@@ -12,22 +12,24 @@ pi 原生支持配置目录覆写：环境变量 **`PI_CODING_AGENT_DIR`**（默
 ~/.devforge/
 ├── plans/                      # 所有 plan tree，系统级统一（decisions/002）
 │   └── <plan-name>/
-└── profiles/
-    ├── plan-agent/             # PI_CODING_AGENT_DIR 指向这里
-    │   ├── AGENTS.md           # 「你是规划 Agent：读 plan-tree skill，跟用户沟通流程，产出 plan tree 保存到本地」
-    │   ├── skills/
-    │   │   └── plan-tree/      # 从 pi 技能库复制/同步 plan-tree 技能
-    │   └── settings.json       # 最小化：模型等基础项
-    └── plan-review/
-        ├── AGENTS.md           # 「你是规划检查 Agent：读 plan tree，检查语义通顺性、前后矛盾」
-        ├── skills/
-        │   └── plan-tree/      # 同上（Review 需要懂 plan tree 的结构约定才能查矛盾）
-        └── settings.json
+├── profiles/                   # 所有 Agent 配置，系统级统一（decisions/006）
+│   ├── plan-agent/             # PI_CODING_AGENT_DIR 指向这里
+│   │   ├── AGENTS.md           # 「你是规划 Agent：读 plan-tree skill，跟用户沟通流程，产出 plan tree 保存到本地」
+│   │   ├── skills/
+│   │   │   └── plan-tree/      # 从 pi 技能库复制/同步 plan-tree 技能
+│   │   └── settings.json       # 最小化：模型等基础项
+│   └── plan-review/
+│       ├── AGENTS.md           # 「你是规划检查 Agent：读 plan tree，检查语义通顺性、前后矛盾」
+│       ├── skills/
+│       │   └── plan-tree/      # 同上（Review 需要懂 plan tree 的结构约定才能查矛盾）
+│       └── settings.json
+└── logs/                       # 结构化日志（architecture-principles §2）
 ```
 
 要点：
+- **配置归属系统，不跟项目走**（decisions/006，用户拍板）：未来阶段新增更多 Agent（编码/测试/部署…），每个都在 `~/.devforge/profiles/<agent-name>/` 有专属文件夹，统一注册、统一管理——profile 目录就是 Agent 的「出厂身份」
 - 两个 profile 的差异主要在 **AGENTS.md 提示词**，skills 目前相同（都要懂 plan-tree）；配置里包含 skills 的说法即此
-- profiles 目录与 plans 目录都在 `~/.devforge/` 下，但职责不同：profiles 是 Agent 的「出厂配置」，plans 是工作产物
+- profiles / plans / logs 同在 `~/.devforge/` 下但职责不同：profiles 是出厂配置，plans 是工作产物，logs 是运行轨迹
 - Review 的提示词刻意窄：只查语义通顺、前后矛盾，其余不管——边界写死在 AGENTS.md 里
 
 ## 待办锚点

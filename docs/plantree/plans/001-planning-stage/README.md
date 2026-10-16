@@ -6,6 +6,8 @@
 
 **In scope：**
 - 编排器骨架（spawn pi 子进程、独立配置注入、生命周期管理）
+- 进程身份与 spawn 台账（decisions/007：只管自家进程，禁止扫全系统杀 pi）
+- 基础架构：完整错误处理 + 结构化日志（baseline/architecture-principles.md，验收标准的一部分）
 - Plan Agent：与用户沟通，产出 plan tree 到 `~/.devforge/plans/`
 - Plan Review Agent：检查 plan tree 语义一致性（仅语义通顺，不管潜在坑）
 - Review 循环：不过 → 扔回 Plan Agent 修 → 新 Review 重查，直至通过

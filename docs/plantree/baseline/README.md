@@ -23,7 +23,17 @@ AI 自动化开发流水线 / 编排平台。把「从 0 到出现一个 MVP」�
 
 - **复用 PI Agent 作为底座**：devforge 不自写 Agent runtime，负责 spawn pi 子进程 + 注入独立配置 + 管生命周期
 - **每类 Agent 独立配置**：绝不跟全局配置走。机制已验证——pi 的 `PI_CODING_AGENT_DIR` 环境变量可覆写配置目录（默认 `~/.pi/agent`），每类 Agent 一个独立 profile 目录（各自的 AGENTS.md / skills / settings）
+- **Agent 通道用 RPC 模式**：`pi --mode rpc` 长驻子进程 + JSONL 控制（decisions/005）
 - **plan tree 跟系统走**：所有 plan tree 统一存 `~/.devforge/plans/`，不跟目标项目走
+- **Agent 配置跟系统走**：所有 Agent 的 profile 统一在 `~/.devforge/profiles/`，每 Agent 一个文件夹，系统级注册（decisions/006）
+
+## 基础架构三原则
+
+所有模块必须遵守，详见 [architecture-principles.md](architecture-principles.md)：完整错误处理 · 完整结构化日志 · AI Friendly 架构。P001 验收标准含前两者（不许先跑通再补）。
+
+## 进程身份红线
+
+devforge 只管理自己启动的 pi 进程，按 spawn 台账精确清理，禁止全系统扫进程杀 pi（decisions/007，机制见 P001 orchestrator-design）。
 
 ## 全局设计哲学（已拍板）
 
