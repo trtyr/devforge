@@ -37,6 +37,7 @@
 
 要点：
 - **配置归属系统，不跟项目走**（decisions/006，用户拍板）：未来阶段新增更多 Agent（编码/测试/部署…），每个都在 `~/.devforge/profiles/<agent-name>/` 有专属文件夹，统一注册、统一管理——profile 目录就是 Agent 的「出厂身份」
+- **profile 的生成与维护归 P002（配置管理体系）**：清单为真源、profile 为渲染产物；本 plan MVP 期间允许手工最小 profile 先行
 - 两个 profile 的差异主要在 **AGENTS.md 提示词**，skills 目前相同（都要懂 plan-tree）；配置里包含 skills 的说法即此
 - profiles / plans / logs 同在 `~/.devforge/` 下但职责不同：profiles 是出厂配置，plans 是工作产物，logs 是运行轨迹
 - Review 的提示词刻意窄：只查语义通顺、前后矛盾，其余不管——边界写死在 AGENTS.md 里

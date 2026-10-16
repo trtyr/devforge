@@ -21,6 +21,7 @@ DevForge：AI 自动化开发流水线（编排平台）。核心思路是把「
 | ID | Plan | Affected Modules | Status | Current Phase | Last Landed | Next Target |
 |----|------|------------------|--------|---------------|-------------|-------------|
 | P001 | [planning-stage](plans/001-planning-stage/README.md) | 编排器（未建） | In Progress | 编排设计定稿 | 2026-10-16 立项建档 | 设计过目确认 |
+| P002 | [config-management](plans/002-config-management/README.md) | 配置管理（未建） | Planning | 立项建档 | 2026-10-16 立项建档 | 清单 schema 设计 |
 
 ## Baseline
 
