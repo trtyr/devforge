@@ -57,5 +57,8 @@ devforge 自己是 AI 编排平台，其自身的产物也必须让 AI（和人�
 
 ## 落地锚点
 
-- 错误处理与日志的具体方案选型在 T006（orchestrator 骨架）时定版并回填本文件
+- 错误处理与日志的具体方案（2026-10-16 定版，task-1）：
+  - **错误处理**：库层 `thiserror` 枚举（`DevforgeError`，Agent/System/Config/Store 分类对应可恢复/不可恢复分明）+ `Context::ctx` 上下文扩展 + 应用层 `anyhow`
+  - **结构化日志**：`tracing` + `tracing-subscriber`——JSON 层写 `~/.devforge/logs/<component>.log.jsonl`，stderr 人类层；`RUST_LOG` 过滤默认 `info`；结构化字段强制带 `component` / `run_id`
+  - **基建**：tokio（异步运行时）· serde/serde_json（RPC JSONL 与配置）· uuid（run-id）
 - 三原则进 P001 验收标准：骨架落地时必须有错误处理与结构化日志，不允许「先跑通再补」

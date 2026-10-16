@@ -4,3 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# 错误处理：库层 thiserror 枚举 + 应用层 anyhow 上下文（architecture-principles §1）
+anyhow = "1"
+thiserror = "2"
+# 序列化：RPC JSONL 协议 / 配置清单 / 产物
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 异步运行时：RPC 子进程 IO + API 服务器
+tokio = { version = "1", features = ["full"] }
+# 结构化日志（architecture-principles §2）
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+# run-id 等标识
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
