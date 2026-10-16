@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::installer::PackageInstaller;
 use crate::config::manifest::ConfigManifest;
-use crate::error::{Context as _, DevforgeError, Result};
+use crate::error::{Context as _, Result};
 
 pub struct Renderer<'a> {
     pub manifest: &'a ConfigManifest,
@@ -120,6 +120,7 @@ mod tests {
     use super::*;
     use crate::config::installer::FakeInstaller;
     use crate::config::manifest::ConfigManifest;
+    use crate::error::DevforgeError;
 
     fn renderer(manifest: &ConfigManifest) -> Renderer<'_> {
         Renderer {

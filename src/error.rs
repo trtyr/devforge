@@ -30,6 +30,10 @@ pub enum DevforgeError {
     #[error("存储错误: {0}")]
     Store(String),
 
+    /// RPC 协议错误（记录损坏、意外 EOF、响应缺失等）。
+    #[error("RPC 协议错误: {0}")]
+    RpcProtocol(String),
+
     #[error("IO: {0}")]
     Io(#[from] std::io::Error),
 

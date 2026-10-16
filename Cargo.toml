@@ -17,6 +17,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 # run-id 等标识
 uuid = { version = "1", features = ["v4"] }
+# 孤儿清理的 kill 系统调用（decisions/007/Q005）
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
