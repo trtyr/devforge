@@ -1,0 +1,38 @@
+{
+  "script": "test_05_events_sse",
+  "checks": [
+    {
+      "name": "收到 project.created",
+      "ok": true,
+      "detail": "{'project': 'evp', 'type': 'project.created'}"
+    },
+    {
+      "name": "project.created payload 含项目名",
+      "ok": true,
+      "detail": "{'project': 'evp', 'type': 'project.created'}"
+    },
+    {
+      "name": "收到 task.created",
+      "ok": true,
+      "detail": "{'project': 'evp', 'task': 'evt', 'type': 'task.created'}"
+    },
+    {
+      "name": "task.created payload 完整",
+      "ok": true,
+      "detail": "{'project': 'evp', 'task': 'evt', 'type': 'task.created'}"
+    },
+    {
+      "name": "事件顺序与触发顺序一致",
+      "ok": true,
+      "detail": "['project.created', 'task.created']"
+    },
+    {
+      "name": "只读请求不产生事件",
+      "ok": true,
+      "detail": "2 vs 2"
+    }
+  ],
+  "issues": [],
+  "passed": 6,
+  "failed": 0
+}

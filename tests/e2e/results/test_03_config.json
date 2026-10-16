@@ -1,0 +1,95 @@
+{
+  "script": "test_03_config",
+  "checks": [
+    {
+      "name": "GET manifest == 200",
+      "ok": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "默认模型池含 deepseek-flash",
+      "ok": true,
+      "detail": "['deepseek-flash']"
+    },
+    {
+      "name": "默认双 Agent",
+      "ok": true,
+      "detail": "['plan-agent', 'plan-review']"
+    },
+    {
+      "name": "必装四件套原文在清单",
+      "ok": true,
+      "detail": "['npm:@ff-labs/pi-fff', 'npm:@juicesharp/rpiv-web-tools', 'npm:pi-blackhole', 'git:github.com/NVlabs/SoL-Pi']"
+    },
+    {
+      "name": "PUT manifest == 200",
+      "ok": true,
+      "detail": "status=200, resp={'ok': True, 'rendered': 2}"
+    },
+    {
+      "name": "PUT 触发重渲染 2 个 profile",
+      "ok": true,
+      "detail": "{'ok': True, 'rendered': 2}"
+    },
+    {
+      "name": "plan-agent AGENTS.md 渲染",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-hwtbz8tr/.devforge/profiles/plan-agent/AGENTS.md"
+    },
+    {
+      "name": "plan-agent settings.json 渲染",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-hwtbz8tr/.devforge/profiles/plan-agent/settings.json"
+    },
+    {
+      "name": "plan-agent settings 来自模型池",
+      "ok": true,
+      "detail": "newapi/DeepSeek flash"
+    },
+    {
+      "name": "plan-agent settings packages 为空（无包清单）",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "name": "plan-review AGENTS.md 渲染",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-hwtbz8tr/.devforge/profiles/plan-review/AGENTS.md"
+    },
+    {
+      "name": "plan-review settings.json 渲染",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-hwtbz8tr/.devforge/profiles/plan-review/settings.json"
+    },
+    {
+      "name": "plan-review settings 来自模型池",
+      "ok": true,
+      "detail": "newapi/DeepSeek flash"
+    },
+    {
+      "name": "plan-review settings packages 为空（无包清单）",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "name": "未知模型引用被拒",
+      "ok": true,
+      "detail": "status=400, body={'error': '配置错误: Agent `plan-agent` 引用的模型 `ghost-model` 不在模型池中'}"
+    },
+    {
+      "name": "PUT 同步落盘清单真源",
+      "ok": false,
+      "detail": "盘上内容未更新"
+    }
+  ],
+  "issues": [
+    {
+      "id": "P3-ISSUE-02",
+      "severity": "high",
+      "desc": "PUT manifest 只更新内存，未落盘真源（main.rs 构造 ServerState 时未传 manifest_path，ServerState.manifest_path 恒 None → PUT 的保存分支永不执行），重启后配置丢失",
+      "evidence": "PUT 后 /tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-hwtbz8tr/.devforge/manifest.json 的 base_packages 仍为旧值"
+    }
+  ],
+  "passed": 15,
+  "failed": 1
+}

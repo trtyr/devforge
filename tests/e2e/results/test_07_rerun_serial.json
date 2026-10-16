@@ -1,0 +1,68 @@
+{
+  "script": "test_07_rerun_serial",
+  "checks": [
+    {
+      "name": "manifest 注入 key 并渲染 profile",
+      "ok": true,
+      "detail": "status=200, 耗时=47s"
+    },
+    {
+      "name": "测试侧补偿完成（models.json + auth.json）",
+      "ok": true,
+      "detail": "['models.json', 'auth.json']"
+    },
+    {
+      "name": "t1 启动 == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "t1 run 已开始",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Running 中同任务再 start == 409",
+      "ok": true,
+      "detail": "status=409, body={'error': '已有运行中的任务（MVP 串行执行，一次一个）'}"
+    },
+    {
+      "name": "Running 中他任务再 start == 409（系统级串行）",
+      "ok": true,
+      "detail": "status=409, body={'error': '已有运行中的任务（MVP 串行执行，一次一个）'}"
+    },
+    {
+      "name": "t1 第一次 run 在超时内结束",
+      "ok": false,
+      "detail": "elapsed=240s"
+    }
+  ],
+  "issues": [
+    {
+      "id": "P7-ISSUE-03",
+      "severity": "medium",
+      "desc": "PUT manifest 同步执行包安装阻塞 47s（四件套含 git clone），客户端常规超时必炸——应异步化或返回任务句柄（发现于 test_07 首跑 10s 超时崩溃）",
+      "evidence": "PUT 耗时 47s"
+    },
+    {
+      "id": "P2-ISSUE-03",
+      "severity": "high",
+      "desc": "渲染器不分发 models.json（provider 的 baseUrl/模型定义缺失）——pi 无法知道 newapi 的地址，模型调用必然失败。测试侧从真实 pi 配置复制补偿",
+      "evidence": "对比真实 ~/.pi/agent/models.json 与渲染产物（无此文件）"
+    },
+    {
+      "id": "P1-CAL-01",
+      "severity": "info",
+      "desc": "联调校准点结论：清单 model_id 照录显示名「DeepSeek flash」不可用，真实 id = mokeywork/deepseek-flash；provider baseUrl = https://newapi.trtyr.top/v1（自建中转，直连可达）",
+      "evidence": "curl chat/completions 验证 200"
+    },
+    {
+      "id": "P7-ISSUE-01",
+      "severity": "high",
+      "desc": "run 超过 240.0s 未结束（可能 pi 卡死/模型不可用/无取消端点无法干预）",
+      "evidence": "runs={'current_run': '92b3ecce-28f7-43e2-a003-a0634746096f', 'plan_tree_dir': '/tmp/devforge-e2e-by47efjt/.devforge/plans/p/t1', 'project': 'p', 'runs': [{'ended_at_ms': None, 'id': '92b3ecce-28f7-43e2-a003-a0634746096f', 'started_at_ms': 1792174737661, 'status': 'Running'}], 'task': 't1'}"
+    }
+  ],
+  "passed": 6,
+  "failed": 1
+}

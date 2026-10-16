@@ -1,0 +1,58 @@
+{
+  "script": "test_02_tasks",
+  "checks": [
+    {
+      "name": "前置项目 p1 创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "前置项目 p2 创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "创建任务 == 201",
+      "ok": true,
+      "detail": "status=201, body={'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'status': 'Pending', 'created_at_ms': 1792173714132, 'current_run': None, 'runs': []}"
+    },
+    {
+      "name": "新任务状态 Pending",
+      "ok": true,
+      "detail": "{'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'status': 'Pending', 'created_at_ms': 1792173714132, 'current_run': None, 'runs': []}"
+    },
+    {
+      "name": "未知 SOP == 400",
+      "ok": true,
+      "detail": "status=400, body={'error': '配置错误: 未知 SOP `coding`——SOP 无管理面，只有内置注册的可用: [\"planning\"]'}"
+    },
+    {
+      "name": "同项目重复任务 == 409",
+      "ok": true,
+      "detail": "status=409"
+    },
+    {
+      "name": "幽灵项目 == 404",
+      "ok": true,
+      "detail": "status=404"
+    },
+    {
+      "name": "跨项目同名任务可创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "p1 任务列表",
+      "ok": true,
+      "detail": "['mvp']"
+    },
+    {
+      "name": "幽灵项目任务列表 == 404",
+      "ok": true,
+      "detail": "status=404"
+    }
+  ],
+  "issues": [],
+  "passed": 10,
+  "failed": 0
+}

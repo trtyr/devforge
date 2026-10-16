@@ -1,0 +1,48 @@
+{
+  "script": "test_00_server",
+  "checks": [
+    {
+      "name": "服务器拉起（隔离 HOME）",
+      "ok": true,
+      "detail": "HOME=/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-vp9uvbf9, port=57743"
+    },
+    {
+      "name": "健康探针 GET /projects == 200",
+      "ok": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "初始项目列表为空",
+      "ok": true,
+      "detail": "body={'projects': []}"
+    },
+    {
+      "name": "manifest 落在隔离 HOME",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-vp9uvbf9/.devforge/manifest.json"
+    },
+    {
+      "name": "真实 HOME 未被触碰（探测）",
+      "ok": true,
+      "detail": "真实 manifest 存在=False（本测试不读写它）"
+    },
+    {
+      "name": "REST 写通（POST /projects == 201）",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "SSE 收到 project.created 事件",
+      "ok": true,
+      "detail": "event={'project': 'smoke', 'type': 'project.created'}"
+    },
+    {
+      "name": "关闭后端口不再服务",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "issues": [],
+  "passed": 8,
+  "failed": 0
+}

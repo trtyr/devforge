@@ -1,0 +1,63 @@
+{
+  "script": "test_06_artifacts_graph",
+  "checks": [
+    {
+      "name": "GET runs == 200",
+      "ok": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "初始 runs 为空",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "name": "初始无 current_run",
+      "ok": true,
+      "detail": "None"
+    },
+    {
+      "name": "plan_tree_dir 符合两层级约定（decisions/002）",
+      "ok": true,
+      "detail": "actual=/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-qi55b7z7/.devforge/plans/p/t, expected=/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-qi55b7z7/.devforge/plans/p/t"
+    },
+    {
+      "name": "GET graph == 200",
+      "ok": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "图状态 Pending",
+      "ok": true,
+      "detail": "Pending"
+    },
+    {
+      "name": "图含 SOP 标识",
+      "ok": true,
+      "detail": "planning"
+    },
+    {
+      "name": "Pending 无节点",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "name": "幽灵任务 runs == 404",
+      "ok": true,
+      "detail": "status=404"
+    },
+    {
+      "name": "幽灵任务 graph == 404",
+      "ok": true,
+      "detail": "status=404"
+    },
+    {
+      "name": "服务器 cwd 围栏就绪（e2e 落点对照用）",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-qi55b7z7/server-cwd"
+    }
+  ],
+  "issues": [],
+  "passed": 11,
+  "failed": 0
+}

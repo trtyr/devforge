@@ -1,0 +1,55 @@
+{
+  "script": "test_01_projects",
+  "checks": [
+    {
+      "name": "创建项目 == 201",
+      "ok": true,
+      "detail": "status=201, body={'name': 'alpha', 'local_path': '/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-work-w7bmumqo/fresh-project', 'created_at_ms': 1792173713874}"
+    },
+    {
+      "name": "响应回显项目名",
+      "ok": true,
+      "detail": "body={'name': 'alpha', 'local_path': '/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-work-w7bmumqo/fresh-project', 'created_at_ms': 1792173713874}"
+    },
+    {
+      "name": "本地目录真实创建",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-work-w7bmumqo/fresh-project"
+    },
+    {
+      "name": "重复创建 == 409",
+      "ok": true,
+      "detail": "status=409, body={'error': '存储错误: 项目 `alpha` 已存在'}"
+    },
+    {
+      "name": "列表包含新项目",
+      "ok": true,
+      "detail": "['alpha']"
+    },
+    {
+      "name": "详情含 local_path",
+      "ok": true,
+      "detail": "{'name': 'alpha', 'local_path': '/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-work-w7bmumqo/fresh-project', 'created_at_ms': 1792173713874}"
+    },
+    {
+      "name": "不存在项目 == 404",
+      "ok": true,
+      "detail": "status=404"
+    },
+    {
+      "name": "不可创建路径返回错误码",
+      "ok": true,
+      "detail": "status=500"
+    }
+  ],
+  "issues": [
+    {
+      "id": "P1-ISSUE-01",
+      "severity": "medium",
+      "desc": "目录创建失败的项目仍残留在项目列表（半注册状态：store 已插入但 ensure_local_dir 失败）",
+      "evidence": "POST /projects local_path=/dev/null/impossible → 200，但 GET /projects 含 badpath"
+    }
+  ],
+  "passed": 8,
+  "failed": 0
+}
