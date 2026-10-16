@@ -58,9 +58,9 @@ git:github.com/NVlabs/SoL-Pi
 npm:@juicesharp/rpiv-ask-user-question   # 仅 Plan Agent（要跟用户沟通，需要提问能力）
 ```
 
-安装机制待办（归 T005）：`pi install` 把包持久化在配置目录的 settings 里——`PI_CODING_AGENT_DIR` 隔离下每个 profile 各自装各自的包集；base 四件套写进公共安装脚本/文档，差异包写进各 profile。
+安装机制（用户拍板 2026-10-16，与 pi 文档一致）：**`pi install` 一把梭**——装的时候自动登记（settings.json packages 数组 + npm/package.json 双记录），插件随 pi 启动自动加载、数据自建，不需要手工接线。唯一可能要手工的是插件自身的配置文件（如 `sol-pi.json` 那种开关参数），按需后置。profile 初始化 = 跑一遍安装清单，完事。
 
 ## 待办锚点
 
-- T005：settings.json 最小集确认（模型、provider 怎么给子 Agent 供 key——继承环境还是要显式注入）；必装插件的 profile 内安装机制（公共四件套 + 差异包）
+- T005：settings.json 最小集确认（模型、provider 怎么给子 Agent 供 key——继承环境还是要显式注入）；插件安装已定案（pi install 一把梭，见必装插件节）
 - skills 的分发方式：复制 vs 符号链接 vs 包管理（pi packages.md 有现成机制，待比对）
