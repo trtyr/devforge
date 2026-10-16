@@ -29,7 +29,7 @@ AI 自动化开发流水线 / 编排平台。把「从 0 到出现一个 MVP」�
 
 ## 基础架构三原则
 
-所有模块必须遵守，详见 [architecture-principles.md](architecture-principles.md)：完整错误处理 · 完整结构化日志 · AI Friendly 架构。P001 验收标准含前两者（不许先跑通再补）。
+所有模块必须遵守，详见 [architecture-principles.md](architecture-principles.md)：完整错误处理 · 完整结构化日志 · AI Friendly 架构 · 全链路可观测 · Agent 完全解耦 · 厚 Agent 薄编排。P001 验收标准含前两者（不许先跑通再补）。
 
 ## 进程身份红线
 

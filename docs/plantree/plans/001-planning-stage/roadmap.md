@@ -19,4 +19,5 @@
 
 ## Deferred
 
-- （空——四阶段扩展不进本 plan）
+- （四阶段扩展不进本 plan）
+- **devforge 对接插件（pi extension）**：Agent 侧与编排器的原生对接（完成信号协议化等），方向已拍板（decisions/009），MVP 后按需启动
