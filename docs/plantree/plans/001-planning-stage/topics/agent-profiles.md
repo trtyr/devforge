@@ -23,7 +23,8 @@
 │   └── <plan-name>/
 ├── profiles/                   # 所有 Agent 配置，系统级统一（decisions/006）
 │   ├── plan-agent/             # PI_CODING_AGENT_DIR 指向这里
-│   │   ├── AGENTS.md           # 「你是规划 Agent：读 plan-tree skill，跟用户沟通流程，产出 plan tree 保存到本地」
+│   │   ├── AGENTS.md           # 「你是规划 Agent：读 plan-tree skill，跟用户沟通流程，产出 plan tree 保存到本地；
+│   │   │                       #    结束前必须用 ask-user-question 问用户是否完成，确认后输出完成标记」（decisions/008）
 │   │   ├── skills/
 │   │   │   └── plan-tree/      # 从 pi 技能库复制/同步 plan-tree 技能
 │   │   └── settings.json       # 最小化：模型等基础项
@@ -36,6 +37,8 @@
 ```
 
 要点：
+- **模型（测试环境统一，用户拍板 2026-10-16）**：`DeepSeek flash`（用户原话，「又强又便宜」；落地时对 newapi 目录核准确切 model id）——两个 Agent 全用这个，P002 模型层第一实例
+- **Plan Agent 权限（MVP）**：纯对话产文档，不读目标项目代码（从 0 开始无代码可读；未来扩展再议）
 - **配置归属系统，不跟项目走**（decisions/006，用户拍板）：未来阶段新增更多 Agent（编码/测试/部署…），每个都在 `~/.devforge/profiles/<agent-name>/` 有专属文件夹，统一注册、统一管理——profile 目录就是 Agent 的「出厂身份」
 - **profile 的生成与维护归 P002（配置管理体系）**：清单为真源、profile 为渲染产物；本 plan MVP 期间允许手工最小 profile 先行
 - 两个 profile 的差异主要在 **AGENTS.md 提示词**，skills 目前相同（都要懂 plan-tree）；配置里包含 skills 的说法即此

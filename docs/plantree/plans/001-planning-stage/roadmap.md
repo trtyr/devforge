@@ -14,7 +14,7 @@
 
 - [ ] (T005) 设计两类 Agent 的独立配置目录结构（agent-profiles）
 - [ ] (T010) 基础架构选型：错误处理方案（thiserror/anyhow 类）+ 结构化日志方案（tracing 类），回填 architecture-principles.md
-- [ ] (T011) 可观测数据层：运行图模型（节点=Agent 实例/边=流转）+ RPC 事件落盘按节点组织（原则 §4，MVP 先数据层、可视化后置）
+- [ ] (T011) 可观测数据层：运行图模型（节点=Agent 实例/边=流转）+ RPC 事件落盘按节点组织 + session 存档归档（--session-dir 按 run-id、台账映射、trace 回溯）（原则 §4，MVP 先数据层、可视化后置）
 - [ ] (T006) 落地 orchestrator 骨架：spawn Plan Agent（含身份标记 + spawn 台账）→ 用户交互产出 plan tree → 保活暂停；错误处理与日志随骨架落地，不许后补
 - [ ] (T007) 落地 Review Agent：读取 plan tree + skills，输出通过/问题清单
 - [ ] (T008) 落地 Review 循环：问题清单回注 Plan Agent → 修复 → 新 Review 重查

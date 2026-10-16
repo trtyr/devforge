@@ -24,7 +24,7 @@
 
 Review Agent 输出的是结构化问题清单还是自由文本？回注给 Plan Agent 时走什么通道（文件？直接注入消息？）
 
-更新：通道已定——编排器经 RPC `get_last_assistant_text` 取结果，落盘后作为 prompt 回注 Plan Agent。**形态**借鉴 pi-agents-team 的 `<final_answer>` 协议：约定 Review 末尾输出结构化块（如 `<verdict>PASS|FAIL</verdict>` + 问题清单），同时解决 Q004 的判定解析。格式细节待 T007 定稿。
+更新：通道已定——编排器经 RPC `get_last_assistant_text` 取结果，落盘后作为 prompt 回注 Plan Agent。**形态**借鉴 pi-agents-team 的 `<final_answer>` 协议，且已升级为「统一结构化输出协议」：完成标记（decisions/008，Plan Agent 用）与 verdict 块（Review 用）同一机制家族，T007 一起定稿格式。
 
 ## Q003 · Plan Agent 的「跟用户沟通」交互面在哪里？【已解决 2026-10-16】
 

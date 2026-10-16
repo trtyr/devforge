@@ -17,21 +17,24 @@ P001 的心脏。状态机、Agent 生命周期、消息传递三大块的方案
                  ┌──────────────────────────────────────────┐
                  ▼                                          │
 [SPAWN plan-agent] → [PLAN_EDITING]（与用户对话，产出 plan tree）
-                 │                                          │
-                 ▼ 产出完成                                  │
-          [PLAN_HOLD]（Plan Agent 暂停保活，上下文完整）        │
+                 │   完成判定：Agent 强制 ask-user-question 问用户 →
+                 │   确认后 Agent 输出完成标记并结束（decisions/008）
+                 ▼ 检测到完成标记                               │
+          [PLAN_HOLD]（进程 idle 保活，上下文完整）               │
                  │                                          │
                  ▼                                          │
 [SPAWN review-agent] → [REVIEWING] ──通过──→ [STAGE_DONE]     │
                  ▲                            （两 Agent 均停） │
-                 │ 不通过                                       │
+                 │ 不通过（问题清单）                             │
                  ▼                                            │
-     [问题清单→Plan Agent]（Review Agent 死）                   │
+     [回注 Plan Agent]（Review Agent 死）                       │
                  │                                            │
                  ▼                                            │
      [PLAN_REVISING]（Plan Agent 唤醒续写，修完暂停）────────────┘
                  （修复完成 → 自动推进：SPAWN 全新 review-agent 从头查）
 ```
+
+流转哲学（decisions/008）：编排层零校验——检测到 Agent 结束标记就直接切换下一环节，不做「上一环节是否正确结束」的判断。用户确认全部发生在 Agent 环节内部（ask-user-question / 直接对话）。
 
 关键不变量：
 1. **同一时刻最多一个 Review Agent 存在**——每轮 review 都是全新实例，不带上一轮记忆（用户明确要求：重新启动一个 PI Agent 从头查）
@@ -75,6 +78,12 @@ devforge 必须能清楚区分「自己启动的 pi」和「用户自己的 pi�
 - **数据模型**：编排器维护一张运行图——节点 = Agent 实例（带 role、run-id、状态：spawned/running/idle/dead），边 = 流转事件（spawn 触发、结果回注、阶段推进、review 回边）。review 循环是真实的循环边，图模型不假装无环
 - **节点数据**：每个节点挂它的运行数据——RPC 事件流（text/think/tool 调用）、结构化日志、verdict、起止时间。原料就是 RPC 事件，编排器边监听边落盘（按 run-id/节点组织，落 `~/.devforge/logs/`）
 - **MVP 边界**：本阶段先做数据层（图状态 + 事件落盘，结构化可查询），流程图可视化渲染后续迭代——但数据模型从第一天按图设计，不事后重构
+
+## Session 存档管理（用户拍板：留 + 必须可管理）
+
+- RPC spawn 时用 `--session-dir` 把每个 Agent 的 pi 会话 JSONL 指到 `~/.devforge/sessions/<run-id>/`（不落 profile，不与用户日常 pi 的 sessions 混杂）
+- spawn 台账记录 run-id ↔ role ↔ session 文件映射，同一项目多次触发可按 trace 回溯（可观测原则的持久层）
+- 实时面（RPC 事件流落盘）+ 存档面（session JSONL）双层，归 T011 实现
 
 ## 已拍板设计哲学
 
