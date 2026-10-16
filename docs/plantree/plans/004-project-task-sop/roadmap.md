@@ -11,7 +11,11 @@
 
 ## Next
 
-- [ ] (T007) API 端点细化：挂接 P003 编排控制域（项目/任务 CRUD 与查询）
+- [x] (T007) API 端点：已挂接 P003（POST/GET projects、tasks CRUD、start、runs、graph——src/server/，74 单测覆盖）（2026-10-16）
+
+## Next
+
+- （开发阶段完成——待测试阶段接手）
 - [ ] (T009) 自动更新：清单变更检测 → 增量重渲染 profile（开发调试期工具，定型后自然闲置）
 
 ## Deferred

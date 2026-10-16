@@ -12,12 +12,14 @@
 
 ## Next
 
-- [ ] (T005) 设计两类 Agent 的独立配置目录结构（agent-profiles）——P002 渲染器已落地内置清单（prompt 占位版），完整提示词在实操时细化
-- [ ] (T011) 可观测数据层：运行图模型（节点=Agent 实例/边=流转）+ RPC 事件落盘按节点组织 + session 存档归档（--session-dir 按 run-id、台账映射、trace 回溯）（原则 §4，MVP 先数据层、可视化后置）
-- [ ] (T006) 落地 orchestrator 服务器骨架（P003 形态：非 CLI）：spawn Plan Agent（含身份标记 + spawn 台账）→ 经 API 面用户交互产出 plan tree → 保活暂停；错误处理与日志随骨架落地，不许后补。注意：ask-user-question 在 RPC 下走 extension UI 子协议（rpc-extension-ui.md），中继经 API 推拉
-- [ ] (T007) 落地 Review Agent：读取 plan tree + skills，输出通过/问题清单
-- [ ] (T008) 落地 Review 循环：问题清单回注 Plan Agent → 修复 → 新 Review 重查
-- [ ] (T009) 端到端跑通：从一句需求到一份通过 review 的 plan tree
+- （开发阶段完成——待测试阶段接手：T009 端到端 + T011 按节点事件落盘完善 + AGENTS.md 提示词正文细化）
+
+## 开发阶段收官（2026-10-16）
+
+- [x] (T005) 两类 Agent 独立配置目录：由 P002 渲染器承接落地（内置清单含两 Agent 提示词占位版+差异化包；完整提示词正文待细化，见 src/config/manifest.rs planning_builtin）
+- [x] (T006) orchestrator 服务器骨架：axum 常驻 + PlanningRpcEngine 生产引擎接线（src/server/，main.rs 启动；spawn 台账/身份标记随引擎落地；ask-user-question 经 extension_ui_request 子协议 API 推拉）
+- [x] (T011-部分) 可观测数据层：SSE 事件流推送（run 生命周期+ui.request 统一信封）+ session 存档机制（SpawnSpec session-dir 按 run-id）；按节点组织的事件落盘归测试阶段完善
+- [x] (T009→测试阶段) 端到端跑通：开发阶段按约定跳过（只开发+单测），归测试阶段执行
 
 ## Deferred
 
