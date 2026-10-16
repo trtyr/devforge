@@ -19,8 +19,8 @@
 
 ```
 ~/.devforge/
-├── plans/                      # 所有 plan tree，系统级统一（decisions/002）
-│   └── <plan-name>/
+├── plans/                      # 所有 plan tree，系统级统一（decisions/002：两层级——项目/任务）
+│   └── <项目名>/<任务>/       # 如 plans/devforge/mvp-from-zero/
 ├── profiles/                   # 所有 Agent 配置，系统级统一（decisions/006）
 │   ├── plan-agent/             # PI_CODING_AGENT_DIR 指向这里
 │   │   ├── AGENTS.md           # 「你是规划 Agent：读 plan-tree skill，跟用户沟通流程，产出 plan tree 保存到本地；
