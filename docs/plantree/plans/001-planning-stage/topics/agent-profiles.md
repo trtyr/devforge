@@ -32,7 +32,26 @@ pi 原生支持配置目录覆写：环境变量 **`PI_CODING_AGENT_DIR`**（默
 - profiles / plans / logs 同在 `~/.devforge/` 下但职责不同：profiles 是出厂配置，plans 是工作产物，logs 是运行轨迹
 - Review 的提示词刻意窄：只查语义通顺、前后矛盾，其余不管——边界写死在 AGENTS.md 里
 
+## 必装插件（用户拍板 2026-10-16）
+
+以下包名为原文照录，所有 Agent 的 profile 都必装——这是基础功能，不是可选项：
+
+```
+npm:@ff-labs/pi-fff
+npm:@juicesharp/rpiv-web-tools
+npm:pi-blackhole
+git:github.com/NVlabs/SoL-Pi
+```
+
+按 Agent 差异化追加：
+
+```
+npm:@juicesharp/rpiv-ask-user-question   # 仅 Plan Agent（要跟用户沟通，需要提问能力）
+```
+
+安装机制待办（归 T005）：`pi install` 把包持久化在配置目录的 settings 里——`PI_CODING_AGENT_DIR` 隔离下每个 profile 各自装各自的包集；base 四件套写进公共安装脚本/文档，差异包写进各 profile。
+
 ## 待办锚点
 
-- T005：settings.json 最小集确认（模型、provider 怎么给子 Agent 供 key——继承环境还是要显式注入）
+- T005：settings.json 最小集确认（模型、provider 怎么给子 Agent 供 key——继承环境还是要显式注入）；必装插件的 profile 内安装机制（公共四件套 + 差异包）
 - skills 的分发方式：复制 vs 符号链接 vs 包管理（pi packages.md 有现成机制，待比对）
