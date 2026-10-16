@@ -4,28 +4,33 @@
 
 ---
 
-## Q001 · 保活与消息传递用什么机制？
+## Q001 · 保活与消息传递用什么机制？【已解决 2026-10-16】
 
-Plan Agent「暂停保活、保留完整上下文、可被 Review 结果唤醒续写」——这要求 pi 子进程会话在进程模型上可持续、可再注入消息。
+**结论：pi RPC 模式（`pi --mode rpc`，长驻子进程 + JSONL 双向控制）。**
 
-候选（未调研，T004 处理）：
-- pi SDK 嵌入（进程内，生命周期天然受控）
-- pi RPC 模式（独立进程 + 长连接，docs 有 rpc.md / rpc-commands.md）
-- JSON / 非交互模式 + session 文件续接（最糙，上下文恢复语义存疑）
+调研结果（官方文档 + 社区先例双确认）：
+- SDK 需 Node.js/Bun 进程内嵌，Rust 宿主不可用 → 划掉
+- print/JSON 模式是一次性进程（跑完即退），无保活 → 划掉
+- RPC 模式为「其他语言编排」而生：进程长驻、上下文在内存，状态机三态原生对应——
+  - **暂停保活** = `agent_settled` 事件（pi 明确不会再自动继续）
+  - **唤醒续写** = 对同一进程再发 `prompt`（同一会话、完整上下文，非 session 重放）
+  - **终止** = 关闭 stdin（体面 shutdown）
+- 先例：npm 包 pi-agents-team（2026-10-11 发布）用同构架构（协调者 + `pi --mode rpc --no-session` 后台 worker），其语义可直接借鉴：idle worker 用 fresh prompt 唤醒、`agent_settled` 作为完成判据、`<final_answer>` 块做结构化输出协议
+- pi 官方仓库另有 experimental packages/orchestrator（supervisor + rpc-process），方向获官方背书
 
-**约束**：上下文必须是「活着的」（同一会话继续），不能是「重新加载 session 文件模拟的活着」——两者对 Plan Agent 的连续记忆可能不等价，需验证。
+来源：pi docs rpc.md / cli-integration.md / sdk.md；pi.dev/packages/pi-agents-team；pi repo commit 87ad824
 
 ## Q002 · Review 结果的形态与回注方式？
 
 Review Agent 输出的是结构化问题清单还是自由文本？回注给 Plan Agent 时走什么通道（文件？直接注入消息？）
 
-倾向：结构化清单（位置 + 问题描述 + 严重度），落文件传递，简单且可追溯。待确认。
+更新：通道已定——编排器经 RPC `get_last_assistant_text` 取结果，落盘后作为 prompt 回注 Plan Agent。**形态**借鉴 pi-agents-team 的 `<final_answer>` 协议：约定 Review 末尾输出结构化块（如 `<verdict>PASS|FAIL</verdict>` + 问题清单），同时解决 Q004 的判定解析。格式细节待 T007 定稿。
 
-## Q003 · Plan Agent 的「跟用户沟通」交互面在哪里？
+## Q003 · Plan Agent 的「跟用户沟通」交互面在哪里？【已解决 2026-10-16】
 
-Plan Agent 需要与用户对话澄清需求。这个交互发生在 pi 的 TUI 里，还是 devforge 编排器做一层转发？
+**结论：devforge 编排器做交互中继（relay）。**
 
-倾向：MVP 直接把 Plan Agent 的 TUI 露给用户（devforge 只是启动它），编排器不管交互面。待确认。
+RPC 模式下子进程没有 TUI（官方文档：TUI-only 能力在 RPC 下不可用/降级），Plan Agent 无法自带交互面。devforge CLI 承担中继：读用户输入 → `prompt` 发给 Plan Agent 进程 → 流式转发 text_delta 回终端（即 rpc.md 官方 minimal client 的模式）。「编排平台拥有控制台」本就是平台该有的形态。TUI 美化后续再说，MVP 纯文本即可。
 
 ## Q004 · 「阶段完成」由谁判定？
 

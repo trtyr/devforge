@@ -27,3 +27,9 @@
 - **决策**：每轮 review 都是全新 pi 实例，从头读 plan tree；发现问题时输出清单后即死，不存活到修复完成
 - **为什么**（用户对初稿的修正）：review 是检查不是干活，完事了就死；干活者（Plan Agent）才需要阶段内存活。无状态重查避免上轮判断污染新轮审查
 - **后果**：修复后的重查是全局重新审查，不是增量复查——更强保证，代价是每轮重复读上下文（接受，零限制哲学下不算成本）
+
+## 005 · Agent 通道用 pi RPC 模式（Q001 定案）
+
+- **决策**：所有子 Agent = `pi --mode rpc` 长驻子进程，devforge（Rust）经 stdin/stdout JSONL 协议控制；保活/唤醒/终止分别映射 `agent_settled` 事件 / 同进程再 prompt / 关 stdin
+- **为什么**：SDK 需 Node/Bun 宿主，Rust 不可用；print/JSON 是一次性进程无保活；RPC 官方定位就是「其他语言编排」，且 pi-agents-team（2026-10-11）已用同构架构验证可行，pi 官方仓库另有 experimental orchestrator 背书
+- **后果**：devforge 是 RPC 协议客户端（协议参考 pi docs rpc.md / rpc-commands.md）；子 Agent 无 TUI，用户交互面归 devforge 中继（Q003）；Review 结果走 `get_last_assistant_text` + 结构化 verdict 块（Q002/Q004）。备选方案「pi extension 型编排器（TypeScript，同 pi-agents-team）」被否：devforge 定位是独立编排平台而非 pi 插件
