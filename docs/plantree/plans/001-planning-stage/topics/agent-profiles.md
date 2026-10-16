@@ -2,9 +2,18 @@
 
 「每类 Agent 一套自己的 pi 配置，绝对不跟全局配置走」的落地机制。
 
-## 机制验证（已确认）
+## 机制（本机实研 2026-10-16）
 
-pi 原生支持配置目录覆写：环境变量 **`PI_CODING_AGENT_DIR`**（默认 `~/.pi/agent`）。spawn 时注入不同值 = 不同 Agent 拿到完全独立的配置世界，零魔改。
+核心开关：pi 原生支持配置目录覆写——环境变量 **`PI_CODING_AGENT_DIR`**（默认 `~/.pi/agent`）。spawn 时注入不同值 = 不同 Agent 拿到完全独立的配置世界，零魔改。
+
+参考样本：本机 `~/.pi/agent/`（用户日常 pi 配置）。结构与机制：
+
+- **插件安装双记录**：`pi install npm:X` 会写两处——`settings.json` 的 `packages` 数组（登记）+ `npm/package.json` 的 dependencies（记版本，实体在 `npm/` 下）。这俩都是配置目录内的，`PI_CODING_AGENT_DIR` 隔离后各 profile 自成体系
+- **插件配置放目录根**：如 `sol-pi.json`（SoL-Pi 的开关与参数）；插件数据自建子目录（本机可见 `fff/`、`pi-blackhole/`、`intercom/` 等）
+- **提示词分层**：`AGENTS.md`（全局规则）为角色提示词主载体；`extensions/` 是本地手写扩展（不走包管理），`skills/` 是技能库
+- **其余配置面**：`mcp.json`（MCP 服务器）、`models.json`/`auth.json`（模型与凭据）、`trust.json`（项目信任）
+
+→ devforge profile = 同构缩微：角色 AGENTS.md + settings.json（含必装包集）+ skills/ + 按需 mcp.json，`pi install` 在 profile 内执行即自动落双记录。
 
 ## 目录规划（草案，T005 细化）
 
