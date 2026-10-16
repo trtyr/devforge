@@ -11,7 +11,7 @@
 - **部署阶段**：部署 Agent 面向目标环境，需要环境档案输入
 - 待规划阶段剧本跑通后逐阶段展开，不提前设计
 
-## 2026-10-16 · 编排器形态候选
+## 2026-10-16 · 编排器形态候选【已晋升 → P001 decisions/005】
 
-- MVP 最简形态可能是 Rust CLI：一条命令跑完规划阶段剧本（交互式 Plan Agent + 循环 Review）
-- pi 有 SDK / RPC / JSON 模式（见 pi docs），可能是保活与消息传递的现成通道，未调研
+- ~~MVP 最简形态可能是 Rust CLI~~ → 已定：Rust 编排器 + pi RPC 模式（decisions/005）
+- ~~pi 有 SDK / RPC / JSON 模式，未调研~~ → 已调研定案：RPC（P001 Q001）
