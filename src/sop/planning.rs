@@ -1,0 +1,323 @@
+//! 规划循环状态机（P001 · decisions/008 零校验流转 + decisions/004 Review 无状态）。
+//!
+//! 状态流转：
+//! ```text
+//! PLAN_EDITING（Plan Agent 与用户对话，强制 ask-user-question 确认完成）
+//!   → 完成标记 → PLAN_HOLD（本抽象中 Plan 会话保活，跨轮次复用）
+//! REVIEWING（每轮全新 Review 实例，从头查）
+//!   → PASS → 阶段完成（decisions/008 零校验，编排器信任 verdict）
+//!   → FAIL → Review 实例即弃 → 问题清单回注活着的 Plan Agent → 自动重查（无上限）
+//! ```
+//!
+//! Review 永不碰用户（P004 边界）；用户交互只在 Plan 环节内（ask-user-question）。
+
+use crate::error::Result;
+use crate::sop::output::{is_complete, parse_verdict};
+
+/// Plan Agent 开场指令（角色 + 强制完成确认 + 完成标记约定）。
+pub const PLAN_KICKOFF: &str = "\
+你是规划 Agent：读取 plan-tree skill，与用户沟通，产出 plan tree 到当前目录（任务目录即 plan root）。\n\
+规则：\n\
+1. 规划过程中用户确认类问题必须用 ask-user-question 询问。\n\
+2. 结束前【必须】用 ask-user-question 问用户是否完成；用户确认后才算完成。\n\
+3. 完成后，在你的最终回复末尾单独一行输出：<plan-complete>";
+
+/// Review 检查指令（每轮全新实例都收到同一份）。
+pub const REVIEW_INSTRUCTION: &str = "\
+你是规划检查 Agent：读取 plan tree 与 plan-tree skill，只检查语义是否通顺、前后是否矛盾。\n\
+不评设计好坏、不找潜在坑、不与用户交互。\n\
+在回复末尾输出 verdict 块：\n\
+通过：<verdict>PASS</verdict>\n\
+不通过：<verdict>FAIL</verdict> 加 <issues> 清单（每行一条，`- ` 开头）。";
+
+/// 打回回注前缀。
+pub const REMEDIATION_PREFIX: &str = "Review 发现以下语义问题，请修订 plan tree：";
+
+/// 用户链路抽象：Plan Agent 的 ask-user-question 经此抵达用户并带回回答。
+/// 真身 = P003 API 中继（前端/MVP 裸 HTTP）；测试 = 脚本回答。
+pub trait UserLink {
+    fn ask(&mut self, question: &str, options: &[&str]) -> Result<String>;
+}
+
+/// Plan Agent 会话（干活者：跨轮次复用，上下文连续——decisions/004）。
+pub trait PlanAgentSession {
+    /// 与 Plan Agent 一轮对话。UI 问答（ask-user-question）在实现内部经 `ui` 发生。
+    fn converse(&mut self, message: &str, ui: &mut dyn UserLink) -> Result<String>;
+}
+
+impl<P: PlanAgentSession + ?Sized> PlanAgentSession for &mut P {
+    fn converse(&mut self, message: &str, ui: &mut dyn UserLink) -> Result<String> {
+        (**self).converse(message, ui)
+    }
+}
+
+/// Review 会话（检查者：用完即弃，decisions/004）。
+pub trait ReviewSession {
+    /// 丢检查指令，等结果，返回 Review 最终文本。
+    fn review(&mut self, instruction: &str) -> Result<String>;
+}
+
+/// Review 会话工厂（每轮全新实例，不带前轮记忆）。
+pub trait ReviewSessionFactory {
+    fn open(&mut self) -> Result<Box<dyn ReviewSession>>;
+}
+
+impl<F: ReviewSessionFactory + ?Sized> ReviewSessionFactory for &mut F {
+    fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
+        (**self).open()
+    }
+}
+
+/// 阶段报告。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageReport {
+    /// Review 轮数。
+    pub rounds: usize,
+    /// 累计打回的问题条数。
+    pub issues_total: usize,
+}
+
+pub struct PlanningLoop<P: PlanAgentSession, F: ReviewSessionFactory> {
+    pub plan: P,
+    pub review_factory: F,
+}
+
+impl<P: PlanAgentSession, F: ReviewSessionFactory> PlanningLoop<P, F> {
+    pub fn new(plan: P, review_factory: F) -> Self {
+        Self { plan, review_factory }
+    }
+
+    /// 跑完规划阶段直至 Review 通过。
+    ///
+    /// 零硬限制（decisions/003）：打回轮次无上限；零校验（decisions/008）：
+    /// Plan Agent 修复后直接自动重查，不验修复质量、不再问用户。
+    pub fn run(&mut self, ui: &mut dyn UserLink) -> Result<StageReport> {
+        // ---- PLAN 阶段：循环直至完成标记（完成判定在 Agent 环节内）----
+        let mut message = PLAN_KICKOFF.to_string();
+        loop {
+            let text = self.plan.converse(&message, ui)?;
+            if is_complete(&text) {
+                break;
+            }
+            message = "继续。完成前记得 ask-user-question 向用户确认，并在最终回复输出完成标记。".into();
+        }
+
+        // ---- REVIEW 循环：每轮全新实例；FAIL 打回后零校验自动重查 ----
+        let mut rounds = 0usize;
+        let mut issues_total = 0usize;
+        loop {
+            rounds += 1;
+            let mut session = self.review_factory.open()?;
+            let text = session.review(REVIEW_INSTRUCTION)?;
+            drop(session); // 用完即弃（无论结论），下一轮必是全新实例
+
+            match parse_verdict(&text)? {
+                crate::sop::output::Verdict::Pass => {
+                    return Ok(StageReport { rounds, issues_total });
+                }
+                crate::sop::output::Verdict::Fail { issues } => {
+                    issues_total += issues.len();
+                    let remediation = format!(
+                        "{REMEDIATION_PREFIX}\n{}",
+                        issues
+                            .iter()
+                            .map(|i| format!("- {i}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    );
+                    // 回注活着的 Plan Agent（它的上下文连续）；修完零校验自动重查
+                    let _ = self.plan.converse(&remediation, ui)?;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sop::output::COMPLETION_TAG;
+    use std::cell::Cell;
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+
+    // ---- 用户脚本 ----
+    struct MockUser {
+        answers: VecDeque<&'static str>,
+        asked: Vec<String>,
+    }
+    impl MockUser {
+        fn new(answers: &[&'static str]) -> Self {
+            Self {
+                answers: answers.iter().copied().collect(),
+                asked: Vec::new(),
+            }
+        }
+    }
+    impl UserLink for MockUser {
+        fn ask(&mut self, question: &str, _options: &[&str]) -> Result<String> {
+            self.asked.push(question.into());
+            self.answers
+                .pop_front()
+                .map(String::from)
+                .ok_or_else(|| crate::error::DevforgeError::System("无更多用户回答".into()))
+        }
+    }
+
+    // ---- Plan Agent 脚本 ----
+    enum PlanTurn {
+        /// 发起 ask-user-question；用户答「完成」→ 回复带完成标记，否则回复继续文本
+        AskDone,
+        /// 断言收到的消息包含片段（打回回注校验），然后回复
+        ExpectContains(&'static str, &'static str),
+    }
+    struct MockPlan {
+        turns: VecDeque<PlanTurn>,
+        received: Vec<String>,
+    }
+    impl MockPlan {
+        fn new(turns: &[PlanTurn]) -> Self {
+            Self {
+                turns: turns.iter().cloned().collect(),
+                received: Vec::new(),
+            }
+        }
+    }
+    impl Clone for PlanTurn {
+        fn clone(&self) -> Self {
+            match self {
+                PlanTurn::AskDone => PlanTurn::AskDone,
+                PlanTurn::ExpectContains(a, b) => PlanTurn::ExpectContains(a, b),
+            }
+        }
+    }
+    impl PlanAgentSession for MockPlan {
+        fn converse(&mut self, message: &str, ui: &mut dyn UserLink) -> Result<String> {
+            self.received.push(message.into());
+            match self.turns.pop_front().expect("MockPlan 轮次耗尽") {
+                PlanTurn::AskDone => {
+                    let answer = ui.ask("规划完成了吗？", &["完成", "还没"])?;
+                    if answer == "完成" {
+                        Ok(format!("好，全部落盘。\n{COMPLETION_TAG}"))
+                    } else {
+                        Ok("收到，继续修改 plan tree。".into())
+                    }
+                }
+                PlanTurn::ExpectContains(needle, reply) => {
+                    assert!(
+                        message.contains(needle),
+                        "应收到含 `{needle}` 的消息，实际: {message}"
+                    );
+                    Ok(reply.into())
+                }
+            }
+        }
+    }
+
+    // ---- Review 工厂脚本 ----
+    struct MockReview {
+        reply: &'static str,
+        closed: Rc<Cell<bool>>,
+    }
+    impl ReviewSession for MockReview {
+        fn review(&mut self, instruction: &str) -> Result<String> {
+            assert_eq!(instruction, REVIEW_INSTRUCTION, "每轮应收到同一检查指令");
+            Ok(self.reply.into())
+        }
+    }
+    impl Drop for MockReview {
+        fn drop(&mut self) {
+            self.closed.set(true);
+        }
+    }
+    #[derive(Default)]
+    struct MockReviewFactory {
+        replies: VecDeque<&'static str>,
+        opened: Vec<Rc<Cell<bool>>>,
+    }
+    impl MockReviewFactory {
+        fn new(replies: &[&'static str]) -> Self {
+            Self {
+                replies: replies.iter().copied().collect(),
+                opened: Vec::new(),
+            }
+        }
+    }
+    impl ReviewSessionFactory for MockReviewFactory {
+        fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
+            let closed = Rc::new(Cell::new(false));
+            self.opened.push(closed.clone());
+            Ok(Box::new(MockReview {
+                reply: self.replies.pop_front().expect("Review 回复耗尽"),
+                closed,
+            }))
+        }
+    }
+
+    const FAIL_ONE: &str = "有矛盾。\n<verdict>FAIL</verdict>\n<issues>\n- 规划说 Rust 又说 Python\n</issues>";
+    const PASS: &str = "通顺。\n<verdict>PASS</verdict>";
+
+    #[test]
+    fn approved_first_round() {
+        let plan = MockPlan::new(&[PlanTurn::AskDone]);
+        let mut factory = MockReviewFactory::new(&[PASS]);
+        let mut user = MockUser::new(&["完成"]);
+        let report = PlanningLoop::new(plan, &mut factory).run(&mut user).unwrap();
+        assert_eq!(report, StageReport { rounds: 1, issues_total: 0 });
+        // Review 用完即弃
+        assert!(factory.opened[0].get());
+        // 完成确认发生且仅一次（在 Plan 环节内）
+        assert_eq!(user.asked.len(), 1);
+    }
+
+    #[test]
+    fn fail_then_remediation_then_pass() {
+        let plan = MockPlan::new(&[
+            PlanTurn::AskDone,
+            PlanTurn::ExpectContains("规划说 Rust 又说 Python", "已修订。\n<plan-complete>"),
+        ]);
+        let mut factory = MockReviewFactory::new(&[FAIL_ONE, PASS]);
+        let mut user = MockUser::new(&["完成"]);
+        let report = PlanningLoop::new(plan, &mut factory).run(&mut user).unwrap();
+        assert_eq!(report, StageReport { rounds: 2, issues_total: 1 });
+        // 两轮都是全新实例且已弃
+        assert_eq!(factory.opened.len(), 2);
+        assert!(factory.opened.iter().all(|f| f.get()));
+    }
+
+    #[test]
+    fn zero_validation_flow_no_user_ask_during_loop() {
+        // 打回与重查之间没有任何用户确认——零校验流转（decisions/008）
+        let plan = MockPlan::new(&[
+            PlanTurn::AskDone,
+            PlanTurn::ExpectContains(REMEDIATION_PREFIX, "修好了。<plan-complete>"),
+            PlanTurn::ExpectContains(REMEDIATION_PREFIX, "又修好了。<plan-complete>"),
+        ]);
+        let mut factory = MockReviewFactory::new(&[FAIL_ONE, FAIL_ONE, PASS]);
+        let mut user = MockUser::new(&["完成"]);
+        let report = PlanningLoop::new(plan, &mut factory).run(&mut user).unwrap();
+        assert_eq!(report.rounds, 3);
+        assert_eq!(report.issues_total, 2);
+        // 用户只被问过一次（初次完成确认）；两轮打回全程零打扰
+        assert_eq!(user.asked.len(), 1);
+    }
+
+    #[test]
+    fn user_can_refuse_completion() {
+        let plan = MockPlan::new(&[PlanTurn::AskDone, PlanTurn::AskDone]);
+        let mut factory = MockReviewFactory::new(&[PASS]);
+        let mut user = MockUser::new(&["还没", "完成"]);
+        let report = PlanningLoop::new(plan, &mut factory).run(&mut user).unwrap();
+        assert_eq!(report.rounds, 1);
+        assert_eq!(user.asked.len(), 2);
+    }
+
+    #[test]
+    fn missing_verdict_is_protocol_error() {
+        let plan = MockPlan::new(&[PlanTurn::AskDone]);
+        let mut factory = MockReviewFactory::new(&["我忘了输出块"]);
+        let mut user = MockUser::new(&["完成"]);
+        let err = PlanningLoop::new(plan, &mut factory).run(&mut user).unwrap_err();
+        assert!(err.to_string().contains("verdict"));
+    }
+}

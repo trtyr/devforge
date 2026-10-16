@@ -122,6 +122,65 @@ impl RpcClient {
         }
     }
 
+    /// 等待 agent_settled，期间遇 extension_ui_request 事件时回调取答案并回传
+    /// （ask-user-question 的 UI 子协议；回答记录格式为联调校准点，见 P001 roadmap）。
+    pub fn wait_settled_with_ui(
+        &mut self,
+        mut on_ui_request: impl FnMut(
+            &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<String>,
+    ) -> Result<WaitOutcome> {
+        let mut out = WaitOutcome::default();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = self.stdout.read_line(&mut line).ctx("读取 RPC 事件流")?;
+            if n == 0 {
+                return Err(DevforgeError::RpcProtocol(
+                    "子进程 EOF：agent_settled 之前流已结束".into(),
+                ));
+            }
+            match decode_line(line.trim_end())? {
+                crate::engine::protocol::Inbound::Response(r) => out.responses.push(r),
+                crate::engine::protocol::Inbound::Event(e) => {
+                    if let Some(delta) = e.text_delta() {
+                        out.text.push_str(delta);
+                    }
+                    if e.r#type == "extension_ui_request" {
+                        // 问用户（经 UI 链路），回传应答（同一 request id）
+                        let answer = on_ui_request(&e.extra)?;
+                        let req_id = e
+                            .extra
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let resp = serde_json::json!({
+                            "id": req_id,
+                            "type": "extension_ui_response",
+                            "value": answer,
+                        });
+                        let mut l = serde_json::to_string(&resp).ctx("序列化 UI 应答")?;
+                        l.push('\n');
+                        self.stdin
+                            .as_mut()
+                            .expect("stdin 仅在 kill 后不可用")
+                            .write_all(l.as_bytes())
+                            .ctx("发送 extension_ui_response")?;
+                            self.stdin.as_mut().expect("stdin").flush().ctx("flush UI 应答")?;
+                        out.events.push(e);
+                        continue;
+                    }
+                    let settled = e.is_agent_settled();
+                    out.events.push(e);
+                    if settled {
+                        return Ok(out);
+                    }
+                }
+            }
+        }
+    }
+
     /// 校验某 id 的响应成功；失败则转为该角色 Agent 的失败错误（可恢复类）。
     pub fn require_success(&self, outcome: &WaitOutcome, id: &str) -> Result<()> {
         match outcome.responses.iter().find(|r| r.id.as_deref() == Some(id)) {
@@ -193,7 +252,7 @@ mod tests {
         RpcClient::spawn_with_command(cmd, spec).unwrap()
     }
 
-    const Rsp_OK: &str =
+    const RSP_OK: &str =
         r#"{"id":"req-1","type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}"#;
     const EVT_START: &str = r#"{"type":"agent_start"}"#;
     const EVT_SETTLED: &str = r#"{"type":"agent_settled"}"#;
@@ -203,7 +262,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let script = write_replay(
             dir.path(),
-            &[Rsp_OK, EVT_START, EVT_SETTLED],
+            &[RSP_OK, EVT_START, EVT_SETTLED],
             "read _x\n", // 常驻等 stdin，避免 spawn/write 竞态
         );
         let mut client = spawn_sh(&script, dir.path());
@@ -224,7 +283,7 @@ mod tests {
         let script = write_replay(
             dir.path(),
             &[
-                Rsp_OK,
+                RSP_OK,
                 r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"he"}}"#,
                 r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"llo"}}"#,
                 EVT_SETTLED,
@@ -242,7 +301,7 @@ mod tests {
     fn eof_before_settled_is_protocol_error() {
         let dir = tempfile::tempdir().unwrap();
         // 无 settled 记录，脚本自然退出 → EOF
-        let script = write_replay(dir.path(), &[Rsp_OK], "");
+        let script = write_replay(dir.path(), &[RSP_OK], "");
         let mut client = spawn_sh(&script, dir.path());
         let err = client.wait_settled().unwrap_err();
         assert!(err.to_string().contains("EOF"), "应为 EOF 协议错误: {err}");

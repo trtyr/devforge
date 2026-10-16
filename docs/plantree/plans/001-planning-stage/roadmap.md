@@ -8,6 +8,7 @@
 - [x] (T003) 编排器设计定稿：状态机 + 保活 + 消息传递 + 进程身份 + 自动流转全定案（2026-10-16）；verdict/完成标记格式细节归 T007
 - [x] (T010) 基础架构选型定版：thiserror+anyhow 双层错误（Agent/System 分类）、tracing JSONL 文件层+stderr 双输出（2026-10-16，代码已落 src/error.rs + src/logging.rs，6 单测绿；回填 architecture-principles 落地锚点）
 - [x] (T006-引擎核心) RPC 编排引擎（src/engine/）：JSONL 协议编解码（prompt/get_state/response/event/text_delta）、spawn 命令构造（三重身份标记注入+session-dir）、spawn 台账（JSON 落盘+Ours/Foreign/Dead 对账双验证+孤儿直接杀）、生命周期客户端（spawn/prompt/wait_settled/require_success/kill，mock 回放测试不碰真 pi）——55 单测全绿 clippy 干净（2026-10-16）
+- [x] (T007+T008) Review Agent + Review 循环（src/sop/）：统一输出协议（完成标记 <plan-complete> + verdict 块 PASS/FAIL/issues 解析）、PlanningLoop 状态机（强制 ask-user-question 完成确认/每轮全新 Review/打回回注/零校验自动重查/无轮次上限）、RPC 桥接（RpcPlanSession 含 extension_ui_request 子协议推拉、RpcReviewFactory 每轮全新 spawn 用完即弃）——66 单测全绿 clippy 干净；注：UI 应答记录格式为联调校准点，端到端验证归测试阶段 T009（2026-10-16）
 
 ## Next
 
