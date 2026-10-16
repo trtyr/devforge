@@ -66,5 +66,5 @@ npm:@juicesharp/rpiv-ask-user-question   # 仅 Plan Agent（要跟用户沟通�
 
 ## 待办锚点
 
-- T005：settings.json 最小集确认（模型、provider 怎么给子 Agent 供 key——继承环境还是要显式注入）；插件安装已定案（pi install 一把梭，见必装插件节）
+- T005：settings.json 最小集确认（模型、provider 怎么给子 Agent 供 key——继承环境还是要显式注入）；插件安装已定案（pi install 一把梭，见必装插件节）；AGENTS.md 提示词需写明目录布局约定——任务目录即 plan root（两层级 plans/<项目>/<任务>/，decisions/002），plan-tree 技能的默认发现顺序不适用，需显式指定
 - skills 的分发方式：复制 vs 符号链接 vs 包管理（pi packages.md 有现成机制，待比对）

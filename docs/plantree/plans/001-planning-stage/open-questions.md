@@ -30,7 +30,7 @@ Review Agent 输出的是结构化问题清单还是自由文本？回注给 Pla
 
 **结论：devforge 编排器做交互中继（relay）。**
 
-RPC 模式下子进程没有 TUI（官方文档：TUI-only 能力在 RPC 下不可用/降级），Plan Agent 无法自带交互面。devforge CLI 承担中继：读用户输入 → `prompt` 发给 Plan Agent 进程 → 流式转发 text_delta 回终端（即 rpc.md 官方 minimal client 的模式）。「编排平台拥有控制台」本就是平台该有的形态。TUI 美化后续再说，MVP 纯文本即可。
+RPC 模式下子进程没有 TUI（官方文档：TUI-only 能力在 RPC 下不可用/降级），Plan Agent 无法自带交互面。交互面归 devforge 的 API 层（形态拍板：devforge 是服务器非 CLI，见 P003）：客户端（前端；MVP 期裸 HTTP 客户端调试）输入 → `prompt` 发给 Plan Agent 进程 → 流式事件经 API 回传，ask-user-question 走 extension UI 子协议经 API 推拉。「编排平台拥有接口层」本就是平台该有的形态。
 
 ## Q004 · 「阶段完成」由谁判定？
 
