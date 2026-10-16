@@ -66,7 +66,7 @@ devforge 必须能清楚区分「自己启动的 pi」和「用户自己的 pi�
 
 1. spawn `pi --mode rpc` 子进程，注入 `PI_CODING_AGENT_DIR=<profile 目录>` + 自家身份标记（见上节）
 2. JSONL 协议驱动：prompt / 事件流监听 / `agent_settled` 同步（协议见 pi docs rpc.md、rpc-commands.md）
-3. Plan 阶段用户交互中继：用户输入 → prompt → text_delta 流式回显（RPC 无 TUI，见 Q003）
+3. Plan 阶段用户交互中继：用户输入 → prompt → text_delta 流式回显 → 经 API 面向客户端（前端；MVP 期用裸 HTTP 客户端调试，含 ask-user-question UI 子协议推拉，见 P003——形态拍板：devforge 是服务器非 CLI）
 4. Review 结果接收（`get_last_assistant_text` + verdict 块）与回注
 5. 状态机推进（含 Q004「通过」判定）；spawn 台账维护与按台账清理
 6. 不做：任何硬限制、任何内容层面的判断（判断力全在两个 Agent 里）
