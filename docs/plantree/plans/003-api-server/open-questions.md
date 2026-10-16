@@ -1,24 +1,17 @@
 # Open Questions — P003
 
-## Q001 · 协议选型：REST、WebSocket 还是混合？
+## Q001 · 协议选型：REST、WebSocket 还是混合？【已解决 2026-10-16】
 
-交互中继（Agent 对话流 + ask-user-question UI 事件）是重流式场景；编排控制是请求-响应场景；可观测是订阅推送场景。
+**结论：REST + SSE 混合**（decisions/001）——REST 管控制/查询/中继输入，SSE 管事件推送。WS 不引入：编排事件是单向流，SSE 更简单。
 
-候选：
-- REST（控制面）+ WebSocket（事件流/中继面）混合
-- 纯 WebSocket JSON-RPC（单一通道，客户端实现简单）
-- gRPC（性能好但前端对接不如 WS 顺手）
+## Q002 · 流式中继的具体形态？【已解决 2026-10-16】
 
-倾向：混合（REST 管控制、WS 管流式与订阅）——各取所长，前端生态成熟。待 T002 细化定案。
+**结论：单一 SSE 通道 + 统一 JSON 信封**（decisions/002）：`{"type": "...", ...}` 一行一事件；`ui.request` 事件带 id/question/options，应答走 `POST /ui/{id}/answer`。与 T011 落盘格式对齐。
 
-## Q002 · 流式中继的具体形态？
+## Q003 · 鉴权与安全边界？【已解决 2026-10-16】
 
-Plan Agent 对话流（text_delta）、ask-user-question 的 UI 请求、可观测事件流——是共用一条 WS 连接多路复用，还是分通道？消息信封怎么设计（run-id / node-id / 类型）？与 T011 运行图模型对齐后一并定。
+**结论：默认 127.0.0.1 + token 预留位**（decisions/003）——token 未配置即放行，配置即强校验 401。多用户远期。
 
-## Q003 · 鉴权与安全边界？
+## Q004 · API 版本化策略？【已解决 2026-10-16】
 
-服务器监听范围（localhost only？）、要不要 token 鉴权、未来多用户可能性。测试环境从简（用户对安全的态度见 P002 decisions/001），但接口设计的鉴权预留位要留。
-
-## Q004 · API 版本化策略？
-
-URL 前缀（/api/v1/）vs header 协商？前端未上线前接口还会变，版本化从第一天带还是首个前端版本冻结时引入？倾向：路径前缀从第一天带，成本近零。
+**结论：`/api/v1/` 路径前缀从第一天**（decisions/004）。

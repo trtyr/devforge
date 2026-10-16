@@ -1,0 +1,297 @@
+//! API 端点处理器（P003 五能力域）。
+
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response, Sse};
+use axum::extract::Request;
+use axum::Json;
+use serde::Deserialize;
+use serde_json::json;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt as _;
+
+use crate::config::ConfigManifest;
+use crate::domain::project::Project;
+use crate::domain::task::Task;
+use crate::server::{run_in_background, SharedState};
+
+// ---------- 错误映射（原则 §1：对外错误面向人和 AI 双读者） ----------
+
+/// API 错误：状态码 + 消息。
+pub struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ApiError {
+    pub fn not_found(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::NOT_FOUND, message: msg.into() }
+    }
+    pub fn conflict(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::CONFLICT, message: msg.into() }
+    }
+    pub fn bad_request(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::BAD_REQUEST, message: msg.into() }
+    }
+    pub fn internal(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: msg.into() }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let body = json!({"error": self.message});
+        (self.status, Json(body)).into_response()
+    }
+}
+
+impl From<crate::error::DevforgeError> for ApiError {
+    fn from(e: crate::error::DevforgeError) -> Self {
+        let msg = e.to_string();
+        // MVP 按语义关键词映射；后续可给错误加机器可读 code（原则 §3）
+        if msg.contains("已存在") {
+            Self::conflict(msg)
+        } else if msg.contains("不存在") {
+            Self::not_found(msg)
+        } else if msg.contains("串行") || msg.contains("不可发起") {
+            Self::conflict(msg)
+        } else if msg.contains("配置错误") || msg.contains("未知 SOP") || msg.contains("不在模型池") {
+            Self::bad_request(msg)
+        } else {
+            Self::internal(msg)
+        }
+    }
+}
+
+type ApiResult<T> = Result<T, ApiError>;
+
+// ---------- 鉴权（Q003：预留位——未配置 token 即放行） ----------
+
+pub async fn auth_middleware(
+    State(st): State<SharedState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if let Some(expected) = &st.token {
+        let got = req.headers().get("x-devforge-token").and_then(|v| v.to_str().ok());
+        if got != Some(expected.as_str()) {
+            return (StatusCode::UNAUTHORIZED, Json(json!({"error": "token 不匹配"})))
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
+
+// ---------- 编排控制：项目 ----------
+
+#[derive(Deserialize)]
+pub struct CreateProjectReq {
+    pub name: String,
+    /// 本地路径——全手动指定（P004 decisions/001）
+    pub local_path: String,
+}
+
+pub async fn create_project(
+    State(st): State<SharedState>,
+    Json(req): Json<CreateProjectReq>,
+) -> ApiResult<(StatusCode, Json<Project>)> {
+    let project = Project::new(req.name, req.local_path.into(), crate::domain::now_ms());
+    let created = {
+        let mut store = st.store.lock().expect("store 锁");
+        store.create_project(project).cloned()?
+    };
+    // 本地关系落地：从 0 = 建目录；已有 = 幂等确认（decisions/001）
+    created.ensure_local_dir().map_err(ApiError::from)?;
+    st.emit(json!({"type": "project.created", "project": created.name}));
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+pub async fn list_projects(State(st): State<SharedState>) -> Json<serde_json::Value> {
+    let store = st.store.lock().expect("store 锁");
+    Json(json!({"projects": store.list_projects()}))
+}
+
+pub async fn get_project(
+    State(st): State<SharedState>,
+    Path(name): Path<String>,
+) -> ApiResult<Json<Project>> {
+    let store = st.store.lock().expect("store 锁");
+    store
+        .get_project(&name)
+        .cloned()
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found(format!("项目 `{name}` 不存在")))
+}
+
+// ---------- 编排控制：任务 ----------
+
+#[derive(Deserialize)]
+pub struct CreateTaskReq {
+    pub id: String,
+    pub sop: String,
+}
+
+pub async fn create_task(
+    State(st): State<SharedState>,
+    Path(project): Path<String>,
+    Json(req): Json<CreateTaskReq>,
+) -> ApiResult<(StatusCode, Json<Task>)> {
+    let created = {
+        let mut store = st.store.lock().expect("store 锁");
+        let registry = st.registry.clone();
+        store.create_task(&registry, &project, req.id, req.sop).cloned()?
+    };
+    st.emit(json!({"type": "task.created", "project": project, "task": created.id}));
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+pub async fn list_tasks(
+    State(st): State<SharedState>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let store = st.store.lock().expect("store 锁");
+    if store.get_project(&project).is_none() {
+        return Err(ApiError::not_found(format!("项目 `{project}` 不存在")));
+    }
+    Ok(Json(json!({"tasks": store.list_tasks(&project)})))
+}
+
+pub async fn start_task(
+    State(st): State<SharedState>,
+    Path((project, task)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    // 前置快速校验（真正的守卫在 begin_run，双保险）
+    {
+        let store = st.store.lock().expect("store 锁");
+        store
+            .get_task(&project, &task)
+            .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
+        if store.has_running_run() {
+            return Err(ApiError::conflict(
+                "已有运行中的任务（MVP 串行执行，一次一个）",
+            ));
+        }
+    }
+    let engine = (st.engine_factory)();
+    std::thread::spawn(move || run_in_background(st, project, task, engine));
+    Ok(StatusCode::ACCEPTED)
+}
+
+// ---------- 产物管理 + 可观测 ----------
+
+pub async fn list_runs(
+    State(st): State<SharedState>,
+    Path((project, task)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let store = st.store.lock().expect("store 锁");
+    let t = store
+        .get_task(&project, &task)
+        .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
+    let runs: Vec<serde_json::Value> = t
+        .runs
+        .iter()
+        .filter_map(|id| store.get_run(id))
+        .map(|r| {
+            json!({
+                "id": r.id.0,
+                "status": r.status,
+                "started_at_ms": r.started_at_ms,
+                "ended_at_ms": r.ended_at_ms,
+            })
+        })
+        .collect();
+    // 产物归集：plan tree 位置（decisions/002 两层级）
+    Ok(Json(json!({
+        "project": project,
+        "task": task,
+        "current_run": t.current_run,
+        "plan_tree_dir": st.plans_root.join(&project).join(&task),
+        "runs": runs,
+    })))
+}
+
+pub async fn task_graph(
+    State(st): State<SharedState>,
+    Path((project, task)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let store = st.store.lock().expect("store 锁");
+    let t = store
+        .get_task(&project, &task)
+        .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
+    let nodes: Vec<serde_json::Value> = t
+        .runs
+        .iter()
+        .filter_map(|id| store.get_run(id))
+        .map(|r| json!({"node": r.id.0, "kind": "run", "status": r.status}))
+        .collect();
+    Ok(Json(json!({
+        "project": project,
+        "task": task,
+        "status": t.status,
+        "sop": t.sop,
+        "nodes": nodes,
+    })))
+}
+
+// ---------- 交互中继 ----------
+
+#[derive(Deserialize)]
+pub struct AnswerReq {
+    pub value: String,
+}
+
+pub async fn answer_ui(
+    State(st): State<SharedState>,
+    Path(id): Path<String>,
+    Json(req): Json<AnswerReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    st.ui.answer(&id, req.value).map_err(ApiError::from)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+/// SSE 事件流：run 生命周期 + ui.request + 领域事件（Q002 信封：JSON 一行一事件）。
+pub async fn events(
+    State(st): State<SharedState>,
+    headers: HeaderMap,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+    let _ = headers; // 预留：按 Last-Event-ID 续传（远期）
+    let rx = st.events.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|item| match item {
+        Ok(data) => Some(Ok(axum::response::sse::Event::default().data(data))),
+        Err(_) => None, // Lagged：订阅者跟不上就跳过（不毒化流）
+    });
+    Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)),
+    )
+}
+
+// ---------- 配置管理 ----------
+
+pub async fn get_manifest(State(st): State<SharedState>) -> Json<ConfigManifest> {
+    Json(st.manifest.lock().expect("manifest 锁").clone())
+}
+
+/// 整份替换清单（P002 两个开放面：模板编辑 + 模型选择——MVP 以整份替换实现，
+/// 细粒度编辑端点远期）。同步落盘真源。
+pub async fn put_manifest(
+    State(st): State<SharedState>,
+    Json(manifest): Json<ConfigManifest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    {
+        let mut m = st.manifest.lock().expect("manifest 锁");
+        *m = manifest;
+        if let Some(path) = &st.manifest_path {
+            m.save(path).map_err(ApiError::from)?;
+        }
+    }
+    // 清单变更即重渲染全部 profile（自动更新，P002 T005 的最简形态）
+    let m = st.manifest.lock().expect("manifest 锁").clone();
+    let renderer = crate::config::Renderer {
+        manifest: &m,
+        installer: &crate::config::installer::PiInstallBridge,
+        skills_source: None,
+    };
+    let rendered = renderer.render_all(&st.profiles_root).map_err(ApiError::from)?;
+    Ok(Json(json!({"ok": true, "rendered": rendered.len()})))
+}

@@ -12,13 +12,19 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 异步运行时：RPC 子进程 IO + API 服务器
 tokio = { version = "1", features = ["full"] }
+# run-id 等标识
+uuid = { version = "1", features = ["v4"] }
 # 结构化日志（architecture-principles §2）
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-# run-id 等标识
-uuid = { version = "1", features = ["v4"] }
+# API 服务器（P003：REST + SSE，2026-10-16 定案）
+axum = "0.8"
+tokio-stream = { version = "0.1", features = ["sync"] }
 # 孤儿清理的 kill 系统调用（decisions/007/Q005）
 libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# axum Router oneshot 端点单测
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

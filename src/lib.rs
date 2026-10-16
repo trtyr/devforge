@@ -10,4 +10,5 @@ pub mod domain;
 pub mod engine;
 pub mod error;
 pub mod logging;
+pub mod server;
 pub mod sop;

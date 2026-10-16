@@ -9,3 +9,5 @@
 {"type":"task_started","goalId":"mvb4xmy5-n60gp5","taskId":"task-4","at":"2026-10-16T15:56:35.458Z"}
 {"type":"task_complete","goalId":"mvb4xmy5-n60gp5","taskId":"task-4","evidence":"55 单测+1 doctest 全绿 clippy 干净(bg_1d5awqkd); 协议编解码/生命周期映射(mock 回放)/台账孤儿对账(Ours/Foreign/Dead+kill)全有专项测试; roadmap 已回写","at":"2026-10-16T16:04:53.225Z"}
 {"type":"task_started","goalId":"mvb4xmy5-n60gp5","taskId":"task-5","at":"2026-10-16T16:06:22.294Z"}
+{"type":"task_complete","goalId":"mvb4xmy5-n60gp5","taskId":"task-5","evidence":"66 单测+1 doctest 全绿 clippy 干净(bg_rhrc3wt6); 状态机覆盖通过/打回/重查/零校验流转, 协议解析覆盖 PASS/FAIL/完成标记, UI 子协议桥接有行为测试; P001 roadmap 已回写","at":"2026-10-16T16:20:06.383Z"}
+{"type":"task_started","goalId":"mvb4xmy5-n60gp5","taskId":"task-6","at":"2026-10-16T16:22:26.074Z"}
