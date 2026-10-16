@@ -3,3 +3,5 @@
 {"type":"task_started","goalId":"mvb4xmy5-n60gp5","taskId":"task-1","at":"2026-10-16T15:42:51.664Z"}
 {"type":"task_complete","goalId":"mvb4xmy5-n60gp5","taskId":"task-1","evidence":"cargo build 通过; cargo test 6 单测+1 doctest 全绿(bg_pmz3csmo); architecture-principles.md 选型回填已 commit(827fedf 后续 commit)","at":"2026-10-16T15:45:28.322Z"}
 {"type":"task_started","goalId":"mvb4xmy5-n60gp5","taskId":"task-2","at":"2026-10-16T15:46:11.081Z"}
+{"type":"task_complete","goalId":"mvb4xmy5-n60gp5","taskId":"task-2","evidence":"23 单测+1 doctest 全绿(bg_r3hlfb7i), clippy 干净; 生命周期/重跑留档/串行守卫均有专项测试; P004 roadmap 已回写 commit","at":"2026-10-16T15:51:47.668Z"}
+{"type":"task_started","goalId":"mvb4xmy5-n60gp5","taskId":"task-3","at":"2026-10-16T15:52:30.889Z"}
