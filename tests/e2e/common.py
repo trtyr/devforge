@@ -199,7 +199,7 @@ def compensate_profile(server: Server, provider: str = "newapi") -> list[str]:
     2. auth.json 改为 provider 键控形状——渲染器形状缺陷（P2-ISSUE-01）
     3. settings.json 注入真实环境运行时键：retry（3 次×5s 退避，中转抖动的生存配置）、
        defaultThinkingLevel、compaction、hideThinkingBlock——渲染器只写 defaultProvider/
-       defaultModel 两键（真实环境有、profile 缺 → 同一站点我方重试混过、对 方一次即死）
+       defaultModel 两键（真实环境有、profile 缺 → 同一站点我方重试混过、对方一次即死）
     4. 插件配置原封复制（用户拍板 2026-10-17「原封不动抄过来」；装什么跟 Plan Tree 走，
        不擅自增减）：pi-blackhole-config.json / config/rpiv-web-tools.json / sol-pi.json
        （对应已装四件套中三个有配置载体的插件；未装插件的配置、本地 extensions、MCP 均不搬）
