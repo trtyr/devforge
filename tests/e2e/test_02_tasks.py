@@ -29,9 +29,13 @@ def main() -> int:
             "新任务状态 Pending", f"{body}",
         )
 
-        # 2. 未知 SOP → 400
+        # 2. 未知 SOP → 400（P005 后 coding 已入注册表，未知例改用 ghost；coding 自身应 201）
         status, body = server.req(
             "POST", "/projects/p1/tasks", {"id": "t2", "sop": "coding"},
+        )
+        r.check(status == 201, "coding SOP 任务 == 201（P005 注册表扩容）", f"status={status}, body={body}")
+        status, body = server.req(
+            "POST", "/projects/p1/tasks", {"id": "t-ghost", "sop": "ghost"},
         )
         r.check(status == 400, "未知 SOP == 400", f"status={status}, body={body}")
 

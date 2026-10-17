@@ -28,6 +28,11 @@ SCRIPTS = [
     ("test_08_e2e_planning.py", 2700, "端到端规划流水线（真 pi + 真模型；内部 RUN_TIMEOUT=2400s）"),
     ("test_09_run_control.py", 300, "运行控制面：cancel/spawn 工作目录/stderr 观测"),
     ("test_10_timeout_async_render.py", 300, "可选超时与异步渲染 SSE 通知"),
+    ("test_11_coding_config.py", 600, "P005 编码配置面：四 profile 渲染/mcp.json/插件/四语言 skills"),
+    ("test_12_sop_override.py", 300, "P005 跨 SOP 触发：start 可选 sop 覆盖/未知 400/无 body 沿用"),
+    ("test_13_coding_preflight.py", 300, "P005 引擎预检：工作区无索引→init+黑板骨架"),
+    ("test_14_coding_full_chain.py", 3600, "P005 编码全链（真 pi + 真模型；内部超时更宽）"),
+    ("test_15_coding_run_control.py", 600, "P005 编码运行控制面：cancel→Failed/终态 404"),
 ]
 
 
@@ -38,7 +43,11 @@ def main() -> int:
 
     runs = []
     for script, timeout, desc in SCRIPTS:
-        if quick and script in ("test_07_rerun_serial.py", "test_08_e2e_planning.py"):
+        if quick and script in (
+            "test_07_rerun_serial.py",
+            "test_08_e2e_planning.py",
+            "test_14_coding_full_chain.py",
+        ):
             runs.append({"script": script, "desc": desc, "skipped": True})
             print(f"[SKIP] {script} (--quick)")
             continue
