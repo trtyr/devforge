@@ -17,6 +17,8 @@ todo 插件是 TUI overlay 形态，而 devforge 的 agent 全部跑 `--mode rpc
 
 偏差协议的「搜索求证」环节依赖 web 搜索/抓取。pi 内置 web tools 在 TUI 会话可用，但在 devforge 渲染的 profile + `--mode rpc` 组合下是否照常暴露，未验证（同类：Q001 todo 插件）。不可用则评估补 pi-web-access 等市场插件。验证时机：T003/T008。
 
-## Q004 · CodeGraph 索引路径与 agent cwd 的错位？
+## Q004 · CodeGraph 索引路径与 agent cwd 的错位？【已解决 2026-10-18】
 
-agent 的 spawn cwd 是黑板（任务目录），`.codegraph/` 索引建在代码工作区（项目 local_path）——`serve --mcp` 无 path 时按客户端 rootUri 找索引，会扑空。设计倾向：提示词教 agent 调用 `codegraph_explore` 时显式传 `projectPath=<代码工作区>`（工具原生支持跨项目查询）；profile 模板不写死路径（profile 全局、项目路径项目级，渲染时不可知）。执行期验证展开方式，若 pi 客户端有更好的 rootUri 机制则简化。
+agent 的 spawn cwd 是黑板（任务目录），`.codegraph/` 索引建在代码工作区（项目 local_path）——server 根目录无索引时工具是否可用？
+
+**结论：官方原生支持，设计成立。**codegraph 官方有无根索引变体（SERVER_INSTRUCTIONS_NO_ROOT_INDEX）：server 起在无索引目录时工具照常暴露，靠 `projectPath` 逐项目查询（解析最近 `.codegraph/`，一会话多项目），新索引被运行中 server 实时拾取。落法：提示词教 agent 显式传 `projectPath=<代码工作区>`（T004/T005 提示词落地）；引擎 spawn 前预检 init（decisions/013）保证索引存在；不可用时 agent 优雅降级原生工具。详见 topics/codegraph-strategy.md。

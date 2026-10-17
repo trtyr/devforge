@@ -78,6 +78,6 @@
 
 ## 013 · CodeGraph 战略地位：代码事实层，codegraph-first 纪律（2026-10-18 拍板）
 
-- **决策**：CodeGraph 定位为流水线的**代码事实层**（plan tree=语义意图，CodeGraph=代码结构真相，两者之桥），非普通供给。落地四件：①codegraph-first 纪律写进双 agent 提示词（结构问题先问图，禁 grep-read 爬取；改前必看 impact；交 review 前 affected 自查测试缺口）；②索引 init 归引擎 spawn 前预检（agent 兑底）；③路径错位用 projectPath 传参教给 agent（Q004）；④MCP 维持单工具 explore，impact/affected/callers 走 CLI。分场景用法矩阵见 topics/codegraph-strategy.md
-- **为什么**（用户拍板）：战略性工具——省轮次（对冲中转长 turn 风险 P8-ISSUE-06）、审得动（decisions/011 对照实物逐项核验的可行性前提）、接得住（产出贴现有架构长）；索引是项目持久资产，跨 run 跨 SOP 越用越新鲜
+- **决策**：CodeGraph 定位为流水线的**代码事实层**（plan tree=语义意图，CodeGraph=代码结构真相，两者之桥；官方定位=cached intelligence），非普通供给。落地五件：①codegraph-first 纪律写进双 agent 提示词（结构问题先问图，禁 grep-read 爬取；改前必看 impact；交 review 前 affected 自查测试缺口；新鲜度 banner 协议）；②索引 init 归引擎 spawn 前预检独占——官方教义 agent 不自行 init（indexing is the user's decision），引擎=用户的执行者；codegraph 不可用时 agent 优雅降级原生工具；③路径错位用 projectPath 传参教给 agent（官方无根索引变体原生支持，Q004 已解决）；④MCP 维持单工具 explore，impact/affected/callers 走 CLI；⑤dedup 不开（coding agent 长会话有 compaction，「已在对话中」指针会断）。分场景用法矩阵与纪律全文见 topics/codegraph-strategy.md
+- **为什么**（用户拍板）：战略性工具——省轮次（对冲中转长 turn 风险 P8-ISSUE-06）、审得动（decisions/011 对照实物逐项核验的可行性前提）、接得住（产出贴现有架构长）；三大基本功=了解功能/修改函数/快速上手新项目（用户拍板，官方教义逐一对应）；索引是项目持久资产，跨 run 跨 SOP 越用越新鲜
 - **后果**：引擎新增预检步骤（T006）；两份提示词都带纪律条款与场景矩阵（T004/T005）；遥测关闭（CODEGRAPH_TELEMETRY=0）
