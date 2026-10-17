@@ -16,6 +16,9 @@ spawn coding-agent（长驻，cwd=黑板）
 
 - 与 planning SOP 同构的骨架：长驻主 Agent + 短命 Review + verdict 驱动 + 零校验自动流转（decisions/008：完成确认在 Agent 环节内，编排层只解析结构化块）
 - 阶段轮数与修复轮数无上限（零硬限制，decisions/003）
+- **无标记停转处置**：agent settled 但未发阶段完成标记 → 编排器回注「继续当前阶段」重推（零上限；模型自然收敛，与零硬限制同源）
+- **阻塞语义**（decisions/012）：ask-user-question 挂起即系统可见阻塞态（dialog 通道现有）；blockers/ 纯留痕；cancel 解除挂起能力直接复用 P001 修复
+- **PASS 附带意见**：advance 的 report 允许携非阻塞建议，回注后 coding agent 先消化建议再进下一阶段
 
 ## 与 planning 的衔接（同任务跨 SOP）
 
