@@ -1,0 +1,12 @@
+[PASS] 前置项目 p1 创建 — status=201
+[PASS] 前置项目 p2 创建 — status=201
+[PASS] 创建任务 == 201 — status=201, body={'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'status': 'Pending', 'created_at_ms': 1792243959459, 'current_run': None, 'runs': []}
+[PASS] 新任务状态 Pending — {'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'status': 'Pending', 'created_at_ms': 1792243959459, 'current_run': None, 'runs': []}
+[PASS] 未知 SOP == 400 — status=400, body={'error': '配置错误: 未知 SOP `coding`——SOP 无管理面，只有内置注册的可用: ["planning"]'}
+[PASS] 同项目重复任务 == 409 — status=409
+[PASS] 幽灵项目 == 404 — status=404
+[PASS] 跨项目同名任务可创建 — status=201
+[PASS] p1 任务列表 — ['mvp']
+[PASS] 幽灵项目任务列表 == 404 — status=404
+[server] 已停止（HOME=/tmp/devforge-e2e-q_s47z2i）
+== test_02_tasks: 10 PASS / 0 FAIL, 0 issues（结果已落 results/test_02_tasks.json）

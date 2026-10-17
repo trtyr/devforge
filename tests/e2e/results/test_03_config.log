@@ -1,0 +1,24 @@
+[PASS] GET manifest == 200 — status=200
+[PASS] 默认模型池含 deepseek-flash — ['grok-4.7', 'deepseek-flash']
+[PASS] 默认双 Agent — ['plan-agent', 'plan-review']
+[PASS] 必装四件套原文在清单 — ['npm:@ff-labs/pi-fff', 'npm:@juicesharp/rpiv-web-tools', 'npm:pi-blackhole', 'git:github.com/NVlabs/SoL-Pi']
+[PASS] PUT manifest == 202（异步化受理） — status=202, resp={'agents': 2, 'async': True, 'ok': True}
+[PASS] PUT 受理体含 ok/async 标记 — {'agents': 2, 'async': True, 'ok': True}
+[PASS] plan-agent AGENTS.md 渲染 — /tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-agent/AGENTS.md
+[PASS] plan-agent settings.json 渲染 — /tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-agent/settings.json
+[PASS] plan-agent settings 来自模型池（真 model_id） — newapi/mokeywork/deepseek-flash
+[PASS] plan-agent settings 运行时生存键（retry/idle 趋快判/thinking/compaction） — retry={'baseDelayMs': 5000, 'maxRetries': 3}, idle=60000
+[PASS] plan-agent settings packages 为空（无包清单） — []
+[PASS] plan-agent 内置 plan-tree skill 兜底渲染 — /tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-agent/skills/plan-tree/SKILL.md
+[PASS] plan-agent models.json 分发带 1M/64K 预算 — {'mokeywork/grok-4.7': (1000000, 65536), 'mokeywork/deepseek-flash': (1000000, 65536)}
+[PASS] plan-review AGENTS.md 渲染 — /tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-review/AGENTS.md
+[PASS] plan-review settings.json 渲染 — /tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-review/settings.json
+[PASS] plan-review settings 来自模型池（真 model_id） — newapi/mokeywork/grok-4.7
+[PASS] plan-review settings 运行时生存键（retry/idle 趋快判/thinking/compaction） — retry={'baseDelayMs': 5000, 'maxRetries': 3}, idle=60000
+[PASS] plan-review settings packages 为空（无包清单） — []
+[PASS] plan-review 内置 plan-tree skill 兜底渲染 — /tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-review/skills/plan-tree/SKILL.md
+[PASS] plan-review models.json 分发带 1M/64K 预算 — {'mokeywork/grok-4.7': (1000000, 65536), 'mokeywork/deepseek-flash': (1000000, 65536)}
+[PASS] 未知模型引用 == 400 — status=400, body={'error': '配置错误: Agent `plan-agent` 引用的模型 `ghost-model` 不在模型池中'}
+[PASS] PUT 同步落盘清单真源 — /tmp/devforge-e2e-udodtss7/.devforge/manifest.json
+[server] 已停止（HOME=/tmp/devforge-e2e-udodtss7）
+== test_03_config: 22 PASS / 0 FAIL, 0 issues（结果已落 results/test_03_config.json）

@@ -1,0 +1,11 @@
+[PASS] 创建项目 == 201 — status=201, body={'name': 'alpha', 'local_path': '/tmp/devforge-e2e-work-ns_w_qb4/fresh-project', 'created_at_ms': 1792243959196}
+[PASS] 响应回显项目名 — body={'name': 'alpha', 'local_path': '/tmp/devforge-e2e-work-ns_w_qb4/fresh-project', 'created_at_ms': 1792243959196}
+[PASS] 本地目录真实创建 — /tmp/devforge-e2e-work-ns_w_qb4/fresh-project
+[PASS] 重复创建 == 409 — status=409, body={'error': '存储错误: 项目 `alpha` 已存在'}
+[PASS] 列表包含新项目 — ['alpha']
+[PASS] 详情含 local_path — {'name': 'alpha', 'local_path': '/tmp/devforge-e2e-work-ns_w_qb4/fresh-project', 'created_at_ms': 1792243959196}
+[PASS] 不存在项目 == 404 — status=404
+[PASS] 不可创建路径返回错误码 — status=500
+[PASS] 失败创建未残留脏数据 — badpath 不在列表中
+[server] 已停止（HOME=/tmp/devforge-e2e-v5i412dw）
+== test_01_projects: 9 PASS / 0 FAIL, 0 issues（结果已落 results/test_01_projects.json）

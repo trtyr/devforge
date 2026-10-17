@@ -1,0 +1,10 @@
+[PASS] PUT manifest == 202（即回不等渲染） — status=202, 0.0s
+[PASS] 受理体标记 async — {'agents': 2, 'async': True, 'ok': True}
+[PASS] 收到 config.rendered SSE 通知 — {'rendered': 2, 'type': 'config.rendered'}
+[PASS] 通知含渲染 profile 数 — {'rendered': 2, 'type': 'config.rendered'}
+[PASS] 任务启动受理 202 — status=202
+[PASS] 超时后 run 进 Failed — {'current_run': 'c700c219-f430-40bf-833d-b988e75d0e8f', 'plan_tree_dir': '/tmp/devforge-e2e-u0kev7_j/.devforge/plans/to/timeout-me', 'project': 'to', 'runs': [{'ended_at_ms': 1792244127787, 'id': 'c700c219-f430-40bf-833d-b988e75d0e8f', 'started_at_ms': 1792244107666, 'status': 'Failed'}], 'task': 'timeout-me'}
+[PASS] 超时收割及时（21s < 60s，deadline=20s） — took=21s
+[PASS] 任务状态同步 Failed — status=200, task={'created_at_ms': 1792244107666, 'current_run': 'c700c219-f430-40bf-833d-b988e75d0e8f', 'id': 'timeout-me', 'project': 'to', 'runs': ['c700c219-f430-40bf-833d-b988e75d0e8f'], 'sop': 'planning', 'status': 'Failed'}
+[server] 已停止（HOME=/tmp/devforge-e2e-u0kev7_j）
+== test_10_timeout_async_render: 8 PASS / 0 FAIL, 0 issues（结果已落 results/test_10_timeout_async_render.json）

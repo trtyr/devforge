@@ -1,0 +1,10 @@
+[PASS] 服务器拉起（隔离 HOME） — HOME=/tmp/devforge-e2e-6t6pw5ts, port=52957
+[PASS] 健康探针 GET /projects == 200 — status=200
+[PASS] 初始项目列表为空 — body={'projects': []}
+[PASS] manifest 落在隔离 HOME — /tmp/devforge-e2e-6t6pw5ts/.devforge/manifest.json
+[PASS] 真实 HOME 未被触碰（探测） — 真实 manifest 存在=False（本测试不读写它）
+[PASS] REST 写通（POST /projects == 201） — status=201
+[PASS] SSE 收到 project.created 事件 — event={'project': 'smoke', 'type': 'project.created'}
+[server] 已停止（HOME=/tmp/devforge-e2e-6t6pw5ts）
+[PASS] 关闭后端口不再服务
+== test_00_server: 8 PASS / 0 FAIL, 0 issues（结果已落 results/test_00_server.json）

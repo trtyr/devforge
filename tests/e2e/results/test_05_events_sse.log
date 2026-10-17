@@ -1,0 +1,8 @@
+[PASS] 收到 project.created — {'project': 'evp', 'type': 'project.created'}
+[PASS] project.created payload 含项目名 — {'project': 'evp', 'type': 'project.created'}
+[PASS] 收到 task.created — {'project': 'evp', 'task': 'evt', 'type': 'task.created'}
+[PASS] task.created payload 完整 — {'project': 'evp', 'task': 'evt', 'type': 'task.created'}
+[PASS] 事件顺序与触发顺序一致 — ['project.created', 'task.created']
+[PASS] 只读请求不产生事件 — 2 vs 2
+[server] 已停止（HOME=/tmp/devforge-e2e-cvkcwkcl）
+== test_05_events_sse: 6 PASS / 0 FAIL, 0 issues（结果已落 results/test_05_events_sse.json）

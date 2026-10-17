@@ -9,7 +9,7 @@
     {
       "name": "默认模型池含 deepseek-flash",
       "ok": true,
-      "detail": "['deepseek-flash']"
+      "detail": "['grok-4.7', 'deepseek-flash']"
     },
     {
       "name": "默认双 Agent",
@@ -22,29 +22,34 @@
       "detail": "['npm:@ff-labs/pi-fff', 'npm:@juicesharp/rpiv-web-tools', 'npm:pi-blackhole', 'git:github.com/NVlabs/SoL-Pi']"
     },
     {
-      "name": "PUT manifest == 200",
+      "name": "PUT manifest == 202（异步化受理）",
       "ok": true,
-      "detail": "status=200, resp={'ok': True, 'rendered': 2}"
+      "detail": "status=202, resp={'agents': 2, 'async': True, 'ok': True}"
     },
     {
-      "name": "PUT 触发重渲染 2 个 profile",
+      "name": "PUT 受理体含 ok/async 标记",
       "ok": true,
-      "detail": "{'ok': True, 'rendered': 2}"
+      "detail": "{'agents': 2, 'async': True, 'ok': True}"
     },
     {
       "name": "plan-agent AGENTS.md 渲染",
       "ok": true,
-      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-hwtbz8tr/.devforge/profiles/plan-agent/AGENTS.md"
+      "detail": "/tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-agent/AGENTS.md"
     },
     {
       "name": "plan-agent settings.json 渲染",
       "ok": true,
-      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-hwtbz8tr/.devforge/profiles/plan-agent/settings.json"
+      "detail": "/tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-agent/settings.json"
     },
     {
-      "name": "plan-agent settings 来自模型池",
+      "name": "plan-agent settings 来自模型池（真 model_id）",
       "ok": true,
-      "detail": "newapi/DeepSeek flash"
+      "detail": "newapi/mokeywork/deepseek-flash"
+    },
+    {
+      "name": "plan-agent settings 运行时生存键（retry/idle 趋快判/thinking/compaction）",
+      "ok": true,
+      "detail": "retry={'baseDelayMs': 5000, 'maxRetries': 3}, idle=60000"
     },
     {
       "name": "plan-agent settings packages 为空（无包清单）",
@@ -52,19 +57,34 @@
       "detail": "[]"
     },
     {
+      "name": "plan-agent 内置 plan-tree skill 兜底渲染",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-agent/skills/plan-tree/SKILL.md"
+    },
+    {
+      "name": "plan-agent models.json 分发带 1M/64K 预算",
+      "ok": true,
+      "detail": "{'mokeywork/grok-4.7': (1000000, 65536), 'mokeywork/deepseek-flash': (1000000, 65536)}"
+    },
+    {
       "name": "plan-review AGENTS.md 渲染",
       "ok": true,
-      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-hwtbz8tr/.devforge/profiles/plan-review/AGENTS.md"
+      "detail": "/tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-review/AGENTS.md"
     },
     {
       "name": "plan-review settings.json 渲染",
       "ok": true,
-      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-hwtbz8tr/.devforge/profiles/plan-review/settings.json"
+      "detail": "/tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-review/settings.json"
     },
     {
-      "name": "plan-review settings 来自模型池",
+      "name": "plan-review settings 来自模型池（真 model_id）",
       "ok": true,
-      "detail": "newapi/DeepSeek flash"
+      "detail": "newapi/mokeywork/grok-4.7"
+    },
+    {
+      "name": "plan-review settings 运行时生存键（retry/idle 趋快判/thinking/compaction）",
+      "ok": true,
+      "detail": "retry={'baseDelayMs': 5000, 'maxRetries': 3}, idle=60000"
     },
     {
       "name": "plan-review settings packages 为空（无包清单）",
@@ -72,24 +92,27 @@
       "detail": "[]"
     },
     {
-      "name": "未知模型引用被拒",
+      "name": "plan-review 内置 plan-tree skill 兜底渲染",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-udodtss7/.devforge/profiles/plan-review/skills/plan-tree/SKILL.md"
+    },
+    {
+      "name": "plan-review models.json 分发带 1M/64K 预算",
+      "ok": true,
+      "detail": "{'mokeywork/grok-4.7': (1000000, 65536), 'mokeywork/deepseek-flash': (1000000, 65536)}"
+    },
+    {
+      "name": "未知模型引用 == 400",
       "ok": true,
       "detail": "status=400, body={'error': '配置错误: Agent `plan-agent` 引用的模型 `ghost-model` 不在模型池中'}"
     },
     {
       "name": "PUT 同步落盘清单真源",
-      "ok": false,
-      "detail": "盘上内容未更新"
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-udodtss7/.devforge/manifest.json"
     }
   ],
-  "issues": [
-    {
-      "id": "P3-ISSUE-02",
-      "severity": "high",
-      "desc": "PUT manifest 只更新内存，未落盘真源（main.rs 构造 ServerState 时未传 manifest_path，ServerState.manifest_path 恒 None → PUT 的保存分支永不执行），重启后配置丢失",
-      "evidence": "PUT 后 /tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-hwtbz8tr/.devforge/manifest.json 的 base_packages 仍为旧值"
-    }
-  ],
-  "passed": 15,
-  "failed": 1
+  "issues": [],
+  "passed": 22,
+  "failed": 0
 }

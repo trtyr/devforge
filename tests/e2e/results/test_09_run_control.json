@@ -1,0 +1,61 @@
+{
+  "script": "test_09_run_control",
+  "checks": [
+    {
+      "name": "PUT manifest 受理（异步渲染）",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "项目就绪",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "任务启动受理 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "spawn 工作目录已创建（plans/rc/cancel-me）",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-1er61maj/.devforge/plans/rc/cancel-me"
+    },
+    {
+      "name": "cancel 端点受理 200",
+      "ok": true,
+      "detail": "last=200"
+    },
+    {
+      "name": "取消后 run 进 Failed",
+      "ok": true,
+      "detail": "{'current_run': 'cf43e63f-3689-49d7-848f-5e34a6a782f3', 'plan_tree_dir': '/tmp/devforge-e2e-1er61maj/.devforge/plans/rc/cancel-me', 'project': 'rc', 'runs': [{'ended_at_ms': 1792244096696, 'id': 'cf43e63f-3689-49d7-848f-5e34a6a782f3', 'started_at_ms': 1792244096384, 'status': 'Failed'}], 'task': 'cancel-me'}"
+    },
+    {
+      "name": "任务状态同步 Failed",
+      "ok": true,
+      "detail": "status=200, task={'created_at_ms': 1792244096383, 'current_run': 'cf43e63f-3689-49d7-848f-5e34a6a782f3', 'id': 'cancel-me', 'project': 'rc', 'runs': ['cf43e63f-3689-49d7-848f-5e34a6a782f3'], 'sop': 'planning', 'status': 'Failed'}"
+    },
+    {
+      "name": "无活动 run 时 cancel == 404",
+      "ok": true,
+      "detail": "status=404"
+    }
+  ],
+  "issues": [
+    {
+      "id": "OBS-SESSION",
+      "severity": "low",
+      "desc": "取消早于 pi 首个会话文件落盘（正常时序：pi 启动需数秒，cancel 先至）；spawn 实证由 plan root 目录创建与 ledger 标记覆盖",
+      "evidence": "/tmp/devforge-e2e-1er61maj/.devforge/sessions/plan 无 jsonl"
+    },
+    {
+      "id": "OBS-STDERR",
+      "severity": "low",
+      "desc": "pi-stderr.log 未落盘——pi 全程静默或取消早于首行 stderr（soft 行为，非缺陷；落盘机制由单测 stderr_lines_land_in_session_log 覆盖）",
+      "evidence": "/tmp/devforge-e2e-1er61maj/.devforge/sessions/plan/pi-stderr.log 不存在"
+    }
+  ],
+  "passed": 8,
+  "failed": 0
+}

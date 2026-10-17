@@ -1,0 +1,12 @@
+[PASS] PUT manifest 受理（异步渲染） — status=202
+[PASS] 项目就绪 — status=201
+[PASS] 任务启动受理 202 — status=202
+[PASS] spawn 工作目录已创建（plans/rc/cancel-me） — /tmp/devforge-e2e-1er61maj/.devforge/plans/rc/cancel-me
+[PASS] cancel 端点受理 200 — last=200
+[PASS] 取消后 run 进 Failed — {'current_run': 'cf43e63f-3689-49d7-848f-5e34a6a782f3', 'plan_tree_dir': '/tmp/devforge-e2e-1er61maj/.devforge/plans/rc/cancel-me', 'project': 'rc', 'runs': [{'ended_at_ms': 1792244096696, 'id': 'cf43e63f-3689-49d7-848f-5e34a6a782f3', 'started_at_ms': 1792244096384, 'status': 'Failed'}], 'task': 'cancel-me'}
+[PASS] 任务状态同步 Failed — status=200, task={'created_at_ms': 1792244096383, 'current_run': 'cf43e63f-3689-49d7-848f-5e34a6a782f3', 'id': 'cancel-me', 'project': 'rc', 'runs': ['cf43e63f-3689-49d7-848f-5e34a6a782f3'], 'sop': 'planning', 'status': 'Failed'}
+[ISSUE] OBS-SESSION (low): 取消早于 pi 首个会话文件落盘（正常时序：pi 启动需数秒，cancel 先至）；spawn 实证由 plan root 目录创建与 ledger 标记覆盖
+[ISSUE] OBS-STDERR (low): pi-stderr.log 未落盘——pi 全程静默或取消早于首行 stderr（soft 行为，非缺陷；落盘机制由单测 stderr_lines_land_in_session_log 覆盖）
+[PASS] 无活动 run 时 cancel == 404 — status=404
+[server] 已停止（HOME=/tmp/devforge-e2e-1er61maj）
+== test_09_run_control: 8 PASS / 0 FAIL, 2 issues（结果已落 results/test_09_run_control.json）

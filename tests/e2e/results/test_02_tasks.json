@@ -14,12 +14,12 @@
     {
       "name": "创建任务 == 201",
       "ok": true,
-      "detail": "status=201, body={'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'status': 'Pending', 'created_at_ms': 1792173714132, 'current_run': None, 'runs': []}"
+      "detail": "status=201, body={'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'status': 'Pending', 'created_at_ms': 1792243959459, 'current_run': None, 'runs': []}"
     },
     {
       "name": "新任务状态 Pending",
       "ok": true,
-      "detail": "{'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'status': 'Pending', 'created_at_ms': 1792173714132, 'current_run': None, 'runs': []}"
+      "detail": "{'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'status': 'Pending', 'created_at_ms': 1792243959459, 'current_run': None, 'runs': []}"
     },
     {
       "name": "未知 SOP == 400",

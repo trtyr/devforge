@@ -1,0 +1,13 @@
+[PASS] GET runs == 200 — status=200
+[PASS] 初始 runs 为空 — []
+[PASS] 初始无 current_run — None
+[PASS] plan_tree_dir 符合两层级约定（decisions/002） — actual=/tmp/devforge-e2e-4ba56916/.devforge/plans/p/t, expected=/tmp/devforge-e2e-4ba56916/.devforge/plans/p/t
+[PASS] GET graph == 200 — status=200
+[PASS] 图状态 Pending — Pending
+[PASS] 图含 SOP 标识 — planning
+[PASS] Pending 无节点 — []
+[PASS] 幽灵任务 runs == 404 — status=404
+[PASS] 幽灵任务 graph == 404 — status=404
+[PASS] 服务器 cwd 围栏就绪（e2e 落点对照用） — /tmp/devforge-e2e-4ba56916/server-cwd
+[server] 已停止（HOME=/tmp/devforge-e2e-4ba56916）
+== test_06_artifacts_graph: 11 PASS / 0 FAIL, 0 issues（结果已落 results/test_06_artifacts_graph.json）

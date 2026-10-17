@@ -1,0 +1,5 @@
+[PASS] token 未配置时放行 — status=200
+[PASS] 任意 token 头在 None 配置下仍放行 — status=200
+[ISSUE] P3-ISSUE-03 (medium): token 鉴权预留位无启动配置入口（main.rs 恒置 None，无 env/CLI 参数），401 强制路径无法端到端验证（单测已覆盖逻辑）
+[server] 已停止（HOME=/tmp/devforge-e2e-5rekxkcm）
+== test_04_auth: 2 PASS / 0 FAIL, 1 issues（结果已落 results/test_04_auth.json）

@@ -72,10 +72,12 @@ def main() -> int:
                 f"超时收割及时（{took:.0f}s < 60s，deadline={RUN_TIMEOUT_MS / 1000:.0f}s）",
                 f"took={took:.0f}s",
             )
-        status, body = server.req("GET", "/projects/to/tasks/timeout-me")
+        status, body = server.req("GET", "/projects/to/tasks")
+        tasks = body.get("tasks", []) if isinstance(body, dict) else []
+        me = next((t for t in tasks if t.get("id") == "timeout-me"), {})
         r.check(
-            status == 200 and body.get("status") == "Failed",
-            "任务状态同步 Failed", f"status={status}, task={body}",
+            status == 200 and me.get("status") == "Failed",
+            "任务状态同步 Failed", f"status={status}, task={me}",
         )
 
         # 4. run.error / SSE 侧可观测（超时事件若经 SSE 广播，记录证据）
