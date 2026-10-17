@@ -72,46 +72,42 @@ def pick_value(questions: list) -> str:
 
 def watch():
     global next_probe
+    last_size = 0
     while True:
+        value = "完成"  # 默认盲答（探测制；无 SSE/会话信息时的保底）
         try:
+            # 主信号：会话文件尾部的挂起 toolCall（能拿到问题/选项时智能应答）
             fs = sorted(glob.glob(f"{HOME}/.devforge/sessions/plan/*.jsonl"))
-            if not fs:
-                time.sleep(2)
-                continue
-            lines = [l for l in open(fs[-1], errors="replace") if l.strip()]
-            if not lines:
-                time.sleep(2)
-                continue
-            d = json.loads(lines[-1])
-            m = d.get("message", {})
-            if not isinstance(m, dict) or m.get("role") != "assistant":
-                time.sleep(2)
-                continue
-            for x in m.get("content", []):
-                if not isinstance(x, dict) or x.get("type") != "toolCall":
+            if fs:
+                lines = [l for l in open(fs[-1], errors="replace") if l.strip()]
+                if lines:
+                    d = json.loads(lines[-1])
+                    m = d.get("message", {})
+                    if isinstance(m, dict) and m.get("role") == "assistant":
+                        for x in m.get("content", []):
+                            if (
+                                isinstance(x, dict)
+                                and x.get("type") == "toolCall"
+                                and x.get("name") == "ask_user_question"
+                                and x.get("id") not in answered_toolcalls
+                            ):
+                                value = pick_value(x.get("arguments", {}).get("questions", []))
+                                break
+            # 探测制回填（主链路）：ui-N 游标轮询，200=真实待答——
+            # 不依赖会话文件签名（dialog-pending 变体会话尾无 toolCall 行）
+            # 也不依赖 SSE（P8-ISSUE-02：ui.request 不达 /events，SSE 消费者永久耳聋）
+            for n in range(next_probe, next_probe + 6):
+                code = post_answer(f"ui-{n}", value)
+                if code == 200:
+                    answered_toolcalls.add(f"probe-{n}")
+                    next_probe = n + 1
+                    print(f"[responder] ui-{n} <- {value[:40]} (probe)", flush=True)
+                    break
+                if code in (404, 500):
                     continue
-                if x.get("name") != "ask_user_question":
-                    continue
-                tc_id = x.get("id", "")
-                if tc_id in answered_toolcalls:
-                    continue
-                value = pick_value(x.get("arguments", {}).get("questions", []))
-                # 探测回填：从游标开始连试 5 个
-                hit = None
-                for n in range(next_probe, next_probe + 6):
-                    code = post_answer(f"ui-{n}", value)
-                    if code == 200:
-                        hit = n
-                        break
-                    if code in (404, 500):
-                        continue
-                if hit:
-                    answered_toolcalls.add(tc_id)
-                    next_probe = hit + 1
-                    print(f"[responder] ui-{hit} <- {value[:40]} (tc {tc_id[:8]})", flush=True)
         except Exception as e:
             print(f"[responder] err: {e}", flush=True)
-        time.sleep(2)
+        time.sleep(4)
 
 
 print(f"[responder] watch {HOME} port {PORT}", flush=True)
