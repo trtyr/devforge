@@ -1,14 +1,102 @@
 {
   "script": "test_08_e2e_planning",
-  "checks": [],
-  "issues": [
+  "checks": [
     {
-      "id": "P8-ISSUE-00",
-      "severity": "high",
-      "desc": "PUT manifest 装包超 600s，全链路无法继续",
-      "evidence": ""
+      "name": "manifest 就绪（耗时 124s）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "测试侧补偿完成（配置全量复刻）",
+      "ok": true,
+      "detail": "['models.json', 'auth.json', 'settings.json', 'plugins-config', 'real-skill']"
+    },
+    {
+      "name": "项目 demo-app 创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "任务 planning-run 创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "start == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "会话文件持续增长（模型在慢生成而非死流）",
+      "ok": true,
+      "detail": "增长曲线: [0, 71041, 85023, 85023, 85023, 85023, 85023, 85023]..."
+    },
+    {
+      "name": "run 在超时内结束",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "时间线含 run.started",
+      "ok": true,
+      "detail": "['run.started']..."
+    },
+    {
+      "name": "时间线含 ui.request（Plan Agent 发起完成确认）",
+      "ok": false,
+      "detail": "ui 事件数=0"
+    },
+    {
+      "name": "AI 应答全部送达（数量对齐）",
+      "ok": false,
+      "detail": "answered=0, requested=0"
+    },
+    {
+      "name": "时间线含 run.finished",
+      "ok": false,
+      "detail": "['run.started']"
+    },
+    {
+      "name": "任务 runs 可查",
+      "ok": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "run 终态 Settled（实际 Running）",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "任务终态 Running（期望 Completed；Failed 记链路问题）",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "plan tree 落在约定路径（decisions/002）：/tmp/devforge-e2e-qvquo0la/.devforge/plans/demo-app/planning-run",
+      "ok": false,
+      "detail": "文件数=0"
     }
   ],
-  "passed": 0,
-  "failed": 0
+  "issues": [
+    {
+      "id": "P8-ISSUE-01",
+      "severity": "high",
+      "desc": "规划 run 超过 1200.0s 未结束（事件时间线已保留 1 条）",
+      "evidence": "可能：模型不可用 / pi 卡死 / UI 应答格式未被接受导致 Plan Agent 停在等待"
+    },
+    {
+      "id": "P8-ISSUE-02",
+      "severity": "high",
+      "desc": "全程未收到 ui.request——Plan Agent 未发起完成确认（提示词/ask-user-question 包未生效），完成确认机制未真正运转",
+      "evidence": "types=['run.started']"
+    },
+    {
+      "id": "P8-ISSUE-04",
+      "severity": "high",
+      "desc": "plan tree 落在服务器进程 cwd 而非 plans/<项目>/<任务>/——decisions/002 被违反（SpawnSpec 未设置子进程工作目录）",
+      "evidence": "server-cwd 下发现: ['README.md', 'ideas/inbox.md', 'baseline/risk-hotspots.md', 'baseline/test-and-release-gates.md', 'baseline/storage-and-state.md', 'baseline/runtime-flows.md', 'baseline/module-map.md', 'baseline/README.md']"
+    }
+  ],
+  "passed": 8,
+  "failed": 7
 }

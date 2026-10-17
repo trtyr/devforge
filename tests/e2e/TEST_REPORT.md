@@ -136,3 +136,18 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 - 逐脚本结果：`tests/e2e/results/*.json`
 - 事件时间线：`tests/e2e/results/test_08_timeline.json`（run.started → 3×ui.request）
 - 复现：`python3 tests/e2e/run_all.py`（全量）或单脚本独立运行
+
+
+---
+
+## 终局（第十六次）：全链路走通 ✓（2026-10-17 19:10–19:26）
+
+配置供给链修复（真实 plan-tree skill 分发进 profile）+ 流挂死快判自愈（httpIdleTimeoutMs=60s → pi agent 级 retry）+ 会话文件独立应答器/API 用户路径混合应答后，第十六次端到端**七环全通**：
+
+创建项目 → 任务 → 规划流水线（多轮 ask-user-question dialog 逐问应答，15+ 文件树含 D001–D006 决策）→ **review-0 FAIL+问题清单 → 修复 → review-1 全新实例重审 → `<verdict>PASS</verdict>`** → run **Settled**（ended_at=1792236253601 实录）→ 任务 **Completed**（API 实测）。
+
+- 逐环证据：`tests/e2e/results/RUN16_FULL_CHAIN.md`（review-1 PASS 原文、树结构、各环 API 状态）
+- plan tree 落盘位置为服务器 cwd（P8-ISSUE-04 路径偏差，按约定记录未修；decisions/002 约定路径待修复阶段达成）
+- 全部遗留缺陷（树路径/SSE 丢件/pi stderr 黑盒/无 run 超时取消等）见上文问题清单，待修复阶段处理
+
+**结论修订**：规划 SOP 端到端机制全环验证成立——「review 通过 → plan tree 落盘 → 任务 Completed」已真实观察到一次；此前「链路末端被阻断」的定性适用于第 1–15 次运行，第十六次在供给链补齐后走通。

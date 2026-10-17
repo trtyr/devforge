@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Reporter, Server, SseStream, UiAutoPilot, compensate_profile, real_api_key  # noqa: E402
 
-RUN_TIMEOUT = 1200.0  # 审计补偿路径：换 grok-4.7（非 reasoning、秒回）+ 去 pi-blackhole（排除 setStatus 干扰）
+RUN_TIMEOUT = 2400.0  # 40 分钟：装包+规划+多轮 review（含流死换血）实测需 >20min
 
 
 def session_bytes(server: Server) -> int:
@@ -88,6 +88,15 @@ def main() -> int:
                     "- 小步快跑：每轮只做一件小事（一次搜索/一次读取/写一个文件的一小段）。\n"
                     "- 避免单次超长输出；写 plan tree 时分多次小段写入，先建骨架再逐步填充。\n"
                     "- 每完成一小步就简短总结一句再继续。\n"
+                )
+            if _a["name"] == "plan-review":
+                _a["role_prompt"] = _a.get("role_prompt", "") + (
+                    "\n\n输出协议（强制，逐字遵守）：你的最终回复末尾【必须】包含协议块，\n"
+                    "通过时：通读后无语义矛盾，则在回复最末尾单独一行输出 <verdict>PASS</verdict>；\n"
+                    "不通过时：在回复最末尾输出 <verdict>FAIL</verdict>，随后一行 <issues> 开头逐条列问题。\n"
+                    "没有协议块的审查视为无效，必须重写回复补上协议块。\n"
+                    "\n工作方式（重要）：快速审查——只读根 README、各阶段 README 与每个任务文件各一遍即可，\n"
+                    "不要展开与审查无关的探索，尽快在回复末尾给出协议块。\n"
                 )
         t0 = time.time()
         try:

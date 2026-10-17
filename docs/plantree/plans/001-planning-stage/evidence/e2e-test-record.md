@@ -1,9 +1,16 @@
-# Evidence · 端到端测试（测试阶段 T009，含根因定性轮，十一轮实证）
+# Evidence · 端到端测试（测试阶段 T009，十六轮实证，全链路走通）
 
-- 时间：2026-10-17 00:00 – 18:35（Asia/Shanghai）
-- 执行者：devforge 会话（AI 替用户应答 UI，用户委托；后段含 API 用户路径活体应答 + 会话文件独立应答器）
-- 脚本组：`tests/e2e/test_00…test_08`（9 脚本，纯标准库 Python）+ 线级诊断实验 v1–v5 + 十一次端到端
-- 结果：**基础 API 面 66 项检查全过**；端到端链路走到 6/7 步，阻断根因全部定性
+- 时间：2026-10-17 00:00 – 19:30（Asia/Shanghai）
+- 执行者：devforge 会话（AI 替用户应答 UI，用户委托；含 API 用户路径活体应答 + 会话文件独立应答器）
+- 结果：**基础 API 面 66 项检查全过；第十六次端到端七环全通，全链路走通**
+
+## 终局：第十六次七环全通（2026-10-17 19:26）
+
+创建项目 → 任务 → 规划流水线（多轮 dialog 逐问应答，15+ 文件树含 D001–D006）→ review-0 FAIL+问题清单 → 修复 → review-1 重审 → **`<verdict>PASS</verdict>`** → run **Settled** → 任务 **Completed**（API 实测）。
+
+- 逐环证据：`tests/e2e/results/RUN16_FULL_CHAIN.md`
+- 树落盘在服务器 cwd（P8-ISSUE-04 路径偏差，记录未修）
+- 生效补偿（全测试侧）：真实 skill 分发/httpIdleTimeoutMs=60s 流挂死快判自愈/会话应答器/配置全量复刻
 
 ## 链路可达终点（已真实观察到）
 
@@ -13,12 +20,9 @@
 - dialog 全环 ✓（第八次：ask-user-question 多连问经 API 用户路径应答，agent 全部消化）
 - **review 循环真实运转** ✓（第八次：review-0 通读全 13 文件给出 FAIL+真实语义问题清单→问题回注→规划 Agent 修复轮 128+ 条→review-1 全新实例重审）
 
-## 未观察到（被阻断）
+## 未观察到（历史轮次，第十六次已解决）
 
-verdict PASS → 约定路径落盘 → 任务 Completed——被两层已定性问题阻断：
-① review-1 漏发 verdict 协议块 → SOP 硬错误（P8-ISSUE-10，应保守 FAIL）；
-② 中转长 turn 流截断（六次复现，含缓解对照），pi idle 超时被慢滴喂活失效。
-devforge 侧放大器（无 run 超时/取消、stderr 黑盒、SSE 丢 ui.request）全部记录，按「只记录不修」约束未动。
+review 通过/任务 Completed 在第 1–15 轮被两层问题阻断（review 漏协议块/中转长 turn 流截断），第十六次经供给链补齐与流快判自愈后全部解决；历史定性详见 TEST_REPORT.md。
 
 ## 五次「停滞」真凶（已测试侧修复）
 

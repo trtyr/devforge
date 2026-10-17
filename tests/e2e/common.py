@@ -235,6 +235,9 @@ def compensate_profile(server: Server, provider: str = "newapi") -> list[str]:
             for k in ("retry", "defaultThinkingLevel", "compaction", "hideThinkingBlock"):
                 if k in real_s:
                     cur[k] = real_s[k]
+            # 流挂死快判：idle 超时降为 60s（默认 300s 被中转慢滴喂活永不触发）——
+            # 挂死流 60s 判错 → pi agent 级 retry（3 次）自动重试，替代人工杀跑重掷
+            cur["httpIdleTimeoutMs"] = 60000
             sp.write_text(json.dumps(cur, indent=2, ensure_ascii=False))
             if "settings.json" not in done:
                 done.append("settings.json")

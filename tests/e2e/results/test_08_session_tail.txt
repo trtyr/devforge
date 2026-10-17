@@ -1,52 +1,42 @@
-session=2026-10-17T09-13-15-559Z_01a14923-0a27-714c-9098-8e339ed6cd63.jsonl
-entries=31
+session=2026-10-17T10-42-25-808Z_01a14974-ad8f-70fc-b4ea-3de7e2c76648.jsonl
+entries=239
 
-- message toolResult: ./ideas/inbox.md
-./decisions/003-defer-main-path.md
-./decisions/002-cli-python-baseline.md
-./decisions/001-scope-baseline.md
-./open-questions.md
-./topics/cli-contract.md
-./topics/acceptance-and-verifi
-- message toolResult: {"type":"session","version":3,"id":"01a14923-0a27-714c-9098-8e339ed6cd63","timestamp":"2026-10-17T09:13:15.559Z","cwd":"/tmp/devforge-e2e-kewnvw6_/server-cwd"}
-{"type":"model_change","id":"a687bf24","
-- message assistant:  bash bash
-- message toolResult: === README
-# Plan Root — demo-app 首个可运行版本
+- message toolResult: ## Phase 2 — 项目与成员
 
-> Plan ID: **P001** ｜ 状态: **Planning** ｜ 模式: `shape-plan`
-> 本目录即 plan root（任务目录 = plan root），不额外嵌套 `docs/plantree/plans/`。
+- [ ] owner/member/viewer 三类角色的权限矩阵有测试覆盖。
+- [ ] 跨项目越权用例存在且能因错误实现而失败（防 R1）。
+- [ ] 非 owner 归档项目返回 `403`；归档幂等（重复归档不报错）。
+- [ ] 移除最后一个 owner、或降级最后一个 owner 为其他角色，均返回 `409 conflict_last_o
+- message assistant:  8 条修订完成，回归校验通过（0 断链、错误码全登记）。
 
-## 1. 范围（Scope）
+| # | 问题 | 修订 |
+|---|---|---|
+| 1 | `Task` 契约有 `createdAt`，数据模型无 `created_at` | `data-model.md` Task 实体补 `created_at`；迁移 005 注释写明「含 created_at / updated_at / sort_seq」 |
 
-- **对象**: `works
-- message toolResult: PI_CODING_AGENT=true
-PI_REASONING_LEVEL=off
-PI_SESSION_FILE=/tmp/devforge-e2e-kewnvw6_/.devforge/sessions/plan/2026-10-17T09-13-15-559Z_01a14923-0a27-714c-9098-8e339ed6cd63.jsonl
-PWD=/tmp/devforge-e2e
-- message assistant:  bash bash
-- message toolResult: == /tmp/devforge-e2e-0z014a13/server-cwd
-/tmp/devforge-e2e-0z014a13/server-cwd
-== /tmp/devforge-e2e-2q7ufrug/server-cwd
-/tmp/devforge-e2e-2q7ufrug/server-cwd
-== /tmp/devforge-e2e-5i22ien8/server-cwd
-/
-- message toolResult: /tmp/devforge-e2e-raf0h672/server-cwd/decisions/001-scope-baseline.md
-/tmp/devforge-e2e-raf0h672/server-cwd/README.md
-=== devforge binary?
-agent-browser
-boss
-codegraph
-codesleuth
-dotenv
-dws
-fastapi
-fl
-- message assistant:  bash
-- message toolResult: ---
-
---- state
-/tmp/devforge-e2e-kewnvw6_/.devforge/logs/devforge.log.jsonl
-{"timestamp":"2026-10-17T09:11:02.259387Z","level":"INFO","fields":{"message":"devforge 启动","component":"main"},"target":"de
-- message assistant:  `plan-tree` skill 文件目前是占位内容（`profiles/plan-agent/skills/plan-tree/README.md` 写着「占位目录——skill 内容待分发」），因此我按 devforge 的约定推进：**当前任务目录 `/tmp/devforge-e2e-kewnvw6_/server-cwd` 即 plan root**。开始前先确认几件事： ask_user_question
 - custom : 
+- custom : 
+- message user: Review 发现以下语义问题，请修订 plan tree：
+- `topics/api-contract/edge-cases.md` 与 `topics/acceptance-criteria.md` 称 `limit > 100` 钳制"契约已写死"，但 `topics/api-contract.md` 与 `topics/api-contract/contracts.md` 均未写出 10
+- message assistant:  逐条核对相关文件。 bash bash
+- message toolResult: === limit 100 ===
+plans/001-task-management-api/topics/api-contract.md:72:请求：`?limit=50&cursor=<opaque>`；响应：`{ "items": [...], "nextCursor": "..." | null }`。
+plans/001-task-management-api/topics/api-c
+- message toolResult: === 删除相关 ===
+plans/001-task-management-api/decisions/003-cursor-pagination.md:10:任务列表是本系统最高频的读操作，且任务会持续被创建、移动、改状态。offset 分页在数据插入/删除时会导致漏项与重复项，对"翻页找任务"的实际体验是可见错误。同时，若各列表接口分页方式不统一，客户端要为每个端点写两套逻辑。
+plans/
+- message assistant:  bash bash
+- message toolResult: === 缓存引用 ===
+50:- 是否引入缓存层：MVP 不需要，见 [risk-hotspots](risk-hotspots.md)。
+
+=== owner_id ===
+./plans/001-task-management-api/topics/data-model.md:18:| `Project` | `id`, `name`, `key`(unique), `owner_id`, 
+- message toolResult: === T000/evidence ===
+## Done
+
+- [x] **T000** 建立 P001 规划骨架：计划 README、roadmap、topics、decisions、baseline 六件套。
+  - 证据：本目录文件树（2026-10-17，规划产物，非代码）。
+
+## In Progress
+=== evidence README T000 ===
+12:现有唯一可称为产
+- message assistant:  已确认 8 条问题。第 3、4 条涉及 Q004 的方向选择，需要你定夺。 ask_user_question
