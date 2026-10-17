@@ -42,3 +42,38 @@ plan-tree skill 占位目录 → agent 发起 `find /` 全盘搜规范 → 单�
 ## 对后续阶段的指向
 
 修复顺序建议：①渲染器配置债（auth 形状/models.json 分发/settings 运行时键/真实 skill 分发）；②UI 桥按 method 分流；③run 超时+取消端点；④pi stderr 落日志；⑤spawn 设工作目录；⑥verdict 缺失改保守 FAIL；⑦SSE 丢件修复；⑧中转长 turn 重试型客户端；⑨端到端复测。
+
+---
+
+# 修复后复测（第 17 试，2026-10-17 21:36–21:56，修复阶段 commit 991acaf 之后）
+
+## 结果：链路首问被 dialog 挂起阻塞 28 分钟，未走通；但拿到两条重量级根因实证
+
+## 实证一（代码级）：P8-ISSUE-02 真因 = 双通道断裂
+
+`UiRelay::ask_blocking` 把 ui.request 广播进 **UiRelay 私有的 `requests` 通道**（mod.rs:69），
+而 `/events` SSE 端点只订阅 `ServerState.events` 领域通道（handlers.rs:289）。
+`requests` 通道除单测助手 `subscribe_requests()` 外**无任何消费者**——
+ui.request 从未到达任何 SSE 客户端，前端/autopilot 天生耳聋。
+run 8 的「autopilot 聋」、修复阶段未覆盖本项，全部由此解释。
+
+## 实证二（行为级）：dialog-pending 变体签名 + 取消半效
+
+- 首问 dialog 挂起期间，**会话文件尾是 blackhole 观察记录而非 assistant toolCall 行**
+  ——按会话文件找 toolCall 的应答器对此变体全盲；
+- 21:39:30 会话静止后：发 cancel（200）→ pi 被 watchdog 精确击杀（/proc 实证）→
+  **run 仍 Running**——引擎线程阻塞在 `ask_blocking`（mpsc recv 无死亡信号），
+  杀 pi 解不了 dialog 等待；**应答挂起 dialog（POST /ui/ui-1/answer 200）才解阻** → run 即 Failed；
+- 即 P8-ISSUE-01 的 cancel 在 dialog-pending 态只有半效：pi 死 ≠ 引擎解阻。
+
+## 现场数据
+
+- 装包+渲染 124s（修复后异步化，远优于历史 10-15 分钟同步阻塞）；
+- 规划 Agent 正常起跑：读真实 plan-tree skill（无全盘扫描）、产出 6 条观察（21:39）、
+  判定 greenfield 需澄清 → 发首问 dialog（deepseek-flash）；
+- plans/demo-app/planning-run 目录已建（P8-ISSUE-04 修复生效），树未落（阻塞于首问）；
+- 三个历史孤儿 pi 进程（test_09/10 批次遗留）已按 PID 清理。
+
+## 对策（第 18 试）
+
+应答器升级探测优先：ui-N 游标轮询（4s）不依赖会话签名也不依赖 SSE（commit 6545429）。
