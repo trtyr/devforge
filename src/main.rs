@@ -28,30 +28,55 @@ async fn main() -> anyhow::Result<()> {
     let sessions_root = root.join("sessions");
 
     // 生产引擎：规划 SOP 的 RPC 接线
-    let (events, _) = tokio::sync::broadcast::channel(256);
+    let (events, _) = tokio::sync::broadcast::channel(1024);
     let ui = Arc::new(devforge::server::UiRelay::new(events.clone()));
     let engine_profiles = profiles_root.clone();
     let engine_sessions = sessions_root.clone();
+    let engine_plans = plans_root.clone();
     let engine_ui = ui.clone();
     let engine_factory = Box::new(move || -> Box<dyn devforge::domain::runner::RunEngine + Send> {
         Box::new(devforge::server::PlanningRpcEngine {
             profile_root: engine_profiles.clone(),
             session_root: engine_sessions.clone(),
+            plans_root: engine_plans.clone(),
             ui: engine_ui.clone(),
         })
     });
 
-    let state = devforge::server::ServerState::new(
+    let mut state = devforge::server::ServerState::new(
         devforge::domain::Store::new(),
         devforge::domain::sop::SopRegistry::builtin(),
         manifest,
         engine_factory,
         events,
         ui,
+        std::sync::Arc::new(devforge::config::installer::PiInstallBridge),
         profiles_root,
         plans_root,
         sessions_root,
     );
+    // P3-ISSUE-02 修复：真源路径交给状态，PUT 替换时同步落盘
+    *state
+        .manifest_path
+        .lock()
+        .expect("manifest_path 锁") = Some(manifest_path);
+    // P3-ISSUE-03 修复：token 配置入口（DEVFORGE_TOKEN 环境变量；未设即放行，Q003）
+    // + run 超时（P8-ISSUE-01）：默认不限时（零硬限制），DEVFORGE_RUN_TIMEOUT_MS 显式开启
+    // （两者在 Arc 分享前经 get_mut 注入）
+    if let Some(s) = std::sync::Arc::get_mut(&mut state) {
+        if let Ok(t) = std::env::var("DEVFORGE_TOKEN") {
+            if !t.is_empty() {
+                s.token = Some(t);
+            }
+        }
+        if let Ok(ms) = std::env::var("DEVFORGE_RUN_TIMEOUT_MS") {
+            if let Ok(n) = ms.parse::<u64>() {
+                if n > 0 {
+                    s.run_timeout_ms = Some(n);
+                }
+            }
+        }
+    }
 
     let addr = std::env::var("DEVFORGE_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:7888".into())

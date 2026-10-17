@@ -40,27 +40,31 @@ def main() -> int:
         # 模型池与固定分配已在内置清单（用户拍板 2026-10-17）：审查→grok-4.7，规划→deepseek-flash
         t0 = time.time()
         try:
+            # P7-ISSUE-03 已修：PUT 异步化（202 即回，后台渲染+安装，config.rendered SSE 通知）
             status, resp = server.req("PUT", "/config/manifest", manifest, timeout=600.0)
             elapsed = time.time() - t0
-            r.check(status == 200, "manifest 注入 key 并渲染 profile", f"status={status}, 耗时={elapsed:.0f}s")
-            if elapsed > 30:
-                r.issue(
-                    "P7-ISSUE-03", "medium",
-                    f"PUT manifest 同步执行包安装阻塞 {elapsed:.0f}s（四件套含 git clone），"
-                    "客户端常规超时必炸——应异步化或返回任务句柄（发现于 test_07 首跑 10s 超时崩溃）",
-                    f"PUT 耗时 {elapsed:.0f}s",
-                )
+            r.check(status == 202, "manifest 替换受理（异步渲染）", f"status={status}, 耗时={elapsed:.1f}s")
+            # 等 profile 就绪：两 profile 的 npm/package.json（安装器收尾产物）+ 3s 宽限
+            prof = server.home / ".devforge" / "profiles"
+            for _ in range(600):
+                marks = [
+                    (prof / a / "npm" / "package.json").exists()
+                    for a in ("plan-agent", "plan-review")
+                ]
+                if all(marks):
+                    break
+                time.sleep(1.0)
+            time.sleep(3.0)
         except TimeoutError:
             r.issue(
                 "P7-ISSUE-03", "medium",
-                "PUT manifest 同步装包超过 600s 未完成——同步阻塞设计在真实环境不可用",
+                "PUT manifest 受理超过 600s 未完成——异步化已修后仍超时属异常",
                 "PUT timeout=600s 超时",
             )
             r.check(False, "manifest PUT 完成")
-            autopilot_never = None
             return r.finish()
 
-        # ---- 补偿：models.json 分发 + auth.json 形状（渲染器缺陷的测试侧对照，非代码修复） ----
+        # ---- 补偿：配置供给已被渲染器原生覆盖（修复后），此处保留执行作交叉校验 ——
         compensated = compensate_profile(server)
         r.check(
             sorted(compensated) == ["auth.json", "models.json"],

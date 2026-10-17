@@ -49,14 +49,17 @@ impl IntoResponse for ApiError {
 impl From<crate::error::DevforgeError> for ApiError {
     fn from(e: crate::error::DevforgeError) -> Self {
         let msg = e.to_string();
-        // MVP 按语义关键词映射；后续可给错误加机器可读 code（原则 §3）
-        if msg.contains("已存在") {
+        // P3-ISSUE-01 修复：变体优先（配置类错误 = 客户端输入问题 → 400），
+        // 语义关键词兜底；后续可给错误加机器可读 code（原则 §3）
+        if matches!(e, crate::error::DevforgeError::Config(_)) {
+            Self::bad_request(msg)
+        } else if msg.contains("已存在") {
             Self::conflict(msg)
         } else if msg.contains("不存在") {
             Self::not_found(msg)
         } else if msg.contains("串行") || msg.contains("不可发起") {
             Self::conflict(msg)
-        } else if msg.contains("配置错误") || msg.contains("未知 SOP") || msg.contains("不在模型池") {
+        } else if msg.contains("未知 SOP") {
             Self::bad_request(msg)
         } else {
             Self::internal(msg)
@@ -102,7 +105,12 @@ pub async fn create_project(
         store.create_project(project).cloned()?
     };
     // 本地关系落地：从 0 = 建目录；已有 = 幂等确认（decisions/001）
-    created.ensure_local_dir().map_err(ApiError::from)?;
+    // P1-ISSUE-01 修复：目录落地失败时回滚 store 插入，不留半注册项目
+    if let Err(e) = created.ensure_local_dir() {
+        let mut store = st.store.lock().expect("store 锁");
+        store.remove_project(&created.name);
+        return Err(ApiError::from(e));
+    }
     st.emit(json!({"type": "project.created", "project": created.name}));
     Ok((StatusCode::CREATED, Json(created)))
 }
@@ -144,6 +152,28 @@ pub async fn create_task(
     };
     st.emit(json!({"type": "task.created", "project": project, "task": created.id}));
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+pub async fn cancel_task(
+    State(st): State<SharedState>,
+    Path((project, task)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    // P8-ISSUE-01 修复：取消端点——置位后 watchdog 按 run-id 精确 SIGKILL 自家 pi
+    let control = st
+        .runs_control
+        .lock()
+        .expect("runs_control 锁")
+        .get(&format!("{project}/{task}"))
+        .cloned();
+    match control {
+        Some(c) => {
+            c.cancel();
+            Ok(Json(json!({"ok": true, "cancelled": true})))
+        }
+        None => Err(ApiError::not_found(format!(
+            "任务 `{project}/{task}` 当前无运行中的 run，无可取消对象"
+        ))),
+    }
 }
 
 pub async fn list_tasks(
@@ -272,26 +302,45 @@ pub async fn get_manifest(State(st): State<SharedState>) -> Json<ConfigManifest>
     Json(st.manifest.lock().expect("manifest 锁").clone())
 }
 
-/// 整份替换清单（P002 两个开放面：模板编辑 + 模型选择——MVP 以整份替换实现，
-/// 细粒度编辑端点远期）。同步落盘真源。
+/// 整份替换清单（P002；P7-ISSUE-03 修复：渲染异步化——同步只做真源落盘与内存生效，
+/// profile 重渲染（含 pi install 分钟级耗时）在后台线程执行，
+/// 完成/失败经 SSE `config.rendered` / `config.render_failed` 通知）。
 pub async fn put_manifest(
     State(st): State<SharedState>,
     Json(manifest): Json<ConfigManifest>,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    // P3-ISSUE-01：同步验证客户端输入（模型/provider 引用可解析），配置错误 fail fast 400
+    for agent in &manifest.agents {
+        manifest.resolve_model(agent).map_err(ApiError::from)?;
+        manifest.resolve_provider(agent).map_err(ApiError::from)?;
+    }
     {
         let mut m = st.manifest.lock().expect("manifest 锁");
         *m = manifest;
-        if let Some(path) = &st.manifest_path {
+        if let Some(path) = st.manifest_path.lock().expect("manifest_path 锁").as_ref() {
             m.save(path).map_err(ApiError::from)?;
         }
     }
-    // 清单变更即重渲染全部 profile（自动更新，P002 T005 的最简形态）
-    let m = st.manifest.lock().expect("manifest 锁").clone();
-    let renderer = crate::config::Renderer {
-        manifest: &m,
-        installer: &crate::config::installer::PiInstallBridge,
-        skills_source: None,
-    };
-    let rendered = renderer.render_all(&st.profiles_root).map_err(ApiError::from)?;
-    Ok(Json(json!({"ok": true, "rendered": rendered.len()})))
+    let agents = st.manifest.lock().expect("manifest 锁").agents.len();
+    let st2 = st.clone();
+    std::thread::spawn(move || {
+        let m = st2.manifest.lock().expect("manifest 锁").clone();
+        let renderer = crate::config::Renderer {
+            manifest: &m,
+            installer: st2.installer.as_ref(),
+            skills_source: None,
+        };
+        match renderer.render_all(&st2.profiles_root) {
+            Ok(rendered) => {
+                st2.emit(json!({"type": "config.rendered", "rendered": rendered.len()}));
+            }
+            Err(e) => {
+                st2.emit(json!({"type": "config.render_failed", "error": e.to_string()}));
+            }
+        }
+    });
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({"ok": true, "async": true, "agents": agents})),
+    ))
 }

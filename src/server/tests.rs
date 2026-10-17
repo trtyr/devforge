@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use crate::config::ConfigManifest;
-use crate::domain::runner::{RunEngine, RunOutcome};
+use crate::domain::runner::{RunControl, RunEngine, RunOutcome};
 use crate::domain::sop::SopRegistry;
 use crate::domain::store::Store;
 use crate::domain::task::Task;
@@ -18,16 +18,33 @@ use tokio_stream::StreamExt as _;
 
 use std::sync::{Arc, Mutex};
 
-/// 测试引擎：立刻完成并记录调用。
+/// 测试引擎：立刻完成并记录调用；hang_ms>0 时模拟长 run（响应取消/超时干预）。
 struct MockEngine {
     calls: Arc<Mutex<Vec<String>>>,
+    hang_ms: u64,
 }
 impl RunEngine for MockEngine {
-    fn execute(&mut self, task: &Task, _run: &Run) -> Result<RunOutcome> {
+    fn execute(&mut self, task: &Task, _run: &Run, control: &RunControl) -> Result<RunOutcome> {
         self.calls
             .lock()
             .unwrap()
             .push(format!("{}/{}", task.project, task.id));
+        if self.hang_ms > 0 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(self.hang_ms);
+            while std::time::Instant::now() < deadline {
+                if control.is_cancelled() {
+                    return Ok(RunOutcome::Failed {
+                        reason: "已取消（cancel 端点）".into(),
+                    });
+                }
+                if control.timed_out(crate::domain::now_ms()) {
+                    return Ok(RunOutcome::Failed {
+                        reason: "已超时（run 超时，被 watchdog 终止）".into(),
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
         Ok(RunOutcome::Completed)
     }
 }
@@ -45,13 +62,21 @@ fn fixture() -> Fixture {
 }
 
 fn fixture_with_token(token: Option<&str>) -> Fixture {
+    fixture_with_engine(0, None, token)
+}
+
+/// 可注入长 run / 超时的夹具变体（取消与超时单测用）。
+fn fixture_with_engine(hang_ms: u64, timeout_ms: Option<u64>, token: Option<&str>) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let calls2 = calls.clone();
     let engine_factory = Box::new(move || -> Box<dyn RunEngine + Send> {
-        Box::new(MockEngine { calls: calls2.clone() })
+        Box::new(MockEngine {
+            calls: calls2.clone(),
+            hang_ms,
+        })
     });
-    let (events, _) = tokio::sync::broadcast::channel(256);
+    let (events, _) = tokio::sync::broadcast::channel(1024);
     let ui = Arc::new(UiRelay::new(events.clone()));
     let mut state = ServerState::new(
         Store::new(),
@@ -60,6 +85,7 @@ fn fixture_with_token(token: Option<&str>) -> Fixture {
         engine_factory,
         events,
         ui,
+        std::sync::Arc::new(crate::config::installer::FakeInstaller),
         dir.path().join("profiles"),
         dir.path().join("plans"),
         dir.path().join("sessions"),
@@ -67,6 +93,9 @@ fn fixture_with_token(token: Option<&str>) -> Fixture {
     // token 在路由构建前注入（Arc 共享后不可再改）
     if let Some(t) = token {
         Arc::get_mut(&mut state).expect("路由未构建前应独占").token = Some(t.into());
+    }
+    if let Some(t) = timeout_ms {
+        Arc::get_mut(&mut state).expect("路由未构建前应独占").run_timeout_ms = Some(t);
     }
     Fixture {
         router: build_router(state.clone()),
@@ -324,11 +353,59 @@ async fn manifest_get_put_roundtrip() {
         Some(serde_json::to_value(&next).unwrap()),
     )
     .await;
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 202); // P7-ISSUE-03：渲染异步化，同步只生效真源
 
     let resp = send(&f.router, "GET", "/api/v1/config/manifest", None).await;
     let body = body_json(resp).await;
     assert_eq!(body["model_pool"][0]["model_id"], "deepseek-v3");
+
+    // P3-ISSUE-02 修复：真源同步落盘（manifest_path 注入后 PUT 即写盘）
+    *f.state.manifest_path.lock().unwrap() = Some(f._dir.path().join("manifest.json"));
+    let mut next2 = ConfigManifest::planning_builtin();
+    next2.model_pool[1].model_id = "mokeywork/grok-4.7-tuned".into();
+    let resp = send(
+        &f.router,
+        "PUT",
+        "/api/v1/config/manifest",
+        Some(serde_json::to_value(&next2).unwrap()),
+    )
+    .await;
+    assert_eq!(resp.status(), 202);
+    let saved = std::fs::read_to_string(f._dir.path().join("manifest.json")).unwrap();
+    assert!(saved.contains("mokeywork/grok-4.7-tuned"), "真源应落盘: {saved}");
+}
+
+#[tokio::test]
+async fn put_manifest_unknown_model_is_400() {
+    // P3-ISSUE-01 修复：配置类错误 400（此前 500）
+    let f = fixture();
+    let mut next = ConfigManifest::planning_builtin();
+    next.agents[0].model = "ghost-model".into();
+    let resp = send(
+        &f.router,
+        "PUT",
+        "/api/v1/config/manifest",
+        Some(serde_json::to_value(&next).unwrap()),
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn project_create_rolls_back_when_local_dir_fails() {
+    // P1-ISSUE-01 修复：目录落地失败回滚插入，不留半注册项目
+    let f = fixture();
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "badpath", "local_path": "/dev/null/impossible/x"})),
+    )
+    .await;
+    assert_eq!(resp.status(), 500);
+    let resp = send(&f.router, "GET", "/api/v1/projects", None).await;
+    let body = body_json(resp).await;
+    assert_eq!(body["projects"].as_array().unwrap().len(), 0, "应无半注册残留");
 }
 
 #[tokio::test]
@@ -351,4 +428,65 @@ async fn graph_endpoint_shows_nodes() {
     }
     assert_eq!(graph["sop"], "planning");
     assert!(graph["nodes"].as_array().unwrap().iter().all(|n| n["kind"] == "run"));
+}
+
+#[tokio::test]
+async fn cancel_endpoint_stops_running_task() {
+    // P8-ISSUE-01 修复：取消端点干预长 run
+    let f = fixture_with_engine(10_000, None, None);
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks", Some(json!({"id": "t", "sop": "planning"}))).await;
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    assert_eq!(resp.status(), 202);
+
+    // control 在 begin_run 后登记；轮询到取消端点可用为止
+    let mut cancelled = false;
+    for _ in 0..100 {
+        let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t/cancel", None).await;
+        if resp.status() == 200 {
+            cancelled = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(cancelled, "取消端点应命中运行中的 run");
+
+    // 引擎响应取消 → run Failed(已取消)，任务 Failed，不留悬空 Running
+    let mut final_runs = Value::Null;
+    for _ in 0..200 {
+        let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
+        final_runs = body_json(resp).await;
+        if final_runs["runs"][0]["status"] == "Failed" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(final_runs["runs"][0]["status"], "Failed");
+    let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks", None).await;
+    let body = body_json(resp).await;
+    assert_eq!(body["tasks"][0]["status"], "Failed");
+}
+
+#[tokio::test]
+async fn run_timeout_fails_run() {
+    // P8-ISSUE-01 修复：可选超时（显式开启，零硬限制哲学）
+    let f = fixture_with_engine(10_000, Some(200), None);
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks", Some(json!({"id": "t", "sop": "planning"}))).await;
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    assert_eq!(resp.status(), 202);
+
+    let mut final_runs = Value::Null;
+    for _ in 0..200 {
+        let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
+        final_runs = body_json(resp).await;
+        if final_runs["runs"][0]["status"] == "Failed" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(final_runs["runs"][0]["status"], "Failed");
+    let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks", None).await;
+    let body = body_json(resp).await;
+    assert_eq!(body["tasks"][0]["status"], "Failed");
 }

@@ -36,6 +36,11 @@ impl Store {
 
     // ---------- 项目层 ----------
 
+    /// 回滚插入（P1-ISSUE-01：目录落地失败时不留半注册项目）。
+    pub fn remove_project(&mut self, name: &str) {
+        self.projects.retain(|p| p.name != name);
+    }
+
     pub fn create_project(&mut self, project: Project) -> Result<&Project> {
         if self.projects.iter().any(|p| p.name == project.name) {
             return Err(DevforgeError::Store(format!(

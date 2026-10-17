@@ -30,6 +30,21 @@ pub struct ModelEntry {
     pub provider: String,
     /// pi settings 的 defaultModel。
     pub model_id: String,
+    /// 上下文窗口（渲染 models.json，P2-ISSUE-03 修复）。
+    pub context_window: u64,
+    /// 最大输出 tokens（渲染 models.json；缺失时 reasoning 模型烧光默认预算产出空正文）。
+    pub max_tokens: u64,
+}
+
+/// provider 定义（渲染 models.json 用，P2-ISSUE-03 修复：pi 由此得知 baseUrl）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderDef {
+    /// provider 名（pi settings 的 defaultProvider / auth.json 键）。
+    pub name: String,
+    /// 协议族（如 "openai-completions"）。
+    pub api: String,
+    /// 服务地址（如自建中转）。
+    pub base_url: String,
 }
 
 /// Agent 管理面：单个 Agent 的配置清单。
@@ -52,6 +67,8 @@ pub struct AgentManifest {
 pub struct ConfigManifest {
     /// 必装四件套（所有 Agent）。
     pub base_packages: Vec<String>,
+    /// provider 定义表（模型管理面，渲染 models.json）。
+    pub providers: Vec<ProviderDef>,
     /// 模型池（模型管理面）。
     pub model_pool: Vec<ModelEntry>,
     /// Agent 清单（Agent 管理面）。
@@ -75,6 +92,11 @@ impl ConfigManifest {
 3. 产出 plan tree 保存到当前目录（任务目录即 plan root）。\n\
 4. 结束前必须用 ask-user-question 问用户是否完成；用户确认后输出完成标记。\n\
 \n\
+工作方式（重要）：\n\
+- 小步快跑：每轮只做一件小事（一次搜索/一次读取/写一个文件的一小段）。\n\
+- 避免单次超长输出；写 plan tree 时分多次小段写入，先建骨架再逐步填充。\n\
+- 每完成一小步就简短总结一句再继续。\n\
+\n\
 （完整提示词在 P001 T005 细化——本文件由渲染器生成，勿手改）\n";
         let review_prompt = "\
 # Plan Review Agent（规划检查 Agent）\n\
@@ -82,12 +104,25 @@ impl ConfigManifest {
 你是 devforge 系统的规划检查 Agent。\n\
 \n\
 职责边界（刻意窄）：读取 plan tree 与 plan-tree skill，只检查语义是否通顺、前后是否矛盾。\n\
-不评设计好坏、不找潜在坑、不与用户交互。输出统一 verdict 块（PASS/FAIL + 问题清单）。\n\
+不评设计好坏、不找潜在坑、不与用户交互。\n\
+输出协议（强制，逐字遵守）：你的最终回复末尾【必须】包含协议块。\n\
+通过：回复最末尾单独一行输出 <verdict>PASS</verdict>。\n\
+不通过：回复最末尾输出 <verdict>FAIL</verdict>，随后 <issues> 开头逐条列问题。\n\
+没有协议块的审查视为无效，必须重写回复补上协议块。\n\
+\n\
+工作方式（重要）：快速审查——只读根 README、各阶段 README 与每个任务文件各一遍即可，\n\
+不要展开与审查无关的探索，尽快在回复末尾给出协议块。\n\
 \n\
 （完整提示词在 P001 T005 细化——本文件由渲染器生成，勿手改）\n";
 
         Self {
             base_packages: BASE_PACKAGES.iter().map(|s| s.to_string()).collect(),
+            // provider 定义表（P2-ISSUE-03：渲染 models.json，pi 由此得知 baseUrl）
+            providers: vec![ProviderDef {
+                name: "newapi".into(),
+                api: "openai-completions".into(),
+                base_url: "https://newapi.trtyr.top/v1".into(),
+            }],
             // 模型固定分配（用户拍板 2026-10-17，固定死不改；id 为 P1-CAL-01 校准后真实 id）：
             //   审查 Agent → Grok 4.7；编码/规划 Agent → DeepSeek flash
             model_pool: vec![
@@ -95,11 +130,15 @@ impl ConfigManifest {
                     id: "grok-4.7".into(),
                     provider: "newapi".into(),
                     model_id: "mokeywork/grok-4.7".into(),
+                    context_window: 1_000_000,
+                    max_tokens: 65_536,
                 },
                 ModelEntry {
                     id: "deepseek-flash".into(),
                     provider: "newapi".into(),
                     model_id: "mokeywork/deepseek-flash".into(),
+                    context_window: 1_000_000,
+                    max_tokens: 65_536,
                 },
             ],
             agents: vec![
@@ -133,6 +172,17 @@ impl ConfigManifest {
                     agent.name, agent.model
                 ))
             })
+    }
+
+    /// 按 Agent 引用的模型找到其 provider 定义（渲染 models.json 用）。
+    pub fn resolve_provider(&self, agent: &AgentManifest) -> Result<&ProviderDef> {
+        let model = self.resolve_model(agent)?;
+        self.providers.iter().find(|p| p.name == model.provider).ok_or_else(|| {
+            DevforgeError::Config(format!(
+                "模型 `{}` 引用的 provider `{}` 无定义",
+                model.id, model.provider
+            ))
+        })
     }
 
     pub fn get_agent(&self, name: &str) -> Result<&AgentManifest> {

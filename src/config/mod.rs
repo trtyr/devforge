@@ -6,7 +6,8 @@
 pub mod installer;
 pub mod manifest;
 pub mod render;
+pub mod skill_assets;
 
 pub use installer::{build_install_command, PackageInstaller, PiInstallBridge};
-pub use manifest::{AgentManifest, ConfigManifest, ModelEntry};
+pub use manifest::{AgentManifest, ConfigManifest, ModelEntry, ProviderDef};
 pub use render::Renderer;

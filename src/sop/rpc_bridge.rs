@@ -26,17 +26,38 @@ impl PlanAgentSession for RpcPlanSession {
         let outcome = self
             .client
             .wait_settled_with_ui(|extra| {
-                // UI 请求的具体字段形状联调校准（P001 roadmap）；MVP 宽松提取
+                // UI 请求字段提取：真实线级形状优先 title（select dialog），
+                // 兼容旧合成形状 request.question，兜底原始 JSON dump
                 let question = extra
-                    .get("request")
-                    .and_then(|r| r.get("question"))
-                    .and_then(|q| q.as_str())
+                    .get("title")
+                    .and_then(|t| t.as_str())
                     .map(str::to_string)
+                    .or_else(|| {
+                        extra
+                            .get("request")
+                            .and_then(|r| r.get("question"))
+                            .and_then(|q| q.as_str())
+                            .map(str::to_string)
+                    })
                     .unwrap_or_else(|| {
                         let extra = serde_json::to_string(extra).unwrap_or_default();
                         format!("Agent 请求输入: {extra}")
                     });
-                ui.ask(&question, &[])
+                // select dialog 的选项透传给 SSE（前端可渲染按钮；MVP 由 AI/用户自由应答）
+                let options: Vec<String> = extra
+                    .get("options")
+                    .and_then(|o| o.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|o| match o {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let refs: Vec<&str> = options.iter().map(String::as_str).collect();
+                ui.ask(&question, &refs)
             })
             .ctx("Plan 对话（含 UI 子协议）")?;
         self.client.require_success(&outcome, &id)?;
@@ -137,7 +158,7 @@ mod tests {
         let body = format!(
             "read _cmd\n\
              cat <<'DEVFORGE_EOF'\n\
-             {{\"id\":\"ui-1\",\"type\":\"extension_ui_request\",\"request\":{{\"question\":\"规划完成了吗\"}}}}\n\
+             {{\"id\":\"ui-1\",\"type\":\"extension_ui_request\",\"method\":\"select\",\"title\":\"规划完成了吗\",\"options\":[\"完成\",\"还没\"]}}\n\
              DEVFORGE_EOF\n\
              read _r\n\
              printf '%s\\n' \"$_r\" > '{capture}'\n\
@@ -161,6 +182,7 @@ mod tests {
             role: "plan-agent".into(),
             run_id: RunId::generate().0,
             session_dir: dir.path().to_path_buf(),
+            working_dir: std::path::PathBuf::from("."),
             extra_args: vec![script.to_string_lossy().into_owned()],
         };
         // 裸 sh 跑回放脚本（pi 的 --mode 前缀 sh 不认）

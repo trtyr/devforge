@@ -140,6 +140,37 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 
 ---
 
+## 修复阶段核销（2026-10-17 修复轮，commit 见 git log）
+
+逐项对照上表：✅=已修（含回归单测）｜🍉=缓解（外部依赖/留远期）｜⏳=待复测验证
+
+| ID | 状态 | 说明 |
+|----|------|------|
+| P8-ISSUE-00 | ✅ | PUT 异步化后阻塞超时自然消解；测试侧 PUT 超时亦放宽 |
+| P8-ISSUE-01 | ✅ | RunControl + POST cancel 端点 + watchdog（scan_and_kill_run 按 run-id 精确 SIGKILL）+ 可选超时（DEVFORGE_RUN_TIMEOUT_MS，默认不限时——零硬限制哲学） |
+| P8-ISSUE-02 | 🍉 | 洪水源已消（fire-and-forget 不再应答/中继），容量 256→1024；Last-Event-ID 续传留远期 |
+| P8-ISSUE-04 | ✅ | SpawnSpec.working_dir → plans/<项目>/<任务>/，create_dir_all 后生效 |
+| P8-ISSUE-05 | ⏳ | 根因（占位 skill→全盘扫描 + cwd 错位）均已修，待复测实证树落约定路径 |
+| P8-ISSUE-06 | 🍉 | 外因（中转长 turn 截断）；httpIdleTimeoutMs=60s 快判 + retry 已入渲染配置；上游可靠性不在本系统范围 |
+| P8-ISSUE-07 | ✅ | is_dialog_method 分流：dialog 四方法才应答，fire-and-forget 只推事件；回归单测×2 |
+| P8-ISSUE-08 | ✅ | stderr piped → 结构化日志 + session_dir/pi-stderr.log 留档，伴读线程 |
+| P8-ISSUE-10 | ✅ | parse_verdict 缺失/未知/未闭合 → 保守 FAIL（协议违例作 issue 进重查循环），不再硬崩 |
+| P2-ISSUE-01 | ✅ | auth.json provider 键控形状 |
+| P2-ISSUE-03 | ✅ | models.json 分发（providers 表 + contextWindow/maxTokens） |
+| P2-ISSUE-04 | ✅ | settings 运行时键（retry/httpIdleTimeoutMs/thinking/compaction）写入渲染器 |
+| P2-ISSUE-05 | ✅ | 真实 plan-tree skill 内置资产（include_str! 编译期嵌入），无源时兜底 |
+| P1-ISSUE-01 | ✅ | 目录落地失败回滚 store 插入（remove_project） |
+| P3-ISSUE-01 | ✅ | 变体优先错误映射：Config→400；PUT 同步段预验证模型/provider 引用 |
+| P3-ISSUE-02 | ✅ | main.rs 传 manifest_path（Mutex 字段），PUT 同步落盘真源 |
+| P3-ISSUE-03 | ✅ | DEVFORGE_TOKEN 环境变量入口（Arc::get_mut 分享前注入） |
+| P7-ISSUE-03 | ✅ | PUT 异步化：202 + 后台渲染线程 + SSE config.rendered/render_failed 通知；顺带 installer 注入 ServerState（单测断真实网络，套件 221s→0.23s） |
+
+**核销合计：✅ 16 项 ｜ 🍉 缓解 2 项 ｜ ⏳ 待复测 1 项（P8-ISSUE-05，复测归下一测试阶段）**
+
+验证：cargo test **87 passed / 0 failed**（含新增回归单测 13 个）+ clippy clean；本阶段零端到端执行（用户约定）。
+
+---
+
 ## 终局（第十六次）：全链路走通 ✓（2026-10-17 19:10–19:26）
 
 配置供给链修复（真实 plan-tree skill 分发进 profile）+ 流挂死快判自愈（httpIdleTimeoutMs=60s → pi agent 级 retry）+ 会话文件独立应答器/API 用户路径混合应答后，第十六次端到端**七环全通**：

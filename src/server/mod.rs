@@ -21,15 +21,16 @@ use axum::Router;
 use serde_json::json;
 use tokio::sync::broadcast;
 
+use crate::config::installer::PackageInstaller;
 use crate::config::ConfigManifest;
 use crate::domain::sop::SopRegistry;
 use crate::domain::store::Store;
 use crate::domain::task::Task;
 use crate::domain::run::Run;
-use crate::domain::runner::{RunEngine, RunOutcome};
+use crate::domain::runner::{RunControl, RunEngine, RunOutcome};
 use crate::engine::client::RpcClient;
 use crate::engine::process::SpawnSpec;
-use crate::error::Result;
+use crate::error::{Context as _, Result};
 use crate::sop::planning::{PlanningLoop, UserLink};
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
 
@@ -112,17 +113,26 @@ impl UserLink for RelayUserLink {
 pub struct PlanningRpcEngine {
     pub profile_root: PathBuf,
     pub session_root: PathBuf,
+    /// plans/<项目>/<任务>/ 根（P8-ISSUE-04：子进程工作目录 = plan root）。
+    pub plans_root: PathBuf,
     pub ui: Arc<UiRelay>,
 }
 
 impl RunEngine for PlanningRpcEngine {
-    fn execute(&mut self, _task: &Task, run: &Run) -> Result<RunOutcome> {
-        let plan_client = RpcClient::spawn(SpawnSpec::new(
-            self.profile_root.join("plan-agent"),
-            "plan-agent",
-            run.id.0.clone(),
-            self.session_root.join("plan"),
-        ))?;
+    fn execute(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
+        // P8-ISSUE-04 修复：子进程工作目录 = plans/<项目>/<任务>/（decisions/002）
+        let working_dir = self.plans_root.join(&task.project).join(&task.id);
+        std::fs::create_dir_all(&working_dir).ctx("创建 plan root 目录")?;
+
+        let plan_client = RpcClient::spawn(
+            SpawnSpec::new(
+                self.profile_root.join("plan-agent"),
+                "plan-agent",
+                run.id.0.clone(),
+                self.session_root.join("plan"),
+            )
+            .with_working_dir(working_dir),
+        )?;
         let plan = RpcPlanSession::new(plan_client);
         let factory = RpcReviewFactory::per_round(
             self.profile_root.join("plan-review"),
@@ -131,15 +141,64 @@ impl RunEngine for PlanningRpcEngine {
         let mut user = RelayUserLink {
             relay: self.ui.clone(),
         };
-        let mut sop_loop = PlanningLoop::new(plan, factory);
-        let report = sop_loop.run(&mut user)?;
-        tracing::info!(
-            component = "planning-engine",
-            rounds = report.rounds,
-            issues = report.issues_total,
-            "规划 SOP 通过"
-        );
-        Ok(RunOutcome::Completed)
+
+        // watchdog（P8-ISSUE-01）：取消置位或超时 → 按 run-id 精确 SIGKILL 自家 pi。
+        // scope 借用外部 control 原件（非快照——cancel 端点置位必须实时可见）；
+        // SOP 结束后置 done，watchdog ≤300ms 内退出。
+        let run_id = run.id.0.clone();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_wd = done.clone();
+        let sop_result = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                loop {
+                    if done_wd.load(std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    if control.is_cancelled() || control.timed_out(crate::domain::now_ms()) {
+                        let killed = crate::engine::ledger::scan_and_kill_run(&run_id);
+                        if killed > 0 {
+                            tracing::warn!(
+                                component = "planning-engine",
+                                run_id = %run_id,
+                                killed,
+                                "watchdog 已清场（取消或超时）"
+                            );
+                        }
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+            });
+            let mut sop_loop = PlanningLoop::new(plan, factory);
+            sop_loop.run(&mut user)
+        });
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        match sop_result {
+            Ok(report) => {
+                tracing::info!(
+                    component = "planning-engine",
+                    rounds = report.rounds,
+                    issues = report.issues_total,
+                    "规划 SOP 通过"
+                );
+                Ok(RunOutcome::Completed)
+            }
+            Err(e) => {
+                // 干预性死亡映射为明确的 Failed 原因（而非底层 RPC EOF 噪音）
+                if control.is_cancelled() {
+                    Ok(RunOutcome::Failed {
+                        reason: "已取消（cancel 端点）".into(),
+                    })
+                } else if control.timed_out(crate::domain::now_ms()) {
+                    Ok(RunOutcome::Failed {
+                        reason: "已超时（run 超时，被 watchdog 终止）".into(),
+                    })
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 }
 
@@ -151,10 +210,16 @@ pub struct ServerState {
     pub store: Mutex<Store>,
     pub registry: SopRegistry,
     pub manifest: Mutex<ConfigManifest>,
-    /// 清单真源落盘路径（PUT 时同步写盘；None = 仅内存）。
-    pub manifest_path: Option<PathBuf>,
+    /// 清单真源落盘路径（PUT 时同步写盘；None = 仅内存）。Mutex 以便测试注入。
+    pub manifest_path: Mutex<Option<PathBuf>>,
     /// 每 run 引擎工厂（decisions/003：可多实例化的单 run 引擎）。
     pub engine_factory: Box<dyn Fn() -> Box<dyn RunEngine + Send> + Send + Sync>,
+    /// profile 安装器（生产 = PiInstallBridge；测试注入 Fake——单测不走真实网络）。
+    pub installer: Arc<dyn PackageInstaller + Send + Sync>,
+    /// 运行中 run 的干预面（P8-ISSUE-01：cancel 端点置位，watchdog 杀进程）。
+    pub runs_control: Mutex<HashMap<String, Arc<RunControl>>>,
+    /// 默认 run 超时 ms（None = 不限时，零硬限制哲学；可由 env DEVFORGE_RUN_TIMEOUT_MS 开启）。
+    pub run_timeout_ms: Option<u64>,
     pub events: broadcast::Sender<String>,
     pub ui: Arc<UiRelay>,
     /// 鉴权预留位：Some(token) 时要求 `x-devforge-token` 头匹配（Q003）。
@@ -173,6 +238,7 @@ impl ServerState {
         engine_factory: Box<dyn Fn() -> Box<dyn RunEngine + Send> + Send + Sync>,
         events: broadcast::Sender<String>,
         ui: Arc<UiRelay>,
+        installer: Arc<dyn PackageInstaller + Send + Sync>,
         profiles_root: PathBuf,
         plans_root: PathBuf,
         sessions_root: PathBuf,
@@ -181,10 +247,13 @@ impl ServerState {
             store: Mutex::new(store),
             registry,
             manifest: Mutex::new(manifest),
-            manifest_path: None,
+            manifest_path: Mutex::new(None),
             engine_factory,
             events,
             ui,
+            installer,
+            runs_control: Mutex::new(HashMap::new()),
+            run_timeout_ms: None,
             token: None,
             profiles_root,
             plans_root,
@@ -207,6 +276,10 @@ pub fn build_router(state: SharedState) -> Router {
             post(handlers::create_task).get(handlers::list_tasks),
         )
         .route("/projects/{name}/tasks/{task}/start", post(handlers::start_task))
+        .route(
+            "/projects/{name}/tasks/{task}/cancel",
+            post(handlers::cancel_task),
+        )
         // 产物管理 + 可观测
         .route("/projects/{name}/tasks/{task}/runs", get(handlers::list_runs))
         .route("/projects/{name}/tasks/{task}/graph", get(handlers::task_graph))
@@ -262,7 +335,25 @@ pub fn run_in_background(
     };
     state.emit(json!({"type": "run.started", "project": project, "task": task_id, "run_id": run.id.0}));
 
-    let outcome = engine.execute(&task_snapshot, &run);
+    // 干预面登记（P8-ISSUE-01）：cancel 端点置位 / 可选超时，watchdog 杀自家 pi
+    let mut control = RunControl::new();
+    if let Some(timeout) = state.run_timeout_ms {
+        control = control.with_deadline(crate::domain::now_ms() + timeout);
+    }
+    let control = Arc::new(control);
+    state
+        .runs_control
+        .lock()
+        .expect("runs_control 锁")
+        .insert(format!("{project}/{task_id}"), control.clone());
+
+    let outcome = engine.execute(&task_snapshot, &run, &control);
+
+    state
+        .runs_control
+        .lock()
+        .expect("runs_control 锁")
+        .remove(&format!("{project}/{task_id}"));
 
     let finish = match &outcome {
         Ok(RunOutcome::Completed) => crate::domain::store::FinishOutcome::Completed,

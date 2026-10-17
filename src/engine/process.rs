@@ -21,6 +21,9 @@ pub struct SpawnSpec {
     pub run_id: String,
     /// 会话存档目录（--session-dir，按 run-id 组织，原则 §4）。
     pub session_dir: PathBuf,
+    /// 子进程工作目录（P8-ISSUE-04 修复：规划产出的 plan tree 必须落在
+    /// plans/<项目>/<任务>/ 约定路径，而非服务器进程 cwd）。
+    pub working_dir: PathBuf,
     /// 附加参数（测试注入 mock 脚本用）。
     pub extra_args: Vec<String>,
 }
@@ -34,8 +37,15 @@ impl SpawnSpec {
             role: role.into(),
             run_id: run_id.into(),
             session_dir,
+            working_dir: PathBuf::from("."),
             extra_args: Vec::new(),
         }
+    }
+
+    /// 设置工作目录（链式；P8-ISSUE-04）。
+    pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
+        self.working_dir = dir;
+        self
     }
 }
 
@@ -52,6 +62,8 @@ pub fn build_spawn_command(spec: &SpawnSpec) -> Command {
     cmd.env("PI_CODING_AGENT_DIR", &spec.profile_dir)
         .env("DEVFORGE_MANAGED", &spec.run_id)
         .env("DEVFORGE_ROLE", &spec.role);
+    // P8-ISSUE-04 修复：子进程工作目录 = plan root（decisions/002）
+    cmd.current_dir(&spec.working_dir);
     cmd
 }
 
@@ -78,6 +90,19 @@ mod tests {
         assert_eq!(
             args,
             vec!["--mode", "rpc", "--session-dir", "/sessions/run-abc"]
+        );
+        // 默认中性工作目录（不污染服务器 cwd 语义）
+        assert_eq!(cmd.get_current_dir(), Some(std::path::Path::new(".")));
+    }
+
+    #[test]
+    fn command_sets_working_dir_for_plan_root() {
+        // P8-ISSUE-04 修复：子进程 cwd = plans/<项目>/<任务>/（decisions/002）
+        let spec = spec().with_working_dir(PathBuf::from("/plans/demo-app/task-1"));
+        let cmd = build_spawn_command(&spec);
+        assert_eq!(
+            cmd.get_current_dir(),
+            Some(std::path::Path::new("/plans/demo-app/task-1"))
         );
     }
 

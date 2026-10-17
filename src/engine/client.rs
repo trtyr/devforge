@@ -22,6 +22,16 @@ pub struct WaitOutcome {
     pub events: Vec<EventRecord>,
 }
 
+/// extension_ui_request 是否为 dialog 类（阻塞等应答）。
+/// dialog：select/confirm/input/editor；fire-and-forget：notify/setStatus/setWidget/setTitle/set_editor_text。
+/// （rpc-extension-ui.md 契约；P8-ISSUE-07 修复的分流依据）
+pub(crate) fn is_dialog_method(extra: &serde_json::Map<String, serde_json::Value>) -> bool {
+    matches!(
+        extra.get("method").and_then(|v| v.as_str()),
+        Some("select") | Some("confirm") | Some("input") | Some("editor")
+    )
+}
+
 /// 长驻 RPC 子进程客户端。
 pub struct RpcClient {
     child: Child,
@@ -43,7 +53,7 @@ impl RpcClient {
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null()) // 诊断走 stderr，不解析为协议（rpc.md）
+            .stderr(Stdio::piped()) // P8-ISSUE-08 修复：stderr 落日志（此前 Stdio::null 黑盒）
             .spawn()
             .ctx(format!(
                 "spawn {} (role={}, run={})",
@@ -53,6 +63,39 @@ impl RpcClient {
             ))?;
         let stdin = child.stdin.take().expect("stdin 已 piped");
         let stdout = child.stdout.take().expect("stdout 已 piped");
+        let stderr = child.stderr.take().expect("stderr 已 piped");
+        // stderr 伴读线程：结构化日志 + 会话目录留档（pi 侧故障从此可观测可诊断）
+        {
+            let role = spec.role.clone();
+            let run_id = spec.run_id.clone();
+            let stderr_log = spec.session_dir.join("pi-stderr.log");
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                let reader = BufReader::new(stderr);
+                for line in reader.lines() {
+                    match line {
+                        Ok(l) if !l.trim().is_empty() => {
+                            tracing::warn!(
+                                component = "pi-stderr",
+                                role = %role,
+                                run_id = %run_id,
+                                "{l}"
+                            );
+                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&stderr_log)
+                            {
+                                use std::io::Write as _;
+                                let _ = writeln!(f, "{l}");
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
         Ok(Self {
             child,
             stdin: Some(stdin),
@@ -122,8 +165,10 @@ impl RpcClient {
         }
     }
 
-    /// 等待 agent_settled，期间遇 extension_ui_request 事件时回调取答案并回传
-    /// （ask-user-question 的 UI 子协议；回答记录格式为联调校准点，见 P001 roadmap）。
+    /// 等待 agent_settled，期间遇 extension_ui_request 事件时：
+    /// dialog 类（select/confirm/input/editor）回调取答案并回传；
+    /// fire-and-forget 类（notify/setStatus/setWidget/setTitle/set_editor_text）只记录不应答
+    /// （P8-ISSUE-07 修复：rpc-extension-ui.md 契约——后者不期待 response，误应答属协议噪音）。
     pub fn wait_settled_with_ui(
         &mut self,
         mut on_ui_request: impl FnMut(
@@ -147,6 +192,11 @@ impl RpcClient {
                         out.text.push_str(delta);
                     }
                     if e.r#type == "extension_ui_request" {
+                        // P8-ISSUE-07 修复：按 method 分流——dialog 才走应答链路
+                        if !is_dialog_method(&e.extra) {
+                            out.events.push(e);
+                            continue;
+                        }
                         // 问用户（经 UI 链路），回传应答（同一 request id）
                         let answer = on_ui_request(&e.extra)?;
                         let req_id = e
@@ -240,6 +290,7 @@ mod tests {
             role: "plan-agent".into(),
             run_id: RunId::generate().0,
             session_dir: session.to_path_buf(),
+            working_dir: PathBuf::from("."),
             extra_args: vec![script.to_string_lossy().into_owned()],
         }
     }
@@ -275,6 +326,91 @@ mod tests {
         assert!(outcome.responses[0].success);
         assert_eq!(outcome.text, "");
         client.kill().unwrap();
+    }
+
+    #[test]
+    fn dialog_methods_classified() {
+        // P8-ISSUE-07 修复：分类表——dialog 四方法 vs fire-and-forget 五方法
+        let mk = |method: &str| {
+            let mut m = serde_json::Map::new();
+            m.insert("method".into(), serde_json::Value::String(method.into()));
+            m
+        };
+        for ok in ["select", "confirm", "input", "editor"] {
+            assert!(is_dialog_method(&mk(ok)), "{ok} 应属 dialog");
+        }
+        for no in [
+            "notify",
+            "setStatus",
+            "setWidget",
+            "setTitle",
+            "set_editor_text",
+        ] {
+            assert!(!is_dialog_method(&mk(no)), "{no} 应属 fire-and-forget");
+        }
+        assert!(!is_dialog_method(&serde_json::Map::new()), "缺 method 不算 dialog");
+    }
+
+    #[test]
+    fn fire_and_forget_not_answered_but_dialog_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let set_status = r#"{"type":"extension_ui_request","id":"u1","method":"setStatus","statusKey":"bh","statusText":"xx"}"#;
+        let select = r#"{"type":"extension_ui_request","id":"u2","method":"select","title":"完成?","options":["完成"]}"#;
+        let received = dir.path().join("received.txt");
+        let tail = format!(
+            r#"while IFS= read -r l; do printf '%s\n' "$l" >> '{}'; done"#,
+            received.display()
+        );
+        let script = write_replay(dir.path(), &[RSP_OK, set_status, select, EVT_SETTLED], &tail);
+        let _ = fs::copy(&script, "/tmp/diag-replay-run16.sh"); // 诊断：保留脚本供人工检查
+        let mut client = spawn_sh(&script, dir.path());
+        client.prompt("go").unwrap();
+
+        let mut asked: Vec<String> = Vec::new();
+        let outcome = client
+            .wait_settled_with_ui(|extra| {
+                asked.push(
+                    extra
+                        .get("method")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                );
+                Ok("完成".to_string())
+            })
+            .unwrap();
+
+        // 先等 shell 把管道缓冲消费进 received.txt（kill 会丢缓冲，竞态实证）
+        for _ in 0..30 {
+            if received.exists()
+                && fs::read_to_string(&received)
+                    .unwrap_or_default()
+                    .contains("extension_ui_response")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        client.kill().unwrap();
+
+        // 回调只对 dialog 触发一次
+        assert_eq!(asked, vec!["select".to_string()]);
+        // 两类请求都进事件流（可观测不丢）
+        let ui_events: Vec<_> = outcome
+            .events
+            .iter()
+            .filter(|e| e.r#type == "extension_ui_request")
+            .collect();
+        assert_eq!(ui_events.len(), 2);
+        // pi 只收到 select 的应答线（setStatus 无 response；prompt 行也被记录但非应答）
+        let got = fs::read_to_string(&received).unwrap_or_default();
+        let answers: Vec<&str> = got
+            .lines()
+            .filter(|l| l.contains("extension_ui_response"))
+            .collect();
+        assert_eq!(answers.len(), 1, "只应有一条应答线: {got:?}");
+        assert!(answers[0].contains("\"id\":\"u2\""), "应答对应 select 的 id: {got:?}");
+        assert!(!got.contains("\"id\":\"u1\""), "setStatus 不得被应答: {got:?}");
     }
 
     #[test]
@@ -317,6 +453,61 @@ mod tests {
         client.prompt("wake").unwrap();
         client.kill().unwrap();
         assert!(!crate::engine::ledger::process_alive(entry.pid));
+    }
+
+    #[test]
+    fn stderr_lines_land_in_session_log() {
+        // P8-ISSUE-08 修复：pi stderr 不再黑洞——结构化日志 + session_dir 留档
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_replay(
+            dir.path(),
+            &[RSP_OK, EVT_START, EVT_SETTLED],
+            "echo 'PI-STDERR-MARK-42' >&2\nread _x\n",
+        );
+        let _ = fs::copy(&script, "/tmp/diag-replay-stderr.sh");
+        let mut client = spawn_sh(&script, dir.path());
+        client.prompt("hi").unwrap();
+        let outcome = client.wait_settled().unwrap();
+
+        // 先等 echo 的 stderr 送达 pi-stderr.log（脚本 cat 后立即 echo；
+        // 别让 kill 抢在 echo 前面——SIGKILL 会丢掉尚未执行的脚本尾部）
+        let log = dir.path().join("pi-stderr.log");
+        for _ in 0..40 {
+            if fs::read_to_string(&log)
+                .unwrap_or_default()
+                .contains("PI-STDERR-MARK-42")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        client.kill().unwrap();
+        assert!(outcome.responses.len() >= 1);
+
+        for _ in 0..40 {
+            if fs::read_to_string(&log)
+                .unwrap_or_default()
+                .contains("PI-STDERR-MARK-42")
+            {
+                return; // 通过
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let listing: Vec<(String, u64)> = std::fs::read_dir(log.parent().unwrap())
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| {
+                        let len = e.metadata().map(|m| m.len()).unwrap_or(0);
+                        (e.file_name().to_string_lossy().into_owned(), len)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        panic!(
+            "stderr 应落盘。内容={:?} 目录清单={:?}",
+            fs::read_to_string(&log).unwrap_or_default(),
+            listing
+        );
     }
 
     #[test]

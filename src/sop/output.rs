@@ -4,7 +4,7 @@
 //! - Plan Agent 完成标记：文本含 `<plan-complete>`
 //! - Review verdict 块：`<verdict>PASS|FAIL</verdict>` + FAIL 时 `<issues>` 清单
 
-use crate::error::{DevforgeError, Result};
+use crate::error::Result;
 
 /// Plan Agent 完成标记（用户确认完成后输出）。
 pub const COMPLETION_TAG: &str = "<plan-complete>";
@@ -21,7 +21,8 @@ pub enum Verdict {
     Fail { issues: Vec<String> },
 }
 
-/// 解析 Review 文本中的 verdict 块。
+/// 解析 Review 文本中的 verdict 块（P8-ISSUE-10 修复：缺失/未知/未闭合不再硬错误，
+/// 而是保守按 FAIL 处理——协议违例本身作为 issue 进重查循环，新实例重审）。
 ///
 /// 合法形态：
 /// ```text
@@ -37,13 +38,13 @@ pub enum Verdict {
 /// </issues>
 /// ```
 pub fn parse_verdict(text: &str) -> Result<Verdict> {
-    let open = text
-        .find("<verdict>")
-        .ok_or_else(|| DevforgeError::RpcProtocol("Review 输出缺 <verdict> 块".into()))?;
+    let Some(open) = text.find("<verdict>") else {
+        return Ok(conservative_fail("Review 输出缺 <verdict> 协议块"));
+    };
     let after_open = &text[open + "<verdict>".len()..];
-    let close = after_open
-        .find("</verdict>")
-        .ok_or_else(|| DevforgeError::RpcProtocol("verdict 块未闭合".into()))?;
+    let Some(close) = after_open.find("</verdict>") else {
+        return Ok(conservative_fail("verdict 块未闭合"));
+    };
     let verdict = after_open[..close].trim();
 
     match verdict {
@@ -52,9 +53,18 @@ pub fn parse_verdict(text: &str) -> Result<Verdict> {
             let issues = extract_issues(&after_open[close + "</verdict>".len()..]);
             Ok(Verdict::Fail { issues })
         }
-        other => Err(DevforgeError::RpcProtocol(format!(
-            "未知 verdict `{other}`（只认 PASS/FAIL）"
+        other => Ok(conservative_fail(&format!(
+            "未知 verdict `{other}`（只认 PASS/FAIL），保守按 FAIL 重查"
         ))),
+    }
+}
+
+/// 保守 FAIL：协议违例作为 issue 传递，驱动换血重查而非崩掉整条链路。
+fn conservative_fail(reason: &str) -> Verdict {
+    Verdict::Fail {
+        issues: vec![format!(
+            "{reason}。请原样重新提交 verdict（此为审查输出协议问题，非 plan tree 问题）"
+        )],
     }
 }
 
@@ -112,9 +122,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_unknown_verdict_is_error() {
-        assert!(parse_verdict("没有任何块").is_err());
-        assert!(parse_verdict("<verdict>MAYBE</verdict>").is_err());
-        assert!(parse_verdict("<verdict>PASS</verdict").is_err()); // 未闭合
+    fn missing_or_unknown_verdict_is_conservative_fail() {
+        // P8-ISSUE-10 修复：协议违例不再硬错误，保守 FAIL 进重查循环
+        for text in ["没有任何块", "<verdict>MAYBE</verdict>", "<verdict>PASS</verdict"] {
+            let v = parse_verdict(text).expect("不再 Err");
+            let Verdict::Fail { issues } = v else {
+                panic!("应保守 FAIL: {text}");
+            };
+            assert!(!issues.is_empty(), "违例原因应作为 issue: {text}");
+        }
     }
 }

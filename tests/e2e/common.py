@@ -191,7 +191,8 @@ def real_api_key(provider: str = "newapi") -> str | None:
 
 
 def compensate_profile(server: Server, provider: str = "newapi") -> list[str]:
-    """测试侧补偿（非代码修复，报告标注）——配置机制内全量复刻真实环境（用户拍板口径）：
+    """测试侧交叉校验（原为补偿；修复阶段后渲染器已原生覆盖 1–4 项，
+    此处保留执行以验证渲染产物与真实环境一致性，异常即暴露渲染回归）：
     1. models.json 从真实 pi 配置复制进 profile——显式 contextWindow 1M + maxTokens 65536
        （渲染器不分发 provider 定义，P2-ISSUE-03；缺失时 pi 用默认输出预算，
        reasoning 模型会烧光预算产出空正文——首轮卡死根因之一）

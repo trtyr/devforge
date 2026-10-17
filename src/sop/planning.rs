@@ -313,11 +313,17 @@ mod tests {
     }
 
     #[test]
-    fn missing_verdict_is_protocol_error() {
-        let plan = MockPlan::new(&[PlanTurn::AskDone]);
-        let mut factory = MockReviewFactory::new(&["我忘了输出块"]);
+    fn missing_verdict_is_conservative_fail_then_remediation() {
+        // P8-ISSUE-10 修复：verdict 缺失不再硬崩，保守 FAIL（协议违例作 issue 回注）
+        // → 打回给规划 Agent → 新审查实例重审通过
+        let plan = MockPlan::new(&[
+            PlanTurn::AskDone,
+            PlanTurn::ExpectContains("<verdict> 协议块", "已核查，plan tree 本体无需变更"),
+        ]);
+        let mut factory = MockReviewFactory::new(&["我忘了输出块", PASS]);
         let mut user = MockUser::new(&["完成"]);
-        let err = PlanningLoop::new(plan, &mut factory).run(&mut user).unwrap_err();
-        assert!(err.to_string().contains("verdict"));
+        let report = PlanningLoop::new(plan, &mut factory).run(&mut user).unwrap();
+        assert_eq!(report.rounds, 2);
+        assert_eq!(report.issues_total, 1);
     }
 }

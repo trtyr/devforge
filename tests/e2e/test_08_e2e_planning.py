@@ -73,37 +73,31 @@ def main() -> int:
     try:
         server.start()
 
-        # ---- 前置：manifest 注入真实 key，渲染 profile（长超时，同步装包已知） ----
+        # ---- 前置：manifest 注入真实 key，渲染 profile ----
         # 模型池与固定分配已在内置清单（用户拍板 2026-10-17）：审查→grok-4.7，规划→deepseek-flash
+        # 提示词协议段（verdict 强制/小步快跑）已并入内置模板（修复阶段），无需测试侧塑形
         key = real_api_key("newapi")
         status, body = server.req("GET", "/config/manifest")
         manifest = body
         manifest["api_key"] = key
-        # 测试侧提示词塑形（manifest 数据层，非代码修复；应对长 turn 流截断——审计建议「拆分 turn」）：
-        # role_prompt 本为占位版（P001 T005 待细化），此处追加小步快跑指引缩短单 turn
-        for _a in manifest["agents"]:
-            if _a["name"] == "plan-agent":
-                _a["role_prompt"] = _a.get("role_prompt", "") + (
-                    "\n\n工作方式（重要）：\n"
-                    "- 小步快跑：每轮只做一件小事（一次搜索/一次读取/写一个文件的一小段）。\n"
-                    "- 避免单次超长输出；写 plan tree 时分多次小段写入，先建骨架再逐步填充。\n"
-                    "- 每完成一小步就简短总结一句再继续。\n"
-                )
-            if _a["name"] == "plan-review":
-                _a["role_prompt"] = _a.get("role_prompt", "") + (
-                    "\n\n输出协议（强制，逐字遵守）：你的最终回复末尾【必须】包含协议块，\n"
-                    "通过时：通读后无语义矛盾，则在回复最末尾单独一行输出 <verdict>PASS</verdict>；\n"
-                    "不通过时：在回复最末尾输出 <verdict>FAIL</verdict>，随后一行 <issues> 开头逐条列问题。\n"
-                    "没有协议块的审查视为无效，必须重写回复补上协议块。\n"
-                    "\n工作方式（重要）：快速审查——只读根 README、各阶段 README 与每个任务文件各一遍即可，\n"
-                    "不要展开与审查无关的探索，尽快在回复末尾给出协议块。\n"
-                )
         t0 = time.time()
         try:
+            # P7-ISSUE-03 已修：PUT 异步化（202 即回，后台渲染+安装）
             status, _ = server.req("PUT", "/config/manifest", manifest, timeout=1800.0)
-            r.check(status == 200, f"manifest 就绪（耗时 {time.time()-t0:.0f}s）")
+            r.check(status == 202, f"manifest 替换受理（耗时 {time.time()-t0:.1f}s）")
+            # 等 profile 就绪：两 profile 的 npm/package.json（安装器收尾产物）+ 3s 宽限
+            prof = server.home / ".devforge" / "profiles"
+            for _ in range(900):
+                marks = [
+                    (prof / a / "npm" / "package.json").exists()
+                    for a in ("plan-agent", "plan-review")
+                ]
+                if all(marks):
+                    break
+                time.sleep(1.0)
+            time.sleep(3.0)
         except TimeoutError:
-            r.issue("P8-ISSUE-00", "high", "PUT manifest 装包超 600s，全链路无法继续")
+            r.issue("P8-ISSUE-00", "high", "PUT manifest 装包超 1800s，全链路无法继续")
             return r.finish()
 
         # ---- 补偿：配置全量复刻（models.json/auth.json/settings 运行时键/插件配置原封） ----

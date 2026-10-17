@@ -7,11 +7,54 @@ use crate::domain::run::Run;
 use crate::domain::store::{FinishOutcome, Store};
 use crate::domain::task::Task;
 use crate::error::Result;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// 单 run 的干预控制面（P8-ISSUE-01 修复：取消端点 + 可选超时的载体）。
+/// 零硬限制哲学：deadline 默认 None（不限时）；超时/取消均为显式外部干预。
+pub struct RunControl {
+    /// 取消标志（cancel 端点置位）。
+    pub cancel: AtomicBool,
+    /// 绝对截止时间（epoch ms）；None = 不限时。
+    pub deadline_ms: Option<u64>,
+}
+
+impl Default for RunControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RunControl {
+    pub fn new() -> Self {
+        Self {
+            cancel: AtomicBool::new(false),
+            deadline_ms: None,
+        }
+    }
+
+    pub fn with_deadline(mut self, deadline_ms: u64) -> Self {
+        self.deadline_ms = Some(deadline_ms);
+        self
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    pub fn timed_out(&self, now_ms: u64) -> bool {
+        matches!(self.deadline_ms, Some(dl) if now_ms >= dl)
+    }
+}
 
 /// 单 run 执行引擎抽象。P001 的 RPC 引擎（spawn pi 子进程跑 SOP）实现本 trait。
 pub trait RunEngine {
     /// 执行一次 run。Err = 技术故障（如子进程无法启动）；Ok(Failed) = 剧本内失败。
-    fn execute(&mut self, task: &Task, run: &Run) -> Result<RunOutcome>;
+    /// control：取消/超时干预面（引擎应周期性检查；阻塞读类引擎配合 watchdog 杀进程）。
+    fn execute(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,7 +74,13 @@ impl<E: RunEngine> Runner<E> {
 
     /// 跑一个任务的一次 run：begin → execute → finish。
     /// 全程遵守 Store 的生命周期守卫（串行守卫/状态机/重跑留档）。
-    pub fn run_task(&mut self, store: &mut Store, project: &str, task_id: &str) -> Result<RunOutcome> {
+    pub fn run_task(
+        &mut self,
+        store: &mut Store,
+        project: &str,
+        task_id: &str,
+        control: &RunControl,
+    ) -> Result<RunOutcome> {
         let run = store.begin_run(project, task_id)?;
         tracing::info!(
             component = "runner",
@@ -47,7 +96,7 @@ impl<E: RunEngine> Runner<E> {
             .cloned()
             .expect("begin_run 已校验存在");
 
-        let result = self.engine.execute(&task, &run);
+        let result = self.engine.execute(&task, &run, control);
 
         match result {
             Ok(outcome) => {
@@ -90,7 +139,7 @@ mod tests {
     }
 
     impl RunEngine for MockEngine {
-        fn execute(&mut self, _task: &Task, run: &Run) -> Result<RunOutcome> {
+        fn execute(&mut self, _task: &Task, run: &Run, _control: &RunControl) -> Result<RunOutcome> {
             self.seen_runs.push(run.id.0.clone());
             match &self.result {
                 Ok(o) => Ok(o.clone()),
@@ -117,7 +166,9 @@ mod tests {
     #[test]
     fn happy_path_updates_lifecycle() {
         let (mut store, mut runner) = setup();
-        let out = runner.run_task(&mut store, "devforge", "mvp").unwrap();
+        let out = runner
+            .run_task(&mut store, "devforge", "mvp", &RunControl::new())
+            .unwrap();
         assert_eq!(out, RunOutcome::Completed);
         let task = store.get_task("devforge", "mvp").unwrap();
         assert_eq!(task.status, TaskStatus::Completed);
@@ -130,7 +181,9 @@ mod tests {
         runner.engine.result = Ok(RunOutcome::Failed {
             reason: "review 三连打回".into(),
         });
-        let out = runner.run_task(&mut store, "devforge", "mvp").unwrap();
+        let out = runner
+            .run_task(&mut store, "devforge", "mvp", &RunControl::new())
+            .unwrap();
         assert_eq!(
             out,
             RunOutcome::Failed {
@@ -144,7 +197,9 @@ mod tests {
     fn technical_error_fails_run_and_propagates() {
         let (mut store, mut runner) = setup();
         runner.engine.result = Err(());
-        let err = runner.run_task(&mut store, "devforge", "mvp").unwrap_err();
+        let err = runner
+            .run_task(&mut store, "devforge", "mvp", &RunControl::new())
+            .unwrap_err();
         assert!(err.is_agent_failure());
         // 技术故障也要落终态，不留悬空 Running
         assert!(!store.has_running_run());
@@ -157,9 +212,13 @@ mod tests {
         runner.engine.result = Ok(RunOutcome::Failed {
             reason: "第一次失败".into(),
         });
-        runner.run_task(&mut store, "devforge", "mvp").unwrap();
+        runner
+            .run_task(&mut store, "devforge", "mvp", &RunControl::new())
+            .unwrap();
         runner.engine.result = Ok(RunOutcome::Completed);
-        runner.run_task(&mut store, "devforge", "mvp").unwrap();
+        runner
+            .run_task(&mut store, "devforge", "mvp", &RunControl::new())
+            .unwrap();
 
         let task = store.get_task("devforge", "mvp").unwrap();
         assert_eq!(task.runs.len(), 2);

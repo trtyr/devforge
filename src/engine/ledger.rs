@@ -112,6 +112,43 @@ pub fn kill_orphan(pid: u32) -> Result<()> {
     Ok(())
 }
 
+/// 按 run-id 精确清场（P8-ISSUE-01 修复：取消/超时的 kill 通道）。
+/// 扫 /proc 找 DEVFORGE_MANAGED == run_id 的进程（自家标记，非全盘扫杀——decisions/007
+/// 红线不破：只动带本 run 标记的进程），SIGKILL 之（取消要立决，SIGTERM 可能被忽略）。
+/// 返回杀掉的进程数。
+pub fn scan_and_kill_run(run_id: &str) -> usize {
+    let mut killed = 0usize;
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.bytes().all(|b| b.is_ascii_digit()) {
+            continue; // 只看数字目录（进程）
+        }
+        let pid: u32 = match name.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if read_managed_marker(pid).as_deref() == Some(run_id) {
+            // SAFETY: kill(2)，SIGKILL 立决
+            let rc = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+            if rc == 0 {
+                killed += 1;
+                tracing::warn!(
+                    component = "ledger",
+                    run_id = %run_id,
+                    pid,
+                    "已取消/超时：SIGKILL 自家 run 进程"
+                );
+            }
+        }
+    }
+    killed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
