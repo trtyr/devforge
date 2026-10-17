@@ -5,17 +5,17 @@
   "status": "active",
   "autoContinue": true,
   "usage": {
-    "tokensUsed": 2339740,
-    "activeSeconds": 956
+    "tokensUsed": 2509962,
+    "activeSeconds": 1635
   },
   "sisyphus": false,
-  "revision": 144,
+  "revision": 218,
   "createdAt": "2026-10-17T17:55:41.299Z",
-  "updatedAt": "2026-10-17T18:12:32.227Z",
+  "updatedAt": "2026-10-17T18:24:23.240Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
-    "generation": "d6720ddd-3fb7-44b3-a441-9373f01694a4",
+    "generation": "e1094f29-c698-4c6d-a36c-887df5f77851",
     "used": 8,
     "phase": "idle",
     "repairUsed": false
@@ -33,20 +33,26 @@
       {
         "id": "task-2",
         "title": "T003 配置供给：渲染器 mcp.json 模板（codegraph stdio+context7 npx，CODEGRAPH_TELEMETRY=0）、插件清单 +rpiv-todo/+pi-lens、四语言（Rust/Go/Python/TS-JS）skills 外部搜索→下载→原样 vendor 入库与分发；pi-lens/todo/web tools 的 RPC 单点冒烟（允许，非端到端）",
-        "status": "pending",
-        "verificationContract": "渲染单元测试覆盖新模板面（mcp.json 两 server、env 注入、插件清单含 pi-lens/rpiv-todo）；四语言 skills 目录存在且含来源登记（URL/版本）于 evidence；单点 RPC 冒烟（允许，非 e2e）结果记录"
+        "status": "complete",
+        "verificationContract": "渲染单元测试覆盖新模板面（mcp.json 两 server、env 注入、插件清单含 pi-lens/rpiv-todo）；四语言 skills 目录存在且含来源登记（URL/版本）于 evidence；单点 RPC 冒烟（允许，非 e2e）结果记录",
+        "completedAt": "2026-10-17T18:12:45.303Z",
+        "evidence": "mcp.json 渲染（codegraph+context7+遥测关闭,规划Agent不生成）；插件清单 coding-agent=四件套+ask+todo+lens / coding-review=+lens；四语言 skills vendor 原样嵌入（来源登记 evidence/skills-sources.md）；RPC 冒烟入档（evidence/rpc-smoke.md）"
       },
       {
         "id": "task-3",
         "title": "T004 Coding Agent profile：提示词模板（三层流程/todo 纪律/伴写纪律/单测禁 e2e/git 阶段PASS即commit/勘察义务/偏差协议/刚需四条款/codegraph-first 纪律含场景矩阵与 projectPath/工作区与黑板双路径告知）",
-        "status": "pending",
-        "verificationContract": "提示词为渲染器内建模板（随 profile 渲染分发）；模板内容对照 topics/coding-agent.md 剧本与 decisions D001-D014 逐条覆盖自查；渲染单测含新模板断言"
+        "status": "complete",
+        "verificationContract": "提示词为渲染器内建模板（随 profile 渲染分发）；模板内容对照 topics/coding-agent.md 剧本与 decisions D001-D014 逐条覆盖自查；渲染单测含新模板断言",
+        "completedAt": "2026-10-17T18:13:06.881Z",
+        "evidence": "CODING_AGENT_PROMPT 正稿落 manifest.rs（三层流程/勘察义务/stages+todo/伴写可测/单测禁e2e/git PASS即commit不push/偏差协议三裁决+blockers留痕/刚需四条款/codegraph-first含projectPath+affected+banner/双路径kickoff告知/打回重审+notes消化/小步快跑）；渲染单测 cod"
       },
       {
         "id": "task-4",
         "title": "T005 Coding Review Agent profile：审查提示词（刚需/后端/前端/前后端连接/文档可测性/todo 实物审计/树完成判定·锚点对照实物 + codegraph-first 审查纪律）+ Review Report 结构化输出协议",
-        "status": "pending",
-        "verificationContract": "提示词审查面与 topics/coding-review-agent.md 七面一一对应；Report 协议块与 T002 schema 一致；渲染单测断言"
+        "status": "complete",
+        "verificationContract": "提示词审查面与 topics/coding-review-agent.md 七面一一对应；Report 协议块与 T002 schema 一致；渲染单测断言",
+        "completedAt": "2026-10-17T18:13:06.892Z",
+        "evidence": "CODING_REVIEW_PROMPT 正稿：七审查面（刚需四条/后端/前端统一样式/前后端连接/文档完全可测/todo实物逐项/树完成锚点对照实物）+codegraph-first 审查纪律+实地跑单测+快速审查；Report 协议块与 T002 schema 一致（stage-verdict/next/issues/notes，语义自洽约束）；轮次号 kickoff 告知；渲染单测断言过"
       },
       {
         "id": "task-5",
@@ -65,7 +71,7 @@
     "proposedAt": "2026-10-17T17:55:36.108Z"
   },
   "activePath": ".pi/goals/active_goal_2026101801554129_mvcp6b1v-9gnaik.md",
-  "currentTaskId": "task-2"
+  "currentTaskId": "task-5"
 }
 
 # Goal Prompt
@@ -77,15 +83,15 @@
 - Status: running
 - Auto-continue: on
 - Sisyphus mode: no
-- Time spent: 15m56s
-- Tokens used: 2.3M (2,339,740) tokens
+- Time spent: 27m15s
+- Tokens used: 2.5M (2,509,962) tokens
 ## Tasks
 
 <!-- blockCompletion: false -->
 - [x] task-1: T002 黑板约定与结构化协议扩展：coding/ 子树布局常量、阶段完成标记块（含无标记重推语义）、Review Report schema（stage-verdict/issues/next: fix|advance|finish，PASS 附非阻塞建议）；单测钉解析含缺块保守路径 — evidence: src/sop/coding_protocol.rs：黑板布局常量×6（锚定 topics/shared-blackboard.md）、stage-complete 解析（取最后/无标记 None）、ReviewReport schema（stage-verdict/next/issues/notes）+保守缺省（缺块/未知值/语义矛盾一律 FAIL+Fix）；13 条协议单测，cargo tes
-- [ ] task-2: T003 配置供给：渲染器 mcp.json 模板（codegraph stdio+context7 npx，CODEGRAPH_TELEMETRY=0）、插件清单 +rpiv-todo/+pi-lens、四语言（Rust/Go/Python/TS-JS）skills 外部搜索→下载→原样 vendor 入库与分发；pi-lens/todo/web tools 的 RPC 单点冒烟（允许，非端到端） — contract: 渲染单元测试覆盖新模板面（mcp.json 两 server、env 注入、插件清单含 pi-lens/rpiv-todo）；四语言 skills 目录存在且含来源登记（URL/版本）于 evidence；单点 RPC 冒烟（允许，非 e2e）结果记录
-- [ ] task-3: T004 Coding Agent profile：提示词模板（三层流程/todo 纪律/伴写纪律/单测禁 e2e/git 阶段PASS即commit/勘察义务/偏差协议/刚需四条款/codegraph-first 纪律含场景矩阵与 projectPath/工作区与黑板双路径告知） — contract: 提示词为渲染器内建模板（随 profile 渲染分发）；模板内容对照 topics/coding-agent.md 剧本与 decisions D001-D014 逐条覆盖自查；渲染单测含新模板断言
-- [ ] task-4: T005 Coding Review Agent profile：审查提示词（刚需/后端/前端/前后端连接/文档可测性/todo 实物审计/树完成判定·锚点对照实物 + codegraph-first 审查纪律）+ Review Report 结构化输出协议 — contract: 提示词审查面与 topics/coding-review-agent.md 七面一一对应；Report 协议块与 T002 schema 一致；渲染单测断言
+- [x] task-2: T003 配置供给：渲染器 mcp.json 模板（codegraph stdio+context7 npx，CODEGRAPH_TELEMETRY=0）、插件清单 +rpiv-todo/+pi-lens、四语言（Rust/Go/Python/TS-JS）skills 外部搜索→下载→原样 vendor 入库与分发；pi-lens/todo/web tools 的 RPC 单点冒烟（允许，非端到端） — evidence: mcp.json 渲染（codegraph+context7+遥测关闭,规划Agent不生成）；插件清单 coding-agent=四件套+ask+todo+lens / coding-review=+lens；四语言 skills vendor 原样嵌入（来源登记 evidence/skills-sources.md）；RPC 冒烟入档（evidence/rpc-smoke.md）
+- [x] task-3: T004 Coding Agent profile：提示词模板（三层流程/todo 纪律/伴写纪律/单测禁 e2e/git 阶段PASS即commit/勘察义务/偏差协议/刚需四条款/codegraph-first 纪律含场景矩阵与 projectPath/工作区与黑板双路径告知） — evidence: CODING_AGENT_PROMPT 正稿落 manifest.rs（三层流程/勘察义务/stages+todo/伴写可测/单测禁e2e/git PASS即commit不push/偏差协议三裁决+blockers留痕/刚需四条款/codegraph-first含projectPath+affected+banner/双路径kickoff告知/打回重审+notes消化/小步快跑）；渲染单测 cod
+- [x] task-4: T005 Coding Review Agent profile：审查提示词（刚需/后端/前端/前后端连接/文档可测性/todo 实物审计/树完成判定·锚点对照实物 + codegraph-first 审查纪律）+ Review Report 结构化输出协议 — evidence: CODING_REVIEW_PROMPT 正稿：七审查面（刚需四条/后端/前端统一样式/前后端连接/文档完全可测/todo实物逐项/树完成锚点对照实物）+codegraph-first 审查纪律+实地跑单测+快速审查；Report 协议块与 T002 schema 一致（stage-verdict/next/issues/notes，语义自洽约束）；轮次号 kickoff 告知；渲染单测断言过
 - [ ] task-5: T006 编排层：CodingSopLoop 状态机（干活→标记→review→fix 重审|advance→树完成；无标记重推零上限；PASS 附建议先消化）、SOP 注册 +coding、同任务跨 SOP start（sop 覆盖）、工作目录模型（黑板 cwd+代码=local_path 注入）、CodeGraph 索引引擎预检（无 .codegraph 则 init） — contract: 状态机单元测试：阶段推进/打回重审/树完成收工/无标记重推/取消与超时路径（沿用 RunControl）；SOP 注册与跨 SOP 触发有单测；预检 init 有单测（临时目录无索引→调用 init 命令构造）
 - [ ] task-6: T007 全量回归与回写：cargo test 0 失败 + clippy --all-targets 0 警告（bg_run 原始日志验真）；P005 roadmap T002-T007 勾选带 commit 证据；执行期发现回写 open-questions；不做 T008 e2e（留待用户拍板） — contract: bg_run 原始日志显示 0 failed 与 0 warning（RTK 前台汇总不可信）；git log 含各任务提交；roadmap T002-T007 勾选带 commit hash；open-questions 记录执行期发现
 

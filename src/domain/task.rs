@@ -1,5 +1,6 @@
 //! 任务层（P004）：项目下的工作单元，绑定一个 SOP 跑流水线。
 
+use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,8 +23,12 @@ pub struct Task {
     pub id: String,
     /// 所属项目名。
     pub project: String,
-    /// 绑定的内置 SOP 标识（decisions/002：SOP 内置写死）。
+    /// 绑定的内置 SOP 标识（decisions/002：SOP 内置写死；同任务可跨 SOP 先后触发，P005）。
     pub sop: crate::domain::sop::SopRef,
+    /// 代码工作区 = 项目登记的 local_path（decisions/001：代码归项目层，黑板只放过程资产）。
+    /// 创建任务时从项目快照；老数据缺省为空（编码 SOP 会拒跑并提示）。
+    #[serde(default)]
+    pub workspace: PathBuf,
     pub status: TaskStatus,
     pub created_at_ms: u64,
     /// 当前（最新）run。
@@ -43,6 +48,7 @@ impl Task {
             id: id.into(),
             project: project.into(),
             sop: sop.into(),
+            workspace: PathBuf::new(),
             status: TaskStatus::Pending,
             created_at_ms,
             current_run: None,

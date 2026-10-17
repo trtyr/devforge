@@ -92,7 +92,7 @@ impl RpcReviewFactory {
         }
     }
 
-    /// 便捷构造：同一 profile，每轮递增序号的 session 子目录。
+    /// 便捷构造：同一 profile，每轮递增序号的 session 子目录（planning 沿用：cwd=服务器 cwd）。
     pub fn per_round(profile_dir: std::path::PathBuf, session_root: std::path::PathBuf) -> Self {
         let counter = std::cell::Cell::new(0u32);
         Self::new(move || {
@@ -104,6 +104,28 @@ impl RpcReviewFactory {
                 RunId::generate().0,
                 session_root.join(format!("review-{n}")),
             )
+        })
+    }
+
+    /// P005：显式指定角色与子进程工作目录（编码审查的 cwd = 黑板，报告与树同址）。
+    pub fn per_round_in(
+        profile_dir: std::path::PathBuf,
+        role: impl Into<String> + 'static,
+        session_root: std::path::PathBuf,
+        working_dir: std::path::PathBuf,
+    ) -> Self {
+        let counter = std::cell::Cell::new(0u32);
+        let role = role.into();
+        Self::new(move || {
+            let n = counter.get();
+            counter.set(n + 1);
+            SpawnSpec::new(
+                profile_dir.clone(),
+                role.clone(),
+                RunId::generate().0,
+                session_root.join(format!("review-{n}")),
+            )
+            .with_working_dir(working_dir.clone())
         })
     }
 }

@@ -190,10 +190,26 @@ pub async fn list_tasks(
     Ok(Json(json!({"tasks": store.list_tasks(&project)})))
 }
 
+#[derive(Deserialize, Default)]
+pub struct StartReq {
+    /// 可选 SOP 覆盖（P005 跨 SOP 触发：同任务先规划后编码）。
+    pub sop: Option<String>,
+}
+
 pub async fn start_task(
     State(st): State<SharedState>,
     Path((project, task)): Path<(String, String)>,
+    body: Option<Json<StartReq>>,
 ) -> ApiResult<StatusCode> {
+    // 可选 sop 覆盖（无 body / 无字段 = 沿用任务注册的 sop）
+    if let Some(Json(req)) = body {
+        if let Some(sop) = req.sop {
+            let mut store = st.store.lock().expect("store 锁");
+            store
+                .set_task_sop(&st.registry, &project, &task, sop)
+                .map_err(ApiError::from)?;
+        }
+    }
     // 前置快速校验（真正的守卫在 begin_run，双保险）
     {
         let store = st.store.lock().expect("store 锁");

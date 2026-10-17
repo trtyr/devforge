@@ -14,6 +14,13 @@ pub const PLANNING_SOP: Sop = Sop {
     description: "Plan Agent 与用户沟通产出 plan tree，Review Agent 循环检查语义一致性直至通过",
 };
 
+/// 内置 SOP：编码流水线（P005 · 第二个 SOP：Coding Agent 分阶段开发 + Coding Review 循环）。
+pub const CODING_SOP: Sop = Sop {
+    id: "coding",
+    name: "编码流水线",
+    description: "Coding Agent 读 plan tree 自定阶段开发（代码+文档伴写+单测），Coding Review 逐轮审查 Report 驱动修复/推进/收工",
+};
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sop {
     /// 内置标识（任务绑定用，如 `"planning"`）。
@@ -32,7 +39,7 @@ impl SopRegistry {
     /// 系统出厂内置的全部 SOP。
     pub fn builtin() -> Self {
         Self {
-            sops: vec![PLANNING_SOP],
+            sops: vec![PLANNING_SOP, CODING_SOP],
         }
     }
 
@@ -63,16 +70,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn planning_sop_is_builtin() {
+    fn builtin_sops_are_planning_and_coding() {
         let reg = SopRegistry::builtin();
-        assert_eq!(reg.ids(), vec!["planning"]);
+        assert_eq!(reg.ids(), vec!["planning", "coding"]);
         assert!(reg.validate("planning").is_ok());
+        assert!(reg.validate("coding").is_ok());
     }
 
     #[test]
     fn unknown_sop_rejected() {
         let reg = SopRegistry::builtin();
-        let err = reg.validate("coding").unwrap_err();
+        let err = reg.validate("ghost").unwrap_err();
         assert!(err.to_string().contains("未知 SOP"));
     }
 }

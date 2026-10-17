@@ -128,6 +128,55 @@ async fn body_json(resp: axum::response::Response) -> Value {
 }
 
 #[tokio::test]
+async fn start_sop_override_switches_task_for_cross_sop_chain() {
+    // P005 跨 SOP 触发：同任务先规划后编码——start 带可选 sop 覆盖
+    let f = fixture();
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": "/tmp/ws-p"})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t1", "sop": "planning"})),
+    )
+    .await;
+
+    // 覆盖为 coding → 202，任务 sop 已切换
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks/t1/start",
+        Some(json!({"sop": "coding"})),
+    )
+    .await;
+    assert_eq!(resp.status(), 202);
+    let body = body_json(
+        send(&f.router, "GET", "/api/v1/projects/p/tasks", None).await,
+    )
+    .await;
+    assert_eq!(body["tasks"][0]["sop"], "coding");
+
+    // 未知 sop → 400（注册表校验，先于任何 run 状态检查——无竞态）
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks/t1/start",
+        Some(json!({"sop": "ghost"})),
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+
+    // 无 body 的 start → 沿用任务注册的 sop（不报错）
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t1/start", None).await;
+    assert_eq!(resp.status(), 202);
+}
+
+#[tokio::test]
 async fn projects_crud_with_local_dir_creation() {
     let f = fixture();
     let dir = tempfile::tempdir().unwrap();
@@ -170,15 +219,25 @@ async fn task_creation_validates() {
     let f = fixture();
     send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
 
-    // 未知 SOP → 400
+    // 未知 SOP → 400（P005：coding 已入注册表，改用 ghost）
     let resp = send(
         &f.router,
         "POST",
         "/api/v1/projects/p/tasks",
-        Some(json!({"id": "t1", "sop": "coding"})),
+        Some(json!({"id": "t1", "sop": "ghost"})),
     )
     .await;
     assert_eq!(resp.status(), 400);
+
+    // P005：coding 已注册 → 201
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t-coding", "sop": "coding"})),
+    )
+    .await;
+    assert_eq!(resp.status(), 201);
 
     // 正常创建 → 201
     let resp = send(

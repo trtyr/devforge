@@ -130,3 +130,7 @@
 {"type":"task_started","goalId":"mvcp6b1v-9gnaik","taskId":"task-1","at":"2026-10-17T17:56:08.002Z"}
 {"type":"task_complete","goalId":"mvcp6b1v-9gnaik","taskId":"task-1","evidence":"src/sop/coding_protocol.rs：黑板布局常量×6（锚定 topics/shared-blackboard.md）、stage-complete 解析（取最后/无标记 None）、ReviewReport schema（stage-verdict/next/issues/notes）+保守缺省（缺块/未知值/语义矛盾一律 FAIL+Fix）；13 条协议单测，cargo tes","at":"2026-10-17T17:58:45.346Z"}
 {"type":"task_started","goalId":"mvcp6b1v-9gnaik","taskId":"task-2","at":"2026-10-17T17:58:50.317Z"}
+{"type":"task_complete","goalId":"mvcp6b1v-9gnaik","taskId":"task-2","evidence":"mcp.json 渲染（codegraph+context7+遥测关闭,规划Agent不生成）；插件清单 coding-agent=四件套+ask+todo+lens / coding-review=+lens；四语言 skills vendor 原样嵌入（来源登记 evidence/skills-sources.md）；RPC 冒烟入档（evidence/rpc-smoke.md）","at":"2026-10-17T18:12:45.304Z"}
+{"type":"task_complete","goalId":"mvcp6b1v-9gnaik","taskId":"task-3","evidence":"CODING_AGENT_PROMPT 正稿落 manifest.rs（三层流程/勘察义务/stages+todo/伴写可测/单测禁e2e/git PASS即commit不push/偏差协议三裁决+blockers留痕/刚需四条款/codegraph-first含projectPath+affected+banner/双路径kickoff告知/打回重审+notes消化/小步快跑）；渲染单测 cod","at":"2026-10-17T18:13:06.881Z"}
+{"type":"task_complete","goalId":"mvcp6b1v-9gnaik","taskId":"task-4","evidence":"CODING_REVIEW_PROMPT 正稿：七审查面（刚需四条/后端/前端统一样式/前后端连接/文档完全可测/todo实物逐项/树完成锚点对照实物）+codegraph-first 审查纪律+实地跑单测+快速审查；Report 协议块与 T002 schema 一致（stage-verdict/next/issues/notes，语义自洽约束）；轮次号 kickoff 告知；渲染单测断言过","at":"2026-10-17T18:13:06.892Z"}
+{"type":"task_started","goalId":"mvcp6b1v-9gnaik","taskId":"task-5","at":"2026-10-17T18:13:13.039Z"}

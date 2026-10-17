@@ -3,11 +3,18 @@
 //! - [`output`]：规划输出协议（完成标记 + verdict 块，decisions/008 同一机制家族）
 //! - [`planning`]：Plan Agent + Review 循环状态机（零校验流转，decisions/008）
 //! - [`coding_protocol`]：编码输出协议（阶段完成标记 + Review Report 块，P005）
+//! - [`coding`]：CodingSopLoop 状态机（阶段推进/打回/树完成，P005）
 
+pub mod coding;
 pub mod coding_protocol;
 pub mod output;
 pub mod planning;
 pub mod rpc_bridge;
+
+pub use coding::{
+    CodingReport, CodingSopLoop, CODING_REMEDIATION_PREFIX, CONTINUE_NUDGE, coding_kickoff,
+    coding_review_instruction,
+};
 
 pub use coding_protocol::{
     parse_review_report, parse_stage_complete, NextAction, ReviewReport, StageVerdict, BLOCKERS_DIR,

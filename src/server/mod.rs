@@ -11,7 +11,7 @@ pub mod handlers;
 mod tests;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +30,7 @@ use crate::domain::runner::{RunControl, RunEngine, RunOutcome};
 use crate::engine::client::RpcClient;
 use crate::engine::process::SpawnSpec;
 use crate::error::{Context as _, Result};
+use crate::sop::coding::CodingSopLoop;
 use crate::sop::planning::{PlanningLoop, UserLink};
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
 
@@ -179,19 +180,62 @@ impl UserLink for RelayUserLink {
     }
 }
 
-// ---------- 生产引擎：规划 SOP 的 RPC 接线 ----------
+// ---------- 生产引擎：内置 SOP 的 RPC 接线 ----------
 
-/// 规划 SOP 的生产引擎：spawn 真 pi 子进程跑 PlanningLoop。
-pub struct PlanningRpcEngine {
-    pub profile_root: PathBuf,
-    pub session_root: PathBuf,
-    /// plans/<项目>/<任务>/ 根（P8-ISSUE-04：子进程工作目录 = plan root）。
-    pub plans_root: PathBuf,
-    pub ui: Arc<UiRelay>,
+/// CodeGraph 索引预检（decisions/013）：工作区无 `.codegraph/` 则 init。
+/// 引擎独占 init（官方教义：agent 不自行 init）；codegraph 不可用时降级为
+/// tracing 警告，不阻塞 run——agent 侧按提示词优雅降级原生工具。
+pub fn preflight_codegraph(workspace: &Path, codegraph_bin: &Path) {
+    if workspace.join(".codegraph").exists() {
+        return;
+    }
+    match std::process::Command::new(codegraph_bin)
+        .arg("init")
+        .arg(workspace)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(s) if s.success() => tracing::info!(
+            component = "coding-engine",
+            workspace = %workspace.display(),
+            "CodeGraph 索引预检完成"
+        ),
+        other => tracing::warn!(
+            component = "coding-engine",
+            workspace = %workspace.display(),
+            result = ?other,
+            "CodeGraph 预检未成功（agent 将降级原生工具）"
+        ),
+    }
 }
 
-impl RunEngine for PlanningRpcEngine {
+/// 内置 SOP 的生产引擎：按 task.sop 分发（planning / coding），spawn 真 pi 子进程。
+pub struct BuiltinRpcEngine {
+    pub profile_root: PathBuf,
+    pub session_root: PathBuf,
+    /// plans/<项目>/<任务>/ 根（P8-ISSUE-04：子进程工作目录 = plan root / 黑板）。
+    pub plans_root: PathBuf,
+    pub ui: Arc<UiRelay>,
+    /// codegraph 可执行（测试注入假脚本用；默认 "codegraph"）。
+    pub codegraph_bin: PathBuf,
+}
+
+impl RunEngine for BuiltinRpcEngine {
     fn execute(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
+        match task.sop.as_str() {
+            "planning" => self.run_planning(task, run, control),
+            "coding" => self.run_coding(task, run, control),
+            other => Err(crate::error::DevforgeError::System(format!(
+                "SOP `{other}` 未接线编排器（注册表与引擎必须同步）"
+            ))),
+        }
+    }
+}
+
+impl BuiltinRpcEngine {
+    fn run_planning(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
         // P8-ISSUE-04 修复：子进程工作目录 = plans/<项目>/<任务>/（decisions/002）
         let working_dir = self.plans_root.join(&task.project).join(&task.id);
         std::fs::create_dir_all(&working_dir).ctx("创建 plan root 目录")?;
@@ -235,20 +279,85 @@ impl RunEngine for PlanningRpcEngine {
                 );
                 Ok(RunOutcome::Completed)
             }
-            Err(e) => {
-                // 干预性死亡映射为明确的 Failed 原因（而非底层 RPC EOF 噪音）
-                if control.is_cancelled() {
-                    Ok(RunOutcome::Failed {
-                        reason: "已取消（cancel 端点）".into(),
-                    })
-                } else if control.timed_out(crate::domain::now_ms()) {
-                    Ok(RunOutcome::Failed {
-                        reason: "已超时（run 超时，被 watchdog 终止）".into(),
-                    })
-                } else {
-                    Err(e)
-                }
+            Err(e) => self.map_intervention(control, "planning-engine", e),
+        }
+    }
+
+    /// 编码 SOP（P005）：黑板骨架 + CodeGraph 预检 + CodingSopLoop。
+    fn run_coding(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
+        if task.workspace.as_os_str().is_empty() {
+            return Err(crate::error::DevforgeError::Store(format!(
+                "任务 `{}/{}` 无代码工作区（项目登记的 local_path 为空），编码 SOP 需要项目地址",
+                task.project, task.id
+            )));
+        }
+        let blackboard = self.plans_root.join(&task.project).join(&task.id);
+        std::fs::create_dir_all(&blackboard).ctx("创建黑板目录")?;
+        // 黑板骨架（topics/shared-blackboard.md）：stages/todo 由 Agent 自建
+        for d in [crate::sop::coding_protocol::CODING_DIR, crate::sop::coding_protocol::DOCS_DIR, crate::sop::coding_protocol::REPORTS_DIR, crate::sop::coding_protocol::BLOCKERS_DIR] {
+            std::fs::create_dir_all(blackboard.join(d)).ctx("建黑板骨架")?;
+        }
+
+        // decisions/013：引擎预检 init（agent 不自行 init）
+        preflight_codegraph(&task.workspace, &self.codegraph_bin);
+
+        let agent_client = RpcClient::spawn(
+            SpawnSpec::new(
+                self.profile_root.join("coding-agent"),
+                "coding-agent",
+                run.id.0.clone(),
+                self.session_root.join("coding"),
+            )
+            .with_working_dir(blackboard.clone()),
+        )?;
+        let agent = RpcPlanSession::new(agent_client);
+        let factory = RpcReviewFactory::per_round_in(
+            self.profile_root.join("coding-review"),
+            "coding-review",
+            self.session_root.join("coding-reviews"),
+            blackboard,
+        );
+        let mut user = RelayUserLink {
+            relay: self.ui.clone(),
+        };
+
+        let run_id = run.id.0.clone();
+        let workspace = task.workspace.clone();
+        let project = task.project.clone();
+        let task_id = task.id.clone();
+        let sop_result = run_with_watchdog(control, run_id, || {
+            let mut sop_loop = CodingSopLoop::new(agent, factory);
+            sop_loop.run(&mut user, &workspace, &project, &task_id)
+        });
+
+        match sop_result {
+            Ok(report) => {
+                tracing::info!(
+                    component = "coding-engine",
+                    stages = ?report.stages_completed,
+                    rounds = report.review_rounds,
+                    issues = report.issues_total,
+                    "编码 SOP 通过"
+                );
+                Ok(RunOutcome::Completed)
             }
+            Err(e) => self.map_intervention(control, "coding-engine", e),
+        }
+    }
+
+    /// 干预性死亡映射为明确的 Failed 原因（而非底层 RPC EOF 噪音）。
+    fn map_intervention(&self, control: &RunControl, component: &str, e: crate::error::DevforgeError) -> Result<RunOutcome> {
+        if control.is_cancelled() {
+            Ok(RunOutcome::Failed {
+                reason: "已取消（cancel 端点）".into(),
+            })
+        } else if control.timed_out(crate::domain::now_ms()) {
+            Ok(RunOutcome::Failed {
+                reason: "已超时（run 超时，被 watchdog 终止）".into(),
+            })
+        } else {
+            tracing::warn!(component, error = %e, "SOP 非干预性失败");
+            Err(e)
         }
     }
 }
@@ -506,5 +615,54 @@ mod watchdog_tests {
         let out = run_with_watchdog(&control, "watchdog-cancel".into(), || 7);
         assert_eq!(out, 7);
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+}
+
+#[cfg(test)]
+mod coding_engine_tests {
+    use super::*;
+
+    #[test]
+    fn preflight_inits_when_no_index() {
+        // decisions/013：工作区无索引 → 引擎调用 init（假脚本被调时建 .codegraph 标记）
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let bin = dir.path().join("fake-codegraph.sh");
+        std::fs::write(&bin, "#!/bin/sh\nmkdir -p \"$2/.codegraph\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        preflight_codegraph(&ws, &bin);
+        assert!(ws.join(".codegraph").exists(), "预检应调用 init 建索引");
+    }
+
+    #[test]
+    fn preflight_skips_when_index_exists() {
+        // 已有索引 → 不调 init（指向不存在的可执行，若被调即报错暴露）
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        std::fs::create_dir_all(ws.join(".codegraph")).unwrap();
+        preflight_codegraph(&ws, Path::new("/nonexistent/codegraph"));
+        assert!(ws.join(".codegraph").exists());
+    }
+
+    #[test]
+    fn dispatch_rejects_unwired_sop() {
+        // 注册表与引擎同步性：未知/未接线 SOP 在 execute 入口即拒，不 spawn 任何进程
+        let mut engine = BuiltinRpcEngine {
+            profile_root: PathBuf::from("/tmp"),
+            session_root: PathBuf::from("/tmp"),
+            plans_root: PathBuf::from("/tmp"),
+            ui: Arc::new(UiRelay::new(Arc::new(EventBus::new()))),
+            codegraph_bin: PathBuf::from("codegraph"),
+        };
+        let task = Task::new("t", "p", "ghost", 1);
+        let run = Run::new("p", "t");
+        let control = RunControl::new();
+        let err = engine.execute(&task, &run, &control).unwrap_err();
+        assert!(err.to_string().contains("未接线"));
     }
 }

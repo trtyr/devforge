@@ -85,7 +85,12 @@ impl Store {
                 "任务 `{id}` 在项目 `{project}` 下已存在"
             )));
         }
-        let task = Task::new(id, project, sop, now_ms());
+        let mut task = Task::new(id, project, sop, now_ms());
+        // P005 decisions/001：任务快照项目登记的代码工作区（编码 SOP 用；黑板由引擎建）
+        task.workspace = self
+            .get_project(project)
+            .map(|p| p.local_path.clone())
+            .unwrap_or_default();
         let id = task.id.clone();
         self.tasks.push(task);
         Ok(self
@@ -110,6 +115,28 @@ impl Store {
 
     pub fn list_tasks(&self, project: &str) -> Vec<&Task> {
         self.tasks.iter().filter(|t| t.project == project).collect()
+    }
+
+    /// 变更任务的 SOP（P005 跨 SOP 触发：同任务先规划后编码）。
+    /// 校验注册 + 任务存在 + 状态可发起（Running/Archived 下禁改）。
+    pub fn set_task_sop(
+        &mut self,
+        registry: &SopRegistry,
+        project: &str,
+        id: &str,
+        sop: impl Into<String>,
+    ) -> Result<()> {
+        let sop = sop.into();
+        registry.validate(&sop)?;
+        let task = self.get_task_mut(project, id)?;
+        if !task.can_begin_run() {
+            return Err(DevforgeError::Store(format!(
+                "任务 `{project}/{id}` 当前状态（{:?}）不可变更 SOP",
+                task.status
+            )));
+        }
+        task.sop = sop;
+        Ok(())
     }
 
     // ---------- Run 生命周期 ----------
@@ -246,8 +273,23 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("不存在"));
 
-        let err = s
+        // P005：coding 已入注册表（不再是未知 SOP），且任务快照工作区
+        let t = s
             .create_task(&SopRegistry::builtin(), "p", "t1", "coding")
+            .unwrap();
+        assert_eq!(t.sop, "coding");
+        assert_eq!(t.workspace, std::path::PathBuf::from("/p"), "快照项目 local_path");
+
+        let err = s
+            .create_task(&SopRegistry::builtin(), "p", "t2", "ghost")
+            .unwrap_err();
+        assert!(err.to_string().contains("未知 SOP"));
+
+        // P005 跨 SOP：set_task_sop 校验注册 + 状态可发起
+        s.set_task_sop(&SopRegistry::builtin(), "p", "t1", "planning").unwrap();
+        assert_eq!(s.get_task("p", "t1").unwrap().sop, "planning");
+        let err = s
+            .set_task_sop(&SopRegistry::builtin(), "p", "t1", "ghost")
             .unwrap_err();
         assert!(err.to_string().contains("未知 SOP"));
     }

@@ -35,11 +35,12 @@ async fn main() -> anyhow::Result<()> {
     let engine_plans = plans_root.clone();
     let engine_ui = ui.clone();
     let engine_factory = Box::new(move || -> Box<dyn devforge::domain::runner::RunEngine + Send> {
-        Box::new(devforge::server::PlanningRpcEngine {
+        Box::new(devforge::server::BuiltinRpcEngine {
             profile_root: engine_profiles.clone(),
             session_root: engine_sessions.clone(),
             plans_root: engine_plans.clone(),
             ui: engine_ui.clone(),
+            codegraph_bin: std::path::PathBuf::from("codegraph"),
         })
     });
 
