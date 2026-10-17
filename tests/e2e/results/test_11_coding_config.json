@@ -1,0 +1,120 @@
+{
+  "script": "test_11_coding_config",
+  "checks": [
+    {
+      "name": "PUT manifest == 202（异步受理）",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "四 profile 全部渲染（含 coding-review，render_all 不中断）",
+      "ok": true,
+      "detail": "elapsed=0s"
+    },
+    {
+      "name": "coding-agent mcp.json 含 codegraph serve --mcp",
+      "ok": true,
+      "detail": "{'args': ['serve', '--mcp'], 'command': 'codegraph', 'env': {'CODEGRAPH_TELEMETRY': '0'}}"
+    },
+    {
+      "name": "codegraph 遥测关闭（D013 卫生条款）",
+      "ok": true,
+      "detail": "{'CODEGRAPH_TELEMETRY': '0'}"
+    },
+    {
+      "name": "coding-agent mcp.json 含 context7",
+      "ok": true,
+      "detail": "{'args': ['-y', '@upstash/context7-mcp'], 'command': 'npx'}"
+    },
+    {
+      "name": "coding-review 同配双 MCP",
+      "ok": true,
+      "detail": "['codegraph', 'context7']"
+    },
+    {
+      "name": "规划 profile 不生成 mcp.json（P001 行为不回归）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "coding-agent: rust-best-practices 原样落盘",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-5jdg5vyh/.devforge/profiles/coding-agent/skills/rust-best-practices/SKILL.md"
+    },
+    {
+      "name": "coding-agent: go-best-practices 原样落盘",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-5jdg5vyh/.devforge/profiles/coding-agent/skills/go-best-practices/SKILL.md"
+    },
+    {
+      "name": "coding-agent: ts-js 双文件原样落盘",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-5jdg5vyh/.devforge/profiles/coding-agent/skills/ts-js-best-practices"
+    },
+    {
+      "name": "coding-agent: python 章程全量（SKILL+references+scripts）",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-5jdg5vyh/.devforge/profiles/coding-agent/skills/python-best-practices"
+    },
+    {
+      "name": "coding-review: rust-best-practices 原样落盘",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-5jdg5vyh/.devforge/profiles/coding-review/skills/rust-best-practices/SKILL.md"
+    },
+    {
+      "name": "coding-review: go-best-practices 原样落盘",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-5jdg5vyh/.devforge/profiles/coding-review/skills/go-best-practices/SKILL.md"
+    },
+    {
+      "name": "coding-review: ts-js 双文件原样落盘",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-5jdg5vyh/.devforge/profiles/coding-review/skills/ts-js-best-practices"
+    },
+    {
+      "name": "coding-review: python 章程全量（SKILL+references+scripts）",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-5jdg5vyh/.devforge/profiles/coding-review/skills/python-best-practices"
+    },
+    {
+      "name": "规划 profile skills 不受扩容影响",
+      "ok": true,
+      "detail": "{'plan-tree'}"
+    },
+    {
+      "name": "coding-agent 提示词含阶段完成协议",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "coding-agent 提示词含单测禁 e2e（D003）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "coding-agent 提示词含 projectPath 教学（Q004）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "review 提示词含 Report 协议",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "review 提示词含树完成锚点（D011）",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "issues": [
+    {
+      "id": "F2-PI-LENS-NPM-FAIL",
+      "severity": "high",
+      "desc": "pi-lens 的 npm 依赖 @ast-grep/cli postinstall 本机失败（Failed to move binaries），致安装器报错且 render_all 中断——后续 profile 不渲染、config.rendered 缺失。影响：D014 诊断层在真实安装路径不可用（需上游/环境修复）。证据：手工 `npm install pi-lens` 复现 + 本轮 render_all 中断现场。",
+      "evidence": ""
+    }
+  ],
+  "passed": 21,
+  "failed": 0
+}

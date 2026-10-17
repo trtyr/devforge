@@ -1,0 +1,48 @@
+{
+  "script": "test_15_coding_run_control",
+  "checks": [
+    {
+      "name": "PUT manifest == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "coding-agent profile 就绪",
+      "ok": true,
+      "detail": "/var/tmp/devforge-e2e-7wajjrw6/.devforge/profiles/coding-agent"
+    },
+    {
+      "name": "项目创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "编码任务创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "start == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "超时后编码 run 进 Failed（窗口 20000ms）",
+      "ok": true,
+      "detail": "final=Failed"
+    },
+    {
+      "name": "任务状态同步 Failed",
+      "ok": true,
+      "detail": "Failed"
+    },
+    {
+      "name": "终态后 cancel == 404",
+      "ok": true,
+      "detail": "status=404"
+    }
+  ],
+  "issues": [],
+  "passed": 8,
+  "failed": 0
+}

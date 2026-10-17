@@ -1,0 +1,43 @@
+{
+  "script": "test_13_coding_preflight",
+  "checks": [
+    {
+      "name": "PUT 剥离清单 == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "项目创建且工作区无 .codegraph（前置）",
+      "ok": true,
+      "detail": "status=201, ws=/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-tj6nwc7w/workspace/pf-demo"
+    },
+    {
+      "name": "编码任务创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "start == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "引擎预检 init：工作区出现 .codegraph（D013）",
+      "ok": true,
+      "detail": "ws=/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-tj6nwc7w/workspace/pf-demo"
+    },
+    {
+      "name": "黑板骨架 coding/docs/reports/blockers 就位（黑板=任务目录）",
+      "ok": true,
+      "detail": "/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-tj6nwc7w/.devforge/plans/pf-demo/pf"
+    },
+    {
+      "name": "run 收场（终态或 cancel 解锁）",
+      "ok": true,
+      "detail": "final=Failed"
+    }
+  ],
+  "issues": [],
+  "passed": 7,
+  "failed": 0
+}

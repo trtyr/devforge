@@ -8,6 +8,7 @@
 |------|------|------|
 | test_02_tasks.py | 未知 SOP 例 `coding`→`ghost`；新增正向断言「coding SOP 任务 == 201」 | P005 后 coding 入 SopRegistry（原「未知 SOP」例已注册，400 变 201）；注册表扩容验证面 |
 | test_10_timeout_async_render.py | `config.rendered` 通知的 rendered 计数 `==2` → `==4` | builtin manifest 现渲染四 profile（规划双 + 编码双） |
+| test_03_config.py | 默认 Agent 断言 `双 Agent` → `四 Agent`（plan/coding 双对） | 同上：SopRegistry/manifest 扩容 |
 | run_all.py | SCRIPTS 补 test_11-15（编码 SOP 五脚本，含 14 号 3600s 长窗口）；`--quick` 跳过清单加 test_14 | 新增功能点的脚本登记（脚本本体在 task-2/3 落地） |
 
 ## 核对无需改动项
