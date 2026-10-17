@@ -124,6 +124,22 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 
 模型首轮生成 >900s 期间：无流式进度可看（SSE 不推 message_update）、无取消端点、pi stderr 黑盒、无 run 级超时——四个「无法干预」叠加，让一次慢生成变成一次不可恢复的挂死。可观测原则 §4 的「节点内完整 trace」与「流转可见」在 MVP 数据层只完成了一半（生命周期事件有，对话流/工具流没有）。
 
+## 收官全量回归（2026-10-18 00:29–00:41，run_all 全套 11 脚本，RUNALL_RC=0）
+
+收官闭环的终态验证（三笔修复合入后首套全量）：
+
+- **cargo test：93 passed / 0 failed**（+1 doctest）；clippy --all-targets 0 警告（原生输出核实）
+- 轻量批 test_00–06：全绿
+- test_07：17 PASS / 0 FAIL（cancel 收场 1s 内，重跑留档全链）
+- **test_08（第 22 试）：15 PASS / 0 FAIL，0 issues**——run Settled+任务 Completed，
+  树 17 文件落约定路径，本轮还走了完整 FAIL→修复→重审循环（review-0 打回→修复→review-1 重审）
+- test_09：8 PASS / 0 FAIL（2 条 soft 观测为设计内非缺陷）；test_10：8 PASS / 0 FAIL（超时 21s 收割）
+- 基建尾巴：run_all 汇总改写 results/RUN_ALL_SUMMARY.md（生成器曾覆盖手写主报告，已改道防复发）
+
+结论：**零 FAIL 零回归，收官基线成立。**
+
+---
+
 ## 五、结论
 
 - **基础 API 面（五能力域的静态与查询路径）质量良好**：66 项检查全过，含真实目录落地、SOP 校验、事件推送、串行守卫。
@@ -205,7 +221,7 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 | test_09_run_control | cancel 端点/spawn cwd/stderr 观测 | **8 PASS / 0 FAIL** | 取消→run+task Failed；plans/<项目>/<任务>/ 目录实证；终态 cancel 404 幂等 |
 | test_10_timeout_async | 可选超时/异步渲染通知 | **8 PASS / 0 FAIL** | DEVFORGE_RUN_TIMEOUT_MS=20s → 21s 收割（<60s）；config.rendered SSE 通知实测送达 |
 | test_07_rerun_serial | 串行守卫/cancel 收场/重跑留档 | **17 PASS / 0 FAIL** | 重写版全绿：守卫双 409、cancel 1s 收场、串行释放、留档 2 条旧 run 不变、current_run 指向最新 |
-| test_08_e2e_planning | 端到端规划全链路 | **第 21 试（修复后首跑）：15 PASS / 0 FAIL** | 全链七环走通：run Settled+任务 Completed+SSE 全环（ui.request×5 全应答）+树落约定路径，5m02s 史上最快；历史 17/18/19/20 试详见证据档 |
+| test_08_e2e_planning | 端到端规划全链路 | **第 21 试（修复后首跑）：15 PASS / 0 FAIL**；**第 22 试（收官全量回归）：15 PASS / 0 FAIL（0 issues）** | 全链七环两连证：run Settled+任务 Completed+SSE 全环（第 21 试 ui.request×5 全应答；第 22 试 FAIL→修复→重审→review-1）+树落约定路径（5/17 文件），5m02s 史上最快；历史 17/18/19/20 试详见证据档 |
 
 ## 二、test_08 第 17/18 试：链路深度推进 + 两条新根因实证
 

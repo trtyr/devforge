@@ -115,3 +115,5 @@
 {"type":"task_started","goalId":"mvcm1yzn-j9ojqj","taskId":"task-1","at":"2026-10-17T16:28:58.088Z"}
 {"type":"task_complete","goalId":"mvcm1yzn-j9ojqj","taskId":"task-1","evidence":"收尾清单落盘 closure-checklist.md：A 产品尾巴（A1 Last-Event-ID 待实现/A2 扫描无残留）+B 测试尾巴（run_all 未覆盖 09/10+时限/全套回归未跑）+C 文档尾巴（roadmap 回写/Q002Q004 关闭/闭环 decision/README）+D 外部关闭（中转可靠性）+E 现状保留 3 项；来源三方对账（TEST_REPORT/代码扫描","at":"2026-10-17T16:30:39.374Z"}
 {"type":"task_started","goalId":"mvcm1yzn-j9ojqj","taskId":"task-2","at":"2026-10-17T16:31:51.630Z"}
+{"type":"task_complete","goalId":"mvcm1yzn-j9ojqj","taskId":"task-2","evidence":"A1 EventBus（seq+环形留档 1024+回放）落地，events 端点 Last-Event-ID 回放+间隙去重，回归单测×2（序号/回放过滤+SSE 断线续传全流程）；B1 run_all.py 补 test_09/10+时限校准；C4 README.md 新增；93 测试全绿+clippy 0 警告；清单 A1/B1/C4 已翻✅并提交","at":"2026-10-17T16:37:47.135Z"}
+{"type":"task_started","goalId":"mvcm1yzn-j9ojqj","taskId":"task-3","at":"2026-10-17T16:38:03.327Z"}

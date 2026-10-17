@@ -1,23 +1,41 @@
-session=2026-10-17T15-42-02-822Z_01a14a86-fc45-704c-bd96-74e190a8108a.jsonl
-entries=62
+session=2026-10-17T16-44-29-267Z_01a14ac0-26d2-767d-a7ba-082146dfb894.jsonl
+entries=68
 
-- message toolResult: Successfully wrote to /tmp/devforge-e2e-chain-eIwE16qn/.devforge/plans/demo-app/planning-run/decisions/002-dev-startup.md
-- message assistant: edit
-- message toolResult: Could not find edits[1] in /tmp/devforge-e2e-chain-eIwE16qn/.devforge/plans/demo-app/planning-run/README.md. The oldText must match exactly including all whitespace and newlines.
+- message toolResult: === README 文件地图 ===
+## 文件地图
+
+| 路径 | 角色 |
+| --- | --- |
+| `roadmap.md` | 阶段与任务状态（Done / In Progress / Next / Deferred） |
+| `open-questions.md` | 未解决问题清单 |
+| `topics/01-product-scope.md` | 目标、非目标、约束、验收标
+- message assistant:  4 条中 3 条完全属实，第 4 条需要更正一部分：`open-questions.md` **在**文件地图里（第 2 行），只有 baseline 五个文件确实漏了。我按事实修，不多认也不漏修。 edit
+- message toolResult: Successfully replaced 2 block(s) in /tmp/devforge-e2e-ri8c5n7h/.devforge/plans/demo-app/planning-run/roadmap.md.
 - message assistant:  edit
-- message toolResult: Successfully replaced 1 block(s) in /tmp/devforge-e2e-chain-eIwE16qn/.devforge/plans/demo-app/planning-run/README.md.
-- message assistant: edit
-- message toolResult: Successfully replaced 1 block(s) in /tmp/devforge-e2e-chain-eIwE16qn/.devforge/plans/demo-app/planning-run/roadmap.md.
-- message assistant: edit
-- message toolResult: Successfully replaced 1 block(s) in /tmp/devforge-e2e-chain-eIwE16qn/.devforge/plans/demo-app/planning-run/topics/core-flow.md.
-- message assistant: bash
-- message toolResult: ./open-questions.md:26:- 结论: 验收口径为 `npm install` + `npm run dev` 两步；`npm run dev` 必须在单进程内并行拉起 api 与 web。见 `decisions/002-dev-startup.md`。
-./topics/core-flow.md:52:| A1 | `npm install` + `npm run dev` 
-- message assistant: 规划完成，plan tree 已写入当前目录（plan root）。
+- message toolResult: Successfully replaced 2 block(s) in /tmp/devforge-e2e-ri8c5n7h/.devforge/plans/demo-app/planning-run/README.md.
+- message assistant: 根 README 与 roadmap 已对齐。现在修 baseline 五个文件的交叉引用指向。 bash
+- message toolResult: === module-map.md ===
+# module-map
 
-**产出结构**
-```
-./
-├── README.md                      入口：范围、非目标、权威顺序、文件地图
-├── roadmap.md                      T001–T006，Done/In Progress/Next/Deferred
-├── open-questio
+Unknown / needs inventory.
+
+补全时机与 scope 说明见 `README.md`（本目录），任务状态见 `../roadmap.md` 的 R-05。
+=== 残留错引用检查 ===
+无残留
+
+- message assistant: 现在处理 D-001——它需要与新口径一致，并显式覆盖 Q-05。 edit
+- message toolResult: Successfully replaced 2 block(s) in /tmp/devforge-e2e-ri8c5n7h/.devforge/plans/demo-app/planning-run/decisions/README.md.
+- message assistant: D-001 已对齐。最后做一次全局一致性核查，特别是"完成"的口径与 Q-05 的覆盖。 bash
+- message toolResult: === ① R-00 与 R-01 口径 ===
+## Done
+
+- R-00 建立 plan root 骨架（README、roadmap、open-questions、topics、baseline 占位、ideas 收件箱）。
+  - 验收证据：产物存在——13 个文件已落盘并通过链接自检。
+  - 关于用户回复"完成"的口径：该回答确认的是"本轮交付到此结束"，**不构成**对 Q-01
+- message assistant: 四条已全部修订，一致性核查通过。同时更正你第 4 条中的一处事实偏差。
+
+**修订内容**
+
+| # | 问题 | 修订 |
+|---|---|---|
+| 1 | R-00 与 R-01/README/D-001 对"完成"的解读矛盾 | R-00 的 Done 验收依据改为**产物存在**（13 文件落盘 + 链接自检），并显式声明用户那句"完成"不构成对 Q-01~Q-05 的答复、也不解除

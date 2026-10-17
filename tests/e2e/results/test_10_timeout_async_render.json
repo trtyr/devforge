@@ -29,7 +29,7 @@
     {
       "name": "超时后 run 进 Failed",
       "ok": true,
-      "detail": "{'current_run': 'c700c219-f430-40bf-833d-b988e75d0e8f', 'plan_tree_dir': '/tmp/devforge-e2e-u0kev7_j/.devforge/plans/to/timeout-me', 'project': 'to', 'runs': [{'ended_at_ms': 1792244127787, 'id': 'c700c219-f430-40bf-833d-b988e75d0e8f', 'started_at_ms': 1792244107666, 'status': 'Failed'}], 'task': 'timeout-me'}"
+      "detail": "{'current_run': '3b1a9274-4d36-4da3-9606-eceb067922eb', 'plan_tree_dir': '/tmp/devforge-e2e-qv8lk39v/.devforge/plans/to/timeout-me', 'project': 'to', 'runs': [{'ended_at_ms': 1792255768886, 'id': '3b1a9274-4d36-4da3-9606-eceb067922eb', 'started_at_ms': 1792255748764, 'status': 'Failed'}], 'task': 'timeout-me'}"
     },
     {
       "name": "超时收割及时（21s < 60s，deadline=20s）",
@@ -39,7 +39,7 @@
     {
       "name": "任务状态同步 Failed",
       "ok": true,
-      "detail": "status=200, task={'created_at_ms': 1792244107666, 'current_run': 'c700c219-f430-40bf-833d-b988e75d0e8f', 'id': 'timeout-me', 'project': 'to', 'runs': ['c700c219-f430-40bf-833d-b988e75d0e8f'], 'sop': 'planning', 'status': 'Failed'}"
+      "detail": "status=200, task={'created_at_ms': 1792255748761, 'current_run': '3b1a9274-4d36-4da3-9606-eceb067922eb', 'id': 'timeout-me', 'project': 'to', 'runs': ['3b1a9274-4d36-4da3-9606-eceb067922eb'], 'sop': 'planning', 'status': 'Failed'}"
     }
   ],
   "issues": [],

@@ -15,7 +15,7 @@
 | ID | 项 | 状态 | 去向 |
 |----|----|------|------|
 | B1 | run_all.py 未覆盖 test_09/test_10；test_08 超时 900s 与实测需求不匹配 | ✅ 已修 | 脚本表补 09/10（300s）；test_08 时限提至 2700s（内部 RUN_TIMEOUT=2400s） |
-| B2 | 三笔修复（SseStream/watchdog/abort_all）合入后 e2e 全套未重跑 | 待办 | task-3 全量回归（轻量批+07/09/10；产品已改动→第 22 试链路重跑领取 Completed 复证实证） |
+| B2 | 三笔修复（SseStream/watchdog/abort_all）合入后 e2e 全套未重跑 | ✅ 已跑 | run_all 全套 11 脚本 RUNALL_RC=0：93 单测全绿；07 17/17；08 第 22 试 15/0（Settled+Completed+树 17 文件+完整打回重审循环）；09 8/0；10 8/0。另：run_all 汇总改写 results/RUN_ALL_SUMMARY.md（生成器曾覆盖手写主报告，已改道防复发） |
 
 ## C. 报告/文档尾巴
 

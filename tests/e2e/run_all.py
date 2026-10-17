@@ -116,9 +116,9 @@ def generate_report(runs: list[dict]) -> None:
             lines.append(f"- 证据：{i['evidence']}")
         lines.append("")
 
-    report = HERE / "TEST_REPORT.md"
+    report = RESULTS / "RUN_ALL_SUMMARY.md"
     report.write_text("\n".join(lines))
-    print(f"\n== 报告已生成: {report}")
+    print(f"\n== 汇总已生成: {report}")
 
 
 def git_rev() -> str:
