@@ -99,7 +99,18 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 | v1 最小条件 | PI_CODING_AGENT_DIR=补偿 profile，直接指令触发 ask-user-question | **extension_ui_request 立即出现在 stdout**（method=select，title/options 齐全），与 rpc-extension-ui.md 契约逐字段一致 |
 | v2 完整复刻 | 同 env 三标记（DEVFORGE_MANAGED/ROLE）+ 同 cwd（空 server-cwd）+ 逐字 PLAN_KICKOFF | agent 深探索 28 个工具后，**dialog 照样正常发出**（ui:1） |
 | v3 桥式应答 | 同 v2 + 忠实模拟 devforge 桥（对一切 UI 请求含 fire-and-forget 回 extension_ui_response） | blackhole 10 分钟发 **635 条** setStatus/notify，全部应答，**pi 活满 601s 无任何异常，stderr 零字节**——「误应答毒杀 pi」假设彻底排除 |
-| 第六次干净单跑 | 无任何并发实验，配置全量复刻 + 固定模型分配 | 停滞签名**第三次连续复现**：agent 早段正常工作（会话 36.5KB，thinking+双 toolCall 已发出）后 turn 永不完成，工具不执行、会话静止 ~15 分钟直至窗口结束——并发干扰假设排除，签名稳定可复现 |
+| 第六次干净单跑 | 无任何并发实验，配置全量复刻 + 固定模型分配 | 停滞签名复现：agent 早段正常工作（会话 36.5KB）后沉默至窗口结束——并发干扰假设排除 |
+| 第七次缓解对照 | blackhole statusBar/worker 通知关闭（消除 UI 请求洪水，v3/v5 实测 7.7 次/秒） | 停滞**第四次复现**：会话 97.5KB 后截断，且 pi 的 5 分钟 idle 超时（retry.provider.timeoutMs=httpIdleTimeoutMs=300s）**6 分钟未触发自愈**——中转以慢滴 keepalive 喂 socket 可绕过 idle 判定；**blackhole UI 刷屏假设同时被排除** |
+| 第八次活体干预 | SSE 丢件实锤后改由 **API 用户路径手动应答 dialog**（探测 /ui/ui-N/answer） | **链路走到 6/7 步**：完成确认→<plan-complete>→规划阶段结束→**review-0（grok-4.7）真实运转**：通读全13文件、FAIL+真实语义问题清单→问题回注→规划 Agent 修复轮 128+ 条→**review-1 全新实例重审**→但 review-1 漏发 verdict 协议块→parse 硬错误→run Failed（新发现 P8-ISSUE-10） |
+| 第九次 | 装 600s 超时被慢网络击穿 | P8-ISSUE-00 早退（PUT 超时已放宽至 1800s） |
+| 第十次 | 全配置（skill 待同步） | **停滞真凶落网**：agent 因 plan-tree skill 是占位目录，发起 `find /` 全盘搜规范（进程实测存活），单次工具执行 10-30 分钟 → 窗口必爆——五次「停滞」全部此机制 |
+| 第十一次 | **真实 plan-tree skill 分发进 profile**（占位缺口的测试侧补偿）+ 独立会话应答器 | 截断签名 A 第六次复现（会话 86.7KB 静止）——skill 修复解决「全盘扫描」，但中转长 turn 截断仍随机发生 |
+
+**根因终审（十一轮实证后）**：
+- **根因一（主因，已测试侧修复）· 占位 skill → `find /` 全盘扫描**：plan-tree skill 未分发（渲染器占位缺口 P2-ISSUE-05），agent 为找规范发起全盘扫描，单次工具执行 10-30 分钟，任何窗口都装不下——前五次「停滞」的真实机制（第十次抓到活体进程）；真实 skill 分发后此机制消失；
+- **根因二（残存）· 中转长 turn 流截断（签名 A）**：会话尾条无 stopReason/usage——模型流中途断供，pi 永等（idle 超时被慢滴喂活失效）；真实 skill 后仍第六次复现；
+- **签名 B · 完成后分发停滞**：会话尾条带完整 usage + stopReason:toolUse 但工具永不执行（第五次）；
+- **放大器 · devforge 无兜底**：无 run 超时/取消、pi stderr 黑盒、SSE 丢 ui.request（P8-ISSUE-02 机制实锤：第八次 dialog 全部滞留 pending，autopilot 零收到，改 API 用户路径后链路立即推进）——全部按约束只记录不修。
 
 结论链：
 1. **pi + ask-user-question 插件的 dialog 发射路径在 devforge 同款条件下完全健康**（裸 stdout 线级证据）；

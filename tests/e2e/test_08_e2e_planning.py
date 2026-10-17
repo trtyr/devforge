@@ -79,9 +79,19 @@ def main() -> int:
         status, body = server.req("GET", "/config/manifest")
         manifest = body
         manifest["api_key"] = key
+        # 测试侧提示词塑形（manifest 数据层，非代码修复；应对长 turn 流截断——审计建议「拆分 turn」）：
+        # role_prompt 本为占位版（P001 T005 待细化），此处追加小步快跑指引缩短单 turn
+        for _a in manifest["agents"]:
+            if _a["name"] == "plan-agent":
+                _a["role_prompt"] = _a.get("role_prompt", "") + (
+                    "\n\n工作方式（重要）：\n"
+                    "- 小步快跑：每轮只做一件小事（一次搜索/一次读取/写一个文件的一小段）。\n"
+                    "- 避免单次超长输出；写 plan tree 时分多次小段写入，先建骨架再逐步填充。\n"
+                    "- 每完成一小步就简短总结一句再继续。\n"
+                )
         t0 = time.time()
         try:
-            status, _ = server.req("PUT", "/config/manifest", manifest, timeout=600.0)
+            status, _ = server.req("PUT", "/config/manifest", manifest, timeout=1800.0)
             r.check(status == 200, f"manifest 就绪（耗时 {time.time()-t0:.0f}s）")
         except TimeoutError:
             r.issue("P8-ISSUE-00", "high", "PUT manifest 装包超 600s，全链路无法继续")

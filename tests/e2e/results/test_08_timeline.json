@@ -1,20 +1,8 @@
 [
   {
     "project": "demo-app",
-    "run_id": "6a9ff235-6e0f-4873-9065-71cedb66ad5b",
+    "run_id": "823ba3ff-e202-456a-a358-fbe2d6f74028",
     "task": "planning-run",
     "type": "run.started"
-  },
-  {
-    "id": "ui-1",
-    "options": [],
-    "question": "Agent 请求输入: {\"id\":\"9542d5a9-34c5-4bd2-8da5-a3f415c49f19\",\"method\":\"setStatus\",\"statusKey\":\"blackhole\",\"statusText\":\"\\u001b[38;5;2mbh\\u001b[39m \\u001b[39m\\u001b[2mO\\u001b[22;39m\\u001b[39m\\u001b[2m▕\\u001b[22;39m\\u001b[39m\\u001b[2m\\u001b[22;39m\\u001b[39m\\u001b[2m░░░░░░░░\\u001b[22;39m\\u001b[39m\\u001b[2m▏\\u001b[22;39m  \\u001b[39m\\u001b[2mP\\u001b[22;39m\\u001b[39m\\u001b[2m▕\\u001b[22;39m\\u001b[39m\\u001b[2m\\u001b[22;39m\\u001b[39m\\u001b[2m░░░░░░░░\\u001b[22;39m\\u001b[39m\\u001b[2m▏\\u001b[22;39m  \\u001b[39m\\u001b[2mX\\u001b[22;39m\\u001b[39m\\u001b[2m▕\\u001b[22;39m\\u001b[39m\\u001b[2m\\u001b[22;39m\\u001b[39m\\u001b[2m░░░░░░░░\\u001b[22;39m\\u001b[39m\\u001b[2m▏\\u001b[22;39m\"}",
-    "type": "ui.request"
-  },
-  {
-    "id": "ui-2",
-    "options": [],
-    "question": "Agent 请求输入: {\"id\":\"dba6f940-2b4c-41b4-b084-cbb67e31c45f\",\"method\":\"setStatus\",\"statusKey\":\"blackhole\",\"statusText\":\"\\u001b[38;5;2mbh\\u001b[39m \\u001b[39m\\u001b[2mO\\u001b[22;39m\\u001b[39m\\u001b[2m▕\\u001b[22;39m\\u001b[39m\\u001b[2m███\\u001b[22;39m\\u001b[39m\\u001b[2m░░░░░\\u001b[22;39m\\u001b[39m\\u001b[2m▏\\u001b[22;39m  \\u001b[39m\\u001b[2mP\\u001b[22;39m\\u001b[39m\\u001b[2m▕\\u001b[22;39m\\u001b[39m\\u001b[2m\\u001b[22;39m\\u001b[39m\\u001b[2m░░░░░░░░\\u001b[22;39m\\u001b[39m\\u001b[2m▏\\u001b[22;39m  \\u001b[39m\\u001b[2mX\\u001b[22;39m\\u001b[39m\\u001b[2m▕\\u001b[22;39m\\u001b[39m\\u001b[2m\\u001b[22;39m\\u001b[39m\\u001b[2m░░░░░░░░\\u001b[22;39m\\u001b[39m\\u001b[2m▏\\u001b[22;39m\"}",
-    "type": "ui.request"
   }
 ]

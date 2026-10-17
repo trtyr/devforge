@@ -257,6 +257,32 @@ def compensate_profile(server: Server, provider: str = "newapi") -> list[str]:
                         done.append(name)
             except OSError:
                 pass
+        # 4b) blackhole 状态刷屏缓解（测试侧补偿，非修复；诊断实验 v3/v5 实证：
+        #     blackhole 以 ~7.7 次/秒发 setStatus，devforge 桥每条阻塞回环 ~0.3s，
+        #     管道背压+广播 Lagged 丢事件 → 桥永久阻塞 → run 卡死。关闭状态栏与
+        #     worker 通知两条高频源，其余 29 键原封）
+        try:
+            bh = pd / "pi-blackhole" / "pi-blackhole-config.json"
+            cfg = json.loads(bh.read_text())
+            cfg["statusBar"] = False
+            cfg["showWorkerNotifications"] = False
+            bh.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+        except (OSError, json.JSONDecodeError):
+            pass
+        # 5) 真实 plan-tree skill 分发（测试侧补偿；渲染器只给占位 README——P2-ISSUE-05。
+        #    诊断实锤：占位 skill 导致 agent 对全盘 `find /` 找规范，单次工具执行 10-30 分钟，
+        #    窗口必爆（五次停滞的真凶）。真实 skill 源在用户环境的 craft/docs/plan-tree）
+        try:
+            real_skill = Path.home() / ".pi" / "agent" / "skills" / "craft" / "docs" / "plan-tree"
+            dst_skill = pd / "skills" / "plan-tree"
+            if real_skill.is_dir():
+                if dst_skill.exists():
+                    shutil.rmtree(dst_skill)
+                shutil.copytree(real_skill, dst_skill)
+                if "real-skill" not in done:
+                    done.append("real-skill")
+        except OSError:
+            pass
     return done
 
 
