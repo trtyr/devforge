@@ -243,4 +243,6 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 
 ### 对目标的诚实终点
 
-合同要求的全链路七环：创建项目 ✓ → 任务 ✓ → 真实 pi 规划（多轮 dialog 代理）✓ → plan tree 落约定路径 ✓（两连证）→ review 循环含 FAIL→修复→重审 ✓（第 18 试）与首审直 PASS ✓（第 19 试）→ 逐字 PASS verdict ✓（两连证）→ **任务 Completed ✗**——被上述 verdict 后挂起缺陷阻断，「只记录不修」约束下此为黑盒可达终点。修复该缺陷后重跑一次链路即頬取 Completed 实证（前六环已稳定复现，预期一次即过）。
+合同要求的全链路七环：创建项目 ✓ → 任务 ✓ → 真实 pi 规划（多轮 dialog 代理）✓ → plan tree 落约定路径 ✓（两连证）→ review 循环含 FAIL→修复→重审 ✓（第 18 试）与首审直 PASS ✓（第 19 试）→ 逐字 PASS verdict ✓（两连证）→ **任务 Completed ✗**——被上述 verdict 后挂起缺陷阻断。
+
+**用户拍板（2026-10-17 23:16）：本阶段只测试不修，测试结果如实记录，测完即结项**——Completed 状态缺失本身作为测试发现记录在案（verdict 后挂起缺陷），修复归下一阶段；修复后重跑一次链路即可领取 Completed 实证（前六环已稳定复现，预期一次即过）。
