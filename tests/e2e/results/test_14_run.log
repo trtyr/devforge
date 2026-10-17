@@ -1,0 +1,43 @@
+Exception in thread Thread-1 (_pump):
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/threading.py", line 1082, in _bootstrap_inner
+    self._context.run(self.run)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "/usr/lib/python3.14/threading.py", line 1024, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/trtyr/code-work/devforge/tests/e2e/common.py", line 155, in _pump
+    line = self.resp.readline()
+  File "/usr/lib/python3.14/http/client.py", line 708, in readline
+    return super().readline(limit)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 700, in peek
+    return self._peek_chunked(n)
+           ~~~~~~~~~~~~~~~~~~^^^
+  File "/usr/lib/python3.14/http/client.py", line 745, in _peek_chunked
+    return self.fp.peek(chunk_left)[:chunk_left]
+           ^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'peek'
+[PASS] manifest 受理（0.0s） — status=202
+[PASS] 四 profile 渲染齐 — /tmp/devforge-e2e-e86ypamb/.devforge/profiles
+[PASS] 测试侧补偿（配置全量复刻） — ['models.json', 'auth.json', 'settings.json', 'plugins-config', 'real-skill']
+[PASS] 项目 demo-app 创建（local_path=工作区） — status=201
+[PASS] 任务 planning-run 创建（sop=planning） — status=201
+[PASS] 规划 start == 202 — status=202
+[PASS] 规划 run.finished ok=True — {'ok': True, 'project': 'demo-app', 'run_id': 'cef2d056-8f8e-4fe6-bc2a-df0b972c5630', 'task': 'planning-run', 'type': 'run.finished'}
+[PASS] 规划 run Settled — Settled
+[PASS] plan tree 已落黑板（编码段的输入） — /tmp/devforge-e2e-e86ypamb/.devforge/plans/demo-app/planning-run
+[PASS] start sop=coding == 202（跨 SOP 触发） — status=202
+[PASS] 编码 run 终态 Settled（实际 Settled）
+[PASS] 任务终态 Completed（实际 Completed）
+[PASS] 黑板 coding/stages.md 存在（N 阶段划分） — /tmp/devforge-e2e-e86ypamb/.devforge/plans/demo-app/planning-run/coding
+[PASS] 黑板 coding/todo.md 存在 — /tmp/devforge-e2e-e86ypamb/.devforge/plans/demo-app/planning-run/coding/todo.md
+[PASS] 伴写文档 coding/docs/ 非空（D004） — 文件数=10
+[PASS] Review Report 至少一份 — ['review-2.md', 'review-1.md']
+[PASS] blockers/ 留痕数=1（偏差协议未触发则应为 0）
+[PASS] 工作区已 git 化（D009 commit 锚点前提） — /tmp/devforge-e2e-e86ypamb/workspace/demo-app
+[PASS] 工作区有真实代码产物 — 文件数=22
+[PASS] 工作区有 git commit 留痕（D009） — commits=['9a11497 docs: fix storage close() description and stale test counts; add doc-drift guard', '7f0e498 stage 3 fixup: RouterHarness serves the real web/ dir instead of a fixture', '6eade5d stage 3 (T004+T006): single-page frontend with three states, README, docs closeout', '328f7ca stage 2 (T003+T005): full E1-E5 endpoints, single error->HTTP mapping, structured access log', 'f1ad721 stage 1 (T001+T002): repo skeleton, config, domain model, SQLite storage, structured logging']
+[PASS] AI 应答与 ui.request 对齐（全代理） — answered=0, requested=0
+[server] 已停止（HOME=/tmp/devforge-e2e-e86ypamb）
+== test_14_coding_full_chain: 21 PASS / 0 FAIL, 0 issues（结果已落 results/test_14_coding_full_chain.json）

@@ -14,21 +14,28 @@
   },
   {
     "project": "demo-app",
-    "run_id": "b081bcff-840b-4a87-adb9-a7858b0989c2",
+    "run_id": "cef2d056-8f8e-4fe6-bc2a-df0b972c5630",
     "task": "planning-run",
     "type": "run.started"
   },
   {
     "ok": true,
     "project": "demo-app",
-    "run_id": "b081bcff-840b-4a87-adb9-a7858b0989c2",
+    "run_id": "cef2d056-8f8e-4fe6-bc2a-df0b972c5630",
     "task": "planning-run",
     "type": "run.finished"
   },
   {
     "project": "demo-app",
-    "run_id": "a1f320f6-e3ef-457d-800b-f44e8cfd08d0",
+    "run_id": "bbf81b2b-d120-4f08-9304-7a1a9365a5f3",
     "task": "planning-run",
     "type": "run.started"
+  },
+  {
+    "ok": true,
+    "project": "demo-app",
+    "run_id": "bbf81b2b-d120-4f08-9304-7a1a9365a5f3",
+    "task": "planning-run",
+    "type": "run.finished"
   }
 ]

@@ -9,7 +9,7 @@
     {
       "name": "四 profile 渲染齐",
       "ok": true,
-      "detail": "/var/tmp/devforge-e2e-81fu1gdr/.devforge/profiles"
+      "detail": "/tmp/devforge-e2e-e86ypamb/.devforge/profiles"
     },
     {
       "name": "测试侧补偿（配置全量复刻）",
@@ -34,7 +34,7 @@
     {
       "name": "规划 run.finished ok=True",
       "ok": true,
-      "detail": "{'ok': True, 'project': 'demo-app', 'run_id': 'b081bcff-840b-4a87-adb9-a7858b0989c2', 'task': 'planning-run', 'type': 'run.finished'}"
+      "detail": "{'ok': True, 'project': 'demo-app', 'run_id': 'cef2d056-8f8e-4fe6-bc2a-df0b972c5630', 'task': 'planning-run', 'type': 'run.finished'}"
     },
     {
       "name": "规划 run Settled",
@@ -44,7 +44,7 @@
     {
       "name": "plan tree 已落黑板（编码段的输入）",
       "ok": true,
-      "detail": "/var/tmp/devforge-e2e-81fu1gdr/.devforge/plans/demo-app/planning-run"
+      "detail": "/tmp/devforge-e2e-e86ypamb/.devforge/plans/demo-app/planning-run"
     },
     {
       "name": "start sop=coding == 202（跨 SOP 触发）",
@@ -52,34 +52,34 @@
       "detail": "status=202"
     },
     {
-      "name": "编码 run 在超时内结束",
-      "ok": false,
+      "name": "编码 run 终态 Settled（实际 Settled）",
+      "ok": true,
       "detail": ""
     },
     {
-      "name": "任务终态 Completed（实际 Running）",
-      "ok": false,
+      "name": "任务终态 Completed（实际 Completed）",
+      "ok": true,
       "detail": ""
     },
     {
       "name": "黑板 coding/stages.md 存在（N 阶段划分）",
       "ok": true,
-      "detail": "/var/tmp/devforge-e2e-81fu1gdr/.devforge/plans/demo-app/planning-run/coding"
+      "detail": "/tmp/devforge-e2e-e86ypamb/.devforge/plans/demo-app/planning-run/coding"
     },
     {
       "name": "黑板 coding/todo.md 存在",
       "ok": true,
-      "detail": "/var/tmp/devforge-e2e-81fu1gdr/.devforge/plans/demo-app/planning-run/coding/todo.md"
+      "detail": "/tmp/devforge-e2e-e86ypamb/.devforge/plans/demo-app/planning-run/coding/todo.md"
     },
     {
       "name": "伴写文档 coding/docs/ 非空（D004）",
       "ok": true,
-      "detail": "文件数=7"
+      "detail": "文件数=10"
     },
     {
       "name": "Review Report 至少一份",
       "ok": true,
-      "detail": "['review-2.md', 'review-4.md', 'review-1.md', 'review-6.md', 'review-8.md', 'review-7.md', 'review-5.md', 'review-3.md']"
+      "detail": "['review-2.md', 'review-1.md']"
     },
     {
       "name": "blockers/ 留痕数=1（偏差协议未触发则应为 0）",
@@ -89,17 +89,17 @@
     {
       "name": "工作区已 git 化（D009 commit 锚点前提）",
       "ok": true,
-      "detail": "/var/tmp/devforge-e2e-81fu1gdr/workspace/demo-app"
+      "detail": "/tmp/devforge-e2e-e86ypamb/workspace/demo-app"
     },
     {
       "name": "工作区有真实代码产物",
       "ok": true,
-      "detail": "文件数=23"
+      "detail": "文件数=22"
     },
     {
       "name": "工作区有 git commit 留痕（D009）",
       "ok": true,
-      "detail": "commits=['25b153a stage 2: single-page frontend + audit logging (static/, test_frontend, test_logging, dom_harness)', '443ad3e stage 1: backend testable loop (config/models/storage/api/server + L1-L3 unit tests)']"
+      "detail": "commits=['9a11497 docs: fix storage close() description and stale test counts; add doc-drift guard', '7f0e498 stage 3 fixup: RouterHarness serves the real web/ dir instead of a fixture', '6eade5d stage 3 (T004+T006): single-page frontend with three states, README, docs closeout', '328f7ca stage 2 (T003+T005): full E1-E5 endpoints, single error->HTTP mapping, structured access log', 'f1ad721 stage 1 (T001+T002): repo skeleton, config, domain model, SQLite storage, structured logging']"
     },
     {
       "name": "AI 应答与 ui.request 对齐（全代理）",
@@ -107,14 +107,7 @@
       "detail": "answered=0, requested=0"
     }
   ],
-  "issues": [
-    {
-      "id": "C14-CODE-TIMEOUT",
-      "severity": "high",
-      "desc": "编码段 3600.0s 未结束（增长曲线 [(3510, 1030265), (3525, 1030265), (3540, 1030265), (3555, 1030265), (3570, 1030265), (3585, 1030265)]，时间线 6 条已留档）",
-      "evidence": ""
-    }
-  ],
-  "passed": 19,
-  "failed": 2
+  "issues": [],
+  "passed": 21,
+  "failed": 0
 }
