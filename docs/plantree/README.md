@@ -20,10 +20,11 @@ DevForge：AI 自动化开发流水线——**服务器形态的编排平台**�
 
 | ID | Plan | Affected Modules | Status | Current Phase | Last Landed | Next Target |
 |----|------|------------------|--------|---------------|-------------|-------------|
-| P001 | [planning-stage](plans/001-planning-stage/README.md) | 编排器（未建） | In Progress | 设计已定稿，待开工 | 2026-10-16 设计定稿（T001-T004, T003） | T005 profile 目录设计 |
-| P002 | [config-management](plans/002-config-management/README.md) | 配置管理（未建） | Planning | 立项建档 | 2026-10-16 立项建档 | 清单 schema 设计 |
-| P003 | [api-server](plans/003-api-server/README.md) | API 接口体系（未建） | Planning | 立项建档 | 2026-10-16 形态拍板（服务器非 CLI） | 协议与风格选型 |
-| P004 | [project-task-sop](plans/004-project-task-sop/README.md) | 三层对象管理（未建） | Planning | 立项建档 | 2026-10-16 三层模型拍板 | 数据模型设计 |
+| P001 | [planning-stage](plans/001-planning-stage/README.md) | sop/server/config/engine | Done | 已闭环（2026-10-18，第 22 试全链通关+收官清单零待定） | bdca305 收官闭环 | 测试阶段立项时复用其结论 |
+| P002 | [config-management](plans/002-config-management/README.md) | config | Done | 随 P001 落地（src/config 渲染器+清单） | 991acaf | —— |
+| P003 | [api-server](plans/003-api-server/README.md) | server | Done | 随 P001 落地（src/server 五能力域） | 991acaf | —— |
+| P004 | [project-task-sop](plans/004-project-task-sop/README.md) | 三层对象管理 | Planning | CRUD+单 run 引擎已随 P001 落地；并发调度未动 | —— | 多任务并发调度设计 |
+| P005 | [coding-stage](plans/005-coding-stage/README.md) | sop/config/server | In Progress | 设计定稿（四口子已拍板），待用户过目开工 | 2026-10-18 plan tree 落档 | T002 黑板约定与协议扩展 |
 
 ## Baseline
 
