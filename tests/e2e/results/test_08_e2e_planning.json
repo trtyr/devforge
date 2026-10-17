@@ -29,32 +29,32 @@
     {
       "name": "会话文件持续增长（模型在慢生成而非死流）",
       "ok": true,
-      "detail": "增长曲线: [0, 75877, 106088, 107450, 127816, 138921, 147941, 159535]..."
+      "detail": "增长曲线: [0, 56528, 113718, 120073, 131512, 138286, 148574, 155260]..."
     },
     {
-      "name": "run 在超时内结束",
-      "ok": false,
-      "detail": ""
+      "name": "run.finished ok=True（规划 SOP 通过）",
+      "ok": true,
+      "detail": "{'ok': True, 'project': 'demo-app', 'run_id': '85eab551-f709-474a-9ad9-f378a3c7b35e', 'task': 'planning-run', 'type': 'run.finished'}"
     },
     {
       "name": "时间线含 run.started",
       "ok": true,
-      "detail": "['run.started']..."
+      "detail": "['run.started', 'ui.request', 'ui.request', 'ui.request', 'ui.request', 'ui.request']..."
     },
     {
       "name": "时间线含 ui.request（Plan Agent 发起完成确认）",
-      "ok": false,
-      "detail": "ui 事件数=0"
+      "ok": true,
+      "detail": "ui 事件数=5"
     },
     {
       "name": "AI 应答全部送达（数量对齐）",
-      "ok": false,
-      "detail": "answered=0, requested=0"
+      "ok": true,
+      "detail": "answered=5, requested=5"
     },
     {
       "name": "时间线含 run.finished",
-      "ok": false,
-      "detail": "['run.started']"
+      "ok": true,
+      "detail": "['ui.request', 'ui.request', 'config.rendered', 'run.finished']"
     },
     {
       "name": "任务 runs 可查",
@@ -62,35 +62,22 @@
       "detail": "status=200"
     },
     {
-      "name": "run 终态 Settled（实际 Running）",
-      "ok": false,
-      "detail": ""
-    },
-    {
-      "name": "任务终态 Running（期望 Completed；Failed 记链路问题）",
-      "ok": false,
-      "detail": ""
-    },
-    {
-      "name": "plan tree 落在约定路径（decisions/002）：/tmp/devforge-e2e-chain-NPlRJO5e/.devforge/plans/demo-app/planning-run",
+      "name": "run 终态 Settled（实际 Settled）",
       "ok": true,
-      "detail": "文件数=19"
-    }
-  ],
-  "issues": [
-    {
-      "id": "P8-ISSUE-01",
-      "severity": "high",
-      "desc": "规划 run 超过 2400.0s 未结束（事件时间线已保留 1 条）",
-      "evidence": "可能：模型不可用 / pi 卡死 / UI 应答格式未被接受导致 Plan Agent 停在等待"
+      "detail": ""
     },
     {
-      "id": "P8-ISSUE-02",
-      "severity": "high",
-      "desc": "全程未收到 ui.request——Plan Agent 未发起完成确认（提示词/ask-user-question 包未生效），完成确认机制未真正运转",
-      "evidence": "types=['run.started']"
+      "name": "任务终态 Completed（期望 Completed；Failed 记链路问题）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "plan tree 落在约定路径（decisions/002）：/tmp/devforge-e2e-chain-PxSLDyIR/.devforge/plans/demo-app/planning-run",
+      "ok": true,
+      "detail": "文件数=7"
     }
   ],
-  "passed": 9,
-  "failed": 6
+  "issues": [],
+  "passed": 15,
+  "failed": 0
 }

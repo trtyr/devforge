@@ -101,3 +101,5 @@
 {"type":"task_started","goalId":"mvck366o-l4r2wm","taskId":"task-2","at":"2026-10-17T15:39:52.242Z"}
 {"type":"task_complete","goalId":"mvck366o-l4r2wm","taskId":"task-2","evidence":"机制诊断（第 20 试活体取证）：fd 表无管道=SOP 已过 review 返回；引擎线程 futex_do_wait（scope join）+watchdog hrtimer_nanosleep 存活；根因=done.store 在 scope 返回后不可达的三行自锁死锁（cancel/超时路径可退故单测未覆盖）。修复：done 置位挪进闭包+抽 run_with_watchdog；回归单测×","at":"2026-10-17T15:55:57.586Z"}
 {"type":"task_started","goalId":"mvck366o-l4r2wm","taskId":"task-3","at":"2026-10-17T15:56:45.023Z"}
+{"type":"task_complete","goalId":"mvck366o-l4r2wm","taskId":"task-3","evidence":"UiRelay::abort_all（清空 pending 丢 sender→阻塞 ask 立刻失败解阻）+ cancel_task 接线；回归单测×2：ui_abort_all_unblocks_ask（机制层）+ dialog_pending_cancel_unwinds_sop（SOP 链路层，dialog 挂起+abort→解阻收场，execute 层 is_cancelled→Faile","at":"2026-10-17T16:00:26.366Z"}
+{"type":"task_started","goalId":"mvck366o-l4r2wm","taskId":"task-4","at":"2026-10-17T16:00:39.632Z"}

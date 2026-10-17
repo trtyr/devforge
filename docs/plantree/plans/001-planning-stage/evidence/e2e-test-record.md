@@ -122,6 +122,26 @@ PASS verdict 落盘（22:08:34）后 run 迟迟不翻 Settled（至 22:39 脚本
 
 ---
 
+# 第 21 试（2026-10-18 00:00–00:05，修复后首跑）：全链七环走通，Completed 实证到手
+
+三笔修复（SseStream 读超时 / watchdog scope 自锁 / cancel abort_all）后首次端到端：
+
+- **5 分 02 秒全程**（史上最快；装包 ~2 分钟 + 规划 + 审查）；
+- 规划会话 155K，树 5 文件落约定路径（README/roadmap/open-questions/decisions/001-tech-stack/topics/scope）；
+- **SSE 时间线全环捕获：run.started → ui.request×5 → config.rendered → run.finished**——
+  SseStream 修复后 autopilot 全程在岗，**5 个 dialog 全部经 SSE 应答（answered=5, requested=5）**，
+  应答器（会话文件探测制）全程未被需要；
+- review-0（grok-4.7，71K 审查会话）逐字 `<verdict>PASS</verdict>`（stopReason=stop，usage 完整）：
+  「语义审查完成。规划意图、范围、任务顺序与决策互相引用一致…未发现前后矛盾或语义不通。」
+- **run 终态 Settled + 任务终态 Completed（API 实证）**——watchdog 自锁修复生效，
+  第 18/19/20 三试的挂起点一去不返；
+- test_08 正式 JSON：**15 PASS / 0 FAIL**（含 run.finished ok=True / Settled / Completed / 树路径四项关键断言）。
+
+七环对账：创建项目 ✓ → 任务 ✓ → 真实 pi 规划（多轮 dialog 代理）✓ → 树落约定路径 ✓ →
+review 循环 ✓ → 逐字 PASS verdict ✓ → **任务 Completed ✓**。
+
+---
+
 # 第 19 试（2026-10-17 22:33–22:55）：直 PASS 复现 + 挂起二连，黑盒终点确认
 
 - 装包缓慢（~20 分钟，外部克隆抖动）→ 规划起跑 → 首问盲答「完成」（此试会话尾无 toolCall 签名，

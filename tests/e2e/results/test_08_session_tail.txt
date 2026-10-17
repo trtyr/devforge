@@ -1,36 +1,62 @@
-session=2026-10-17T13-59-55-540Z_01a14a29-7d93-7000-b700-e83709c8e9cf.jsonl
-entries=173
+session=2026-10-17T16-03-11-779Z_01a14a9a-5922-71a6-b369-756823af86b4.jsonl
+entries=50
 
-- message toolResult: Successfully replaced 1 block(s) in /tmp/devforge-e2e-chain-NPlRJO5e/.devforge/plans/demo-app/planning-run/decisions/002-auth-strategy.md.
+- message toolResult: ./README.md
+./decisions/001-tech-stack.md
+./open-questions.md
+./roadmap.md
+./topics/scope.md
+=== 链接检查 ===
+../decisions/001-tech-stack.md: ../roadmap.md: ../topics/scope.md: README.md: decisions/001-te
+- message assistant:  终检发现一处路径不够明确：`topics/scope.md` 中引用 `open-questions.md` 时缺少 `../` 前缀。现在修正： edit
+- message toolResult: Successfully replaced 1 block(s) in /tmp/devforge-e2e-chain-PxSLDyIR/.devforge/plans/demo-app/planning-run/topics/scope.md.
 - message assistant: bash
-- message toolResult: === 各处 Q002 关闭时机 ===
-./open-questions.md:15:- 关闯时机（唯一权威）：**T001 完成时实测并定案**，结果写回 `decisions/002-auth-strategy.md` 的复核章节或新增 decision。T005/T006 开工前必须有结论；T006 不得在未定案时把 middleware 当作安全边界。
-./decisions/002-a
-- message assistant: Q002 关闭时机已全线统一为「T001 完成时」。修一处错字「关闯」并复核 Q005 表述。 edit
-- message toolResult: Successfully replaced 1 block(s) in /tmp/devforge-e2e-chain-NPlRJO5e/.devforge/plans/demo-app/planning-run/open-questions.md.
+- message toolResult: OK   topics/scope.md -> ../roadmap.md
+OK   topics/scope.md -> ../open-questions.md
+OK   topics/scope.md -> ../decisions/001-tech-stack.md
+OK   decisions/001-tech-stack.md -> ../topics/scope.md
+
+- message assistant: 所有相对链接都能解析。最后做一次一致性核对再收尾： bash
+- message toolResult: === 任务ID唯一性 ===
+      2 T001
+      3 T002
+      3 T003
+      2 T004
+      2 T005
+      2 T006
+      1 T007
+=== 问题ID ===
+Q001
+Q002
+Q003
+Q004
+Q005
+Q006
+=== 状态声明 ===
+- 进入 `In Progress`（有代码开始落地）时再补 `imple
 - message assistant:  bash
-- message toolResult: === Q005 vs decisions/002 冲突检查 ===
-open-questions.md:25:## Q005 密码哈希算法选 argon2id 还是 bcrypt？
-open-questions.md:28:- 当前处理：优先 argon2id，若安装受阻降级 bcrypt cost ≥ 12。
-topics/03-auth-and-session.md:7:- 算法：argon
-- message assistant:  Q005 表述自洽（算法二选一在 T003 定，策略层面已 Accepted）。最后做一次完整一致性核对。 bash
-- message toolResult: === 文件清单 ===
-./README.md
-./baseline/README.md
-./baseline/module-map.md
-./baseline/risk-hotspots.md
-./baseline/runtime-flows.md
-./baseline/storage-and-state.md
-./baseline/test-and-release-gates.md
-./de
-- message assistant: 所有修订已完成。确认修订结果。 ask_user_question
-- message toolResult: User has answered your questions: "四处语义矛盾已修订完毕，是否确认完成？"="确认完成". You can now continue with the user's answers in mind.
-- message assistant:  修订完成。
+- message toolResult: === 唯一定义行（- `T00x` 开头）===
+7
+      1 - `T001`
+      1 - `T002`
+      1 - `T003`
+      1 - `T004`
+      1 - `T005`
+      1 - `T006`
+      1 - `T007`
 
-## 4 处矛盾的修法
+- message assistant:  规划树已成形并通过终检。当前状态总结：
 
-**1. Q003 状态矛盾** — `topics/01-product-scope.md`
-「与用户确认过的范围」补入 Q001/Q003/Q006 的确认结论与日期；「未确认」改为「无」，并指向归档位置。
+| 文件 | 角色 |
+|---|---|
+| `README.md` | 入口：范围、非目标、权威顺序、文件地图、生命周期（Planning） |
+| `roadmap.md` | 任务身份与状态唯一权威：T001–T007，含依赖链 |
+| `topics/scope.md` | 主题胶囊：范围、6 条验收标准、验证路径、风险 |
+| `decisio ask_user_question
+- message toolResult: User has answered your questions: "本次 demo-app 的 plan tree 规划是否可以结束？"="完成". You can now continue with the user's answers in mind.
+- message assistant: 用户确认完成。规划收尾。
 
-**2. Q001 状态矛盾** — `topics/02-architecture.md`
-标题由「技术栈（建议，待用户确认 Q001）」改为「
+产出位置：`.devforge/plans/demo-app/planning-run/`（5 个文件，工作模式 `clarify` → 计划阶段 `Planning`）
+后续接手路径：读 `README.md` → `roadmap.md` 挑 `T001`/`T002` → 遇到选型分歧查 `open-questions.md`。
+
+<plan-complete>

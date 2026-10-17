@@ -241,8 +241,12 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 - **新缺陷（已修，本轮 task-2）· verdict 后挂起 = watchdog scope 自锁死锁**：第 18/19/20 三试连续复现；活体取证（第 20 试挂起现场 /proc）定位：服务进程 fd 表**无任何管道**（review pi 已被 Drop 正常击杀 = SOP 已越过 review 返回）、线程表内引擎线程 `futex_do_wait`（scope join 停车）+ watchdog 线程 `hrtimer_nanosleep`（轮询循环）双双存活、stderr 无 panic。机制：`PlanningRpcEngine::execute` 的 watchdog scope 中 `done.store(true)` 写在 `std::thread::scope` 返回**之后**，而 scope join 要等 watchdog 退出、watchdog 只认 done——正常完成（PASS→SOP 返回）时 done 置位不可达 → 三行自锁死锁。cancel/超时路径反而能退出（watchdog 触发后 return），故单测 MockEngine 从未覆盖。修复：done 置位挪进 scope 闭包内 f() 返回后；新增回归单测 `watchdog_scope_returns_after_closure_completes`（旧实现下必死锁）与 cancel 路径单测；顺带清 main.rs 三处 collapsible_if 与 client.rs 一处 len_zero。
 - **外因项（中转长 turn 截断）本期未再现**——httpIdleTimeoutMs=60s + retry 的渲染层缓解疑似生效，样本不足不下结论。
 
-### 对目标的诚实终点
+### 对目标的诚实终点（2026-10-18 00:05 更新：修复后已翻转）
 
-合同要求的全链路七环：创建项目 ✓ → 任务 ✓ → 真实 pi 规划（多轮 dialog 代理）✓ → plan tree 落约定路径 ✓（两连证）→ review 循环含 FAIL→修复→重审 ✓（第 18 试）与首审直 PASS ✓（第 19 试）→ 逐字 PASS verdict ✓（两连证）→ **任务 Completed ✗**——被上述 verdict 后挂起缺陷阻断。
+修复阶段（本轮 goal）三笔修复落地后，**第 21 试全链七环走通**：test_08 正式 JSON **15 PASS / 0 FAIL**，
+含 run.finished ok=True / **run Settled / 任务 Completed** / 树落约定路径四项关键断言；SSE 时间线全环捕获
+（run.started → ui.request×5 → config.rendered → run.finished），5 个 dialog 全部经修复后的 SSE autopilot
+应答（answered=5, requested=5），全程 5 分 02 秒。详见证据档第 21 试小节。
 
-**用户拍板（2026-10-17 23:16）：本阶段只测试不修，测试结果如实记录，测完即结项**——Completed 状态缺失本身作为测试发现记录在案（verdict 后挂起缺陷），修复归下一阶段；修复后重跑一次链路即可领取 Completed 实证（前六环已稳定复现，预期一次即过）。
+- 用户拍板（2026-10-17 23:16「只测不修、如实记录、测完结项」驱动了当轮结项；随后用户下令「开始修吧」
+  开启本修复轮，三缺陷均已修复并以第 21 试端到端验证；Completed 实证已领取，本节历史记录保留。
