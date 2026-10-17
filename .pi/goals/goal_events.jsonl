@@ -103,3 +103,4 @@
 {"type":"task_started","goalId":"mvck366o-l4r2wm","taskId":"task-3","at":"2026-10-17T15:56:45.023Z"}
 {"type":"task_complete","goalId":"mvck366o-l4r2wm","taskId":"task-3","evidence":"UiRelay::abort_all（清空 pending 丢 sender→阻塞 ask 立刻失败解阻）+ cancel_task 接线；回归单测×2：ui_abort_all_unblocks_ask（机制层）+ dialog_pending_cancel_unwinds_sop（SOP 链路层，dialog 挂起+abort→解阻收场，execute 层 is_cancelled→Faile","at":"2026-10-17T16:00:26.366Z"}
 {"type":"task_started","goalId":"mvck366o-l4r2wm","taskId":"task-4","at":"2026-10-17T16:00:39.632Z"}
+{"type":"task_complete","goalId":"mvck366o-l4r2wm","taskId":"task-4","evidence":"第 21 试（修复后首跑）5m02s 全链七环走通：test_08 JSON 15 PASS/0 FAIL 含 run Settled+任务 Completed PASS；树 5 文件落约定路径；SSE 时间线全环（ui.request×5 全应答 answered=5/requested=5）；review-0 逐字 PASS verdict；证据已入 evidence 档+报告翻转，commi","at":"2026-10-17T16:07:07.930Z"}

@@ -205,7 +205,7 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 | test_09_run_control | cancel 端点/spawn cwd/stderr 观测 | **8 PASS / 0 FAIL** | 取消→run+task Failed；plans/<项目>/<任务>/ 目录实证；终态 cancel 404 幂等 |
 | test_10_timeout_async | 可选超时/异步渲染通知 | **8 PASS / 0 FAIL** | DEVFORGE_RUN_TIMEOUT_MS=20s → 21s 收割（<60s）；config.rendered SSE 通知实测送达 |
 | test_07_rerun_serial | 串行守卫/cancel 收场/重跑留档 | **17 PASS / 0 FAIL** | 重写版全绿：守卫双 409、cancel 1s 收场、串行释放、留档 2 条旧 run 不变、current_run 指向最新 |
-| test_08_e2e_planning | 端到端规划全链路 | 9 PASS / 6 FAIL（第 18 试 JSON）| **树 19 项落约定路径脚本级 PASS**；run 未终态（verdict 后挂起，见第 17/18/19 试）|
+| test_08_e2e_planning | 端到端规划全链路 | **第 21 试（修复后首跑）：15 PASS / 0 FAIL** | 全链七环走通：run Settled+任务 Completed+SSE 全环（ui.request×5 全应答）+树落约定路径，5m02s 史上最快；历史 17/18/19/20 试详见证据档 |
 
 ## 二、test_08 第 17/18 试：链路深度推进 + 两条新根因实证
 
