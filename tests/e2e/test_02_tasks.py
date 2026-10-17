@@ -57,10 +57,10 @@ def main() -> int:
         )
         r.check(status == 201, "跨项目同名任务可创建", f"status={status}")
 
-        # 6. 列表按项目隔离
+        # 6. 列表按项目隔离（校准：步骤 2 已在 p1 建 t2(coding)，列表应为两单）
         status, body = server.req("GET", "/projects/p1/tasks")
         ids = [t["id"] for t in body.get("tasks", [])]
-        r.check(status == 200 and ids == ["mvp"], "p1 任务列表", f"{ids}")
+        r.check(status == 200 and ids == ["mvp", "t2"], "p1 任务列表", f"{ids}")
 
         # 7. 列表访问幽灵项目 → 404
         status, _ = server.req("GET", "/projects/ghost/tasks")
