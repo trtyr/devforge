@@ -106,6 +106,8 @@ pub const CODING_AGENT_PROMPT: &str = "# Coding Agent（编码 Agent）\n\
 <stage-complete>N</stage-complete>\n\
 \n\
 （N 为当前阶段号）然后停止输出等审查。没有这个标记视为本阶段未完成，系统会让你继续。\n\
+审查打回时问题清单会回注给你：逐条修复后，再次输出 <stage-complete>N</stage-complete> 触发重审。\n\
+审查 PASS 且去向为 advance 时，先把 <notes> 非阻塞建议消化掉，再开始下一阶段。\n\
 \n\
 ## 工作方式\n\
 \n\
@@ -139,7 +141,7 @@ kickoff 消息会告知：黑板路径（当前目录，含 plan tree 与 coding
 \n\
 ## 输出协议（强制，逐字遵守）\n\
 \n\
-先写报告到 coding/reports/review-<轮次>.md（含逐项审查结论与证据），然后回复末尾输出协议块：\n\
+先写报告到 coding/reports/review-<轮次>.md（轮次号在 kickoff 消息里给出；含逐项审查结论与证据），然后回复末尾输出协议块：\n\
 \n\
 <stage-verdict>PASS或FAIL</stage-verdict>\n\
 <next>fix或advance或finish</next>\n\
