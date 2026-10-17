@@ -204,8 +204,8 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 | test_06_artifacts_graph | 产物归集与图 | 全 PASS | |
 | test_09_run_control | cancel 端点/spawn cwd/stderr 观测 | **8 PASS / 0 FAIL** | 取消→run+task Failed；plans/<项目>/<任务>/ 目录实证；终态 cancel 404 幂等 |
 | test_10_timeout_async | 可选超时/异步渲染通知 | **8 PASS / 0 FAIL** | DEVFORGE_RUN_TIMEOUT_MS=20s → 21s 收割（<60s）；config.rendered SSE 通知实测送达 |
-| test_07_rerun_serial | 串行守卫/cancel 收场/重跑留档 | （结果待填） | 重写版：守卫后 cancel 收场，不等完整规划 |
-| test_08_e2e_planning | 端到端规划全链路 | （结果待填） | 第 17/18 试，见下节 |
+| test_07_rerun_serial | 串行守卫/cancel 收场/重跑留档 | **17 PASS / 0 FAIL** | 重写版全绿：守卫双 409、cancel 1s 收场、串行释放、留档 2 条旧 run 不变、current_run 指向最新 |
+| test_08_e2e_planning | 端到端规划全链路 | 9 PASS / 6 FAIL（第 18 试 JSON）| **树 19 项落约定路径脚本级 PASS**；run 未终态（verdict 后挂起，见第 17/18/19 试）|
 
 ## 二、test_08 第 17/18 试：链路深度推进 + 两条新根因实证
 
@@ -233,12 +233,14 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
   疑点指向 pi 回合完成后自行退场（真源 blackhole 配置 agentMaxTurns=16 上限？）而 EOF/settled 链路
   未按预期唤醒引擎。修复阶段新 bug，待修复阶段处理。
 
-## 三、复测结论（v2）
+## 三、复测结论（v2，第 17/18/19 三试后定稿）
 
-- **修复面 16 项全部端到端回归通过**（含 test_03/09/10 的专项断言），零回归；
-- **P8-ISSUE-05 转正**：plan tree 首次落约定路径，占位 skill+cwd 双根因修复实证；
-- **P8-ISSUE-02 从 🍉 降级为真缺陷**：双通道断裂根因定位（修复归下一阶段）；
-- **新增**：verdict 后挂起（第 18 试）、cancel 在 dialog-pending 态半效（第 17 试）；
-- 外因项（中转长 turn 截断）本期未再现——httpIdleTimeoutMs=60s + retry 的渲染层缓解疑似生效，样本不足不下结论。
+- **修复面 16 项全部端到端回归通过**（含 test_03/07/09/10 专项断言），零回归；
+- **P8-ISSUE-05 转正**：第 18/19 两试树连续落约定路径（15 文件 5 目录 / 12+ 文件全结构），占位 skill+cwd 双根因修复实证；
+- **P8-ISSUE-02 真因落定（双通道断裂）**：UiRelay 私有 requests 通道无消费者，/events 只订阅领域通道——第 18 试 SSE 侧 ui.request=0 与同期 12+ 实际应答构成正反配对实证；修复归下一阶段；
+- **新缺陷（只记录）· verdict 后挂起**：review 逐字 PASS 后 pi 零 stderr 清洁退场、桥阻塞在 wait_settled read_line（EOF 应达未达）、run 永驻 Running——第 18/19 两试连续复现（22:08 与 22:50 两次 PASS verdict 均如此），cancel 对其无效（见第 17 试）；修复阶段源码级诊断；
+- **外因项（中转长 turn 截断）本期未再现**——httpIdleTimeoutMs=60s + retry 的渲染层缓解疑似生效，样本不足不下结论。
 
-（test_07/test_08 正式结果 JSON 落盘后回填上表槽位）
+### 对目标的诚实终点
+
+合同要求的全链路七环：创建项目 ✓ → 任务 ✓ → 真实 pi 规划（多轮 dialog 代理）✓ → plan tree 落约定路径 ✓（两连证）→ review 循环含 FAIL→修复→重审 ✓（第 18 试）与首审直 PASS ✓（第 19 试）→ 逐字 PASS verdict ✓（两连证）→ **任务 Completed ✗**——被上述 verdict 后挂起缺陷阻断，「只记录不修」约束下此为黑盒可达终点。修复该缺陷后重跑一次链路即頬取 Completed 实证（前六环已稳定复现，预期一次即过）。

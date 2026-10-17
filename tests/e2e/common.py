@@ -41,7 +41,10 @@ class Server:
     def __init__(self, port: int | None = None, home: str | None = None,
                  env_extra: dict[str, str] | None = None):
         self.port = port or free_port()
-        self.home = Path(home) if home else Path(tempfile.mkdtemp(prefix="devforge-e2e-"))
+        # home 优先级：显式参数 > DEVFORGE_E2E_HOME 环境变量（外滩应答器与测试绑同一隔离 HOME）> 随机临时目录
+        self.home = Path(home) if home else Path(
+            os.environ.get("DEVFORGE_E2E_HOME") or tempfile.mkdtemp(prefix="devforge-e2e-")
+        )
         self.proc: subprocess.Popen | None = None
         self.log_path = self.home / "server-stderr.log"
         # 服务器工作目录（围栏：隔离 spawn 子进程的落盘污染，同时用于观测 plan tree 实际落点）

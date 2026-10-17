@@ -115,3 +115,18 @@ PASS verdict 落盘（22:08:34）后 run 迟迟不翻 Settled（至 22:39 脚本
 
 合同要求 Completed 状态实证；verdict 后挂起机制不明，随机性未知（修复前 run 16 曾完整走通），
 再赌一次终态翻盘。
+
+---
+
+# 第 19 试（2026-10-17 22:33–22:55）：直 PASS 复现 + 挂起二连，黑盒终点确认
+
+- 装包缓慢（~20 分钟，外部克隆抖动）→ 规划起跑 → 首问盲答「完成」（此试会话尾无 toolCall 签名，
+  探测制盲答路径实战验证）→ 树 12+ 文件连续落约定路径（README/roadmap/baseline/decisions/D001-language-stack/
+  D002-persistence/topics/acceptance/architecture/scope/implementation-status/open-questions/ideas/history——
+  含 Provisional 决策、OQ-01…05、Phase 0–2 roadmap 的完整规划结构）；
+- **review-0 首审直 PASS**（22:50:34，逐字 `<verdict>PASS</verdict>` + 语义审查结论 + usage 完整，
+  stopReason=stop，24.5K tokens）——无 FAIL 轮直接通过；
+- **挂起二连**：PASS 后 3 分钟起 run 仍 Running，全部 pi 清洁退场（零 stderr、无孙进程持 fd），
+  与第 18 试同签名——**连续两次复现，定性为系统性新缺陷**；
+- 第 17/18/19 三试合并结论：前六环（创建→任务→规划→树落约定路径→review 循环→逐字 PASS verdict）
+  全部实证且可重复；第七环（Completed 翻转）被 verdict 后挂起阻断，「只记录不修」下为黑盒可达终点。
