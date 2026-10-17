@@ -238,7 +238,7 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 - **修复面 16 项全部端到端回归通过**（含 test_03/07/09/10 专项断言），零回归；
 - **P8-ISSUE-05 转正**：第 18/19 两试树连续落约定路径（15 文件 5 目录 / 12+ 文件全结构），占位 skill+cwd 双根因修复实证；
 - **P8-ISSUE-02 误诊撤回（重要更正）**：原判「双通道断裂——UiRelay 私有 requests 通道无消费者」**经修复阶段源码复核不成立**：`UiRelay::new(events.clone())` 存的就是共享 events 通道（main.rs:31-32、fixture 同构），产品侧 SSE 契约无恙（新增回归单测 sse_delivers_ui_request 钉死）。真因在**测试基建**：`SseStream` 的 HTTP 连接带 10s socket 读超时，而服务器 SSE keepalive 间隔 15s——任何静默段先触发 `socket.timeout`（OSError 子类）被 `_pump` 的 `except OSError: pass` 静默吞掉，**泵线程悄悄退场 = SSE 消费者从首个 >10s 静默段起永久耳聋**。run.started 恰好在订阅后 10s 窗口内到达故被捕获，后续 ui.request/run.finished 全部丢失——历史「autopilot 耳聋」「SSE 流掉线」全部由此解释。已修：读超时提到 120s（>15s keepalive）+ TimeoutError 继续读不退泵（common.py）；产品代码零改动（git diff 991acaf..c2dcde3 -- src/ 为空，audit 已核实）。
-- **新缺陷（只记录）· verdict 后挂起**：review 逐字 PASS 后 pi 零 stderr 清洁退场、桥阻塞在 wait_settled read_line（EOF 应达未达）、run 永驻 Running——第 18/19 两试连续复现，cancel 对其无效；修复阶段源码级诊断（本轮 task-2）；
+- **新缺陷（已修，本轮 task-2）· verdict 后挂起 = watchdog scope 自锁死锁**：第 18/19/20 三试连续复现；活体取证（第 20 试挂起现场 /proc）定位：服务进程 fd 表**无任何管道**（review pi 已被 Drop 正常击杀 = SOP 已越过 review 返回）、线程表内引擎线程 `futex_do_wait`（scope join 停车）+ watchdog 线程 `hrtimer_nanosleep`（轮询循环）双双存活、stderr 无 panic。机制：`PlanningRpcEngine::execute` 的 watchdog scope 中 `done.store(true)` 写在 `std::thread::scope` 返回**之后**，而 scope join 要等 watchdog 退出、watchdog 只认 done——正常完成（PASS→SOP 返回）时 done 置位不可达 → 三行自锁死锁。cancel/超时路径反而能退出（watchdog 触发后 return），故单测 MockEngine 从未覆盖。修复：done 置位挪进 scope 闭包内 f() 返回后；新增回归单测 `watchdog_scope_returns_after_closure_completes`（旧实现下必死锁）与 cancel 路径单测；顺带清 main.rs 三处 collapsible_if 与 client.rs 一处 len_zero。
 - **外因项（中转长 turn 截断）本期未再现**——httpIdleTimeoutMs=60s + retry 的渲染层缓解疑似生效，样本不足不下结论。
 
 ### 对目标的诚实终点

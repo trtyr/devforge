@@ -321,14 +321,16 @@ async fn sse_delivers_ui_request() {
     // P8-ISSUE-02 回归：ui.request 必须出现在 /events SSE 流上（复测误诊双通道，
     // 实测 UiRelay.requests 即共享 events 通道；此测试钉死该契约防回归）。
     let f = fixture();
+    // 先订阅 SSE（broadcast 只投递订阅后的事件），再发起 ask——顺序不可倒置
+    let resp = send(&f.router, "GET", "/api/v1/events", None).await;
+    assert_eq!(resp.status(), 200);
+    let mut stream = resp.into_body().into_data_stream();
+
     let st = f.state.clone();
     let handle = std::thread::spawn(move || {
         st.ui.ask_blocking("测试问题", &["选项A", "选项B"])
     });
 
-    let resp = send(&f.router, "GET", "/api/v1/events", None).await;
-    assert_eq!(resp.status(), 200);
-    let mut stream = resp.into_body().into_data_stream();
     let mut got = String::new();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
     while !got.contains("ui.request") {

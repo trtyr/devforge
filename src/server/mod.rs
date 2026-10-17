@@ -144,35 +144,14 @@ impl RunEngine for PlanningRpcEngine {
 
         // watchdog（P8-ISSUE-01）：取消置位或超时 → 按 run-id 精确 SIGKILL 自家 pi。
         // scope 借用外部 control 原件（非快照——cancel 端点置位必须实时可见）；
-        // SOP 结束后置 done，watchdog ≤300ms 内退出。
+        // SOP 结束后在闭包内置 done，watchdog ≤300ms 内退出（修复：原实现 done 在
+        // scope 返回后才置位，而 scope 要等 watchdog 退出——正常完成必死锁，
+        // 第 18/19/20 三试 verdict 后挂起的真因）。
         let run_id = run.id.0.clone();
-        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let done_wd = done.clone();
-        let sop_result = std::thread::scope(|scope| {
-            scope.spawn(move || {
-                loop {
-                    if done_wd.load(std::sync::atomic::Ordering::SeqCst) {
-                        return;
-                    }
-                    if control.is_cancelled() || control.timed_out(crate::domain::now_ms()) {
-                        let killed = crate::engine::ledger::scan_and_kill_run(&run_id);
-                        if killed > 0 {
-                            tracing::warn!(
-                                component = "planning-engine",
-                                run_id = %run_id,
-                                killed,
-                                "watchdog 已清场（取消或超时）"
-                            );
-                        }
-                        return;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                }
-            });
+        let sop_result = run_with_watchdog(control, run_id.clone(), || {
             let mut sop_loop = PlanningLoop::new(plan, factory);
             sop_loop.run(&mut user)
         });
-        done.store(true, std::sync::atomic::Ordering::SeqCst);
 
         match sop_result {
             Ok(report) => {
@@ -379,3 +358,80 @@ pub fn run_in_background(
 
 // 台账条目类型在本模块的再导出（spawn 侧调用方记录用）
 pub use crate::engine::ledger::LedgerEntry as SpawnLedgerEntry;
+
+/// SOP 执行 + 取消/超时看门狗。
+///
+/// 契约：`f` 返回后立刻置位 done（在 scope 闭包内），watchdog ≤300ms 退出、scope join 才能返回——
+/// 否则 done 置位不可达（在 scope 返回后）而 scope 等 watchdog，正常完成必死锁
+/// （第 18/19/20 试 verdict 后挂起的真因）。
+fn run_with_watchdog<T>(
+    control: &RunControl,
+    run_id: String,
+    f: impl FnOnce() -> T,
+) -> T {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let done = std::sync::Arc::new(AtomicBool::new(false));
+    let done_wd = done.clone();
+    let done_main = done.clone();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            loop {
+                if done_wd.load(Ordering::SeqCst) {
+                    return;
+                }
+                if control.is_cancelled() || control.timed_out(crate::domain::now_ms()) {
+                    let killed = crate::engine::ledger::scan_and_kill_run(&run_id);
+                    if killed > 0 {
+                        tracing::warn!(
+                            component = "planning-engine",
+                            run_id = %run_id,
+                            killed,
+                            "watchdog 已清场（取消或超时）"
+                        );
+                    }
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        });
+        let out = f();
+        // 修复点：f 返回后立刻置位（在 scope 闭包内），watchdog 才能退出、join 才能返回；
+        // 若在 scope 返回后才置位则不可达，正常完成必死锁（verdict 后挂起真因）
+        done_main.store(true, Ordering::SeqCst);
+        out
+    })
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn watchdog_scope_returns_after_closure_completes() {
+        // 回归（verdict 后挂起）：f 正常返回后 scope join 必须解锁（旧实现此处死锁）
+        let control = RunControl::new();
+        let start = Instant::now();
+        let out = run_with_watchdog(&control, "watchdog-regression".into(), || {
+            std::thread::sleep(Duration::from_millis(400));
+            42
+        });
+        assert_eq!(out, 42);
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "scope join 死锁：elapsed={:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn watchdog_scope_cancel_path_does_not_hang() {
+        // cancel 置位 → watchdog 触发清场路径（scan_and_kill_run 对不存在进程为 no-op）→ 退出
+        let control = RunControl::new();
+        control.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        let start = Instant::now();
+        let out = run_with_watchdog(&control, "watchdog-cancel".into(), || 7);
+        assert_eq!(out, 7);
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+}

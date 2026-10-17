@@ -97,3 +97,5 @@
 {"type":"goal_created","goalId":"mvck366o-l4r2wm","objective":"修复复测发现的三条缺陷——P8-ISSUE-02 双通道断裂（ui.request 进 /events SSE）、verdict 后挂起（review PASS 后 run 永驻 Running）、dialog-pending 态 cancel 半效——并重跑端到端链路领取任务 Completed 实证","sisyphus":false,"autoContinue":true,"at":"2026-10-17T15:33:16.944Z"}
 {"type":"task_list_set","goalId":"mvck366o-l4r2wm","taskCount":5,"blockCompletion":true,"at":"2026-10-17T15:33:16.944Z"}
 {"type":"task_started","goalId":"mvck366o-l4r2wm","taskId":"task-1","at":"2026-10-17T15:33:45.003Z"}
+{"type":"task_complete","goalId":"mvck366o-l4r2wm","taskId":"task-1","evidence":"误诊撤回：UiRelay.requests 即共享 events 通道(main.rs:31-32)；真因=测试 SseStream 10s 读超时 vs 服务器 15s keepalive+OSError 静默吞→泵退场；已修(读超时 120s+TimeoutError continue)；新增产品回归单测 sse_delivers_ui_request；cargo test 88 过+clip","at":"2026-10-17T15:38:57.850Z"}
+{"type":"task_started","goalId":"mvck366o-l4r2wm","taskId":"task-2","at":"2026-10-17T15:39:52.242Z"}

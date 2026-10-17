@@ -482,7 +482,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         client.kill().unwrap();
-        assert!(outcome.responses.len() >= 1);
+        assert!(!outcome.responses.is_empty());
 
         for _ in 0..40 {
             if fs::read_to_string(&log)

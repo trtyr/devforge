@@ -64,17 +64,16 @@ async fn main() -> anyhow::Result<()> {
     // + run 超时（P8-ISSUE-01）：默认不限时（零硬限制），DEVFORGE_RUN_TIMEOUT_MS 显式开启
     // （两者在 Arc 分享前经 get_mut 注入）
     if let Some(s) = std::sync::Arc::get_mut(&mut state) {
-        if let Ok(t) = std::env::var("DEVFORGE_TOKEN") {
-            if !t.is_empty() {
-                s.token = Some(t);
-            }
+        if let Ok(t) = std::env::var("DEVFORGE_TOKEN")
+            && !t.is_empty()
+        {
+            s.token = Some(t);
         }
-        if let Ok(ms) = std::env::var("DEVFORGE_RUN_TIMEOUT_MS") {
-            if let Ok(n) = ms.parse::<u64>() {
-                if n > 0 {
-                    s.run_timeout_ms = Some(n);
-                }
-            }
+        if let Ok(ms) = std::env::var("DEVFORGE_RUN_TIMEOUT_MS")
+            && let Ok(n) = ms.parse::<u64>()
+            && n > 0
+        {
+            s.run_timeout_ms = Some(n);
         }
     }
 
