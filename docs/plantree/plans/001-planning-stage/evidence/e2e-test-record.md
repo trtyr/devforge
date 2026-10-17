@@ -49,13 +49,17 @@ plan-tree skill 占位目录 → agent 发起 `find /` 全盘搜规范 → 单�
 
 ## 结果：链路首问被 dialog 挂起阻塞 28 分钟，未走通；但拿到两条重量级根因实证
 
-## 实证一（代码级）：P8-ISSUE-02 真因 = 双通道断裂
+## 实证一（23:5x 纠错）：P8-ISSUE-02 原判「双通道断裂」撤回——真因在测试基建
 
-`UiRelay::ask_blocking` 把 ui.request 广播进 **UiRelay 私有的 `requests` 通道**（mod.rs:69），
-而 `/events` SSE 端点只订阅 `ServerState.events` 领域通道（handlers.rs:289）。
-`requests` 通道除单测助手 `subscribe_requests()` 外**无任何消费者**——
-ui.request 从未到达任何 SSE 客户端，前端/autopilot 天生耳聋。
-run 8 的「autopilot 聋」、修复阶段未覆盖本项，全部由此解释。
+**纠错**：原判称 UiRelay 将 ui.request 广播进私有 requests 通道且无消费者。修复阶段源码复核：
+`UiRelay::new(events.clone())` 存的就是共享 events 通道（main.rs:31-32、fixture 同构），
+产品侧 SSE 契约无恙，新增回归单测 `sse_delivers_ui_request` 钉死该契约。
+
+**真因**：测试基建 `SseStream` 的 HTTP 连接带 10s socket 读超时，而服务器 SSE keepalive 间隔 15s——
+任何静默段先触发 `socket.timeout`（OSError 子类）被 `_pump` 的 `except OSError: pass` 静默吞掉，
+**泵线程悄悄退场 = SSE 消费者从首个 >10s 静默段起永久耳聋**。run.started 恰在订阅后首窗口内到达故被捕获，
+后续 ui.request/run.finished 全部丢失——历史「autopilot 耳聋」「SSE 流掉线」全部由此解释。
+已修：读超时 120s（>15s keepalive）+ TimeoutError 继续读不退泵（common.py）。
 
 ## 实证二（行为级）：dialog-pending 变体签名 + 取消半效
 

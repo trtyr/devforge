@@ -138,27 +138,37 @@ class SseStream:
         self.resp = self.conn.getresponse()
         if self.resp.status != 200:
             raise RuntimeError(f"SSE 订阅失败: {self.resp.status}")
+        # 读超时与连接超时分离：服务器 keepalive 间隔 15s，读超时必须远大于它，
+        # 否则静默段先触发 socket 超时把泵线程杀死（复测第 18/19 试 autopilot 耳聋真因，
+        # 曾误诊为产品双通道断裂——实测 UiRelay.requests 即共享 events 通道）
+        if self.conn.sock is not None:
+            self.conn.sock.settimeout(120.0)
         self.events: list[dict] = []
         self._stop = threading.Event()
         self.thread = threading.Thread(target=self._pump, daemon=True)
         self.thread.start()
 
     def _pump(self) -> None:
-        try:
-            while not self._stop.is_set():
-                line = self.resp.readline()
-                if not line:
-                    break
-                text = line.decode(errors="replace").strip()
-                if not text.startswith("data: "):
-                    continue  # SSE 注释/keep-alive 行
-                payload = text[len("data: "):]
-                try:
-                    self.events.append(json.loads(payload))
-                except json.JSONDecodeError:
-                    continue
-        except (OSError, ValueError):
-            pass  # 连接关闭即退出
+        while not self._stop.is_set():
+            try:
+                while not self._stop.is_set():
+                    line = self.resp.readline()
+                    if not line:
+                        return
+                    text = line.decode(errors="replace").strip()
+                    if not text.startswith("data: "):
+                        continue  # SSE 注释/keep-alive 行
+                    payload = text[len("data: "):]
+                    try:
+                        self.events.append(json.loads(payload))
+                    except json.JSONDecodeError:
+                        continue
+            except TimeoutError:
+                # 读超时（OSError 子类）：静默段超时——继续等，不退泵
+                # （服务器 15s keepalive 会喂活连接；退泵 = SSE 永久耳聋）
+                continue
+            except (OSError, ValueError):
+                return  # 连接关闭即退出
 
     def wait_for(self, predicate, timeout: float = 30.0) -> dict | None:
         """轮询已收集事件直到谓词命中或超时。返回命中事件或 None。"""

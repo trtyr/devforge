@@ -317,6 +317,54 @@ async fn ui_relay_roundtrip() {
 }
 
 #[tokio::test]
+async fn sse_delivers_ui_request() {
+    // P8-ISSUE-02 回归：ui.request 必须出现在 /events SSE 流上（复测误诊双通道，
+    // 实测 UiRelay.requests 即共享 events 通道；此测试钉死该契约防回归）。
+    let f = fixture();
+    let st = f.state.clone();
+    let handle = std::thread::spawn(move || {
+        st.ui.ask_blocking("测试问题", &["选项A", "选项B"])
+    });
+
+    let resp = send(&f.router, "GET", "/api/v1/events", None).await;
+    assert_eq!(resp.status(), 200);
+    let mut stream = resp.into_body().into_data_stream();
+    let mut got = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !got.contains("ui.request") {
+        assert!(tokio::time::Instant::now() < deadline, "SSE 未送出 ui.request");
+        let chunk = tokio::time::timeout(std::time::Duration::from_millis(500), stream.next())
+            .await
+            .expect("chunk 超时");
+        match chunk {
+            Some(Ok(bytes)) => got.push_str(&String::from_utf8_lossy(&bytes)),
+            _ => break,
+        }
+    }
+    assert!(got.contains("ui.request"), "SSE 应送出 ui.request: {got}");
+
+    // 提取 id 并回填，释放阻塞的 ask 线程
+    let v: Value = serde_json::from_str(
+        got.split("data: ")
+            .find(|l| l.contains("ui.request"))
+            .and_then(|l| l.split('\n').next())
+            .expect("data 行"),
+    )
+    .unwrap();
+    let id = v["id"].as_str().unwrap().to_string();
+    let resp = send(
+        &f.router,
+        "POST",
+        &format!("/api/v1/ui/{id}/answer"),
+        Some(json!({"value": "选项A"})),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let answer = handle.join().unwrap().unwrap();
+    assert_eq!(answer, "选项A");
+}
+
+#[tokio::test]
 async fn auth_token_enforced_when_configured() {
     let f = fixture_with_token(Some("secret"));
 
