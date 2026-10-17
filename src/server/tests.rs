@@ -540,3 +540,70 @@ async fn run_timeout_fails_run() {
     let body = body_json(resp).await;
     assert_eq!(body["tasks"][0]["status"], "Failed");
 }
+
+#[tokio::test]
+async fn ui_abort_all_unblocks_ask() {
+    // task-3 回归（机制层）：cancel 的解阻动作 abort_all 必须让阻塞中的 ask 立刻失败
+    let f = fixture();
+    let ui = f.state.ui.clone();
+    let handle = std::thread::spawn(move || ui.ask_blocking("继续吗", &["完成"]));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while f.state.ui.pending_count() == 0 {
+        assert!(std::time::Instant::now() < deadline, "dialog 未挂起");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let aborted = f.state.ui.abort_all();
+    assert_eq!(aborted, 1);
+    let r = handle.join().unwrap();
+    assert!(r.is_err(), "abort 后 ask 应失败解阻");
+    assert_eq!(f.state.ui.pending_count(), 0);
+}
+
+#[tokio::test]
+async fn dialog_pending_cancel_unwinds_sop() {
+    // task-3 回归（链路层）：dialog 挂起 + cancel 解阻 → SOP 以错误解阻
+    // （execute 层将 is_cancelled 映射为 Failed{已取消}，映射已有）
+    use super::RelayUserLink;
+    use crate::sop::output::COMPLETION_TAG;
+    use crate::sop::planning::{
+        PlanAgentSession, PlanningLoop, ReviewSession, ReviewSessionFactory, UserLink,
+    };
+
+    struct FakePlan;
+    impl PlanAgentSession for FakePlan {
+        fn converse(&mut self, _message: &str, ui: &mut dyn UserLink) -> crate::error::Result<String> {
+            let _answer = ui.ask("继续吗", &["完成"])?; // 阻塞点：等用户应答
+            Ok(format!("收到。\n{COMPLETION_TAG}"))
+        }
+    }
+    struct PassFactory;
+    impl ReviewSessionFactory for PassFactory {
+        fn open(&mut self) -> crate::error::Result<Box<dyn ReviewSession>> {
+            Ok(Box::new(PassReview))
+        }
+    }
+    struct PassReview;
+    impl ReviewSession for PassReview {
+        fn review(&mut self, _instruction: &str) -> crate::error::Result<String> {
+            Ok("通过 <verdict>PASS</verdict>".into())
+        }
+    }
+
+    let f = fixture();
+    let relay = f.state.ui.clone();
+    let relay2 = relay.clone();
+    let handle = std::thread::spawn(move || {
+        let mut user = RelayUserLink { relay: relay2 };
+        let mut lp = PlanningLoop::new(FakePlan, PassFactory);
+        lp.run(&mut user)
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while relay.pending_count() == 0 {
+        assert!(std::time::Instant::now() < deadline, "dialog 未挂起");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // cancel 端点的解阻动作（handlers::cancel_task 同款）
+    relay.abort_all();
+    let result = handle.join().unwrap();
+    assert!(result.is_err(), "dialog 挂起被 abort 后 SOP 应解阻收场（execute 层映射为 Failed）");
+}

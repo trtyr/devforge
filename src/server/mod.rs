@@ -94,6 +94,16 @@ impl UiRelay {
     pub fn pending_count(&self) -> usize {
         self.pending.lock().expect("pending 锁").len()
     }
+
+    /// 中止全部待答（cancel 端点解阻用）：丢弃 sender 使所有阻塞中的
+    /// `ask_blocking` 立刻失败解阻，引擎得以按 cancel 语义收场——
+    /// 修复 dialog 挂起态 cancel 半效（杀 pi 不解阻 mpsc recv）。
+    pub fn abort_all(&self) -> usize {
+        let mut map = self.pending.lock().expect("pending 锁");
+        let n = map.len();
+        map.clear();
+        n
+    }
 }
 
 /// sop::UserLink 的中继实现（引擎线程内使用）。

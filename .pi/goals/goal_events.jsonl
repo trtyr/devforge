@@ -99,3 +99,5 @@
 {"type":"task_started","goalId":"mvck366o-l4r2wm","taskId":"task-1","at":"2026-10-17T15:33:45.003Z"}
 {"type":"task_complete","goalId":"mvck366o-l4r2wm","taskId":"task-1","evidence":"误诊撤回：UiRelay.requests 即共享 events 通道(main.rs:31-32)；真因=测试 SseStream 10s 读超时 vs 服务器 15s keepalive+OSError 静默吞→泵退场；已修(读超时 120s+TimeoutError continue)；新增产品回归单测 sse_delivers_ui_request；cargo test 88 过+clip","at":"2026-10-17T15:38:57.850Z"}
 {"type":"task_started","goalId":"mvck366o-l4r2wm","taskId":"task-2","at":"2026-10-17T15:39:52.242Z"}
+{"type":"task_complete","goalId":"mvck366o-l4r2wm","taskId":"task-2","evidence":"机制诊断（第 20 试活体取证）：fd 表无管道=SOP 已过 review 返回；引擎线程 futex_do_wait（scope join）+watchdog hrtimer_nanosleep 存活；根因=done.store 在 scope 返回后不可达的三行自锁死锁（cancel/超时路径可退故单测未覆盖）。修复：done 置位挪进闭包+抽 run_with_watchdog；回归单测×","at":"2026-10-17T15:55:57.586Z"}
+{"type":"task_started","goalId":"mvck366o-l4r2wm","taskId":"task-3","at":"2026-10-17T15:56:45.023Z"}

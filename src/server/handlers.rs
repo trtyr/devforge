@@ -168,6 +168,9 @@ pub async fn cancel_task(
     match control {
         Some(c) => {
             c.cancel();
+            // 解阻 dialog 挂起：丢掟全部待答 sender，阻塞中的 ask 立刻失败，
+            // SOP 以错误解阻 → 下方 execute 的 is_cancelled 映射为 Failed
+            st.ui.abort_all();
             Ok(Json(json!({"ok": true, "cancelled": true})))
         }
         None => Err(ApiError::not_found(format!(
