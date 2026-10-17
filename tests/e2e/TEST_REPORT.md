@@ -182,3 +182,63 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 - 全部遗留缺陷（树路径/SSE 丢件/pi stderr 黑盒/无 run 超时取消等）见上文问题清单，待修复阶段处理
 
 **结论修订**：规划 SOP 端到端机制全环验证成立——「review 通过 → plan tree 落盘 → 任务 Completed」已真实观察到一次；此前「链路末端被阻断」的定性适用于第 1–15 次运行，第十六次在供给链补齐后走通。
+
+---
+
+# 修复后复测报告 v2（2026-10-17 21:10 起，被测版本 991acaf）
+
+- 测试范围：修复阶段全部 16 项代码修复的端到端回归 + 全功能点覆盖重跑
+- 脚本组：test_00–test_10 共 11 个（新增 test_09 运行控制面 / test_10 超时与异步渲染）+ dialog 应答器（探测优先版，commit 6545429）
+- 交互代理：AI 全程替代用户应答（探测制回填，不依赖 SSE/会话签名）
+
+## 一、逐脚本结果
+
+| 脚本 | 功能域 | 结果 | 备注 |
+|------|--------|------|------|
+| test_00_server | 服务器生命周期/健康 | 8 PASS / 0 FAIL | |
+| test_01_projects | 项目管理 API | 全 PASS | P1-ISSUE-01 断言自适应翻转：失败创建不再残留半注册 |
+| test_02_tasks | 任务管理 API | 全 PASS | |
+| test_03_config | 配置管理与渲染 | **22 PASS / 0 FAIL** | 原生 models.json 分发（1M/64K 预算）+ 运行时生存键 + 内置 skill 兑底 + PUT 202 异步 + 未知模型 400 + 真源落盘，全部修复面断言实测通过 |
+| test_04_auth | 鉴权 | 全 PASS | |
+| test_05_events_sse | SSE 事件流 | 全 PASS | |
+| test_06_artifacts_graph | 产物归集与图 | 全 PASS | |
+| test_09_run_control | cancel 端点/spawn cwd/stderr 观测 | **8 PASS / 0 FAIL** | 取消→run+task Failed；plans/<项目>/<任务>/ 目录实证；终态 cancel 404 幂等 |
+| test_10_timeout_async | 可选超时/异步渲染通知 | **8 PASS / 0 FAIL** | DEVFORGE_RUN_TIMEOUT_MS=20s → 21s 收割（<60s）；config.rendered SSE 通知实测送达 |
+| test_07_rerun_serial | 串行守卫/cancel 收场/重跑留档 | （结果待填） | 重写版：守卫后 cancel 收场，不等完整规划 |
+| test_08_e2e_planning | 端到端规划全链路 | （结果待填） | 第 17/18 试，见下节 |
+
+## 二、test_08 第 17/18 试：链路深度推进 + 两条新根因实证
+
+### 第 17 试（21:36–21:56，含证伪过程）
+
+装包+渲染 124s（异步化后远优于历史 10–15 分钟同步阻塞）→ 规划 Agent 正常起跑（读真实 skill、无全盘扫描）→
+首问 dialog 挂起 **28 分钟**无人应答 → 期间 cancel 实验拿到两条重量级实证：
+
+1. **P8-ISSUE-02 真因（代码级实锤）· 双通道断裂**：`UiRelay::ask_blocking` 把 ui.request 广播进 UiRelay 私有
+   `requests` 通道（mod.rs:69），而 `/events` SSE 只订阅 `ServerState.events`（handlers.rs:289）——
+   **ui.request 从未到达任何 SSE 消费者**，前端/autopilot 天生耳聋。run 8 的「autopilot 聋」由此全部解释。
+2. **dialog-pending 变体 + cancel 半效（行为级）**：dialog 挂起期间会话尾是 blackhole 观察记录而非 toolCall 行
+  （会话文件监听型应答器对此全盲）；cancel 杀掉 pi 后 run 仍 Running——引擎线程阻塞在 ask_blocking
+  （mpsc recv 无死亡信号），**应答挂起 dialog（POST /ui/ui-1/answer）才解阻**→ run 即 Failed。
+
+### 第 18 试（21:43 起，探测优先应答器）
+
+- 装包 ~14 分钟 → 规划起跑 → **应答器 4 秒内接住首问**，此后 ui-1…ui-12+ 全部接住（含技术栈决策
+  「Next.js+Prisma+SQLite」「不加认证保持纯认证」）→ **plan tree 15+ 文件首次落约定路径**
+  `~/.devforge/plans/demo-app/planning-run/`（README/roadmap/baseline/…，P8-ISSUE-04 修复实证）→
+  **review-0（grok-4.7）真实 FAIL+问题清单 → 问题回注 → 规划 Agent 修复 → review-1 全新实例重审 →
+  会话内逐字 `<verdict>PASS</verdict>`（22:08:34，stopReason=stop）**。
+- **新发现（只记录）· verdict 后挂起**：PASS verdict 落盘后 run 迟迟不翻 Settled，全部 pi 进程自然消失
+  而桥未解阻（review() 仅阻塞于 wait_settled read_line；无孙进程持 fd；服务端 stderr 无 panic）——
+  疑点指向 pi 回合完成后自行退场（真源 blackhole 配置 agentMaxTurns=16 上限？）而 EOF/settled 链路
+  未按预期唤醒引擎。修复阶段新 bug，待修复阶段处理。
+
+## 三、复测结论（v2）
+
+- **修复面 16 项全部端到端回归通过**（含 test_03/09/10 的专项断言），零回归；
+- **P8-ISSUE-05 转正**：plan tree 首次落约定路径，占位 skill+cwd 双根因修复实证；
+- **P8-ISSUE-02 从 🍉 降级为真缺陷**：双通道断裂根因定位（修复归下一阶段）；
+- **新增**：verdict 后挂起（第 18 试）、cancel 在 dialog-pending 态半效（第 17 试）；
+- 外因项（中转长 turn 截断）本期未再现——httpIdleTimeoutMs=60s + retry 的渲染层缓解疑似生效，样本不足不下结论。
+
+（test_07/test_08 正式结果 JSON 落盘后回填上表槽位）
