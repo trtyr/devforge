@@ -134,3 +134,5 @@
 {"type":"task_complete","goalId":"mvcp6b1v-9gnaik","taskId":"task-3","evidence":"CODING_AGENT_PROMPT 正稿落 manifest.rs（三层流程/勘察义务/stages+todo/伴写可测/单测禁e2e/git PASS即commit不push/偏差协议三裁决+blockers留痕/刚需四条款/codegraph-first含projectPath+affected+banner/双路径kickoff告知/打回重审+notes消化/小步快跑）；渲染单测 cod","at":"2026-10-17T18:13:06.881Z"}
 {"type":"task_complete","goalId":"mvcp6b1v-9gnaik","taskId":"task-4","evidence":"CODING_REVIEW_PROMPT 正稿：七审查面（刚需四条/后端/前端统一样式/前后端连接/文档完全可测/todo实物逐项/树完成锚点对照实物）+codegraph-first 审查纪律+实地跑单测+快速审查；Report 协议块与 T002 schema 一致（stage-verdict/next/issues/notes，语义自洽约束）；轮次号 kickoff 告知；渲染单测断言过","at":"2026-10-17T18:13:06.892Z"}
 {"type":"task_started","goalId":"mvcp6b1v-9gnaik","taskId":"task-5","at":"2026-10-17T18:13:13.039Z"}
+{"type":"task_complete","goalId":"mvcp6b1v-9gnaik","taskId":"task-5","evidence":"src/sop/coding.rs CodingSopLoop（kickoff双路径/无标记重推/FAIL回注重审/advance消化notes/finish收工）+6 状态机单测；SopRegistry+coding；store.set_task_sop+Task.workspace 快照；handlers start 可选 sop 覆盖（handler 单测：切换/未知400/无body沿用）","at":"2026-10-17T18:24:33.264Z"}
+{"type":"task_started","goalId":"mvcp6b1v-9gnaik","taskId":"task-6","at":"2026-10-17T18:24:46.744Z"}

@@ -202,13 +202,13 @@ pub async fn start_task(
     body: Option<Json<StartReq>>,
 ) -> ApiResult<StatusCode> {
     // 可选 sop 覆盖（无 body / 无字段 = 沿用任务注册的 sop）
-    if let Some(Json(req)) = body {
-        if let Some(sop) = req.sop {
-            let mut store = st.store.lock().expect("store 锁");
-            store
-                .set_task_sop(&st.registry, &project, &task, sop)
-                .map_err(ApiError::from)?;
-        }
+    if let Some(Json(req)) = body
+        && let Some(sop) = req.sop
+    {
+        let mut store = st.store.lock().expect("store 锁");
+        store
+            .set_task_sop(&st.registry, &project, &task, sop)
+            .map_err(ApiError::from)?;
     }
     // 前置快速校验（真正的守卫在 begin_run，双保险）
     {

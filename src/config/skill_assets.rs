@@ -15,44 +15,6 @@ pub fn builtin_skill_files(skill: &str) -> Option<Vec<(&'static str, &'static st
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plan_tree_skill_has_frontmatter_and_body() {
-        let files = builtin_skill_files("plan-tree").expect("plan-tree 应有内置资产");
-        assert!(files.iter().any(|(name, _)| *name == "SKILL.md"));
-        let (_, body) = files.iter().find(|(name, _)| *name == "SKILL.md").unwrap();
-        assert!(body.starts_with("---"), "应有 frontmatter");
-        assert!(body.contains("# plan-tree"));
-        assert!(body.contains("目录约定"), "应有结构约定正文");
-    }
-
-    #[test]
-    fn unknown_skill_returns_none() {
-        assert!(builtin_skill_files("ghost").is_none());
-    }
-
-    #[test]
-    fn language_skills_vendor_coverage() {
-        // P005 T003：四语言 vendor 完整性（来源登记见 P005 evidence/skills-sources.md）
-        let rust = builtin_language_files("rust-best-practices").unwrap();
-        assert_eq!(rust.len(), 1);
-        assert!(rust[0].1.contains("Rust Strict Standard"));
-        let go = builtin_language_files("go-best-practices").unwrap();
-        assert!(go.iter().any(|(n, b)| *n == "SKILL.md" && b.contains("Go Strict Standard")));
-        let ts = builtin_language_files("ts-js-best-practices").unwrap();
-        assert_eq!(ts.len(), 2, "SKILL.md(TS) + javascript-strict.md");
-        let py = builtin_language_files("python-best-practices").unwrap();
-        assert!(py.iter().any(|(n, _)| *n == "SKILL.md"));
-        assert!(py.iter().any(|(n, _)| *n == "references/standard.md"));
-        assert!(py.iter().any(|(n, _)| n.starts_with("scripts/")), "scaffold/验收脚本随 skill 分发");
-        // 原样入库：frontmatter 保留（pi 按 description 触发）
-        assert!(rust[0].1.starts_with("---"));
-    }
-}
-
 // ===== P005 T003：四语言最佳实践 skills（外部 vendor 原样嵌入；来源与许可证登记见
 // docs/plantree/plans/005-coding-stage/evidence/skills-sources.md）=====
 const RUSTBESTPRACTICES_0: (&str, &str) = ("SKILL.md", include_str!("../../assets/skills/rust-best-practices/SKILL.md"));
@@ -143,5 +105,43 @@ pub fn builtin_language_files(skill: &str) -> Option<Vec<(&'static str, &'static
             PYTHONBESTPRACTICES_34,
             PYTHONBESTPRACTICES_35]),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_tree_skill_has_frontmatter_and_body() {
+        let files = builtin_skill_files("plan-tree").expect("plan-tree 应有内置资产");
+        assert!(files.iter().any(|(name, _)| *name == "SKILL.md"));
+        let (_, body) = files.iter().find(|(name, _)| *name == "SKILL.md").unwrap();
+        assert!(body.starts_with("---"), "应有 frontmatter");
+        assert!(body.contains("# plan-tree"));
+        assert!(body.contains("目录约定"), "应有结构约定正文");
+    }
+
+    #[test]
+    fn unknown_skill_returns_none() {
+        assert!(builtin_skill_files("ghost").is_none());
+    }
+
+    #[test]
+    fn language_skills_vendor_coverage() {
+        // P005 T003：四语言 vendor 完整性（来源登记见 P005 evidence/skills-sources.md）
+        let rust = builtin_language_files("rust-best-practices").unwrap();
+        assert_eq!(rust.len(), 1);
+        assert!(rust[0].1.contains("Rust Strict Standard"));
+        let go = builtin_language_files("go-best-practices").unwrap();
+        assert!(go.iter().any(|(n, b)| *n == "SKILL.md" && b.contains("Go Strict Standard")));
+        let ts = builtin_language_files("ts-js-best-practices").unwrap();
+        assert_eq!(ts.len(), 2, "SKILL.md(TS) + javascript-strict.md");
+        let py = builtin_language_files("python-best-practices").unwrap();
+        assert!(py.iter().any(|(n, _)| *n == "SKILL.md"));
+        assert!(py.iter().any(|(n, _)| *n == "references/standard.md"));
+        assert!(py.iter().any(|(n, _)| n.starts_with("scripts/")), "scaffold/验收脚本随 skill 分发");
+        // 原样入库：frontmatter 保留（pi 按 description 触发）
+        assert!(rust[0].1.starts_with("---"));
     }
 }

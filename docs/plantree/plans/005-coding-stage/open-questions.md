@@ -28,3 +28,9 @@ agent 的 spawn cwd 是黑板（任务目录），`.codegraph/` 索引建在代�
 生态侦察发现代码上下文有三大家族（结构图/LSP 诊断/语义检索），已覆盖结构与文档两类，缺**诊断层**。候选 pi-lens。
 
 **结论：入选（用户拍板）。**supply 五件套定型（decisions/014）。待验：`--mode rpc` 下工具可用性（T003，同类 Q001）；与 codegraph 工具面重叠度（预期互补：图=结构真相，lens=编译器级反馈）。不入选的代价已消除：诊断不再依赖手动跑构建。
+
+## 执行期验证记录（2026-10-18 夜，T007 回写）
+
+- **Q001/Q003/Q005 部分验证**：RPC 单点冒烟（evidence/rpc-smoke.md）——手工 profile（双插件+双 MCP）下 `pi --mode rpc` 零 stderr、RPC 应答正常；**工具级可见性（todo/lens 工具注册、MCP 连接、web tools 暴露）未验，归 T008**。
+- **planning review cwd 观察项（新）**：planning 的 review 实例沿用旧构造 cwd=服务器 cwd（历史行为，e2e 已验证能找到树）；coding 的审查实例改用 per_round_in 显式 cwd=黑板。planning 是否迁移到 plan root 留观（不动已验证路径）。
+- **执行期新发现（记录不阻塞）**：①edit 工具批量操作存在部分落盘非原子现象（task.rs 两轮修复实证）——同一文件多处修改改用单次小编辑；②coding_review_instruction 轮次号从 1 起（MockReviewFactory 以 opened.len() 计数，push 后即当轮号）。
