@@ -28,8 +28,8 @@ async fn main() -> anyhow::Result<()> {
     let sessions_root = root.join("sessions");
 
     // 生产引擎：规划 SOP 的 RPC 接线
-    let (events, _) = tokio::sync::broadcast::channel(1024);
-    let ui = Arc::new(devforge::server::UiRelay::new(events.clone()));
+    let bus = std::sync::Arc::new(devforge::server::EventBus::new());
+    let ui = Arc::new(devforge::server::UiRelay::new(bus.clone()));
     let engine_profiles = profiles_root.clone();
     let engine_sessions = sessions_root.clone();
     let engine_plans = plans_root.clone();
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
         devforge::domain::sop::SopRegistry::builtin(),
         manifest,
         engine_factory,
-        events,
+        bus,
         ui,
         std::sync::Arc::new(devforge::config::installer::PiInstallBridge),
         profiles_root,

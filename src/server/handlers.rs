@@ -284,17 +284,37 @@ pub async fn answer_ui(
 }
 
 /// SSE 事件流：run 生命周期 + ui.request + 领域事件（Q002 信封：JSON 一行一事件）。
+/// 断线续传（A1 尾巴收口）：携带 `Last-Event-ID` 头时先回放缓冲中该序号之后的
+/// 留档事件再接实时流；回放与订阅间隙的重叠按序号去重（缓冲窗口内恰一次）。
 pub async fn events(
     State(st): State<SharedState>,
     headers: HeaderMap,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
-    let _ = headers; // 预留：按 Last-Event-ID 续传（远期）
-    let rx = st.events.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|item| match item {
-        Ok(data) => Some(Ok(axum::response::sse::Event::default().data(data))),
+    let last_id: u64 = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let rx = st.bus.subscribe();
+    let replay = st.bus.replay_after(last_id);
+    let replay_max = replay.last().map(|(id, _)| *id).unwrap_or(last_id);
+    let replayed = tokio_stream::iter(replay.into_iter().map(|(id, data)| {
+        Ok(axum::response::sse::Event::default()
+            .id(id.to_string())
+            .data(data))
+    }));
+    let live = BroadcastStream::new(rx).filter_map(move |item| match item {
+        Ok((id, data)) => {
+            if id <= replay_max {
+                return None; // 回放已覆盖（订阅与快照间隙去重）
+            }
+            Some(Ok(axum::response::sse::Event::default()
+                .id(id.to_string())
+                .data(data)))
+        }
         Err(_) => None, // Lagged：订阅者跟不上就跳过（不毒化流）
     });
-    Sse::new(stream).keep_alive(
+    Sse::new(replayed.chain(live)).keep_alive(
         axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)),
     )
 }

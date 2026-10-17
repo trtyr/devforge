@@ -7,14 +7,14 @@
 
 | ID | 项 | 状态 | 去向 |
 |----|----|------|------|
-| A1 | SSE Last-Event-ID 断线续传（handlers.rs events 端点 `let _ = headers` 占位，Q002 信封设计的既定远期项） | 待修 | task-2 实现（内存环形缓冲 + `sse::Event.id` + Last-Event-ID 回放） |
+| A1 | SSE Last-Event-ID 断线续传（handlers.rs events 端点 `let _ = headers` 占位，Q002 信封设计的既定远期项） | ✅ 已修 | EventBus（序号+环形留档+回放）落地；events 端点支持 Last-Event-ID 回放+实时去重；回归单测 eventbus_assigns_sequential_ids_and_replays + sse_last_event_id_replays_missed_events |
 | A2 | src/ TODO/FIXME/未实现扫描 | 已查无 | 仅 skill 兜底「占位」字样为设计内注释（P2-ISSUE-05 修复的回落行为），非尾巴 |
 
 ## B. 测试基建尾巴
 
 | ID | 项 | 状态 | 去向 |
 |----|----|------|------|
-| B1 | run_all.py 未覆盖 test_09/test_10；test_08 超时 900s 与实测需求不匹配 | 待修 | task-2 更新脚本表与时限 |
+| B1 | run_all.py 未覆盖 test_09/test_10；test_08 超时 900s 与实测需求不匹配 | ✅ 已修 | 脚本表补 09/10（300s）；test_08 时限提至 2700s（内部 RUN_TIMEOUT=2400s） |
 | B2 | 三笔修复（SseStream/watchdog/abort_all）合入后 e2e 全套未重跑 | 待办 | task-3 全量回归（轻量批+07/09/10；产品已改动→第 22 试链路重跑领取 Completed 复证实证） |
 
 ## C. 报告/文档尾巴
@@ -24,7 +24,7 @@
 | C1 | P001 roadmap 缺三笔回写：修复阶段收官（991acaf，16 项修复）、复测收官（第 17-21 试）、闭环 | 待写 | task-4 |
 | C2 | open-questions Q002/Q004 机制已落地并经端到端验证，未标已解决 | 待关 | task-4 关闭并写结论 |
 | C3 | 闭环 decision 未落档（项目收官的裁决记录） | 待写 | task-4 |
-| C4 | 仓库无 README（收官阶段的基本卫生） | 待补 | task-2 简明 README（定位/架构/运行方式/测试入口） |
+| C4 | 仓库无 README（收官阶段的基本卫生） | ✅ 已补 | README.md（定位/形态/架构/运行/测试） |
 
 ## D. 外部依赖（显式关闭，不修）
 

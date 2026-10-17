@@ -76,14 +76,14 @@ fn fixture_with_engine(hang_ms: u64, timeout_ms: Option<u64>, token: Option<&str
             hang_ms,
         })
     });
-    let (events, _) = tokio::sync::broadcast::channel(1024);
-    let ui = Arc::new(UiRelay::new(events.clone()));
+    let bus = std::sync::Arc::new(crate::server::EventBus::new());
+    let ui = Arc::new(UiRelay::new(bus.clone()));
     let mut state = ServerState::new(
         Store::new(),
         SopRegistry::builtin(),
         ConfigManifest::planning_builtin(),
         engine_factory,
-        events,
+        bus,
         ui,
         std::sync::Arc::new(crate::config::installer::FakeInstaller),
         dir.path().join("profiles"),
@@ -276,44 +276,68 @@ async fn sse_pushes_events() {
     assert!(got.contains("hello"), "SSE 应收到事件: {got}");
 }
 
+#[test]
+fn eventbus_assigns_sequential_ids_and_replays() {
+    // A1 尾巴收口回归：序号单调、留档可回放、replay_after 过滤正确
+    let bus = crate::server::EventBus::new();
+    bus.emit(json!({"n": 1}));
+    bus.emit(json!({"n": 2}));
+    bus.emit(json!({"n": 3}));
+    let all = bus.replay_after(0);
+    let ids = all.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    assert_eq!(ids, vec![1, 2, 3]);
+    let after = bus.replay_after(1);
+    let ids = after.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    assert_eq!(ids, vec![2, 3]);
+    assert_eq!(bus.last_id(), 3);
+}
+
 #[tokio::test]
-async fn ui_relay_roundtrip() {
+async fn sse_last_event_id_replays_missed_events() {
+    // A1 尾巴收口回归：断线期间错过的事件凭 Last-Event-ID 回放，并接上实时流
     let f = fixture();
-    // 订阅 ui 事件拿 id
-    let mut ui_rx = f.state.ui.subscribe_requests();
+    f.state.emit(json!({"type": "e1"}));
+    f.state.emit(json!({"type": "e2"}));
+    f.state.emit(json!({"type": "e3"}));
 
-    let ui = f.state.ui.clone();
-    let handle = std::thread::spawn(move || {
-        ui.ask_blocking("规划完成了吗", &["完成", "还没"])
-    });
-
-    // 等请求出现
-    let mut request_id = String::new();
-    for _ in 0..100 {
-        if let Ok(ev) = ui_rx.try_recv() {
-            let v: Value = serde_json::from_str(&ev).unwrap();
-            if v["type"] == "ui.request" {
-                request_id = v["id"].as_str().unwrap().to_string();
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(!request_id.is_empty(), "应收到 ui.request 事件");
-    assert_eq!(f.state.ui.pending_count(), 1);
-
-    // POST 回填
-    let resp = send(
-        &f.router,
-        "POST",
-        &format!("/api/v1/ui/{request_id}/answer"),
-        Some(json!({"value": "完成"})),
-    )
-    .await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/events")
+        .header("last-event-id", "1")
+        .body(Body::empty())
+        .unwrap();
+    let resp = f.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 200);
+    let mut stream = resp.into_body().into_data_stream();
+    let mut got = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !(got.contains("e2") && got.contains("e3")) {
+        assert!(tokio::time::Instant::now() < deadline, "回放超时");
+        let chunk = tokio::time::timeout(std::time::Duration::from_millis(500), stream.next())
+            .await
+            .expect("chunk 超时");
+        match chunk {
+            Some(Ok(bytes)) => got.push_str(&String::from_utf8_lossy(&bytes)),
+            _ => break,
+        }
+    }
+    assert!(got.contains("e2") && got.contains("e3"), "应回放 2/3 号: {got}");
+    assert!(!got.contains("e1"), "Last-Event-ID=1 不应回放 1 号: {got}");
 
-    let answer = handle.join().unwrap().unwrap();
-    assert_eq!(answer, "完成");
+    // 回放后接实时流（序号 4）
+    f.state.emit(json!({"type": "e4"}));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !got.contains("e4") {
+        assert!(tokio::time::Instant::now() < deadline, "实时事件超时");
+        let chunk = tokio::time::timeout(std::time::Duration::from_millis(500), stream.next())
+            .await
+            .expect("chunk 超时");
+        match chunk {
+            Some(Ok(bytes)) => got.push_str(&String::from_utf8_lossy(&bytes)),
+            _ => break,
+        }
+    }
+    assert!(got.contains("e4"), "回放后应接上实时流: {got}");
 }
 
 #[tokio::test]

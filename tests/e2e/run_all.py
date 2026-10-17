@@ -24,8 +24,10 @@ SCRIPTS = [
     ("test_04_auth.py", 120, "鉴权"),
     ("test_05_events_sse.py", 120, "SSE 事件流"),
     ("test_06_artifacts_graph.py", 120, "产物归集与运行图"),
-    ("test_07_rerun_serial.py", 900, "串行守卫与重跑留档（真 pi + 真模型）"),
-    ("test_08_e2e_planning.py", 900, "端到端规划流水线（真 pi + 真模型）"),
+    ("test_07_rerun_serial.py", 900, "串行守卫与 cancel 收场/重跑留档（真 pi + 真模型）"),
+    ("test_08_e2e_planning.py", 2700, "端到端规划流水线（真 pi + 真模型；内部 RUN_TIMEOUT=2400s）"),
+    ("test_09_run_control.py", 300, "运行控制面：cancel/spawn 工作目录/stderr 观测"),
+    ("test_10_timeout_async_render.py", 300, "可选超时与异步渲染 SSE 通知"),
 ]
 
 

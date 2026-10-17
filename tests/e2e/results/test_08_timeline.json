@@ -1,70 +1,67 @@
 [
   {
     "project": "demo-app",
-    "run_id": "85eab551-f709-474a-9ad9-f378a3c7b35e",
+    "run_id": "479f14b8-2921-474e-a299-9a0b51bda57e",
     "task": "planning-run",
     "type": "run.started"
   },
   {
     "id": "ui-1",
     "options": [
-      "1. 最小可运行演示（推荐） — 目标是尽快跑通一条端到端链路，代码量小、验证路径短，适合 demo 与流程演示。",
-      "2. 真实业务原型 — 按可交付产品标准规划：多角色、持久化、错误处理与部署都纳入范围，工期更长。",
-      "3. 内部工具/脚本 — 面向小团队内部使用，弱化 UI 与权限，强调自动化与可维护性。",
-      "4. 技术验证原型（Spike） — 只验证某个技术方向可行，允许丢弃代码，不追求结构完整。",
+      "1. 最小可运行 Demo（推荐） — 以「能跑起来并演示主流程」为目标，范围收窄到一条核心链路，便于快速验证端到端。",
+      "2. 完整产品 MVP — 覆盖用户体系、数据持久化、前后端、部署等完整 MVP 范围，规划体量较大。",
+      "3. 技术方案验证 — 侧重选型与架构验证（框架、存储、集成方式），产出对比与决策记录而非功能清单。",
+      "4. 流程/工程化搭建 — 重点在工程骨架：目录结构、CI、测试、发布门禁，功能实现次要。",
       "5. Type something."
     ],
-    "question": "[目标定位] demo-app 这次规划的目标定位是什么？",
+    "question": "[规划目标] demo-app 这次要规划的核心目标是什么？",
     "type": "ui.request"
   },
   {
     "id": "ui-2",
     "options": [
-      "1. TypeScript + Next.js（推荐） — 前后端一体、路由与构建开箱即用，适合演示型 Web 应用。",
-      "2. TypeScript + Vite/React — 纯前端 SPA，后端另配轻量 API，结构更解耦。",
-      "3. Node CLI / 脚本 — 无 UI，纯命令行或批处理形态。",
-      "4. 由规划决定 — 我在 plan tree 中写成待定选项并列出取舍，交给你后续拍板。",
+      "1. Web 全栈应用（推荐） — 前端页面 + 后端 API + 简单存储，最常见的 demo 形态。",
+      "2. 纯前端单页应用 — 只做浏览器端，用本地存储或 mock 数据，无需服务端。",
+      "3. CLI / 脚本工具 — 命令行工具形态，无 UI，强调可组合与可测试。",
+      "4. HTTP API 服务 — 只交付后端接口与文档，前端不在范围内。",
       "5. Type something."
     ],
-    "question": "[技术栈] 实现的默认技术栈用哪个？",
+    "question": "[技术形态] 计划中的交付形态偏向哪种？",
     "type": "ui.request"
   },
   {
     "id": "ui-3",
-    "options": [],
-    "question": "[功能范围] 演示的核心功能包含哪些？（可多选）\n\n1. 数据 CRUD + 列表页 — 最基础的一条纵向切片：创建/读取/更新/删除与列表展示。\n2. 登录/会话 — 含最小认证与会话保持，会引入用户模型与权限判断。\n3. 仪表盘/图表 — 聚合统计与可视化，需要有可聚合的数据。\n4. 外部 API 集成 — 调用第三方接口，需处理失败、重试与密钥配置。\n\nEnter the numbers of all that apply, comma-separated (e.g. \"1,3\"). Add \"; custom answer\" to include your own text, or type only custom text.",
+    "options": [
+      "1. 标准骨架 + 核心内容（推荐） — README、roadmap、topics、decisions、open-questions 建齐，内容聚焦可执行，不堆砌。",
+      "2. 精简版 — 仅 README + roadmap + open-questions，最小可持续状态。",
+      "3. 完整版 — 额外含 baseline、evidence、history、indexes、ideas 全套容器，便于长期维护。",
+      "4. Type something."
+    ],
+    "question": "[文档深度] 希望 plan tree 产出到什么粒度？",
     "type": "ui.request"
   },
   {
     "id": "ui-4",
     "options": [
-      "1. 精简骨架（推荐） — README + roadmap + 1~2 个 topic + open-questions，文件少、读起来快。",
-      "2. 完整编号模板 — P001/T001 编号 + topics/decisions/evidence/history/indexes 全套目录。",
+      "1. 接受两步（推荐） — `npm install` 后 `npm run dev` 一条命令拉起前后端，作为 A1 验收口径。",
+      "2. 要求一步到位 — 必须 `npm run dev` 完成依赖安装 + 启动，实际需额外引导脚本。",
       "3. Type something."
     ],
-    "question": "[产出形态] plan tree 的详细程度希望到哪一档？\n\n--- 1. 精简骨架（推荐） preview ---\nplanning-run/\n  README.md          # 入口：范围、权威顺序、文件地图\n  roadmap.md         # Done / In Progress / Next / Deferred\n  open-questions.md  # 未决问题\n  topics/\n    scope.md         # 单一主题胶囊\n  decisions/\n    001-<choice>.md\n\n--- 2. 完整编号模板 preview ---\nplanning-run/\n  README.md\n  roadmap.md          # T001..T00N\n  implementation-status.md\n  open-questions.md   # Q001..\n  indexes/\n    phase-map.md\n    evidence-map.md\n  topics/README.md + <topic>.md\n  decisions/README.md + 001-*.md\n  evidence/README.md\n  history/",
+    "question": "[Q003 口径] Q003：“单命令启动”指 `npm install` + `npm run dev` 两步可以接受吗？",
     "type": "ui.request"
   },
   {
     "id": "ui-5",
     "options": [
-      "1. 已完成，可以结束 — 规划树按当前内容定稿，我输出完成标记，后续可以进入实现阶段。",
-      "2. 先把 open questions 定下来 — 我会逐条问 Q001、Q002、Q005 等未决问题，并把结论写回 topic/decision 后再收尾。",
-      "3. 还需要修改规划树 — 你指出需要调整的部分（如任务拆分粒度、验收标准、目录结构），我改完再问一次完成。",
-      "4. Type something."
+      "1. 完成，结束本轮 — plan tree 已建齐（README / roadmap / topics / decisions / open-questions / ideas / baseline / evidence / history），可以结束本轮规划。",
+      "2. 还需调整 — 先补充或调整某些文档（如拆分 topic、细化任务验收、新增决策记录），我会继续完善。",
+      "3. Type something."
     ],
-    "question": "[是否完成] 本次 demo-app 的 plan tree 规划是否可以结束？",
+    "question": "[是否完成] plan tree 已产出到当前目录，是否确认本轮规划完成？",
     "type": "ui.request"
   },
   {
     "rendered": 2,
     "type": "config.rendered"
-  },
-  {
-    "ok": true,
-    "project": "demo-app",
-    "run_id": "85eab551-f709-474a-9ad9-f378a3c7b35e",
-    "task": "planning-run",
-    "type": "run.finished"
   }
 ]

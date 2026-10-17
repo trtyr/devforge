@@ -19,7 +19,6 @@ use axum::middleware;
 use axum::routing::{get, post};
 use axum::Router;
 use serde_json::json;
-use tokio::sync::broadcast;
 
 use crate::config::installer::PackageInstaller;
 use crate::config::ConfigManifest;
@@ -34,27 +33,88 @@ use crate::error::{Context as _, Result};
 use crate::sop::planning::{PlanningLoop, UserLink};
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
 
+// ---------- 事件总线（可观测域） ----------
+
+/// 单一事件源：序号、环形缓冲、广播三合一。
+/// 支撑 SSE 断线续传（Last-Event-ID）：emit 时分配单调序号并留档，
+/// 重连客户端带 `Last-Event-ID` 即可回放错过的事件（缓冲窗口内恰一次）。
+pub struct EventBus {
+    seq: std::sync::atomic::AtomicU64,
+    log: Mutex<std::collections::VecDeque<(u64, String)>>,
+    tx: tokio::sync::broadcast::Sender<(u64, String)>,
+}
+
+impl EventBus {
+    const CAP: usize = 1024;
+
+    pub fn new() -> Self {
+        let (tx, _) = tokio::sync::broadcast::channel(Self::CAP);
+        Self {
+            seq: std::sync::atomic::AtomicU64::new(0),
+            log: Mutex::new(std::collections::VecDeque::with_capacity(Self::CAP)),
+            tx,
+        }
+    }
+
+    /// 分配序号、留档、广播（无订阅者时广播失败被忽略——留档仍可供回放）。
+    pub fn emit(&self, value: serde_json::Value) {
+        use std::sync::atomic::Ordering;
+        let id = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let data = value.to_string();
+        {
+            let mut log = self.log.lock().expect("event log 锁");
+            log.push_back((id, data.clone()));
+            while log.len() > Self::CAP {
+                log.pop_front();
+            }
+        }
+        let _ = self.tx.send((id, data));
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(u64, String)> {
+        self.tx.subscribe()
+    }
+
+    /// 回放 `last_id` 之后（不含）的全部留档事件。
+    pub fn replay_after(&self, last_id: u64) -> Vec<(u64, String)> {
+        self.log
+            .lock()
+            .expect("event log 锁")
+            .iter()
+            .filter(|(id, _)| *id > last_id)
+            .cloned()
+            .collect()
+    }
+
+    pub fn last_id(&self) -> u64 {
+        self.seq
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ---------- UI 中继（交互中继域） ----------
 
 /// ask-user-question 的 API 中继：请求推 SSE，应答经 POST 端点回填。
 pub struct UiRelay {
     next_id: AtomicU64,
-    requests: broadcast::Sender<String>,
+    bus: std::sync::Arc<EventBus>,
     pending: Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>,
 }
 
 impl UiRelay {
     /// 事件通道：ui.request 与 run 事件同流（单一 SSE 通道，Q002 信封设计）。
-    pub fn new(events: broadcast::Sender<String>) -> Self {
+    pub fn new(bus: std::sync::Arc<EventBus>) -> Self {
         Self {
             next_id: AtomicU64::new(1),
-            requests: events,
+            bus,
             pending: Mutex::new(HashMap::new()),
         }
-    }
-
-    pub fn subscribe_requests(&self) -> broadcast::Receiver<String> {
-        self.requests.subscribe()
     }
 
     /// 阻塞等待用户应答（在引擎的同步线程里调用）。
@@ -66,10 +126,12 @@ impl UiRelay {
             .expect("pending 锁")
             .insert(id.clone(), tx);
         // 先登记后广播：应答端点在事件可见后仍能命中 pending
-        let _ = self.requests.send(
-            json!({"type": "ui.request", "id": id, "question": question, "options": options})
-                .to_string(),
-        );
+        self.bus.emit(json!({
+            "type": "ui.request",
+            "id": id,
+            "question": question,
+            "options": options
+        }));
         rx.recv().map_err(|e| {
             crate::error::DevforgeError::System(format!("等待 UI 应答: {e}"))
         })
@@ -209,7 +271,8 @@ pub struct ServerState {
     pub runs_control: Mutex<HashMap<String, Arc<RunControl>>>,
     /// 默认 run 超时 ms（None = 不限时，零硬限制哲学；可由 env DEVFORGE_RUN_TIMEOUT_MS 开启）。
     pub run_timeout_ms: Option<u64>,
-    pub events: broadcast::Sender<String>,
+    /// 事件总线：序号 + 环形缓冲 + 广播（SSE 源与 Last-Event-ID 回放）。
+    pub bus: std::sync::Arc<EventBus>,
     pub ui: Arc<UiRelay>,
     /// 鉴权预留位：Some(token) 时要求 `x-devforge-token` 头匹配（Q003）。
     pub token: Option<String>,
@@ -225,7 +288,7 @@ impl ServerState {
         registry: SopRegistry,
         manifest: ConfigManifest,
         engine_factory: Box<dyn Fn() -> Box<dyn RunEngine + Send> + Send + Sync>,
-        events: broadcast::Sender<String>,
+        bus: std::sync::Arc<EventBus>,
         ui: Arc<UiRelay>,
         installer: Arc<dyn PackageInstaller + Send + Sync>,
         profiles_root: PathBuf,
@@ -238,7 +301,7 @@ impl ServerState {
             manifest: Mutex::new(manifest),
             manifest_path: Mutex::new(None),
             engine_factory,
-            events,
+            bus,
             ui,
             installer,
             runs_control: Mutex::new(HashMap::new()),
@@ -251,7 +314,7 @@ impl ServerState {
     }
 
     pub fn emit(&self, value: serde_json::Value) {
-        let _ = self.events.send(value.to_string());
+        self.bus.emit(value);
     }
 }
 
