@@ -1,0 +1,14 @@
+# 运行期可写目录:忽略内容,但保留 .gitkeep,让目录本身进 git。
+# 写成 `data/` 会连 .gitkeep 一起忽略,于是新 clone 里这两个目录根本不存在,
+# 而 scaffold 生成的占位文件永远提交不上去——那是个纯粹的死文件。
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+
+.env
+.venv/
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

@@ -5,18 +5,18 @@
   "status": "active",
   "autoContinue": true,
   "usage": {
-    "tokensUsed": 855436,
-    "activeSeconds": 164
+    "tokensUsed": 1238349,
+    "activeSeconds": 725
   },
   "sisyphus": false,
-  "revision": 32,
+  "revision": 99,
   "createdAt": "2026-10-17T17:55:41.299Z",
-  "updatedAt": "2026-10-17T17:58:34.133Z",
+  "updatedAt": "2026-10-17T18:08:29.392Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
-    "generation": "2a7a5a1e-e250-4f50-b15c-fce784d306e5",
-    "used": 3,
+    "generation": "1f0bb895-4332-4a74-8b81-e60a9001ef1e",
+    "used": 4,
     "phase": "idle",
     "repairUsed": false
   },
@@ -25,8 +25,10 @@
       {
         "id": "task-1",
         "title": "T002 黑板约定与结构化协议扩展：coding/ 子树布局常量、阶段完成标记块（含无标记重推语义）、Review Report schema（stage-verdict/issues/next: fix|advance|finish，PASS 附非阻塞建议）；单测钉解析含缺块保守路径",
-        "status": "pending",
-        "verificationContract": "协议单元测试覆盖：正常解析/缺块保守路径/未知 next 值保守处理；cargo test 全绿；协议常量与 topics/shared-blackboard.md、coding-review-agent.md 的布局/schema 一致"
+        "status": "complete",
+        "verificationContract": "协议单元测试覆盖：正常解析/缺块保守路径/未知 next 值保守处理；cargo test 全绿；协议常量与 topics/shared-blackboard.md、coding-review-agent.md 的布局/schema 一致",
+        "completedAt": "2026-10-17T17:58:45.346Z",
+        "evidence": "src/sop/coding_protocol.rs：黑板布局常量×6（锚定 topics/shared-blackboard.md）、stage-complete 解析（取最后/无标记 None）、ReviewReport schema（stage-verdict/next/issues/notes）+保守缺省（缺块/未知值/语义矛盾一律 FAIL+Fix）；13 条协议单测，cargo tes"
       },
       {
         "id": "task-2",
@@ -63,7 +65,7 @@
     "proposedAt": "2026-10-17T17:55:36.108Z"
   },
   "activePath": ".pi/goals/active_goal_2026101801554129_mvcp6b1v-9gnaik.md",
-  "currentTaskId": "task-1"
+  "currentTaskId": "task-2"
 }
 
 # Goal Prompt
@@ -75,12 +77,12 @@
 - Status: running
 - Auto-continue: on
 - Sisyphus mode: no
-- Time spent: 2m44s
-- Tokens used: 855K (855,436) tokens
+- Time spent: 12m05s
+- Tokens used: 1.2M (1,238,349) tokens
 ## Tasks
 
 <!-- blockCompletion: false -->
-- [ ] task-1: T002 黑板约定与结构化协议扩展：coding/ 子树布局常量、阶段完成标记块（含无标记重推语义）、Review Report schema（stage-verdict/issues/next: fix|advance|finish，PASS 附非阻塞建议）；单测钉解析含缺块保守路径 — contract: 协议单元测试覆盖：正常解析/缺块保守路径/未知 next 值保守处理；cargo test 全绿；协议常量与 topics/shared-blackboard.md、coding-review-agent.md 的布局/schema 一致
+- [x] task-1: T002 黑板约定与结构化协议扩展：coding/ 子树布局常量、阶段完成标记块（含无标记重推语义）、Review Report schema（stage-verdict/issues/next: fix|advance|finish，PASS 附非阻塞建议）；单测钉解析含缺块保守路径 — evidence: src/sop/coding_protocol.rs：黑板布局常量×6（锚定 topics/shared-blackboard.md）、stage-complete 解析（取最后/无标记 None）、ReviewReport schema（stage-verdict/next/issues/notes）+保守缺省（缺块/未知值/语义矛盾一律 FAIL+Fix）；13 条协议单测，cargo tes
 - [ ] task-2: T003 配置供给：渲染器 mcp.json 模板（codegraph stdio+context7 npx，CODEGRAPH_TELEMETRY=0）、插件清单 +rpiv-todo/+pi-lens、四语言（Rust/Go/Python/TS-JS）skills 外部搜索→下载→原样 vendor 入库与分发；pi-lens/todo/web tools 的 RPC 单点冒烟（允许，非端到端） — contract: 渲染单元测试覆盖新模板面（mcp.json 两 server、env 注入、插件清单含 pi-lens/rpiv-todo）；四语言 skills 目录存在且含来源登记（URL/版本）于 evidence；单点 RPC 冒烟（允许，非 e2e）结果记录
 - [ ] task-3: T004 Coding Agent profile：提示词模板（三层流程/todo 纪律/伴写纪律/单测禁 e2e/git 阶段PASS即commit/勘察义务/偏差协议/刚需四条款/codegraph-first 纪律含场景矩阵与 projectPath/工作区与黑板双路径告知） — contract: 提示词为渲染器内建模板（随 profile 渲染分发）；模板内容对照 topics/coding-agent.md 剧本与 decisions D001-D014 逐条覆盖自查；渲染单测含新模板断言
 - [ ] task-4: T005 Coding Review Agent profile：审查提示词（刚需/后端/前端/前后端连接/文档可测性/todo 实物审计/树完成判定·锚点对照实物 + codegraph-first 审查纪律）+ Review Report 结构化输出协议 — contract: 提示词审查面与 topics/coding-review-agent.md 七面一一对应；Report 协议块与 T002 schema 一致；渲染单测断言

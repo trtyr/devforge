@@ -17,7 +17,7 @@ async fn main() -> anyhow::Result<()> {
     let manifest = if manifest_path.exists() {
         devforge::config::ConfigManifest::load(&manifest_path).map_err(|e| anyhow::anyhow!(e.to_string()))?
     } else {
-        let m = devforge::config::ConfigManifest::planning_builtin();
+        let m = devforge::config::ConfigManifest::builtin();
         m.save(&manifest_path).map_err(|e| anyhow::anyhow!(e.to_string()))?;
         m
     };

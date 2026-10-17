@@ -128,3 +128,5 @@
 {"type":"goal_created","goalId":"mvcp6b1v-9gnaik","objective":"实现 devforge Coding SOP 全部代码（P005 Phase B + Phase C 单测部分，T002-T007）：共享黑板产物约定与结构化协议、配置供给（codegraph/context7 MCP、rpiv-todo/pi-lens 插件、四语言 skills vendor）、Coding Agent 与 Coding Review Agent 双 profile 提示词、CodingSopLoop 编排状态机（含 SOP 注册与跨 SOP 触发、CodeGraph 引擎预检 init），最终 cargo test 0 失败 + clippy 0 警告 + plan tree 状态回写。明确不做端到端测试（T008 留待用户醒来拍板）。","sisyphus":false,"autoContinue":true,"at":"2026-10-17T17:55:41.299Z"}
 {"type":"task_list_set","goalId":"mvcp6b1v-9gnaik","taskCount":6,"blockCompletion":false,"at":"2026-10-17T17:55:41.299Z"}
 {"type":"task_started","goalId":"mvcp6b1v-9gnaik","taskId":"task-1","at":"2026-10-17T17:56:08.002Z"}
+{"type":"task_complete","goalId":"mvcp6b1v-9gnaik","taskId":"task-1","evidence":"src/sop/coding_protocol.rs：黑板布局常量×6（锚定 topics/shared-blackboard.md）、stage-complete 解析（取最后/无标记 None）、ReviewReport schema（stage-verdict/next/issues/notes）+保守缺省（缺块/未知值/语义矛盾一律 FAIL+Fix）；13 条协议单测，cargo tes","at":"2026-10-17T17:58:45.346Z"}
+{"type":"task_started","goalId":"mvcp6b1v-9gnaik","taskId":"task-2","at":"2026-10-17T17:58:50.317Z"}

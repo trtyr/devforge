@@ -1,0 +1,4 @@
+# 结构化全局配置;环境变量(APP_*)可逐项覆盖,如 APP_RETRIEVER__TOP_K=20
+retriever:
+  top_k: 10
+  rerank_model: cohere/rerank-v4.0-fast

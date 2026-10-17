@@ -81,7 +81,7 @@ fn fixture_with_engine(hang_ms: u64, timeout_ms: Option<u64>, token: Option<&str
     let mut state = ServerState::new(
         Store::new(),
         SopRegistry::builtin(),
-        ConfigManifest::planning_builtin(),
+        ConfigManifest::builtin(),
         engine_factory,
         bus,
         ui,
@@ -418,7 +418,7 @@ async fn manifest_get_put_roundtrip() {
     assert_eq!(body["model_pool"][0]["id"], "grok-4.7"); // 固定分配：审查 → grok-4.7（池序首）
 
     // 换模型（模型管理面的最简形态）
-    let mut next = ConfigManifest::planning_builtin();
+    let mut next = ConfigManifest::builtin();
     next.model_pool[0].model_id = "deepseek-v3".into();
     let resp = send(
         &f.router,
@@ -435,7 +435,7 @@ async fn manifest_get_put_roundtrip() {
 
     // P3-ISSUE-02 修复：真源同步落盘（manifest_path 注入后 PUT 即写盘）
     *f.state.manifest_path.lock().unwrap() = Some(f._dir.path().join("manifest.json"));
-    let mut next2 = ConfigManifest::planning_builtin();
+    let mut next2 = ConfigManifest::builtin();
     next2.model_pool[1].model_id = "mokeywork/grok-4.7-tuned".into();
     let resp = send(
         &f.router,
@@ -453,7 +453,7 @@ async fn manifest_get_put_roundtrip() {
 async fn put_manifest_unknown_model_is_400() {
     // P3-ISSUE-01 修复：配置类错误 400（此前 500）
     let f = fixture();
-    let mut next = ConfigManifest::planning_builtin();
+    let mut next = ConfigManifest::builtin();
     next.agents[0].model = "ghost-model".into();
     let resp = send(
         &f.router,

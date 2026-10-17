@@ -98,7 +98,11 @@ impl<'a> Renderer<'a> {
                     Some(files) => {
                         fs::create_dir_all(&target).ctx("建 skill 目录")?;
                         for (name, body) in files {
-                            fs::write(target.join(name), body)
+                            let f = target.join(name);
+                            if let Some(parent) = f.parent() {
+                                fs::create_dir_all(parent).ctx("建 skill 子目录")?;
+                            }
+                            fs::write(f, body)
                                 .ctx(format!("写内置 skill {skill}/{name}"))?;
                         }
                     }
@@ -123,6 +127,39 @@ impl<'a> Renderer<'a> {
                     .to_string(),
             )
             .ctx(format!("写 {} 的 auth.json", agent.name))?;
+        }
+
+        // mcp.json（P005 T003：pi 原生 schema，<agent-dir>/mcp.json 全项目可用；
+        // 空 = 不生成该文件，规划双 Agent 不受影响）
+        if !agent.mcp.is_empty() {
+            let mut servers = serde_json::Map::new();
+            for m in &agent.mcp {
+                let mut entry = serde_json::Map::new();
+                entry.insert("command".into(), serde_json::Value::String(m.command.clone()));
+                entry.insert(
+                    "args".into(),
+                    serde_json::Value::Array(
+                        m.args.iter().cloned().map(serde_json::Value::String).collect(),
+                    ),
+                );
+                if !m.env.is_empty() {
+                    entry.insert(
+                        "env".into(),
+                        serde_json::Value::Object(
+                            m.env.iter()
+                                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                                .collect(),
+                        ),
+                    );
+                }
+                servers.insert(m.name.clone(), serde_json::Value::Object(entry));
+            }
+            let mcp_json = serde_json::json!({ "mcpServers": servers });
+            fs::write(
+                dir.join("mcp.json"),
+                serde_json::to_string_pretty(&mcp_json).ctx("序列化 mcp")?,
+            )
+            .ctx(format!("写 {} 的 mcp.json", agent.name))?;
         }
 
         // 包安装（必装四件套 + 差异化包）——双记录由 installer 负责
@@ -194,7 +231,7 @@ mod tests {
 
     #[test]
     fn render_creates_directory_structure() {
-        let manifest = ConfigManifest::planning_builtin();
+        let manifest = ConfigManifest::builtin();
         let root = tempfile::tempdir().unwrap();
         let profile = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
 
@@ -217,7 +254,7 @@ mod tests {
 
     #[test]
     fn dual_records_carry_base_plus_extra() {
-        let manifest = ConfigManifest::planning_builtin();
+        let manifest = ConfigManifest::builtin();
         let root = tempfile::tempdir().unwrap();
         let profile = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
 
@@ -244,7 +281,7 @@ mod tests {
 
     #[test]
     fn review_agent_gets_no_extra_packages() {
-        let manifest = ConfigManifest::planning_builtin();
+        let manifest = ConfigManifest::builtin();
         let root = tempfile::tempdir().unwrap();
         let profile = renderer(&manifest).render_agent(root.path(), "plan-review").unwrap();
         let settings: serde_json::Value =
@@ -256,7 +293,7 @@ mod tests {
 
     #[test]
     fn api_key_written_provider_keyed() {
-        let mut manifest = ConfigManifest::planning_builtin();
+        let mut manifest = ConfigManifest::builtin();
         manifest.api_key = Some("sk-test-123".into());
         let root = tempfile::tempdir().unwrap();
         let profile = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
@@ -270,7 +307,7 @@ mod tests {
 
     #[test]
     fn models_json_carries_provider_and_budget() {
-        let manifest = ConfigManifest::planning_builtin();
+        let manifest = ConfigManifest::builtin();
         let root = tempfile::tempdir().unwrap();
         let profile = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
         let models: serde_json::Value =
@@ -290,7 +327,7 @@ mod tests {
 
     #[test]
     fn settings_carry_runtime_keys() {
-        let manifest = ConfigManifest::planning_builtin();
+        let manifest = ConfigManifest::builtin();
         let root = tempfile::tempdir().unwrap();
         let profile = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
         let settings: serde_json::Value = serde_json::from_str(
@@ -309,7 +346,7 @@ mod tests {
 
     #[test]
     fn prompts_carry_protocol_and_workflow() {
-        let manifest = ConfigManifest::planning_builtin();
+        let manifest = ConfigManifest::builtin();
         let review = manifest.get_agent("plan-review").unwrap();
         assert!(review.role_prompt.contains("<verdict>PASS</verdict>"));
         assert!(review.role_prompt.contains("<verdict>FAIL</verdict>"));
@@ -320,7 +357,7 @@ mod tests {
 
     #[test]
     fn skills_copied_from_source_when_given() {
-        let manifest = ConfigManifest::planning_builtin();
+        let manifest = ConfigManifest::builtin();
         // 造假 skill 源
         let skill_src = tempfile::tempdir().unwrap();
         let plan_tree = skill_src.path().join("plan-tree");
@@ -340,17 +377,103 @@ mod tests {
 
     #[test]
     fn render_all_covers_every_agent() {
-        let manifest = ConfigManifest::planning_builtin();
+        let manifest = ConfigManifest::builtin();
         let root = tempfile::tempdir().unwrap();
         let rendered = renderer(&manifest).render_all(root.path()).unwrap();
-        assert_eq!(rendered.len(), 2);
-        assert!(root.path().join("plan-agent").is_dir());
-        assert!(root.path().join("plan-review").is_dir());
+        assert_eq!(rendered.len(), 4, "规划双 Agent + 编码双 Agent");
+        for name in ["plan-agent", "plan-review", "coding-agent", "coding-review"] {
+            assert!(root.path().join(name).is_dir());
+        }
+    }
+
+    #[test]
+    fn coding_agent_profile_has_mcp_json() {
+        // P005 T003：pi 原生 schema，codegraph（含遥测关闭）+ context7
+        let manifest = ConfigManifest::builtin();
+        let root = tempfile::tempdir().unwrap();
+        let profile = renderer(&manifest).render_agent(root.path(), "coding-agent").unwrap();
+        let mcp: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(profile.join("mcp.json")).unwrap()).unwrap();
+        let cg = &mcp["mcpServers"]["codegraph"];
+        assert_eq!(cg["command"], "codegraph");
+        assert_eq!(cg["args"][0], "serve");
+        assert_eq!(cg["args"][1], "--mcp");
+        assert_eq!(cg["env"]["CODEGRAPH_TELEMETRY"], "0"); // decisions/013 卫生条款
+        let c7 = &mcp["mcpServers"]["context7"];
+        assert_eq!(c7["command"], "npx");
+        assert!(c7["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a == "@upstash/context7-mcp"));
+        // 规划双 Agent 无 MCP：不生成文件（P001 行为不回归）
+        let plan_profile = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
+        assert!(!plan_profile.join("mcp.json").exists());
+    }
+
+    #[test]
+    fn coding_packages_carry_todo_and_lens() {
+        let manifest = ConfigManifest::builtin();
+        let root = tempfile::tempdir().unwrap();
+        let profile = renderer(&manifest).render_agent(root.path(), "coding-agent").unwrap();
+        let settings: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(profile.join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        let pkgs: Vec<&str> = settings["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(pkgs.len(), 7, "四件套+ask+todo+lens: {pkgs:?}");
+        for must in [
+            "npm:@juicesharp/rpiv-ask-user-question",
+            "npm:@juicesharp/rpiv-todo",
+            "npm:pi-lens",
+        ] {
+            assert!(pkgs.contains(&must), "缺 {must}: {pkgs:?}");
+        }
+        // review 只有诊断层，无 todo/ask（无状态一轮）
+        let review = renderer(&manifest).render_agent(root.path(), "coding-review").unwrap();
+        let rsettings: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(review.join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        let rpkgs: Vec<&str> = rsettings["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(rpkgs.len(), 5, "四件套+lens: {rpkgs:?}");
+        assert!(rpkgs.contains(&"npm:pi-lens"));
+        assert!(!rpkgs.contains(&"npm:@juicesharp/rpiv-todo"));
+    }
+
+    #[test]
+    fn coding_prompts_carry_protocol_and_discipline() {
+        let manifest = ConfigManifest::builtin();
+        let coder = manifest.get_agent("coding-agent").unwrap();
+        // 阶段完成协议（T002 schema 对齐）
+        assert!(coder.role_prompt.contains("<stage-complete>N</stage-complete>"));
+        // 决策链锚点抽查：伴写/单测禁 e2e/git/偏差留痕/codegraph-first/刚需
+        assert!(coder.role_prompt.contains("严禁写端到端测试"));
+        assert!(coder.role_prompt.contains("绝不 push"));
+        assert!(coder.role_prompt.contains("coding/blockers/"));
+        assert!(coder.role_prompt.contains("projectPath"));
+        assert!(coder.role_prompt.contains("AI-friendly"));
+        assert!(coder.role_prompt.contains("勘察"));
+        let reviewer = manifest.get_agent("coding-review").unwrap();
+        assert!(reviewer.role_prompt.contains("<stage-verdict>PASS或FAIL</stage-verdict>"));
+        assert!(reviewer.role_prompt.contains("<next>fix或advance或finish</next>"));
+        assert!(reviewer.role_prompt.contains("完全基于文档写测试"));
+        assert!(reviewer.role_prompt.contains("对照实际代码与文档"));
     }
 
     #[test]
     fn unknown_agent_rejected() {
-        let manifest = ConfigManifest::planning_builtin();
+        let manifest = ConfigManifest::builtin();
         let root = tempfile::tempdir().unwrap();
         let err = renderer(&manifest)
             .render_agent(root.path(), "ghost")
