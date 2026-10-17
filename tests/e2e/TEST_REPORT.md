@@ -51,7 +51,8 @@
 | P8-ISSUE-05 | plan tree 零产物（约定路径 plans/<项目>/<任务>/ 与服务器 cwd 均无）——decisions/002 的落盘契约未兑现 | 长窗口结束双路径 glob 均空 |
 | P8-ISSUE-06 | 模型首轮生成 >900s（增长探针证实极慢生成非死流）——当前模型/提示词配置下流水线事实上不可用 | 增长曲线 [0, 25134, 25134…] |
 | P2-ISSUE-01 | 渲染器写出的 auth.json 形状（`{"api_key":…}`）与 pi 期望（provider 键控）不符——pi 拿不到 key | 对比真实 ~/.pi/agent/auth.json |
-| P2-ISSUE-03 | 渲染器不分发 models.json——provider 的 baseUrl/模型定义缺失，pi 不知道 newapi 地址 | 渲染产物无 models.json；测试侧复制后模型链路即通 |
+| P2-ISSUE-03 | 渲染器不分发 models.json——provider 的 baseUrl/模型定义缺失，pi 不知道 newapi 地址与 maxTokens/contextWindow（默认输出预算下 reasoning 模型烧光预算产出空正文——首轮卡死根因之一） | 渲染产物无 models.json；测试侧复制后模型链路即通 |
+| P2-ISSUE-04 | 渲染器只写 settings.json 两键（defaultProvider/defaultModel），缺运行时生存配置：retry（中转抖动的重试生存）、defaultThinkingLevel、compaction 等——同一中转抖动，真实环境靠 retry 3×5s 混过，devforge profile 一次即死且无日志（用户对照洞察：同插件同模型，为何我方好好的？根因在此） | 对比真实 settings.json 与渲染产物 |
 | P8-ISSUE-07 | UI 桥接对 fire-and-forget 类请求（setStatus/notify/setWidget/setTitle/set_editor_text）**误发 extension_ui_response**——rpc-extension-ui.md 明确此类不期待应答，协议违规噪音（对无主 id 的应答可能干扰 dialog 相关性） | 自动应答日志 3 条全是 setStatus |
 
 ### medium
@@ -74,6 +75,7 @@
 
 - **P1-CAL-01**：清单 model_id 照录显示名「DeepSeek flash」不可用；真实 id = `mokeywork/deepseek-flash`；provider baseUrl = `https://newapi.trtyr.top/v1`（自建中转，本机直连可达）。curl 实测该 id 200。
 - 注意：`api.newapi.top` 公共域在本机被 TLS 阻断（000），自建域直连正常——端到端必须用后者。
+- **P1-CAL-02（2026-10-17 用户拍板，固定死不改）**：模型固定分配——审查 Agent → Grok 4.7（mokeywork/grok-4.7）；编码 Agent → DeepSeek flash（mokeywork/deepseek-flash）；规划 Agent 维持 deepseek-flash。内置清单已写死（P002 decisions/004），测试侧不再覆盖模型。
 
 ## 四、根因分析（三条链）
 
@@ -85,8 +87,27 @@
 
 pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等应答）与 fire-and-forget（notify/setStatus/setWidget/setTitle/set_editor_text，**不应答**）。当前桥无差别对一切 extension_ui_request 回 `extension_ui_response`：
 - 对 setStatus 的应答是协议噪音；
-- 真正的 dialog（ask-user-question）从未到达——Plan Agent 还没走到确认环节就卡在模型生成；
+- 真正的 dialog（ask-user-question）在多次长跑中从未到达——根因定性见下节（诊断实验）；
 - 两个缺陷相互掩蔽，需要按 method 分流后才能看清 dialog 链路是否健康。
+
+### 链二诊断实验 · 根因定性（测试侧，未改任何产品代码）
+
+为满足「阻断必须被决定性归因」，做了三个绕开 devforge 的对照实验 + 一次干净对照复跑：
+
+| 实验 | 条件 | 结果 |
+|------|------|------|
+| v1 最小条件 | PI_CODING_AGENT_DIR=补偿 profile，直接指令触发 ask-user-question | **extension_ui_request 立即出现在 stdout**（method=select，title/options 齐全），与 rpc-extension-ui.md 契约逐字段一致 |
+| v2 完整复刻 | 同 env 三标记（DEVFORGE_MANAGED/ROLE）+ 同 cwd（空 server-cwd）+ 逐字 PLAN_KICKOFF | agent 深探索 28 个工具后，**dialog 照样正常发出**（ui:1） |
+| v3 桥式应答 | 同 v2 + 忠实模拟 devforge 桥（对一切 UI 请求含 fire-and-forget 回 extension_ui_response） | blackhole 10 分钟发 **635 条** setStatus/notify，全部应答，**pi 活满 601s 无任何异常，stderr 零字节**——「误应答毒杀 pi」假设彻底排除 |
+| 第六次干净单跑 | 无任何并发实验，配置全量复刻 + 固定模型分配 | 停滞签名**第三次连续复现**：agent 早段正常工作（会话 36.5KB，thinking+双 toolCall 已发出）后 turn 永不完成，工具不执行、会话静止 ~15 分钟直至窗口结束——并发干扰假设排除，签名稳定可复现 |
+
+结论链：
+1. **pi + ask-user-question 插件的 dialog 发射路径在 devforge 同款条件下完全健康**（裸 stdout 线级证据）；
+2. devforge 桥的转发/中继链路被独立证明可用：两次端到端中 blackhole 的 setStatus 全部走完 **桥→UiRelay→SSE→智能应答→回填** 全环（5/5 与 2/2，均 200）；
+3. 第五次端到端（配置全量复刻后）取得突破：**agent 真实产出完整 plan tree**（README/roadmap/open-questions + decisions/ideas/topics 全套）——但落在服务器进程 cwd 而非约定路径（新增 P8-ISSUE-04：SpawnSpec 未设工作目录，decisions/002 被违反；对称缺陷：review Agent 同 cwd 反而能读到树）；
+4. **最终定性：链路末端阻断 = provider 中转的长 turn 流截断**（模型 turn 已发出 thinking/toolCall 但流永不完成 → 工具不执行 → 会话静止），在三次连续 run（含一次无并发干净对照）中稳定复现；该问题在 pi 侧、devforge 桥、中继链路、配置供给四个层面均已被线级证据排除，指向中转/上游服务对长 turn 的可靠性；devforge 侧的放大器 = 无 run 超时/取消（P8-ISSUE-01）+ pi stderr 黑盒（P8-ISSUE-08），使每次截断都变成不可恢复、不可诊断的永久挂死；
+5. 按「只记录不修」约束：修复超纲（外部中转可靠性 + devforge 超时/取消/stderr 均属修复项），端到端在当前约束下的可达终点 = **plan tree 真实产出（路径错位）+ 全链路前段全通 + 阻断决定性定性**。
+6. 方法论教训：进程存活判定不可依赖 ps/RTK 改写后的输出（曾误判 pi 已死），**以文件证据（会话增长/产物落盘）为准**。
 
 ### 链三 · 可观测与运维缺口
 
@@ -95,8 +116,8 @@ pi 的 extension UI 分两类：dialog（select/confirm/input/editor，阻塞等
 ## 五、结论
 
 - **基础 API 面（五能力域的静态与查询路径）质量良好**：66 项检查全过，含真实目录落地、SOP 校验、事件推送、串行守卫。
-- **端到端规划流水线当前不可用**：可以启动、模型可以对话，但首轮生成 >15 分钟不完成 + 完成确认未运转 + 无 plan tree 产物，三者叠加使「从需求到通过 review 的 plan tree」无法达成。
-- 修复方向（供决策，不在本阶段执行）：配置供给链三补（auth 形状/models.json 分发/校准 model_id）→ UI 桥按 method 分流（dialog 路由用户、fire-and-forget 只推 SSE 不应答）→ 运维三件（run 超时+取消端点、pi stderr 落日志、SSE 推对话流）→ 提示词正文与 plan-tree skill 真实分发 → 放开端到端复测。
+- **端到端规划流水线当前不可用，但阻断已定性**：链路可启动、模型可对话、dialog 协议线级健康（诊断实验 v1/v2）；补偿版长跑在 agent 发出 ask_user_question 后遇 provider 流停滞（疑似中转对长上下文 turn 的可靠性），叠加系统无超时/取消、pi stderr 黑盒，一次瞬态停滞即永久挂死——链路末端（review 循环→PASS→plan tree→Completed）至本报告更新时仍未被观察到，属「被外因+内因叠加阻断」而非协议不可行。
+- 修复方向（供决策，不在本阶段执行）：①配置供给三补（auth 形状/models.json 分发/校准 model_id）；②UI 桥按 method 分流（dialog 路由用户、fire-and-forget 只推 SSE 不应答）；③运维三件（run 超时+取消端点、pi stderr 落日志、SSE 推对话流）；④spawn 设置工作目录（plan tree 落盘到位）；⑤提示词正文与 plan-tree skill 真实分发；⑥复测端到端。
 
 ## 六、测试产物
 

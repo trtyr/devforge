@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Reporter, Server, SseStream, UiAutoPilot, compensate_profile, real_api_key  # noqa: E402
 
-RUN_TIMEOUT = 900.0  # 长窗口：给 reasoning 模型生成留时间；卡死 vs 慢生成用会话增长探针区分
+RUN_TIMEOUT = 1200.0  # 审计补偿路径：换 grok-4.7（非 reasoning、秒回）+ 去 pi-blackhole（排除 setStatus 干扰）
 
 
 def session_bytes(server: Server) -> int:
@@ -30,6 +30,42 @@ def session_bytes(server: Server) -> int:
     return max((f.stat().st_size for f in files), default=0)
 
 
+def session_bytes(server: Server) -> int:
+    """最新 plan 会话 JSONL 的字节数（增长探针）。"""
+    sd = server.home / ".devforge" / "sessions" / "plan"
+    files = list(sd.glob("*.jsonl")) if sd.is_dir() else []
+    return max((f.stat().st_size for f in files), default=0)
+
+
+def dump_session_tail(server: Server, out: Path, last_n: int = 12) -> None:
+    """审计补偿诊断：dump 会话尾部 N 条（type/role/内容预览）到文件，定性 pi 卡在哪。"""
+    sd = server.home / ".devforge" / "sessions" / "plan"
+    files = sorted(sd.glob("*.jsonl")) if sd.is_dir() else []
+    if not files:
+        out.write_text("(无会话文件)")
+        return
+    lines = [l for l in files[-1].read_text(errors="replace").splitlines() if l.strip()]
+    picks = lines[-last_n:]
+    rows = []
+    for l in picks:
+        try:
+            d = json.loads(l)
+        except json.JSONDecodeError:
+            continue
+        m = d.get("message", {})
+        role = m.get("role", "") if isinstance(m, dict) else ""
+        content = m.get("content", "") if isinstance(m, dict) else ""
+        if isinstance(content, list):
+            content = " ".join(
+                str(x.get("text", x.get("name", "")))[:200]
+                for x in content if isinstance(x, dict)
+            )
+        rows.append(f"- {d.get('type','?')} {role}: {str(content)[:300]}")
+    out.write_text(
+        f"session={files[-1].name}\nentries={len(lines)}\n\n" + "\n".join(rows)
+    )
+
+
 def main() -> int:
     r = Reporter("test_08_e2e_planning")
     server = Server()
@@ -37,12 +73,12 @@ def main() -> int:
     try:
         server.start()
 
-        # ---- 前置：manifest 注入真实 key + 正确模型 id，渲染 profile（长超时，同步装包已知） ----
+        # ---- 前置：manifest 注入真实 key，渲染 profile（长超时，同步装包已知） ----
+        # 模型池与固定分配已在内置清单（用户拍板 2026-10-17）：审查→grok-4.7，规划→deepseek-flash
         key = real_api_key("newapi")
         status, body = server.req("GET", "/config/manifest")
         manifest = body
         manifest["api_key"] = key
-        manifest["model_pool"][0]["model_id"] = "mokeywork/deepseek-flash"  # 校准：真实 id（非显示名）
         t0 = time.time()
         try:
             status, _ = server.req("PUT", "/config/manifest", manifest, timeout=600.0)
@@ -51,11 +87,11 @@ def main() -> int:
             r.issue("P8-ISSUE-00", "high", "PUT manifest 装包超 600s，全链路无法继续")
             return r.finish()
 
-        # ---- 补偿：models.json 分发 + auth.json 形状（P2-ISSUE-01/03 的测试侧对照） ----
+        # ---- 补偿：配置全量复刻（models.json/auth.json/settings 运行时键/插件配置原封） ----
         compensated = compensate_profile(server)
         r.check(
-            sorted(compensated) == ["auth.json", "models.json"],
-            "测试侧补偿完成（models.json + auth.json）",
+            set(["models.json", "auth.json"]).issubset(set(compensated)),
+            "测试侧补偿完成（配置全量复刻）",
             f"{compensated}",
         )
 
@@ -112,6 +148,11 @@ def main() -> int:
                         "且系统无 run 超时/取消机制，编排器只能无限等",
                         f"增长曲线: {sizes}",
                     )
+            # 审计补偿诊断：会话尾部落盘，定性 pi 卡在哪
+            dump_session_tail(
+                server,
+                Path(__file__).resolve().parent / "results" / "test_08_session_tail.txt",
+            )
 
             if final is None:
                 r.issue(

@@ -191,15 +191,25 @@ def real_api_key(provider: str = "newapi") -> str | None:
 
 
 def compensate_profile(server: Server, provider: str = "newapi") -> list[str]:
-    """测试侧补偿（非代码修复，报告标注）：
-    1. models.json 从真实 pi 配置复制进 profile——渲染器不分发 provider 定义（P2-ISSUE-03）
+    """测试侧补偿（非代码修复，报告标注）——配置机制内全量复刻真实环境（用户拍板口径）：
+    1. models.json 从真实 pi 配置复制进 profile——显式 contextWindow 1M + maxTokens 65536
+       （渲染器不分发 provider 定义，P2-ISSUE-03；缺失时 pi 用默认输出预算，
+       reasoning 模型会烧光预算产出空正文——首轮卡死根因之一）
     2. auth.json 改为 provider 键控形状——渲染器形状缺陷（P2-ISSUE-01）
+    3. settings.json 注入真实环境运行时键：retry（3 次×5s 退避，中转抖动的生存配置）、
+       defaultThinkingLevel、compaction、hideThinkingBlock——渲染器只写 defaultProvider/
+       defaultModel 两键（真实环境有、profile 缺 → 同一站点我方重试混过、对 方一次即死）
+    4. 插件配置原封复制（用户拍板 2026-10-17「原封不动抄过来」；装什么跟 Plan Tree 走，
+       不擅自增减）：pi-blackhole-config.json / config/rpiv-web-tools.json / sol-pi.json
+       （对应已装四件套中三个有配置载体的插件；未装插件的配置、本地 extensions、MCP 均不搬）
     返回实际执行的补偿清单。
     """
     import shutil
     done = []
-    real_models = Path.home() / ".pi" / "agent" / "models.json"
-    real_auth = Path.home() / ".pi" / "agent" / "auth.json"
+    real_dir = Path.home() / ".pi" / "agent"
+    real_models = real_dir / "models.json"
+    real_auth = real_dir / "auth.json"
+    real_settings = real_dir / "settings.json"
     for agent in ("plan-agent", "plan-review"):
         pd = server.home / ".devforge" / "profiles" / agent
         if not pd.is_dir():
@@ -217,6 +227,36 @@ def compensate_profile(server: Server, provider: str = "newapi") -> list[str]:
                 done.append("auth.json")
         except (OSError, KeyError, json.JSONDecodeError):
             pass
+        # 3) settings.json 运行时键注入（以渲染产物为基底，保留 defaultProvider/defaultModel/packages）
+        try:
+            real_s = json.loads(real_settings.read_text())
+            sp = pd / "settings.json"
+            cur = json.loads(sp.read_text()) if sp.exists() else {}
+            for k in ("retry", "defaultThinkingLevel", "compaction", "hideThinkingBlock"):
+                if k in real_s:
+                    cur[k] = real_s[k]
+            sp.write_text(json.dumps(cur, indent=2, ensure_ascii=False))
+            if "settings.json" not in done:
+                done.append("settings.json")
+        except (OSError, json.JSONDecodeError):
+            pass
+        # 4) 插件配置原封复制（用户拍板「原封不动抄过来」；范围=Plan Tree 记录的已装插件）
+        verbatim = [
+            (real_dir / "pi-blackhole" / "pi-blackhole-config.json",
+             pd / "pi-blackhole" / "pi-blackhole-config.json"),
+            (real_dir / "config" / "rpiv-web-tools.json", pd / "config" / "rpiv-web-tools.json"),
+            (real_dir / "sol-pi.json", pd / "sol-pi.json"),
+        ]
+        for src, dst in verbatim:
+            try:
+                if src.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(src, dst)
+                    name = "plugins-config"
+                    if name not in done:
+                        done.append(name)
+            except OSError:
+                pass
     return done
 
 
@@ -245,7 +285,7 @@ class UiAutoPilot:
                     self._seen.add(ev["id"])
                     try:
                         status, _ = self.server.req(
-                            "POST", f"/ui/{ev['id']}/answer", {"value": self.default_answer}
+                            "POST", f"/ui/{ev['id']}/answer", self._smart_answer(ev)
                         )
                         self.answered.append({"id": ev["id"], "status": status,
                                               "question": ev.get("question")})
@@ -253,6 +293,32 @@ class UiAutoPilot:
                     except OSError as e:
                         print(f"[autopilot] 应答失败: {e}")
             time.sleep(0.2)
+
+    def _smart_answer(self, ev: dict) -> dict:
+        """按请求形状应答（联调校准）：question 内嵌裸 JSON，解析 method/options/title；
+        select → 选项标签（完成确认类挑完成项，否则首个）；其余 → 默认文本。"""
+        payload = {}
+        raw = ev.get("question") or ""
+        if isinstance(raw, str) and "{" in raw:
+            try:
+                payload = json.loads(raw[raw.index("{"):])
+            except json.JSONDecodeError:
+                payload = {}
+        method = str(payload.get("method") or "").lower()
+        title = str(payload.get("title") or "")
+        options = payload.get("options") or []
+        labels = [
+            (o.get("label") if isinstance(o, dict) else str(o)) for o in options
+        ]
+        pick = self.default_answer
+        if method == "select" and labels:
+            done_keys = ("完成", "是", "确认", "已", "通过")
+            if any(k in title for k in done_keys):
+                hit = [l for l in labels if any(k in l for k in done_keys)]
+                pick = hit[0] if hit else labels[0]
+            else:
+                pick = labels[0]
+        return {"value": pick}
 
 
 def wait_run_status(server: Server, project: str, task: str, statuses: set[str], timeout: float = 180.0):

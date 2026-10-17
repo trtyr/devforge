@@ -312,7 +312,7 @@ async fn manifest_get_put_roundtrip() {
     let resp = send(&f.router, "GET", "/api/v1/config/manifest", None).await;
     assert_eq!(resp.status(), 200);
     let body = body_json(resp).await;
-    assert_eq!(body["model_pool"][0]["id"], "deepseek-flash");
+    assert_eq!(body["model_pool"][0]["id"], "grok-4.7"); // 固定分配：审查 → grok-4.7（池序首）
 
     // 换模型（模型管理面的最简形态）
     let mut next = ConfigManifest::planning_builtin();

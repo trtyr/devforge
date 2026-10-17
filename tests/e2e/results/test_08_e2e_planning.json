@@ -2,14 +2,14 @@
   "script": "test_08_e2e_planning",
   "checks": [
     {
-      "name": "manifest 就绪（耗时 40s）",
+      "name": "manifest 就绪（耗时 443s）",
       "ok": true,
       "detail": ""
     },
     {
-      "name": "测试侧补偿完成（models.json + auth.json）",
+      "name": "测试侧补偿完成（配置全量复刻）",
       "ok": true,
-      "detail": "['models.json', 'auth.json']"
+      "detail": "['models.json', 'auth.json', 'settings.json', 'plugins-config']"
     },
     {
       "name": "项目 demo-app 创建",
@@ -29,7 +29,7 @@
     {
       "name": "会话文件持续增长（模型在慢生成而非死流）",
       "ok": true,
-      "detail": "增长曲线: [0, 25134, 25134, 25134, 25134, 25134, 25134, 25134]..."
+      "detail": "增长曲线: [0, 24004, 24004, 24004, 24004, 24004, 24004, 24004]..."
     },
     {
       "name": "run 在超时内结束",
@@ -72,7 +72,7 @@
       "detail": ""
     },
     {
-      "name": "plan tree 落在约定路径（decisions/002）：/tmp/devforge-e2e-2q7ufrug/.devforge/plans/demo-app/planning-run",
+      "name": "plan tree 落在约定路径（decisions/002）：/tmp/devforge-e2e-9owlm1_m/.devforge/plans/demo-app/planning-run",
       "ok": false,
       "detail": "文件数=0"
     }
@@ -81,14 +81,14 @@
     {
       "id": "P8-ISSUE-01",
       "severity": "high",
-      "desc": "规划 run 超过 900.0s 未结束（事件时间线已保留 3 条）",
+      "desc": "规划 run 超过 1200.0s 未结束（事件时间线已保留 3 条）",
       "evidence": "可能：模型不可用 / pi 卡死 / UI 应答格式未被接受导致 Plan Agent 停在等待"
     },
     {
       "id": "P8-ISSUE-05",
       "severity": "high",
       "desc": "未找到任何 plan tree 产物（约定路径与服务器 cwd 均无）——Plan Agent 可能未产出或产出在未知位置",
-      "evidence": "已搜索 /tmp/devforge-e2e-2q7ufrug/.devforge/plans/demo-app/planning-run 与 /tmp/devforge-e2e-2q7ufrug/server-cwd"
+      "evidence": "已搜索 /tmp/devforge-e2e-9owlm1_m/.devforge/plans/demo-app/planning-run 与 /tmp/devforge-e2e-9owlm1_m/server-cwd"
     }
   ],
   "passed": 10,

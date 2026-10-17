@@ -37,7 +37,7 @@ def main() -> int:
         status, body = server.req("GET", "/config/manifest")
         manifest = body
         manifest["api_key"] = key
-        manifest["model_pool"][0]["model_id"] = "mokeywork/deepseek-flash"
+        # 模型池与固定分配已在内置清单（用户拍板 2026-10-17）：审查→grok-4.7，规划→deepseek-flash
         t0 = time.time()
         try:
             status, resp = server.req("PUT", "/config/manifest", manifest, timeout=600.0)

@@ -61,8 +61,8 @@ pub struct ConfigManifest {
 }
 
 impl ConfigManifest {
-    /// 内置默认清单：规划阶段的两个 Agent + DeepSeek flash 模型池（用户拍板 2026-10-16，
-    /// 「又强又便宜」；确切 provider/model id 落地联调时对 newapi 目录核对——P001 T005）。
+    /// 内置默认清单：规划阶段的两个 Agent + 固定模型池（2026-10-17 用户拍板固定死：
+    /// 审查 Agent → Grok 4.7，编码/规划 Agent → DeepSeek flash；真实 id 经 P1-CAL-01 校准）。
     pub fn planning_builtin() -> Self {
         let plan_agent_prompt = "\
 # Plan Agent（规划 Agent）\n\
@@ -88,11 +88,20 @@ impl ConfigManifest {
 
         Self {
             base_packages: BASE_PACKAGES.iter().map(|s| s.to_string()).collect(),
-            model_pool: vec![ModelEntry {
-                id: "deepseek-flash".into(),
-                provider: "newapi".into(),
-                model_id: "DeepSeek flash".into(), // 用户原话照录；T005 核对确切 id
-            }],
+            // 模型固定分配（用户拍板 2026-10-17，固定死不改；id 为 P1-CAL-01 校准后真实 id）：
+            //   审查 Agent → Grok 4.7；编码/规划 Agent → DeepSeek flash
+            model_pool: vec![
+                ModelEntry {
+                    id: "grok-4.7".into(),
+                    provider: "newapi".into(),
+                    model_id: "mokeywork/grok-4.7".into(),
+                },
+                ModelEntry {
+                    id: "deepseek-flash".into(),
+                    provider: "newapi".into(),
+                    model_id: "mokeywork/deepseek-flash".into(),
+                },
+            ],
             agents: vec![
                 AgentManifest {
                     name: "plan-agent".into(),
@@ -105,7 +114,7 @@ impl ConfigManifest {
                     name: "plan-review".into(),
                     role_prompt: review_prompt.into(),
                     extra_packages: vec![],
-                    model: "deepseek-flash".into(),
+                    model: "grok-4.7".into(), // 审查 Agent 固定 Grok 4.7（用户拍板 2026-10-17）
                     skills: vec!["plan-tree".into()],
                 },
             ],
@@ -169,7 +178,10 @@ mod tests {
         let pa = m.get_agent("plan-agent").unwrap();
         let model = m.resolve_model(pa).unwrap();
         assert_eq!(model.provider, "newapi");
-        assert_eq!(model.model_id, "DeepSeek flash");
+        assert_eq!(model.model_id, "mokeywork/deepseek-flash");
+        // 固定分配：审查 Agent → Grok 4.7（用户拍板 2026-10-17）
+        let rv = m.get_agent("plan-review").unwrap();
+        assert_eq!(m.resolve_model(rv).unwrap().model_id, "mokeywork/grok-4.7");
     }
 
     #[test]

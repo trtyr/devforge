@@ -5,18 +5,18 @@
   "status": "active",
   "autoContinue": true,
   "usage": {
-    "tokensUsed": 22324634,
-    "activeSeconds": 3201
+    "tokensUsed": 51592859,
+    "activeSeconds": 8003
   },
   "sisyphus": false,
-  "revision": 636,
+  "revision": 2632,
   "createdAt": "2026-10-16T17:56:39.098Z",
-  "updatedAt": "2026-10-16T18:51:40.729Z",
+  "updatedAt": "2026-10-17T08:22:25.267Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
-    "generation": "5971b982-27d3-4f3e-b8c4-3982a5f17110",
-    "used": 108,
+    "generation": "73008786-862a-4f2e-9b74-cf4c357c6a23",
+    "used": 172,
     "phase": "idle",
     "repairUsed": false
   },
@@ -57,15 +57,16 @@
       {
         "id": "task-5",
         "title": "测试报告：run_all.py 汇总全部脚本结果 + TEST_REPORT.md（逐功能点 PASS/FAIL + 发现问题清单 + 事件时间线）+ plantree evidence 回写（问题只记录不修）",
-        "status": "pending",
-        "verificationContract": "TEST_REPORT.md 覆盖五能力域+端到端全链路；问题清单独立成节；plantree P001 evidence 有测试记录"
+        "status": "complete",
+        "verificationContract": "TEST_REPORT.md 覆盖五能力域+端到端全链路；问题清单独立成节；plantree P001 evidence 有测试记录",
+        "completedAt": "2026-10-16T18:52:00.127Z",
+        "evidence": "TEST_REPORT.md 已生成（五能力域+端到端全链路+14 项发现独立成节+根因三链+事件时间线）；plantree P001 evidence/e2e-test-record.md + roadmap 测试阶段记录已回写；commit e7b7903 纯测试与文档零代码改动"
       }
     ],
     "blockCompletion": true,
     "proposedAt": "2026-10-16T17:56:32.703Z"
   },
-  "activePath": ".pi/goals/active_goal_2026101701563909_mvb9roze-fpkuco.md",
-  "currentTaskId": "task-5"
+  "activePath": ".pi/goals/active_goal_2026101701563909_mvb9roze-fpkuco.md"
 }
 
 # Goal Prompt
@@ -77,8 +78,8 @@
 - Status: running
 - Auto-continue: on
 - Sisyphus mode: no
-- Time spent: 53m21s
-- Tokens used: 22M (22,324,634) tokens
+- Time spent: 2h13m23s
+- Tokens used: 52M (51,592,859) tokens
 ## Tasks
 
 <!-- blockCompletion: true -->
@@ -86,5 +87,5 @@
 - [x] task-2: 基础 API 脚本组：项目管理（创建含真实目录落地/重复 409/列表/404）、任务管理（SOP 校验/重复）、配置管理（manifest GET/PUT 重渲染验证）、鉴权（token 401/放行）——一个功能点一个脚本 — evidence: 四脚本独立可跑：test_01(8P/1issue 半注册项目) test_02(10P/0) test_03(15P/1F+P3-ISSUE-02 high 真源不落盘) test_04(2P/1issue token 无配置入口)；结果落 results/*.json
 - [x] task-3: 事件流与生命周期脚本：SSE 订阅收领域事件、产物归集（runs/plan_tree_dir）、运行图端点、重跑留档、串行守卫 409 — evidence: test_05(6P)/test_06(11P)全绿; test_07: 串行守卫 409 双验证通过, 重跑被 P8-ISSUE-01(run 卡死模型生成)阻断——已如实记录, 重跑语义暂由单测覆盖+e2e 尝试留档; 三脚本 results 已落盘
 - [x] task-4: 端到端规划流水线：创建项目任务→start→spawn 真 pi→AI 替用户应答 ui.request（SSE 收到 POST 回填）→观察 review 循环→PASS→plan tree 真实落盘验证→任务状态 Completed — evidence: test_08 长窗口(900s)复测完成(bg_6f69ijg5): 链路前段全通(创建/start/SSE/UI应答 3/3)，但模型首轮生成>900s 未完成(增长曲线证实慢生成非死流)→plan tree 未产出、任务未 Completed（P8-ISSUE-01/02/05 高危记录）；联调校准点 4/4 验证并记录(模型id/auth形状/models.json分发/UI应答格式)
-- [ ] task-5: 测试报告：run_all.py 汇总全部脚本结果 + TEST_REPORT.md（逐功能点 PASS/FAIL + 发现问题清单 + 事件时间线）+ plantree evidence 回写（问题只记录不修） — contract: TEST_REPORT.md 覆盖五能力域+端到端全链路；问题清单独立成节；plantree P001 evidence 有测试记录
+- [x] task-5: 测试报告：run_all.py 汇总全部脚本结果 + TEST_REPORT.md（逐功能点 PASS/FAIL + 发现问题清单 + 事件时间线）+ plantree evidence 回写（问题只记录不修） — evidence: TEST_REPORT.md 已生成（五能力域+端到端全链路+14 项发现独立成节+根因三链+事件时间线）；plantree P001 evidence/e2e-test-record.md + roadmap 测试阶段记录已回写；commit e7b7903 纯测试与文档零代码改动
 

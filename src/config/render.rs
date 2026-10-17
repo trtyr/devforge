@@ -153,7 +153,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(settings["defaultProvider"], "newapi");
-        assert_eq!(settings["defaultModel"], "DeepSeek flash");
+        assert_eq!(settings["defaultModel"], "mokeywork/deepseek-flash");
         // skills 占位
         assert!(profile.join("skills/plan-tree/README.md").exists());
     }
