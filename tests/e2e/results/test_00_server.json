@@ -4,7 +4,7 @@
     {
       "name": "服务器拉起（隔离 HOME）",
       "ok": true,
-      "detail": "HOME=/tmp/devforge-e2e-ozmngql1, port=40239"
+      "detail": "HOME=/tmp/devforge-e2e-sopvvcs4, port=48505"
     },
     {
       "name": "健康探针 GET /projects == 200",
@@ -19,7 +19,7 @@
     {
       "name": "manifest 落在隔离 HOME",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-ozmngql1/.devforge/manifest.json"
+      "detail": "/tmp/devforge-e2e-sopvvcs4/.devforge/manifest.json"
     },
     {
       "name": "真实 HOME 未被触碰（探测）",

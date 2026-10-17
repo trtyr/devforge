@@ -9,17 +9,17 @@
     {
       "name": "受理体标记 async",
       "ok": true,
-      "detail": "{'agents': 2, 'async': True, 'ok': True}"
+      "detail": "{'agents': 4, 'async': True, 'ok': True}"
     },
     {
       "name": "收到 config.rendered SSE 通知",
       "ok": true,
-      "detail": "{'rendered': 2, 'type': 'config.rendered'}"
+      "detail": "{'rendered': 4, 'type': 'config.rendered'}"
     },
     {
-      "name": "通知含渲染 profile 数",
+      "name": "通知含渲染 profile 数（P005 后四 Agent）",
       "ok": true,
-      "detail": "{'rendered': 2, 'type': 'config.rendered'}"
+      "detail": "{'rendered': 4, 'type': 'config.rendered'}"
     },
     {
       "name": "任务启动受理 202",
@@ -29,7 +29,7 @@
     {
       "name": "超时后 run 进 Failed",
       "ok": true,
-      "detail": "{'current_run': '3b1a9274-4d36-4da3-9606-eceb067922eb', 'plan_tree_dir': '/tmp/devforge-e2e-qv8lk39v/.devforge/plans/to/timeout-me', 'project': 'to', 'runs': [{'ended_at_ms': 1792255768886, 'id': '3b1a9274-4d36-4da3-9606-eceb067922eb', 'started_at_ms': 1792255748764, 'status': 'Failed'}], 'task': 'timeout-me'}"
+      "detail": "{'current_run': 'cd80dbf6-d89e-4f32-a6d7-34b5cdd15ff0', 'plan_tree_dir': '/tmp/devforge-e2e-r_85budr/.devforge/plans/to/timeout-me', 'project': 'to', 'runs': [{'ended_at_ms': 1792272360860, 'id': 'cd80dbf6-d89e-4f32-a6d7-34b5cdd15ff0', 'started_at_ms': 1792272340739, 'status': 'Failed'}], 'task': 'timeout-me'}"
     },
     {
       "name": "超时收割及时（21s < 60s，deadline=20s）",
@@ -39,7 +39,7 @@
     {
       "name": "任务状态同步 Failed",
       "ok": true,
-      "detail": "status=200, task={'created_at_ms': 1792255748761, 'current_run': '3b1a9274-4d36-4da3-9606-eceb067922eb', 'id': 'timeout-me', 'project': 'to', 'runs': ['3b1a9274-4d36-4da3-9606-eceb067922eb'], 'sop': 'planning', 'status': 'Failed'}"
+      "detail": "status=200, task={'created_at_ms': 1792272340737, 'current_run': 'cd80dbf6-d89e-4f32-a6d7-34b5cdd15ff0', 'id': 'timeout-me', 'project': 'to', 'runs': ['cd80dbf6-d89e-4f32-a6d7-34b5cdd15ff0'], 'sop': 'planning', 'status': 'Failed', 'workspace': '/tmp/to-e2e'}"
     }
   ],
   "issues": [],

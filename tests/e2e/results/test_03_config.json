@@ -12,9 +12,9 @@
       "detail": "['grok-4.7', 'deepseek-flash']"
     },
     {
-      "name": "默认双 Agent",
+      "name": "默认四 Agent（P005 注册表扩容）",
       "ok": true,
-      "detail": "['plan-agent', 'plan-review']"
+      "detail": "['plan-agent', 'plan-review', 'coding-agent', 'coding-review']"
     },
     {
       "name": "必装四件套原文在清单",
@@ -24,22 +24,22 @@
     {
       "name": "PUT manifest == 202（异步化受理）",
       "ok": true,
-      "detail": "status=202, resp={'agents': 2, 'async': True, 'ok': True}"
+      "detail": "status=202, resp={'agents': 4, 'async': True, 'ok': True}"
     },
     {
       "name": "PUT 受理体含 ok/async 标记",
       "ok": true,
-      "detail": "{'agents': 2, 'async': True, 'ok': True}"
+      "detail": "{'agents': 4, 'async': True, 'ok': True}"
     },
     {
       "name": "plan-agent AGENTS.md 渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-2eha_wks/.devforge/profiles/plan-agent/AGENTS.md"
+      "detail": "/tmp/devforge-e2e-_458x4eu/.devforge/profiles/plan-agent/AGENTS.md"
     },
     {
       "name": "plan-agent settings.json 渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-2eha_wks/.devforge/profiles/plan-agent/settings.json"
+      "detail": "/tmp/devforge-e2e-_458x4eu/.devforge/profiles/plan-agent/settings.json"
     },
     {
       "name": "plan-agent settings 来自模型池（真 model_id）",
@@ -59,7 +59,7 @@
     {
       "name": "plan-agent 内置 plan-tree skill 兜底渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-2eha_wks/.devforge/profiles/plan-agent/skills/plan-tree/SKILL.md"
+      "detail": "/tmp/devforge-e2e-_458x4eu/.devforge/profiles/plan-agent/skills/plan-tree/SKILL.md"
     },
     {
       "name": "plan-agent models.json 分发带 1M/64K 预算",
@@ -69,12 +69,12 @@
     {
       "name": "plan-review AGENTS.md 渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-2eha_wks/.devforge/profiles/plan-review/AGENTS.md"
+      "detail": "/tmp/devforge-e2e-_458x4eu/.devforge/profiles/plan-review/AGENTS.md"
     },
     {
       "name": "plan-review settings.json 渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-2eha_wks/.devforge/profiles/plan-review/settings.json"
+      "detail": "/tmp/devforge-e2e-_458x4eu/.devforge/profiles/plan-review/settings.json"
     },
     {
       "name": "plan-review settings 来自模型池（真 model_id）",
@@ -94,7 +94,7 @@
     {
       "name": "plan-review 内置 plan-tree skill 兜底渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-2eha_wks/.devforge/profiles/plan-review/skills/plan-tree/SKILL.md"
+      "detail": "/tmp/devforge-e2e-_458x4eu/.devforge/profiles/plan-review/skills/plan-tree/SKILL.md"
     },
     {
       "name": "plan-review models.json 分发带 1M/64K 预算",
@@ -109,7 +109,7 @@
     {
       "name": "PUT 同步落盘清单真源",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-2eha_wks/.devforge/manifest.json"
+      "detail": "/tmp/devforge-e2e-_458x4eu/.devforge/manifest.json"
     }
   ],
   "issues": [],

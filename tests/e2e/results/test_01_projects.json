@@ -4,17 +4,17 @@
     {
       "name": "创建项目 == 201",
       "ok": true,
-      "detail": "status=201, body={'name': 'alpha', 'local_path': '/tmp/devforge-e2e-work-ib84e_gm/fresh-project', 'created_at_ms': 1792255100931}"
+      "detail": "status=201, body={'name': 'alpha', 'local_path': '/tmp/devforge-e2e-work-48xgysh5/fresh-project', 'created_at_ms': 1792271782487}"
     },
     {
       "name": "响应回显项目名",
       "ok": true,
-      "detail": "body={'name': 'alpha', 'local_path': '/tmp/devforge-e2e-work-ib84e_gm/fresh-project', 'created_at_ms': 1792255100931}"
+      "detail": "body={'name': 'alpha', 'local_path': '/tmp/devforge-e2e-work-48xgysh5/fresh-project', 'created_at_ms': 1792271782487}"
     },
     {
       "name": "本地目录真实创建",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-work-ib84e_gm/fresh-project"
+      "detail": "/tmp/devforge-e2e-work-48xgysh5/fresh-project"
     },
     {
       "name": "重复创建 == 409",
@@ -29,7 +29,7 @@
     {
       "name": "详情含 local_path",
       "ok": true,
-      "detail": "{'name': 'alpha', 'local_path': '/tmp/devforge-e2e-work-ib84e_gm/fresh-project', 'created_at_ms': 1792255100931}"
+      "detail": "{'name': 'alpha', 'local_path': '/tmp/devforge-e2e-work-48xgysh5/fresh-project', 'created_at_ms': 1792271782487}"
     },
     {
       "name": "不存在项目 == 404",

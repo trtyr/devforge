@@ -69,7 +69,7 @@
     {
       "name": "第二次 run 取消收场",
       "ok": true,
-      "detail": "{'current_run': 'bd73ea72-1992-4be7-a3a2-2d356ca85174', 'plan_tree_dir': '/tmp/devforge-e2e-ijv2g055/.devforge/plans/p/t1', 'project': 'p', 'runs': [{'ended_at_ms': 1792255288928, 'id': '44b981ac-760b-44cb-a3c9-cd135632bc15', 'started_at_ms': 1792255288618, 'status': 'Failed'}, {'ended_at_ms': None, 'id': 'bd73ea72-1992-4be7-a3a2-2d356ca85174', 'started_at_ms': 1792255290629, 'status': 'Running'}], 'task': 't1'}"
+      "detail": "{'current_run': '0c07a4fb-c80b-4f5b-9f3a-faacdd65c5a1', 'plan_tree_dir': '/tmp/devforge-e2e-x14ricn0/.devforge/plans/p/t1', 'project': 'p', 'runs': [{'ended_at_ms': 1792271817454, 'id': 'fd3f8ddf-1e5a-4e77-bdb5-ad63be206373', 'started_at_ms': 1792271817144, 'status': 'Failed'}, {'ended_at_ms': None, 'id': '0c07a4fb-c80b-4f5b-9f3a-faacdd65c5a1', 'started_at_ms': 1792271819156, 'status': 'Running'}], 'task': 't1'}"
     },
     {
       "name": "重跑后 runs 留档 2 条",
@@ -84,7 +84,7 @@
     {
       "name": "current_run 指向最新 run",
       "ok": true,
-      "detail": "bd73ea72-1992-4be7-a3a2-2d356ca85174"
+      "detail": "0c07a4fb-c80b-4f5b-9f3a-faacdd65c5a1"
     }
   ],
   "issues": [

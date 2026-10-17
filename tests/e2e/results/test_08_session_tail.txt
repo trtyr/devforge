@@ -1,41 +1,41 @@
-session=2026-10-17T16-44-29-267Z_01a14ac0-26d2-767d-a7ba-082146dfb894.jsonl
-entries=68
+session=2026-10-17T21-17-15-766Z_01a14bb9-e275-7556-9431-10c45c3cba51.jsonl
+entries=100
 
-- message toolResult: === README 文件地图 ===
-## 文件地图
+- message toolResult: Successfully replaced 1 block(s) in /tmp/devforge-e2e-uj20rlv5/.devforge/plans/demo-app/planning-run/decisions/README.md.
+- message toolResult: Successfully replaced 1 block(s) in /tmp/devforge-e2e-uj20rlv5/.devforge/plans/demo-app/planning-run/README.md.
+- message assistant: edit
+- message toolResult: Successfully replaced 2 block(s) in /tmp/devforge-e2e-uj20rlv5/.devforge/plans/demo-app/planning-run/roadmap.md.
+- message assistant: 重新做一致性自查，并检索是否还有乐观更新/回滚的残留。 bash bash
+- message toolResult: === 乐观/回滚 残留 ===
+./open-questions.md:44:  状态对齐方式（已由 [decision 003](decisions/003-non-optimistic-update.md) 定为非乐观）。
+./decisions/003-non-optimistic-update.md:1:# 003 — 写交互采用非乐观更新
+./decisions/003-non-opt
+- message toolResult: broken links: none
+=== lines ===
+   23 ./ideas/inbox.md
+   71 ./open-questions.md
+   49 ./roadmap.md
+   26 ./topics/README.md
+   62 ./topics/app-shell-and-routing.md
+   86 ./topics/data-and-api.md
+   
+- message assistant:  bash
+- message toolResult: 不展示堆栈。
 
-| 路径 | 角色 |
-| --- | --- |
-| `roadmap.md` | 阶段与任务状态（Done / In Progress / Next / Deferred） |
-| `open-questions.md` | 未解决问题清单 |
-| `topics/01-product-scope.md` | 目标、非目标、约束、验收标
-- message assistant:  4 条中 3 条完全属实，第 4 条需要更正一部分：`open-questions.md` **在**文件地图里（第 2 行），只有 baseline 五个文件确实漏了。我按事实修，不多认也不漏修。 edit
-- message toolResult: Successfully replaced 2 block(s) in /tmp/devforge-e2e-ri8c5n7h/.devforge/plans/demo-app/planning-run/roadmap.md.
-- message assistant:  edit
-- message toolResult: Successfully replaced 2 block(s) in /tmp/devforge-e2e-ri8c5n7h/.devforge/plans/demo-app/planning-run/README.md.
-- message assistant: 根 README 与 roadmap 已对齐。现在修 baseline 五个文件的交叉引用指向。 bash
-- message toolResult: === module-map.md ===
-# module-map
+## Flow 2：写交互
 
-Unknown / needs inventory.
+状态对齐方式已定为**非乐观**（[decision 003](../decisions/003-non-optimistic-update.md)）：
+界面在响应返回前不改变业务状态，因此本流程没有回滚分支。
+端点形态仍待 Q003 确定，下图的 `WRITE /api/items…` 表示二者之一，不影响流程形状。
 
-补全时机与 scope 说明见 `README.md`（本目录），任务状态见 `../roadmap.md` 的 R-05。
-=== 残留错引用检查 ===
-无残留
+```text
+用户触发写操作
+- message assistant: 两处矛盾已消除。确认修订完成。 ask_user_question
+- message toolResult: User has answered your questions: "两处矛盾已修订：非乐观更新升为 decision 003（唯一权威），端点表拆为“固定/条件”两组且 Q003 只阻 T005。是否确认完成？"="完成". You can now continue with the user's answers in mind.
+- message assistant: ## 修订完成
 
-- message assistant: 现在处理 D-001——它需要与新口径一致，并显式覆盖 Q-05。 edit
-- message toolResult: Successfully replaced 2 block(s) in /tmp/devforge-e2e-ri8c5n7h/.devforge/plans/demo-app/planning-run/decisions/README.md.
-- message assistant: D-001 已对齐。最后做一次全局一致性核查，特别是"完成"的口径与 Q-05 的覆盖。 bash
-- message toolResult: === ① R-00 与 R-01 口径 ===
-## Done
+**问题 1 — 乐观/非乐观与回滚自相矛盾**
 
-- R-00 建立 plan root 骨架（README、roadmap、open-questions、topics、baseline 占位、ideas 收件箱）。
-  - 验收证据：产物存在——13 个文件已落盘并通过链接自检。
-  - 关于用户回复"完成"的口径：该回答确认的是"本轮交付到此结束"，**不构成**对 Q-01
-- message assistant: 四条已全部修订，一致性核查通过。同时更正你第 4 条中的一处事实偏差。
+根因是"状态对齐方式"散落在 `topics/` 与 `baseline/` 各写一份。按 plan-tree 的「一个事实一个权威」原则处理：
 
-**修订内容**
-
-| # | 问题 | 修订 |
-|---|---|---|
-| 1 | R-00 与 R-01/README/D-001 对"完成"的解读矛盾 | R-00 的 Done 验收依据改为**产物存在**（13 文件落盘 + 链接自检），并显式声明用户那句"完成"不构成对 Q-01~Q-05 的答复、也不解除
+- 新增 `decisions/003-non-optimistic-update.md`：M1 定为**非乐观更新**，因此**不存在回滚路径**；并显式声明「本决策不约束端点形态
