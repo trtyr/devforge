@@ -117,3 +117,5 @@
 {"type":"task_started","goalId":"mvcm1yzn-j9ojqj","taskId":"task-2","at":"2026-10-17T16:31:51.630Z"}
 {"type":"task_complete","goalId":"mvcm1yzn-j9ojqj","taskId":"task-2","evidence":"A1 EventBus（seq+环形留档 1024+回放）落地，events 端点 Last-Event-ID 回放+间隙去重，回归单测×2（序号/回放过滤+SSE 断线续传全流程）；B1 run_all.py 补 test_09/10+时限校准；C4 README.md 新增；93 测试全绿+clippy 0 警告；清单 A1/B1/C4 已翻✅并提交","at":"2026-10-17T16:37:47.135Z"}
 {"type":"task_started","goalId":"mvcm1yzn-j9ojqj","taskId":"task-3","at":"2026-10-17T16:38:03.327Z"}
+{"type":"task_complete","goalId":"mvcm1yzn-j9ojqj","taskId":"task-3","evidence":"run_all 全套 11 脚本 RUNALL_RC=0：cargo test 93 过 0 挂；轻量批全绿；test_07 17/17；test_08 第 22 试 15 PASS/0 FAIL 0 issues（run Settled+任务 Completed+树 17 文件+完整 FAIL→修复→重审循环，SSE autopilot 全应答）；test_09 8/0；test_10 8/0；","at":"2026-10-17T16:51:32.677Z"}
+{"type":"task_started","goalId":"mvcm1yzn-j9ojqj","taskId":"task-4","at":"2026-10-17T16:51:44.456Z"}

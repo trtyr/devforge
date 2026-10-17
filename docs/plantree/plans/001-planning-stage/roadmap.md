@@ -24,6 +24,24 @@
 - [x] (T009-真凶) 五次「停滞」真凶=占位 skill→`find /` 全盘扫描（第十次抓活体进程）；真实 skill 已测试侧分发，机制消失
 - 详见 evidence/e2e-test-record.md 与 tests/e2e/TEST_REPORT.md；问题只记录不修（用户约定），修复决策待用户拍板
 
+## 修复阶段收官（2026-10-17，commit 991acaf）
+
+- [x] (T009-修复) TEST_REPORT 全部记录在案缺陷修复完毕：✅16 / 🍉缓解 2 / ⏳待复测 1——渲染器配置债（auth 形状/models.json 分发/settings 运行时键/真实 skill 内置/协议段入模板）、UI 桥 method 分流、运行控制面（cancel 端点+watchdog 精确清场+可选超时）、pi stderr 落日志、spawn 工作目录、verdict 保守 FAIL、半注册回滚、manifest 落盘、token 入口、PUT 异步化
+- [x] 修复全部带回归单测：cargo test 87 过 0 挂 + clippy 清；零端到端执行（用户约定，复测归下一阶段）
+
+## 复测阶段收官（2026-10-17，第 17-21 试）
+
+- [x] (T009-复测) 修复后全量端到端：11 脚本全功能点覆盖（新增 test_09 运行控制面/test_10 超时与异步渲染）
+- [x] 第 18-20 试连续暴露三新缺陷并全部定位：①SSE 消费者超时耳聋（误诊双通道后纠正：真因=测试 SseStream 10s 读超时 vs 15s keepalive）；②verdict 后挂起（watchdog scope 自锁死锁，活体取证实锤）；③dialog 挂起态 cancel 半效
+- [x] 第 21 试（修复后首跑）：**5 分 02 秒全链七环走通**——15 PASS/0 FAIL，run Settled+任务 Completed+SSE 全环（ui.request×5 全应答）+树落约定路径，逐字 PASS verdict
+
+## 收官闭环（2026-10-18，本轮）
+
+- [x] 收官清点：9 项尾巴枚举（evidence/closure-checklist.md），零待定
+- [x] A1 Last-Event-ID 断线续传落地（EventBus 序号+环形留档+回放）；B1 run_all 补 09/10+时限；C4 补 README；D1 中转可靠性显式划为外部依赖（缓解已内置）
+- [x] 收官全量回归（第 22 试）：run_all 全套 11 脚本 RUNALL_RC=0——93 单测全绿；07 17/17；08 **15 PASS/0 FAIL 含完整 FAIL→修复→重审循环与 Settled+Completed**；09 8/0；10 8/0；clippy 0 警告
+- [x] decisions/010 收官模式入档；Q002/Q004 关闭；closure-checklist 零待定——**规划阶段闭环**
+
 ## Deferred
 
 - （四阶段扩展不进本 plan）

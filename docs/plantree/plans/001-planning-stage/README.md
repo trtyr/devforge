@@ -34,4 +34,5 @@
 - `topics/agent-profiles.md` — 两类 Agent 的 pi 配置隔离方案
 - `topics/review-loop.md` — Review 循环语义与迭代流程
 - `decisions/` — 已拍板决策
+- `evidence/` — 实证档（e2e 全记录/收官清点单）
 - `open-questions.md` — 未决问题
