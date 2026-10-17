@@ -38,13 +38,16 @@ def free_port() -> int:
 class Server:
     """隔离 HOME 的真服务器子进程。"""
 
-    def __init__(self, port: int | None = None, home: str | None = None):
+    def __init__(self, port: int | None = None, home: str | None = None,
+                 env_extra: dict[str, str] | None = None):
         self.port = port or free_port()
         self.home = Path(home) if home else Path(tempfile.mkdtemp(prefix="devforge-e2e-"))
         self.proc: subprocess.Popen | None = None
         self.log_path = self.home / "server-stderr.log"
         # 服务器工作目录（围栏：隔离 spawn 子进程的落盘污染，同时用于观测 plan tree 实际落点）
         self.cwd = self.home / "server-cwd"
+        # 额外环境变量（如 DEVFORGE_RUN_TIMEOUT_MS / DEVFORGE_TOKEN），合并进子进程环境
+        self.env_extra = dict(env_extra or {})
 
     @property
     def base(self) -> str:
@@ -60,6 +63,7 @@ class Server:
             **{k: v for k, v in os.environ.items() if k != "HOME"},
             "HOME": str(self.home),
             "DEVFORGE_ADDR": f"127.0.0.1:{self.port}",
+            **self.env_extra,
         }
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         log = open(self.log_path, "wb")
