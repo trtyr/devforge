@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Reporter, Server, SseStream, UiAutoPilot, compensate_profile, real_api_key  # noqa: E402
 
 PLAN_TIMEOUT = 2400.0    # 规划段：40 分钟（沿 test_08 口径）
-CODE_TIMEOUT = 3600.0    # 编码段：60 分钟（真写代码+单测，时长未知首跑取宽）
+CODE_TIMEOUT = 7200.0    # 编码段：120 分钟（v2 实测 60min 内 stage1+2 双 commit 已落但未及收尾；窗口翻倍拿 Settled+Completed 实证）
 
 
 def newest_session_bytes(server: Server, kind: str) -> int:
@@ -119,16 +119,22 @@ def main() -> int:
             )
             r.check(status == 202, "start sop=coding == 202（跨 SOP 触发）", f"status={status}")
 
+            # 记住规划 run 的 id（runs 数组按时间正序，runs[0] 是规划）——
+            # 编码 run = id 不同的那条（首跑脚本 bug：错把 runs[0] 当编码 run，覆盖后立刻误判收尾）
+            _, runs_body = server.req("GET", "/projects/demo-app/tasks/planning-run/runs")
+            plan_run_id = runs_body["runs"][0]["id"]
+
             code_start = time.time()
             code_deadline = code_start + CODE_TIMEOUT
             growth: list[tuple[float, int]] = []
             fin2 = None
             while time.time() < code_deadline:
-                # 第二轮 run 已创建且进终态 = 编码段收尾（runs[0] 为最新）
                 _, runs_body = server.req("GET", "/projects/demo-app/tasks/planning-run/runs")
-                runs = runs_body.get("runs", [])
-                if len(runs) >= 2 and runs[0]["status"] in ("Settled", "Failed"):
-                    fin2 = {"status": runs[0]["status"], "run_id": runs[0]["id"]}
+                coding = next(
+                    (x for x in runs_body.get("runs", []) if x["id"] != plan_run_id), None
+                )
+                if coding and coding["status"] in ("Settled", "Failed"):
+                    fin2 = {"status": coding["status"], "run_id": coding["id"]}
                     break
                 timeline.extend(sse.events[len(timeline):])
                 el = time.time() - code_start

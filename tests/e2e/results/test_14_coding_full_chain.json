@@ -1,0 +1,120 @@
+{
+  "script": "test_14_coding_full_chain",
+  "checks": [
+    {
+      "name": "manifest 受理（0.0s）",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "四 profile 渲染齐",
+      "ok": true,
+      "detail": "/var/tmp/devforge-e2e-81fu1gdr/.devforge/profiles"
+    },
+    {
+      "name": "测试侧补偿（配置全量复刻）",
+      "ok": true,
+      "detail": "['models.json', 'auth.json', 'settings.json', 'plugins-config', 'real-skill']"
+    },
+    {
+      "name": "项目 demo-app 创建（local_path=工作区）",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "任务 planning-run 创建（sop=planning）",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "规划 start == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "规划 run.finished ok=True",
+      "ok": true,
+      "detail": "{'ok': True, 'project': 'demo-app', 'run_id': 'b081bcff-840b-4a87-adb9-a7858b0989c2', 'task': 'planning-run', 'type': 'run.finished'}"
+    },
+    {
+      "name": "规划 run Settled",
+      "ok": true,
+      "detail": "Settled"
+    },
+    {
+      "name": "plan tree 已落黑板（编码段的输入）",
+      "ok": true,
+      "detail": "/var/tmp/devforge-e2e-81fu1gdr/.devforge/plans/demo-app/planning-run"
+    },
+    {
+      "name": "start sop=coding == 202（跨 SOP 触发）",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "编码 run 在超时内结束",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "任务终态 Completed（实际 Running）",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "黑板 coding/stages.md 存在（N 阶段划分）",
+      "ok": true,
+      "detail": "/var/tmp/devforge-e2e-81fu1gdr/.devforge/plans/demo-app/planning-run/coding"
+    },
+    {
+      "name": "黑板 coding/todo.md 存在",
+      "ok": true,
+      "detail": "/var/tmp/devforge-e2e-81fu1gdr/.devforge/plans/demo-app/planning-run/coding/todo.md"
+    },
+    {
+      "name": "伴写文档 coding/docs/ 非空（D004）",
+      "ok": true,
+      "detail": "文件数=7"
+    },
+    {
+      "name": "Review Report 至少一份",
+      "ok": true,
+      "detail": "['review-2.md', 'review-4.md', 'review-1.md', 'review-6.md', 'review-8.md', 'review-7.md', 'review-5.md', 'review-3.md']"
+    },
+    {
+      "name": "blockers/ 留痕数=1（偏差协议未触发则应为 0）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "工作区已 git 化（D009 commit 锚点前提）",
+      "ok": true,
+      "detail": "/var/tmp/devforge-e2e-81fu1gdr/workspace/demo-app"
+    },
+    {
+      "name": "工作区有真实代码产物",
+      "ok": true,
+      "detail": "文件数=23"
+    },
+    {
+      "name": "工作区有 git commit 留痕（D009）",
+      "ok": true,
+      "detail": "commits=['25b153a stage 2: single-page frontend + audit logging (static/, test_frontend, test_logging, dom_harness)', '443ad3e stage 1: backend testable loop (config/models/storage/api/server + L1-L3 unit tests)']"
+    },
+    {
+      "name": "AI 应答与 ui.request 对齐（全代理）",
+      "ok": true,
+      "detail": "answered=0, requested=0"
+    }
+  ],
+  "issues": [
+    {
+      "id": "C14-CODE-TIMEOUT",
+      "severity": "high",
+      "desc": "编码段 3600.0s 未结束（增长曲线 [(3510, 1030265), (3525, 1030265), (3540, 1030265), (3555, 1030265), (3570, 1030265), (3585, 1030265)]，时间线 6 条已留档）",
+      "evidence": ""
+    }
+  ],
+  "passed": 19,
+  "failed": 2
+}
