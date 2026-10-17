@@ -2,7 +2,7 @@
   "script": "test_08_e2e_planning",
   "checks": [
     {
-      "name": "manifest 就绪（耗时 124s）",
+      "name": "manifest 替换受理（耗时 0.0s）",
       "ok": true,
       "detail": ""
     },
@@ -29,7 +29,7 @@
     {
       "name": "会话文件持续增长（模型在慢生成而非死流）",
       "ok": true,
-      "detail": "增长曲线: [0, 71041, 85023, 85023, 85023, 85023, 85023, 85023]..."
+      "detail": "增长曲线: [0, 75877, 106088, 107450, 127816, 138921, 147941, 159535]..."
     },
     {
       "name": "run 在超时内结束",
@@ -72,16 +72,16 @@
       "detail": ""
     },
     {
-      "name": "plan tree 落在约定路径（decisions/002）：/tmp/devforge-e2e-qvquo0la/.devforge/plans/demo-app/planning-run",
-      "ok": false,
-      "detail": "文件数=0"
+      "name": "plan tree 落在约定路径（decisions/002）：/tmp/devforge-e2e-chain-NPlRJO5e/.devforge/plans/demo-app/planning-run",
+      "ok": true,
+      "detail": "文件数=19"
     }
   ],
   "issues": [
     {
       "id": "P8-ISSUE-01",
       "severity": "high",
-      "desc": "规划 run 超过 1200.0s 未结束（事件时间线已保留 1 条）",
+      "desc": "规划 run 超过 2400.0s 未结束（事件时间线已保留 1 条）",
       "evidence": "可能：模型不可用 / pi 卡死 / UI 应答格式未被接受导致 Plan Agent 停在等待"
     },
     {
@@ -89,14 +89,8 @@
       "severity": "high",
       "desc": "全程未收到 ui.request——Plan Agent 未发起完成确认（提示词/ask-user-question 包未生效），完成确认机制未真正运转",
       "evidence": "types=['run.started']"
-    },
-    {
-      "id": "P8-ISSUE-04",
-      "severity": "high",
-      "desc": "plan tree 落在服务器进程 cwd 而非 plans/<项目>/<任务>/——decisions/002 被违反（SpawnSpec 未设置子进程工作目录）",
-      "evidence": "server-cwd 下发现: ['README.md', 'ideas/inbox.md', 'baseline/risk-hotspots.md', 'baseline/test-and-release-gates.md', 'baseline/storage-and-state.md', 'baseline/runtime-flows.md', 'baseline/module-map.md', 'baseline/README.md']"
     }
   ],
-  "passed": 8,
-  "failed": 7
+  "passed": 9,
+  "failed": 6
 }

@@ -1,0 +1,20 @@
+[PASS] manifest 替换受理（异步渲染） — status=202, 耗时=0.0s
+[PASS] 测试侧交叉校验执行（含 models.json/auth.json） — ['models.json', 'auth.json', 'settings.json', 'plugins-config', 'real-skill']
+[PASS] plan-agent 渲染原生分发 models.json（1M/64K 预算） — models=[('mokeywork/deepseek-flash', 1000000, 65536), ('mokeywork/grok-4.7', 1000000, 65536)]
+[PASS] plan-review 渲染原生分发 models.json（1M/64K 预算） — models=[('mokeywork/deepseek-flash', 1000000, 65536), ('mokeywork/grok-4.7', 1000000, 65536)]
+[ISSUE] P1-CAL-01 (info): 联调校准点结论：清单 model_id 照录显示名「DeepSeek flash」不可用，真实 id = mokeywork/deepseek-flash；provider baseUrl = https://newapi.trtyr.top/v1（自建中转，直连可达）
+[PASS] t1 启动 == 202 — status=202
+[PASS] t1 run 已开始
+[PASS] Running 中同任务再 start == 409 — status=409, body={'error': '已有运行中的任务（MVP 串行执行，一次一个）'}
+[PASS] Running 中他任务再 start == 409（系统级串行） — status=409, body={'error': '已有运行中的任务（MVP 串行执行，一次一个）'}
+[PASS] cancel 端点受理 200 — last=200
+[PASS] cancel 收场：run 进 Failed（1s 内）
+[PASS] 取消后他任务可启动（串行已释放） — status=202
+[PASS] t2 取消受理 — last=200
+[PASS] 终态后重跑 start == 202 — status=202
+[PASS] 第二次 run 取消收场 — {'current_run': 'c446a8ba-7d04-4394-8434-4dd91f0a6c76', 'plan_tree_dir': '/tmp/devforge-e2e-vegtq5ma/.devforge/plans/p/t1', 'project': 'p', 'runs': [{'ended_at_ms': 1792247434009, 'id': 'a5595d4b-5236-4b33-b385-549accf3fe7f', 'started_at_ms': 1792247433702, 'status': 'Failed'}, {'ended_at_ms': None, 'id': 'c446a8ba-7d04-4394-8434-4dd91f0a6c76', 'started_at_ms': 1792247435710, 'status': 'Running'}], 'task': 't1'}
+[PASS] 重跑后 runs 留档 2 条 — 2
+[PASS] 旧 run 状态留档不变 — run1=Failed
+[PASS] current_run 指向最新 run — c446a8ba-7d04-4394-8434-4dd91f0a6c76
+[server] 已停止（HOME=/tmp/devforge-e2e-vegtq5ma）
+== test_07_rerun_serial: 17 PASS / 0 FAIL, 1 issues（结果已落 results/test_07_rerun_serial.json）

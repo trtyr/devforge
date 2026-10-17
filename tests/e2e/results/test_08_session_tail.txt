@@ -1,42 +1,36 @@
-session=2026-10-17T10-42-25-808Z_01a14974-ad8f-70fc-b4ea-3de7e2c76648.jsonl
-entries=239
+session=2026-10-17T13-59-55-540Z_01a14a29-7d93-7000-b700-e83709c8e9cf.jsonl
+entries=173
 
-- message toolResult: ## Phase 2 — 项目与成员
+- message toolResult: Successfully replaced 1 block(s) in /tmp/devforge-e2e-chain-NPlRJO5e/.devforge/plans/demo-app/planning-run/decisions/002-auth-strategy.md.
+- message assistant: bash
+- message toolResult: === 各处 Q002 关闭时机 ===
+./open-questions.md:15:- 关闯时机（唯一权威）：**T001 完成时实测并定案**，结果写回 `decisions/002-auth-strategy.md` 的复核章节或新增 decision。T005/T006 开工前必须有结论；T006 不得在未定案时把 middleware 当作安全边界。
+./decisions/002-a
+- message assistant: Q002 关闭时机已全线统一为「T001 完成时」。修一处错字「关闯」并复核 Q005 表述。 edit
+- message toolResult: Successfully replaced 1 block(s) in /tmp/devforge-e2e-chain-NPlRJO5e/.devforge/plans/demo-app/planning-run/open-questions.md.
+- message assistant:  bash
+- message toolResult: === Q005 vs decisions/002 冲突检查 ===
+open-questions.md:25:## Q005 密码哈希算法选 argon2id 还是 bcrypt？
+open-questions.md:28:- 当前处理：优先 argon2id，若安装受阻降级 bcrypt cost ≥ 12。
+topics/03-auth-and-session.md:7:- 算法：argon
+- message assistant:  Q005 表述自洽（算法二选一在 T003 定，策略层面已 Accepted）。最后做一次完整一致性核对。 bash
+- message toolResult: === 文件清单 ===
+./README.md
+./baseline/README.md
+./baseline/module-map.md
+./baseline/risk-hotspots.md
+./baseline/runtime-flows.md
+./baseline/storage-and-state.md
+./baseline/test-and-release-gates.md
+./de
+- message assistant: 所有修订已完成。确认修订结果。 ask_user_question
+- message toolResult: User has answered your questions: "四处语义矛盾已修订完毕，是否确认完成？"="确认完成". You can now continue with the user's answers in mind.
+- message assistant:  修订完成。
 
-- [ ] owner/member/viewer 三类角色的权限矩阵有测试覆盖。
-- [ ] 跨项目越权用例存在且能因错误实现而失败（防 R1）。
-- [ ] 非 owner 归档项目返回 `403`；归档幂等（重复归档不报错）。
-- [ ] 移除最后一个 owner、或降级最后一个 owner 为其他角色，均返回 `409 conflict_last_o
-- message assistant:  8 条修订完成，回归校验通过（0 断链、错误码全登记）。
+## 4 处矛盾的修法
 
-| # | 问题 | 修订 |
-|---|---|---|
-| 1 | `Task` 契约有 `createdAt`，数据模型无 `created_at` | `data-model.md` Task 实体补 `created_at`；迁移 005 注释写明「含 created_at / updated_at / sort_seq」 |
+**1. Q003 状态矛盾** — `topics/01-product-scope.md`
+「与用户确认过的范围」补入 Q001/Q003/Q006 的确认结论与日期；「未确认」改为「无」，并指向归档位置。
 
-- custom : 
-- custom : 
-- message user: Review 发现以下语义问题，请修订 plan tree：
-- `topics/api-contract/edge-cases.md` 与 `topics/acceptance-criteria.md` 称 `limit > 100` 钳制"契约已写死"，但 `topics/api-contract.md` 与 `topics/api-contract/contracts.md` 均未写出 10
-- message assistant:  逐条核对相关文件。 bash bash
-- message toolResult: === limit 100 ===
-plans/001-task-management-api/topics/api-contract.md:72:请求：`?limit=50&cursor=<opaque>`；响应：`{ "items": [...], "nextCursor": "..." | null }`。
-plans/001-task-management-api/topics/api-c
-- message toolResult: === 删除相关 ===
-plans/001-task-management-api/decisions/003-cursor-pagination.md:10:任务列表是本系统最高频的读操作，且任务会持续被创建、移动、改状态。offset 分页在数据插入/删除时会导致漏项与重复项，对"翻页找任务"的实际体验是可见错误。同时，若各列表接口分页方式不统一，客户端要为每个端点写两套逻辑。
-plans/
-- message assistant:  bash bash
-- message toolResult: === 缓存引用 ===
-50:- 是否引入缓存层：MVP 不需要，见 [risk-hotspots](risk-hotspots.md)。
-
-=== owner_id ===
-./plans/001-task-management-api/topics/data-model.md:18:| `Project` | `id`, `name`, `key`(unique), `owner_id`, 
-- message toolResult: === T000/evidence ===
-## Done
-
-- [x] **T000** 建立 P001 规划骨架：计划 README、roadmap、topics、decisions、baseline 六件套。
-  - 证据：本目录文件树（2026-10-17，规划产物，非代码）。
-
-## In Progress
-=== evidence README T000 ===
-12:现有唯一可称为产
-- message assistant:  已确认 8 条问题。第 3、4 条涉及 Q004 的方向选择，需要你定夺。 ask_user_question
+**2. Q001 状态矛盾** — `topics/02-architecture.md`
+标题由「技术栈（建议，待用户确认 Q001）」改为「

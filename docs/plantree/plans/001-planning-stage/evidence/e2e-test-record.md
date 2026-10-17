@@ -77,3 +77,41 @@ run 8 的「autopilot 聋」、修复阶段未覆盖本项，全部由此解释�
 ## 对策（第 18 试）
 
 应答器升级探测优先：ui-N 游标轮询（4s）不依赖会话签名也不依赖 SSE（commit 6545429）。
+
+---
+
+# 第 18 试（2026-10-17 21:43–22:40，探测优先应答器）：史上最深链路 + 第三条根因
+
+## 走到的深度（全部首次）
+
+- 装包 ~14 分钟 → 规划起跑 → **应答器 4s 内接住首问**，ui-1…ui-12+ 全部接住
+  （含技术栈决策「接受 Next.js + Prisma + SQLite（推荐）」、范围决策「不加，保持纯认证（推荐）」）；
+- **plan tree 首次落约定路径** `~/.devforge/plans/demo-app/planning-run/`：
+  README/open-questions/roadmap + baseline（module-map/storage-and-state/runtime-flows/risk-hotspots/test-and-release-gates）
+  + decisions（001-tech-stack/002-auth-strategy）+ ideas/inbox + topics（product-scope/architecture/auth-and-session）
+  —— 15 文件 5 目录，test_08 脚本级 PASS（文件数=19 含目录）；
+- **review-0（grok-4.7）真实 FAIL+问题清单 → 回注修复 → review-1 全新实例重审 →
+  会话逐字 `<verdict>PASS</verdict>`**（22:08:34，stopReason=stop，usage 完整，130K 审查会话）；
+- 全程 12+ dialog 应答零失败，应答器探测制实战验证。
+
+## 第三条根因（新缺陷，只记录）：verdict 后挂起
+
+PASS verdict 落盘（22:08:34）后 run 迟迟不翻 Settled（至 22:39 脚本兜底仍 Running）：
+
+- 全部 pi 进程自然消失（/proc 实证），**零 stderr**（pi-stderr.log 均未创建 = 清洁退场）；
+- 引擎线程堵在 `review() → wait_settled read_line`（rpc_bridge.rs:76）——EOF 应达而未达；
+- 无孙进程持 fd（cwd 全扫仅 devforge 自身）；服务端 stderr 无 panic；
+- 疑点：pi 回合完成后自行退场（何种触发？真源 blackhole agentMaxTurns=16？）且 EOF/settled 链路
+  未按预期唤醒引擎。修复阶段源码级诊断。
+
+黑盒配对证据：test_08 自有 SSE 流 **ui.request 事件数=0**，同期应答器实际接住 12+ dialog——
+双通道断裂（实证一）的正反两面同时闭环。
+
+## test_07 重写版（22:24–22:33）：17/17 全绿零缺陷
+
+守卫双 409、cancel 收场 1s 内 run Failed、串行释放验证、重跑留档（runs=2/旧 run 不变/current_run 指向最新）。
+
+## 第 19 试动机
+
+合同要求 Completed 状态实证；verdict 后挂起机制不明，随机性未知（修复前 run 16 曾完整走通），
+再赌一次终态翻盘。

@@ -2,14 +2,24 @@
   "script": "test_07_rerun_serial",
   "checks": [
     {
-      "name": "manifest 注入 key 并渲染 profile",
+      "name": "manifest 替换受理（异步渲染）",
       "ok": true,
-      "detail": "status=200, 耗时=47s"
+      "detail": "status=202, 耗时=0.0s"
     },
     {
-      "name": "测试侧补偿完成（models.json + auth.json）",
+      "name": "测试侧交叉校验执行（含 models.json/auth.json）",
       "ok": true,
-      "detail": "['models.json', 'auth.json']"
+      "detail": "['models.json', 'auth.json', 'settings.json', 'plugins-config', 'real-skill']"
+    },
+    {
+      "name": "plan-agent 渲染原生分发 models.json（1M/64K 预算）",
+      "ok": true,
+      "detail": "models=[('mokeywork/deepseek-flash', 1000000, 65536), ('mokeywork/grok-4.7', 1000000, 65536)]"
+    },
+    {
+      "name": "plan-review 渲染原生分发 models.json（1M/64K 预算）",
+      "ok": true,
+      "detail": "models=[('mokeywork/deepseek-flash', 1000000, 65536), ('mokeywork/grok-4.7', 1000000, 65536)]"
     },
     {
       "name": "t1 启动 == 202",
@@ -32,37 +42,59 @@
       "detail": "status=409, body={'error': '已有运行中的任务（MVP 串行执行，一次一个）'}"
     },
     {
-      "name": "t1 第一次 run 在超时内结束",
-      "ok": false,
-      "detail": "elapsed=240s"
+      "name": "cancel 端点受理 200",
+      "ok": true,
+      "detail": "last=200"
+    },
+    {
+      "name": "cancel 收场：run 进 Failed（1s 内）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "取消后他任务可启动（串行已释放）",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "t2 取消受理",
+      "ok": true,
+      "detail": "last=200"
+    },
+    {
+      "name": "终态后重跑 start == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "第二次 run 取消收场",
+      "ok": true,
+      "detail": "{'current_run': 'c446a8ba-7d04-4394-8434-4dd91f0a6c76', 'plan_tree_dir': '/tmp/devforge-e2e-vegtq5ma/.devforge/plans/p/t1', 'project': 'p', 'runs': [{'ended_at_ms': 1792247434009, 'id': 'a5595d4b-5236-4b33-b385-549accf3fe7f', 'started_at_ms': 1792247433702, 'status': 'Failed'}, {'ended_at_ms': None, 'id': 'c446a8ba-7d04-4394-8434-4dd91f0a6c76', 'started_at_ms': 1792247435710, 'status': 'Running'}], 'task': 't1'}"
+    },
+    {
+      "name": "重跑后 runs 留档 2 条",
+      "ok": true,
+      "detail": "2"
+    },
+    {
+      "name": "旧 run 状态留档不变",
+      "ok": true,
+      "detail": "run1=Failed"
+    },
+    {
+      "name": "current_run 指向最新 run",
+      "ok": true,
+      "detail": "c446a8ba-7d04-4394-8434-4dd91f0a6c76"
     }
   ],
   "issues": [
-    {
-      "id": "P7-ISSUE-03",
-      "severity": "medium",
-      "desc": "PUT manifest 同步执行包安装阻塞 47s（四件套含 git clone），客户端常规超时必炸——应异步化或返回任务句柄（发现于 test_07 首跑 10s 超时崩溃）",
-      "evidence": "PUT 耗时 47s"
-    },
-    {
-      "id": "P2-ISSUE-03",
-      "severity": "high",
-      "desc": "渲染器不分发 models.json（provider 的 baseUrl/模型定义缺失）——pi 无法知道 newapi 的地址，模型调用必然失败。测试侧从真实 pi 配置复制补偿",
-      "evidence": "对比真实 ~/.pi/agent/models.json 与渲染产物（无此文件）"
-    },
     {
       "id": "P1-CAL-01",
       "severity": "info",
       "desc": "联调校准点结论：清单 model_id 照录显示名「DeepSeek flash」不可用，真实 id = mokeywork/deepseek-flash；provider baseUrl = https://newapi.trtyr.top/v1（自建中转，直连可达）",
       "evidence": "curl chat/completions 验证 200"
-    },
-    {
-      "id": "P7-ISSUE-01",
-      "severity": "high",
-      "desc": "run 超过 240.0s 未结束（可能 pi 卡死/模型不可用/无取消端点无法干预）",
-      "evidence": "runs={'current_run': '92b3ecce-28f7-43e2-a003-a0634746096f', 'plan_tree_dir': '/tmp/devforge-e2e-by47efjt/.devforge/plans/p/t1', 'project': 'p', 'runs': [{'ended_at_ms': None, 'id': '92b3ecce-28f7-43e2-a003-a0634746096f', 'started_at_ms': 1792174737661, 'status': 'Running'}], 'task': 't1'}"
     }
   ],
-  "passed": 6,
-  "failed": 1
+  "passed": 17,
+  "failed": 0
 }
