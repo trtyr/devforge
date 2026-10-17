@@ -75,3 +75,9 @@
 - **决策**：「流水线检测到阻塞」由 ask-user-question 的 dialog 挂起承担——run 挂起等答案即系统可见的阻塞态（现有 ui relay 通道）；blockers/ 纯留痕，不做文件监视器
 - **为什么**（用户拍板）：现有通道够用，不增机制
 - **后果**：未走 ask 静默写 blockers/ 的情形系统不主动感知（提示词纪律约束）；cancel 解除 dialog 挂起的能力（P001 已修）直接复用
+
+## 013 · CodeGraph 战略地位：代码事实层，codegraph-first 纪律（2026-10-18 拍板）
+
+- **决策**：CodeGraph 定位为流水线的**代码事实层**（plan tree=语义意图，CodeGraph=代码结构真相，两者之桥），非普通供给。落地四件：①codegraph-first 纪律写进双 agent 提示词（结构问题先问图，禁 grep-read 爬取；改前必看 impact；交 review 前 affected 自查测试缺口）；②索引 init 归引擎 spawn 前预检（agent 兑底）；③路径错位用 projectPath 传参教给 agent（Q004）；④MCP 维持单工具 explore，impact/affected/callers 走 CLI。分场景用法矩阵见 topics/codegraph-strategy.md
+- **为什么**（用户拍板）：战略性工具——省轮次（对冲中转长 turn 风险 P8-ISSUE-06）、审得动（decisions/011 对照实物逐项核验的可行性前提）、接得住（产出贴现有架构长）；索引是项目持久资产，跨 run 跨 SOP 越用越新鲜
+- **后果**：引擎新增预检步骤（T006）；两份提示词都带纪律条款与场景矩阵（T004/T005）；遥测关闭（CODEGRAPH_TELEMETRY=0）

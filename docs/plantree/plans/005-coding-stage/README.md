@@ -35,6 +35,7 @@
 - `topics/coding-agent.md` — Coding Agent 行为剧本（三层流程/伴写/偏差协议）
 - `topics/coding-review-agent.md` — Review Agent 审查面与 Report 协议
 - `topics/agent-supply.md` — todo 插件 / MCP / 语言 skills 供给与渲染器扩展点
+- `topics/codegraph-strategy.md` — CodeGraph 战略用法：代码事实层定位、场景矩阵、运行策略
 - `topics/orchestration.md` — CodingSopLoop 状态机、与 planning 的衔接、风险
 - `decisions/` — 已拍板决策
 - `open-questions.md` — 未决问题

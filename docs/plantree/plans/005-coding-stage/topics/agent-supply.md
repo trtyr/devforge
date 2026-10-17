@@ -11,7 +11,7 @@ Coding Agent 与 Review Agent 共用同一配置基面（Review = Coding 换提�
 
 | MCP | 拉起方式 | 用途 |
 |-----|---------|------|
-| CodeGraph | `codegraph serve --mcp`（stdio；本机 CLI 已装 1.6.2） | 代码知识图谱：默认单工具 `codegraph_explore`（源码+调用链+影响面一次调用）；索引建在项目代码工作区（`codegraph init`，由 Coding Agent 开工自检） |
+| CodeGraph | `codegraph serve --mcp`（stdio；本机 CLI 已装 1.6.2） | **代码事实层**——战略地位与分场景用法见 [codegraph-strategy.md](../topics/codegraph-strategy.md)：引擎预检 init、codegraph-first 纪律、MCP 单工具 + CLI 补充 |
 | context7 | `npx -y @upstash/context7-mcp` | 最新库文档（resolve-library-id / get-library-docs）——偏差协议里「技术求证」的弹药 |
 | web tools | pi 内置 | 通用网络搜索/抓取 |
 

@@ -8,9 +8,9 @@
 
 - [ ] (T002) 共享黑板产物约定与结构化协议扩展：`coding/` 子树布局、阶段完成标记块（含无标记重推语义）、Review Report schema（verdict 家族扩展，PASS 可附非阻塞建议）；单测钉协议解析
 - [ ] (T003) 配置供给：渲染器 mcp.json 模板（codegraph stdio + context7 npx）、插件清单扩展（rpiv-todo）、四语言 skills vendor 入库与分发
-- [ ] (T004) Coding Agent profile：提示词模板（三层流程/todo 纪律/伴写纪律/单测纪律/偏差协议/刚需架构条款）+ settings/auth 沿用 planning 渲染管线
-- [ ] (T005) Coding Review Agent profile：审查提示词（三面+刚需+文档可测性+进度审计+树完成判定）+ Report 结构化输出协议
-- [ ] (T006) 编排层：CodingSopLoop 状态机（干活→标记→review→fix 重审|advance→树完成）+ SOP 注册 + 同任务跨 SOP start 触发 + 工作目录模型（黑板 cwd + 代码=项目 local_path）
+- [ ] (T004) Coding Agent profile：提示词模板（三层流程/todo 纪律/伴写纪律/单测纪律/偏差协议/刚需架构条款/codegraph-first 纪律含场景矩阵与 projectPath 传参/勘察义务）+ settings/auth 沿用 planning 渲染管线
+- [ ] (T005) Coding Review Agent profile：审查提示词（三面+刚需+文档可测性+进度审计+树完成判定/codegraph-first 审查纪律）+ Report 结构化输出协议
+- [ ] (T006) 编排层：CodingSopLoop 状态机（干活→标记→review→fix 重审|advance→树完成）+ SOP 注册 + 同任务跨 SOP start 触发 + 工作目录模型（黑板 cwd + 代码=项目 local_path）+ **CodeGraph 索引引擎预检**（spawn 前无 .codegraph 则 init，decisions/013）
 
 ## Phase C · 测试与验收
 
