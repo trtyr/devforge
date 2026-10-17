@@ -30,7 +30,7 @@ Coding Agent 与 Review Agent 共用同一配置基面（Review = Coding 换提�
 | 家族 | 回答什么 | 我们的选型 |
 |------|---------|-----------|
 | **结构图**（repo map/graph） | 调用谁/影响谁/流程怎么走——结构真相 | ✅ CodeGraph（事实层，见 codegraph-strategy.md） |
-| **LSP/诊断** | 类型错误/lint/形式检查——编译器级即时反馈 | 🗳 候选 pi-lens（Q005）：49 语言服务器 + ast-grep/opengrep/typos 辅助扫描，编辑后即时诊断免跑全量构建；pi 原生插件与我们的宿主同源 |
+| **LSP/诊断** | 类型错误/lint/形式检查——编译器级即时反馈 | ✅ pi-lens（2026-10-18 拍板入选，Q005 关闭）：49 语言服务器 + ast-grep/opengrep/typos 辅助扫描，编辑后即时诊断免跑全量构建；pi 原生插件与我们的宿主同源。RPC 可用性待验（T003，同类 Q001） |
 | **语义检索**（embedding RAG） | 按意思找代码（补偿图的词法盲区） | 🍉 Deferred：opencode-codebase-index / pi-smritikosh；1M 上下文+好提示词下非刚需 |
 
 旁类已覆盖：最新文档（context7+web tools）✓｜过程管理（rpiv-todo）✓｜领域知识（四语言 skills）✓。

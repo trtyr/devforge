@@ -23,12 +23,8 @@ agent 的 spawn cwd 是黑板（任务目录），`.codegraph/` 索引建在代�
 
 **结论：官方原生支持，设计成立。**codegraph 官方有无根索引变体（SERVER_INSTRUCTIONS_NO_ROOT_INDEX）：server 起在无索引目录时工具照常暴露，靠 `projectPath` 逐项目查询（解析最近 `.codegraph/`，一会话多项目），新索引被运行中 server 实时拾取。落法：提示词教 agent 显式传 `projectPath=<代码工作区>`（T004/T005 提示词落地）；引擎 spawn 前预检 init（decisions/013）保证索引存在；不可用时 agent 优雅降级原生工具。详见 topics/codegraph-strategy.md。
 
-## Q005 · pi-lens（LSP/诊断层）是否入选？
+## Q005 · pi-lens（LSP/诊断层）是否入选？【已解决 2026-10-18】
 
-生态侦察发现代码上下文有三大家族（结构图/LSP 诊断/语义检索），已覆盖结构与文档两类，缺**诊断层**：编辑后的类型错误/lint 反馈目前只能靠跑构建。候选 pi-lens（pi 原生插件，49 语言服务器 + ast-grep/opengrep/typos 辅助扫描，注册 agent 工具 + MCP 镜像）。
+生态侦察发现代码上下文有三大家族（结构图/LSP 诊断/语义检索），已覆盖结构与文档两类，缺**诊断层**。候选 pi-lens。
 
-- 入选收益：coding agent 改完即时看诊断（免跑全量构建）；review agent 拿 lint/类型证据
-- 待验：`--mode rpc` 下工具可用性（同类 Q001）；与 codegraph 的工具面重叠度
-- 不入选的代价：诊断依赖 agent 手动跑构建，轮次更多
-
-验证时机：T003。
+**结论：入选（用户拍板）。**supply 五件套定型（decisions/014）。待验：`--mode rpc` 下工具可用性（T003，同类 Q001）；与 codegraph 工具面重叠度（预期互补：图=结构真相，lens=编译器级反馈）。不入选的代价已消除：诊断不再依赖手动跑构建。
