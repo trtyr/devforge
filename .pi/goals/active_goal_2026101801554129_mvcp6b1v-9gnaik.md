@@ -1,0 +1,89 @@
+{
+  "version": 3,
+  "id": "mvcp6b1v-9gnaik",
+  "objective": "实现 devforge Coding SOP 全部代码（P005 Phase B + Phase C 单测部分，T002-T007）：共享黑板产物约定与结构化协议、配置供给（codegraph/context7 MCP、rpiv-todo/pi-lens 插件、四语言 skills vendor）、Coding Agent 与 Coding Review Agent 双 profile 提示词、CodingSopLoop 编排状态机（含 SOP 注册与跨 SOP 触发、CodeGraph 引擎预检 init），最终 cargo test 0 失败 + clippy 0 警告 + plan tree 状态回写。明确不做端到端测试（T008 留待用户醒来拍板）。",
+  "status": "active",
+  "autoContinue": true,
+  "usage": {
+    "tokensUsed": 855436,
+    "activeSeconds": 164
+  },
+  "sisyphus": false,
+  "revision": 32,
+  "createdAt": "2026-10-17T17:55:41.299Z",
+  "updatedAt": "2026-10-17T17:58:34.133Z",
+  "scheduler": {
+    "version": 1,
+    "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
+    "generation": "2a7a5a1e-e250-4f50-b15c-fce784d306e5",
+    "used": 3,
+    "phase": "idle",
+    "repairUsed": false
+  },
+  "taskList": {
+    "tasks": [
+      {
+        "id": "task-1",
+        "title": "T002 黑板约定与结构化协议扩展：coding/ 子树布局常量、阶段完成标记块（含无标记重推语义）、Review Report schema（stage-verdict/issues/next: fix|advance|finish，PASS 附非阻塞建议）；单测钉解析含缺块保守路径",
+        "status": "pending",
+        "verificationContract": "协议单元测试覆盖：正常解析/缺块保守路径/未知 next 值保守处理；cargo test 全绿；协议常量与 topics/shared-blackboard.md、coding-review-agent.md 的布局/schema 一致"
+      },
+      {
+        "id": "task-2",
+        "title": "T003 配置供给：渲染器 mcp.json 模板（codegraph stdio+context7 npx，CODEGRAPH_TELEMETRY=0）、插件清单 +rpiv-todo/+pi-lens、四语言（Rust/Go/Python/TS-JS）skills 外部搜索→下载→原样 vendor 入库与分发；pi-lens/todo/web tools 的 RPC 单点冒烟（允许，非端到端）",
+        "status": "pending",
+        "verificationContract": "渲染单元测试覆盖新模板面（mcp.json 两 server、env 注入、插件清单含 pi-lens/rpiv-todo）；四语言 skills 目录存在且含来源登记（URL/版本）于 evidence；单点 RPC 冒烟（允许，非 e2e）结果记录"
+      },
+      {
+        "id": "task-3",
+        "title": "T004 Coding Agent profile：提示词模板（三层流程/todo 纪律/伴写纪律/单测禁 e2e/git 阶段PASS即commit/勘察义务/偏差协议/刚需四条款/codegraph-first 纪律含场景矩阵与 projectPath/工作区与黑板双路径告知）",
+        "status": "pending",
+        "verificationContract": "提示词为渲染器内建模板（随 profile 渲染分发）；模板内容对照 topics/coding-agent.md 剧本与 decisions D001-D014 逐条覆盖自查；渲染单测含新模板断言"
+      },
+      {
+        "id": "task-4",
+        "title": "T005 Coding Review Agent profile：审查提示词（刚需/后端/前端/前后端连接/文档可测性/todo 实物审计/树完成判定·锚点对照实物 + codegraph-first 审查纪律）+ Review Report 结构化输出协议",
+        "status": "pending",
+        "verificationContract": "提示词审查面与 topics/coding-review-agent.md 七面一一对应；Report 协议块与 T002 schema 一致；渲染单测断言"
+      },
+      {
+        "id": "task-5",
+        "title": "T006 编排层：CodingSopLoop 状态机（干活→标记→review→fix 重审|advance→树完成；无标记重推零上限；PASS 附建议先消化）、SOP 注册 +coding、同任务跨 SOP start（sop 覆盖）、工作目录模型（黑板 cwd+代码=local_path 注入）、CodeGraph 索引引擎预检（无 .codegraph 则 init）",
+        "status": "pending",
+        "verificationContract": "状态机单元测试：阶段推进/打回重审/树完成收工/无标记重推/取消与超时路径（沿用 RunControl）；SOP 注册与跨 SOP 触发有单测；预检 init 有单测（临时目录无索引→调用 init 命令构造）"
+      },
+      {
+        "id": "task-6",
+        "title": "T007 全量回归与回写：cargo test 0 失败 + clippy --all-targets 0 警告（bg_run 原始日志验真）；P005 roadmap T002-T007 勾选带 commit 证据；执行期发现回写 open-questions；不做 T008 e2e（留待用户拍板）",
+        "status": "pending",
+        "verificationContract": "bg_run 原始日志显示 0 failed 与 0 warning（RTK 前台汇总不可信）；git log 含各任务提交；roadmap T002-T007 勾选带 commit hash；open-questions 记录执行期发现"
+      }
+    ],
+    "blockCompletion": false,
+    "proposedAt": "2026-10-17T17:55:36.108Z"
+  },
+  "activePath": ".pi/goals/active_goal_2026101801554129_mvcp6b1v-9gnaik.md",
+  "currentTaskId": "task-1"
+}
+
+# Goal Prompt
+
+实现 devforge Coding SOP 全部代码（P005 Phase B + Phase C 单测部分，T002-T007）：共享黑板产物约定与结构化协议、配置供给（codegraph/context7 MCP、rpiv-todo/pi-lens 插件、四语言 skills vendor）、Coding Agent 与 Coding Review Agent 双 profile 提示词、CodingSopLoop 编排状态机（含 SOP 注册与跨 SOP 触发、CodeGraph 引擎预检 init），最终 cargo test 0 失败 + clippy 0 警告 + plan tree 状态回写。明确不做端到端测试（T008 留待用户醒来拍板）。
+
+## Progress
+
+- Status: running
+- Auto-continue: on
+- Sisyphus mode: no
+- Time spent: 2m44s
+- Tokens used: 855K (855,436) tokens
+## Tasks
+
+<!-- blockCompletion: false -->
+- [ ] task-1: T002 黑板约定与结构化协议扩展：coding/ 子树布局常量、阶段完成标记块（含无标记重推语义）、Review Report schema（stage-verdict/issues/next: fix|advance|finish，PASS 附非阻塞建议）；单测钉解析含缺块保守路径 — contract: 协议单元测试覆盖：正常解析/缺块保守路径/未知 next 值保守处理；cargo test 全绿；协议常量与 topics/shared-blackboard.md、coding-review-agent.md 的布局/schema 一致
+- [ ] task-2: T003 配置供给：渲染器 mcp.json 模板（codegraph stdio+context7 npx，CODEGRAPH_TELEMETRY=0）、插件清单 +rpiv-todo/+pi-lens、四语言（Rust/Go/Python/TS-JS）skills 外部搜索→下载→原样 vendor 入库与分发；pi-lens/todo/web tools 的 RPC 单点冒烟（允许，非端到端） — contract: 渲染单元测试覆盖新模板面（mcp.json 两 server、env 注入、插件清单含 pi-lens/rpiv-todo）；四语言 skills 目录存在且含来源登记（URL/版本）于 evidence；单点 RPC 冒烟（允许，非 e2e）结果记录
+- [ ] task-3: T004 Coding Agent profile：提示词模板（三层流程/todo 纪律/伴写纪律/单测禁 e2e/git 阶段PASS即commit/勘察义务/偏差协议/刚需四条款/codegraph-first 纪律含场景矩阵与 projectPath/工作区与黑板双路径告知） — contract: 提示词为渲染器内建模板（随 profile 渲染分发）；模板内容对照 topics/coding-agent.md 剧本与 decisions D001-D014 逐条覆盖自查；渲染单测含新模板断言
+- [ ] task-4: T005 Coding Review Agent profile：审查提示词（刚需/后端/前端/前后端连接/文档可测性/todo 实物审计/树完成判定·锚点对照实物 + codegraph-first 审查纪律）+ Review Report 结构化输出协议 — contract: 提示词审查面与 topics/coding-review-agent.md 七面一一对应；Report 协议块与 T002 schema 一致；渲染单测断言
+- [ ] task-5: T006 编排层：CodingSopLoop 状态机（干活→标记→review→fix 重审|advance→树完成；无标记重推零上限；PASS 附建议先消化）、SOP 注册 +coding、同任务跨 SOP start（sop 覆盖）、工作目录模型（黑板 cwd+代码=local_path 注入）、CodeGraph 索引引擎预检（无 .codegraph 则 init） — contract: 状态机单元测试：阶段推进/打回重审/树完成收工/无标记重推/取消与超时路径（沿用 RunControl）；SOP 注册与跨 SOP 触发有单测；预检 init 有单测（临时目录无索引→调用 init 命令构造）
+- [ ] task-6: T007 全量回归与回写：cargo test 0 失败 + clippy --all-targets 0 警告（bg_run 原始日志验真）；P005 roadmap T002-T007 勾选带 commit 证据；执行期发现回写 open-questions；不做 T008 e2e（留待用户拍板） — contract: bg_run 原始日志显示 0 failed 与 0 warning（RTK 前台汇总不可信）；git log 含各任务提交；roadmap T002-T007 勾选带 commit hash；open-questions 记录执行期发现
+
