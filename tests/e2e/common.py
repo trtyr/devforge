@@ -77,11 +77,18 @@ class Server:
         )
         deadline = time.time() + timeout
         last_err: Exception | None = None
+        # 健康探针携带实例 token（若有）：token 强制模式下无头探针会被 401 拦截，
+        # 服务器明明活着却被误判未就绪
+        probe_headers = (
+            {"x-devforge-token": self.env_extra["DEVFORGE_TOKEN"]}
+            if self.env_extra.get("DEVFORGE_TOKEN")
+            else None
+        )
         while time.time() < deadline:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"服务器提前退出（exit={self.proc.returncode}），见 {self.log_path}")
             try:
-                status, _ = self.req("GET", "/projects")
+                status, _ = self.req("GET", "/projects", headers_extra=probe_headers)
                 if status == 200:
                     return self
             except OSError as e:  # 连接未就绪

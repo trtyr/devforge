@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""test_04 · 鉴权：默认放行路径 + token 强制路径可达性。
+"""test_04 · 鉴权：默认放行路径 + token 强制路径端到端（006 修复回归）。
 
-已知约束：binary main.rs 未暴露 token 配置入口（无 env/CLI 参数），
-强制路径（Some(token) → 401）无法从外部触发——按约定记录为发现，不修。
+006 变更（commit a73f92f）：--token CLI 与 DEVFORGE_TOKEN env 入口落地，
+401 强制路径现在可以从外部真实触发——本脚本以双服务器实例覆盖两条路径：
+默认实例（未配置 → 放行）+ 强制实例（DEVFORGE_TOKEN → 401/200 矩阵）。
 """
-
 import sys
 from pathlib import Path
 
@@ -29,17 +29,41 @@ def main() -> int:
         r.check(
             conn_ok[0] == 200, "任意 token 头在 None 配置下仍放行", f"status={conn_ok[0]}"
         )
-
-        # 3. 强制路径可达性：服务器无 token 配置入口 → 记录发现
-        r.issue(
-            "P3-ISSUE-03", "medium",
-            "token 鉴权预留位无启动配置入口（main.rs 恒置 None，无 env/CLI 参数），"
-            "401 强制路径无法端到端验证（单测已覆盖逻辑）",
-            "src/main.rs 未读取任何 token 相关配置；ServerState.token 恒 None",
-        )
-
     finally:
         server.stop()
+
+    # 3. token 强制路径端到端（006 修复回归：DEVFORGE_TOKEN env → ServerState.token）
+    guarded = Server(env_extra={"DEVFORGE_TOKEN": "secret-e2e"})
+    try:
+        guarded.start()
+
+        # 3a. 无头 → 401
+        status, body = guarded.req("GET", "/projects")
+        r.check(
+            status == 401,
+            "配置 token 后无头请求 == 401",
+            f"status={status}, body={body}",
+        )
+
+        # 3b. 错误 token → 401
+        status, _ = guarded.req(
+            "GET", "/projects", headers_extra={"x-devforge-token": "wrong"}
+        )
+        r.check(status == 401, "错误 token == 401", f"status={status}")
+
+        # 3c. 正确 token → 200
+        status, body = guarded.req(
+            "GET", "/projects", headers_extra={"x-devforge-token": "secret-e2e"}
+        )
+        r.check(status == 200, "正确 token == 200", f"status={status}, body={body}")
+
+        # 3d. SSE 事件流同在鉴权面内（同 router layer）：无头 → 401
+        #（授权侧的流式 200 会长挂，不在脚本里等——授权放行已由 3c 覆盖）
+        status, _ = guarded.req("GET", "/events")
+        r.check(status == 401, "SSE 事件流无头同样 401（鉴权覆盖全 API 面）", f"status={status}")
+
+    finally:
+        guarded.stop()
     return r.finish()
 
 

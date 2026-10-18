@@ -6,10 +6,8 @@
 - 未知 sop → 400（注册表校验，先于 run 状态检查——无竞态）
 - 无 body start → 202 且沿用任务注册 sop
 - 任务创建时 workspace 快照项目 local_path（decisions/001 代码归项目层）
-
-注：本脚本聚焦 API/编排面。执行中发现 F1（记录不修）：未渲染 profile 时编码 run
-不快速失败（spawn 不校验 profile 目录，真 pi 挂 Running）——测试侧用 cancel 解锁，
-顺带覆盖编码 run 的 cancel 路径；真实编码链路由 test_14 覆盖。
+- 未渲染 profile 时编码 run 快速失败（006 T001 F1 修复回归，commit 5d51e29：
+  spawn 前门卫拦截，不再真起 pi 挂 Running 占串行槽）
 """
 
 import sys
@@ -59,29 +57,40 @@ def main() -> int:
             time.sleep(0.5)
         r.check(sop_now == "coding", "任务 sop 已切换为 coding（跨 SOP 链路入口）", f"sop={sop_now}")
 
-        # 3. 发现 F1（记录不修）：未渲染 profile 的编码 run 不快速失败——spawn 不校验
-        # profile 目录，真 pi 挂 Running 占住串行槽。测试侧用 cancel 解锁（顺带覆盖编码 run 的
-        # cancel 路径：watchdog 按 run-id 清场）。
-        status, _ = server.req("POST", "/projects/demo-app/tasks/flow/cancel")
-        r.check(status == 200, "cancel 挂 Running 的编码 run == 200（F1 解锁）", f"status={status}")
-        deadline = time.time() + 30
+        # 3. F1 修复回归（006 T001，commit 5d51e29）：未渲染 profile 的编码 run
+        # spawn 前门卫拦截 → run 秒级 Failed，不再真起 pi 挂 Running 占串行槽
+        t0 = time.time()
+        status, _ = server.req("POST", "/projects/demo-app/tasks/flow/start", {"sop": "coding"})
+        r.check(status == 202, "未渲染 profile 下 start 仍受理 == 202", f"status={status}")
+        deadline = t0 + 15
         final = None
         while time.time() < deadline:
             _, runs_body = server.req("GET", "/projects/demo-app/tasks/flow/runs")
             runs = runs_body.get("runs", [])
-            if runs and runs[0]["status"] in ("Settled", "Failed"):
-                final = runs[0]["status"]
+            if runs and runs[-1]["status"] in ("Settled", "Failed"):
+                final = runs[-1]["status"]
                 break
-            time.sleep(0.5)
-        r.check(final == "Failed", "cancel 后编码 run 进 Failed", f"final={final}")
-        r.issue(
-            "F1-MISSING-PROFILE-HANG", "high",
-            "未渲染 profile 时编码 run 不快速失败：spawn 不校验 profile 目录，"
-            "真 pi 以缺失 agent-dir 启动并挂 Running 占住串行槽；需 cancel 解锁。"
-            "证据：本脚本第 3 节 + runs JSON。",
+            time.sleep(0.3)
+        elapsed = time.time() - t0
+        r.check(
+            final == "Failed",
+            "未渲染 profile 的编码 run 快速 Failed（F1 修复回归）",
+            f"final={final}, elapsed={elapsed:.1f}s",
         )
+        r.check(
+            elapsed < 10,
+            "秒级失败（无真 pi 挂 Running 占串行槽）",
+            f"elapsed={elapsed:.1f}s",
+        )
+        _, tasks_body = server.req("GET", "/projects/demo-app/tasks")
+        r.check(
+            tasks_body["tasks"][0]["status"] == "Failed",
+            "任务终态同步 Failed",
+            f"status={tasks_body['tasks'][0]['status']}",
+        )
+
         status, _ = server.req("POST", "/projects/demo-app/tasks/flow/start", None)
-        r.check(status == 202, "无 body start == 202（沿用注册 sop）", f"status={status}")
+        r.check(status == 202, "无 body start == 202（沿用注册 sop；Failed 可重跑）", f"status={status}")
 
     finally:
         server.stop()
