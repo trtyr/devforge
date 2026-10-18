@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Reporter, Server, SseStream, UiAutoPilot, compensate_profile, real_api_key  # noqa: E402
 
 PLAN_TIMEOUT = 2400.0    # 规划段：40 分钟（沿 test_08 口径）
-CODE_TIMEOUT = 7200.0    # 编码段：120 分钟（v2 实测 60min 内 stage1+2 双 commit 已落但未及收尾；窗口翻倍拿 Settled+Completed 实证）
+CODE_TIMEOUT = 10800.0   # 编码段：180 分钟（v4 实证 7200s 不足：晚向慢模型 5 阶段自划分 2h 未竟被收割，C14 同窗预算问题重演；v2→v3 先例：加窗即通非缺陷，故 180min 拿全供给 Settled+Completed 见证）
 
 
 def newest_session_bytes(server: Server, kind: str) -> int:
