@@ -380,8 +380,17 @@ mod tests {
         let manifest = ConfigManifest::builtin();
         let root = tempfile::tempdir().unwrap();
         let rendered = renderer(&manifest).render_all(root.path()).unwrap();
-        assert_eq!(rendered.len(), 4, "规划双 Agent + 编码双 Agent");
-        for name in ["plan-agent", "plan-review", "coding-agent", "coding-review"] {
+        assert_eq!(rendered.len(), 8, "规划双 + 编码双 + 测试双 + 文档双（P007）");
+        for name in [
+            "plan-agent",
+            "plan-review",
+            "coding-agent",
+            "coding-review",
+            "test-agent",
+            "test-review",
+            "doc-fix",
+            "doc-review",
+        ] {
             assert!(root.path().join(name).is_dir());
         }
     }

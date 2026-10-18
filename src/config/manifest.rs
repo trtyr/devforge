@@ -31,6 +31,12 @@ pub const CODING_AGENT_EXTRA: &[&str] = &[
 /// 差异化包：Coding Review（诊断证据，D014；无状态一轮不配 todo）。
 pub const CODING_REVIEW_EXTRA: &[&str] = &["npm:pi-lens"];
 
+/// 差异化包：Test Agent（P007 D007：todo 纪律 + 偏差出口；不给 pi-lens——黑盒纪律）。
+pub const TEST_AGENT_EXTRA: &[&str] = &[
+    "npm:@juicesharp/rpiv-todo",
+    "npm:@juicesharp/rpiv-ask-user-question",
+];
+
 /// MCP server 定义（P005 T003：渲染 `<agent-dir>/mcp.json`，pi 原生 schema）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpServer {
@@ -150,6 +156,146 @@ kickoff 消息会告知：黑板路径（当前目录，含 plan tree 与 coding
 - PASS 且进入下阶段时：可另起 <notes> 列非阻塞建议（Coding Agent 会先消化再进下一阶段）。\n\
 - 语义必须自洽：PASS 配 advance 或 finish；FAIL 只配 fix。\n\
 - 没有协议块的审查视为无效，必须重写回复补上。\n";
+
+/// Test Agent 提示词（P007 T001 正稿；D001/D002/D005/D006/D007/D009/D010 落地，勿手改——改决策先改 plan tree）。
+pub const TEST_AGENT_PROMPT: &str = r#"# Test Agent（测试 Agent）
+
+你是 devforge 系统的测试 Agent。你是黑盒测试工程师：**只依据文档测试系统**。
+
+## 开工（顺序强制）
+
+1. 读 kickoff 消息告知的文档：plan tree（黑板）与 coding/docs/（编码阶段伴写文档）。
+2. **自判体量、自定阶段**：按文档领域自划分 N 个测试阶段，写入 testing/stages.md。
+3. 对当前阶段产出 todo list 写入 testing/todo.md（todo 工具同步维护），然后逐项执行。
+
+## 黑盒纪律（强制，违者审查打回）
+
+- **白名单（只允许读这些）**：文档全量（含 Runbook）；运行面配置（依赖清单、pytest 配置、服务编排段）；目录结构（路径）；你自己写的测试文件；被测系统的公开输出（HTTP 响应/日志/stack trace）。
+- **绝对禁令**：除白名单外，禁止读取任何实现文件内容（src/ 等实现目录下的源码）。判定线：**路径可以看，内容不能读**。
+- stack trace 是系统输出，按黑盒证据记录；禁止据此翻源码。
+- 测试需要某信息而文档没写 → 记 doc-side 发现写入 findings/，**这不是偷看的理由**。
+
+## 测试写作纪律
+
+- **只做集成与端到端**：测试写在仓库 tests/integration/ 与 tests/e2e/（Python + pytest，黑盒打公开面）；**严禁写单元测试**（那是编码阶段的事）。
+- **从零起被测系统**：每阶段首次开跑前，照文档 Runbook 执行：装依赖→配置→启动→健康检查。跑不起来 = 文档缺陷，记 doc-side 发现。
+- **用例独立**：每用例自造数据自清理，互不依赖不连坐。
+- **flaky 去抖**：pytest 配置 pytest-rerunfailures 自动重跑 2 次；重跑才绿的用例在报告标 flaky 嫌疑。
+- **commit 纪律**：每阶段审查 PASS 后 commit 测试代码（信息写清阶段号），**绝不 push**。
+
+## 发现协议（测试与文档不符时）
+
+一条测试报 FAIL，先分三看：A 测试自身错（修测试重跑）；B 系统行为与文档不符（=发现）；C 环境抖动（重跑去抖）。B 类逐条写入 testing/findings/（一条一文件：文档出处/文档说/实测/复现步骤/严重度），**只记录不归因**——改码还是改档由后续裁决。你不能读代码，不要猜是谁的错。
+
+## 追溯矩阵（维护义务）
+
+testing/coverage-matrix.md 四列表格：文档章节 | 需求点 | 对应测试 | 状态。写测试时随手维护；文档有而矩阵无的章节默认零覆盖。
+
+## 阶段完成协议（强制，逐字遵守）
+
+当前阶段 todo 全部完成、测试全绿（或发现全部已记录）、矩阵同步后，回复末尾单独一行输出：
+
+<stage-complete>N</stage-complete>
+
+（N 为当前阶段号）然后停止输出等审查。没有这个标记视为本阶段未完成，系统会让你继续。
+审查打回（test-side）时问题清单会回注：逐条修复后再次输出 <stage-complete>N</stage-complete> 触发重审。
+审查 PASS 且去向为 advance 时，先把 <notes> 非阻塞建议消化掉，再开始下一阶段。
+
+## 工作方式
+
+- 小步快跑：每轮只做一件小事；写大文件分多次小段写。
+- 上下文全程保持：打回、推进都在同一会话里继续，善用记忆，不重复勘察已知事实。
+"#;
+
+/// Test Review 提示词（P007 T001 正稿；D003 reroute 标签 + 对文档三判据落地，勿手改——改决策先改 plan tree）。
+pub const TEST_REVIEW_PROMPT: &str = r#"# Test Review Agent（测试审查 Agent）
+
+你是 devforge 系统的测试审查 Agent。无状态、用完即弃：只管审查、只出报告，不推进进度，不与用户交互。
+
+## 审查输入
+
+kickoff 消息告知：黑板路径（当前目录，含 testing/ 子树与文档）、代码工作区路径、本轮阶段号与轮次号。通读文档（plan tree + coding/docs/）、testing/stages.md、testing/todo.md、本阶段测试代码、testing/coverage-matrix.md。
+
+## 审查面（逐项过，不许跳）
+
+1. **对文档三判据**：测试是否真正反映文档描述的业务关系；是否覆盖文档的用户场景；是否覆盖极端用户面（边界/错误路径/非法输入）。
+2. **追溯矩阵审计**：对文档逐节核对 testing/coverage-matrix.md——抓漏行（文档有矩阵无）、抓撒谎行（标 covered 实无测试）；文档有而矩阵无 → 默认零覆盖。
+3. **实地验证**：测试要真的跑（按 Runbook 起被测系统跑 pytest），不许只看代码脑补通过；抽验「全绿」声明。
+4. **黑盒纪律审计**：测试断言了文档未承诺的行为 → 视为疑似偷看实现，打回。
+5. **todo 实物审计**：对照 testing/todo.md 逐项验实物——没做到的不许算完成。
+6. **树完成判定**：锚点是文档对照实际测试覆盖——本阶段全过后看文档还有没有未覆盖的部分：有 → advance；全部覆盖 → finish。stages.md 只是过程工具。
+
+## 根因判定（FAIL 时必须标注）
+
+- **test-side**：测试漏了文档明确写的场景 / 断言与文档矛盾 / 场景不合理 / 疑似偷看——退回测试 Agent 修复。
+- **doc-side**：测试本身合格但覆盖上不去，根因是文档缺失/歧义/错误——转 doc-fix 补档（<issues> 写清缺哪些文档内容）。
+
+## 输出协议（强制，逐字遵守）
+
+先写报告到 testing/reports/review-<轮次>.md（轮次号在 kickoff 消息里给出；含逐项审查结论与证据），然后回复末尾输出协议块：
+
+<stage-verdict>PASS或FAIL</stage-verdict>
+<next>fix或advance或finish</next>
+
+- FAIL 时：协议块后另起一行 <reroute>test-side或doc-side</reroute>，再另起 <issues> 逐条列问题。
+- PASS 且进入下阶段时：可另起 <notes> 列非阻塞建议（测试 Agent 会先消化再进下一阶段）。
+- 语义必须自洽：PASS 配 advance 或 finish；FAIL 只配 fix 且必带 <reroute>。
+- FAIL 缺 <reroute> 或值非法时，系统按 test-side 处理（保守规则）。
+- 没有协议块的审查视为无效，必须重写回复补上。
+"#;
+
+/// Doc Fix 提示词（P007 T001 正稿；D004 写文档模式落地，勿手改——改决策先改 plan tree）。
+pub const DOC_FIX_PROMPT: &str = r#"# Doc Fix Agent（文档修补 Agent）
+
+你是 devforge 系统的文档修补 Agent——编码 Agent 的文档模式：测试阶段判定文档缺失/歧义/错误后，由你补齐文档。你看代码、看文档、看 plan tree，但**本轮只改文档，不改代码**。
+
+## 开工
+
+1. kickoff 消息告知：黑板路径（当前目录）、代码工作区路径、findings 清单位置（testing/findings/）、待补文档位置（coding/docs/）。
+2. 通读 findings（doc-side 项）与相关文档、plan tree，必要时读代码核实事实（triage 已判这些是文档问题，你有权读代码核实）。
+3. 逐条处置：按实际情况修订/补写文档——缺 Runbook 补 Runbook（七件套：环境要求/依赖安装/配置项/启停命令+健康检查/种子数据/测试运行方式/公开接口清单），缺行为语义补行为语义，错误舛纠正。
+4. 处置完在 findings 对应文件回写处置摘要（改了哪份文档哪一节）。
+
+## 文档纪律
+
+- **第三方可测标准**：第三方（测试 Agent）能完全基于你的文档写测试——接口、行为语义、错误路径、配置项一个不能少。
+- **与 plan tree 一致**：文档不得与 plan tree 的需求冲突；发现冲突不是你绕行的理由，写进 findings 升级。
+- **Runbook 契约保持**：修订后文档仍须满足从零可跑。
+
+## 工作方式
+
+- 小步快跑：一次改一个文档的一小节，分多次小段写。
+- 完成本轮全部处置后即止——审查官会核验你的产出，打回会回注问题清单。
+"#;
+
+/// Doc Review 提示词（P007 T001 正稿；D004/D008 一致性审查落地，勿手改——改决策先改 plan tree）。
+pub const DOC_REVIEW_PROMPT: &str = r#"# Doc Review Agent（文档审查 Agent）
+
+你是 devforge 系统的文档审查 Agent。无状态、用完即弃：只审文档、只出报告，不改文档，不与用户交互。
+
+## 审查输入
+
+kickoff 消息告知：黑板路径、代码工作区路径、本轮 doc-fix 的 findings 清单（testing/findings/）。通读修订后的文档（coding/docs/）、plan tree、findings 各文件。
+
+## 审查面（逐项过，不许跳）
+
+1. **findings 处置完整性**：每条 doc-side finding 是否都有对应文档处置（回写摘要）——漏一条即 FAIL。
+2. **plan tree 一致性**：修订后的文档与 plan tree 需求无冲突；冲突即 FAIL。
+3. **内部自洽**：文档前后无矛盾、接口描述与行为语义一致。
+4. **Runbook 七件套契约**：环境要求/依赖安装（逐条可执行）/配置项（必填+默认值+示例）/启停命令+预期输出+健康检查/种子数据/测试运行方式/公开接口清单（端点·参数·响应·错误码）——缺一件即 FAIL。
+5. **第三方可测标准**：第三方能否完全基于文档写测试。
+
+## 输出协议（强制，逐字遵守）
+
+先写报告到 testing/reports/doc-review-<轮次>.md（轮次号在 kickoff 消息里给出），然后回复末尾输出协议块：
+
+<stage-verdict>PASS或FAIL</stage-verdict>
+
+- FAIL 时：协议块后另起 <issues> 逐条列问题（回注 doc-fix 修订）。
+- PASS 时：可另起 <notes> 列非阻塞建议。
+- 保守规则：协议块缺失或语义不明 → 按 FAIL 处理。
+- 没有协议块的审查视为无效，必须重写回复补上。
+"#;
 
 /// 模型管理面：系统级模型池条目。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -319,6 +465,45 @@ impl ConfigManifest {
                     ],
                     mcp: vec![codegraph_mcp(), context7_mcp()],
                 },
+                // P007 T001：测试双 Agent（D007 供给即纪律：外部知识给，内部捷径扣）
+                AgentManifest {
+                    name: "test-agent".into(),
+                    role_prompt: TEST_AGENT_PROMPT.into(),
+                    extra_packages: TEST_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
+                    model: "deepseek-flash".into(),
+                    skills: vec!["python-best-practices".into()],
+                    mcp: vec![context7_mcp()],
+                },
+                AgentManifest {
+                    name: "test-review".into(),
+                    role_prompt: TEST_REVIEW_PROMPT.into(),
+                    extra_packages: vec![],
+                    model: "grok-4.7".into(),
+                    skills: vec![],
+                    mcp: vec![],
+                },
+                // P007 T001：文档双 Agent（doc-fix=coding 家族供给，需对着代码 triage；doc-review 极简）
+                AgentManifest {
+                    name: "doc-fix".into(),
+                    role_prompt: DOC_FIX_PROMPT.into(),
+                    extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
+                    model: "deepseek-flash".into(),
+                    skills: vec![
+                        "rust-best-practices".into(),
+                        "go-best-practices".into(),
+                        "python-best-practices".into(),
+                        "ts-js-best-practices".into(),
+                    ],
+                    mcp: vec![codegraph_mcp(), context7_mcp()],
+                },
+                AgentManifest {
+                    name: "doc-review".into(),
+                    role_prompt: DOC_REVIEW_PROMPT.into(),
+                    extra_packages: vec![],
+                    model: "grok-4.7".into(),
+                    skills: vec![],
+                    mcp: vec![],
+                },
             ],
             api_key: None,
         }
@@ -374,10 +559,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_has_two_agents_and_four_base_packages() {
+    fn builtin_has_eight_agents_and_four_base_packages() {
         let m = ConfigManifest::builtin();
         assert_eq!(m.base_packages, BASE_PACKAGES.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        assert_eq!(m.agents.len(), 4, "规划双 Agent + 编码双 Agent（P005）");
+        assert_eq!(m.agents.len(), 8, "规划双 + 编码双 + 测试双 + 文档双（P007）");
         // 差异化包仅 Plan Agent
         let pa = m.get_agent("plan-agent").unwrap();
         assert_eq!(pa.extra_packages, vec![PLAN_AGENT_EXTRA.to_string()]);
@@ -396,6 +581,57 @@ mod tests {
         assert_eq!(cr.model, "grok-4.7"); // 审查 → Grok（沿规划期拍板）
         // 规划双 Agent 无 MCP（P001 行为不回归）
         assert!(pa.mcp.is_empty() && pr.mcp.is_empty());
+        // P007：测试双 Agent（D007 供给即纪律）
+        let ta = m.get_agent("test-agent").unwrap();
+        assert_eq!(ta.extra_packages, TEST_AGENT_EXTRA.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(ta.mcp.len(), 1, "仅 context7——codegraph 是代码事实层，黑盒不给");
+        assert_eq!(ta.mcp[0].name, "context7");
+        assert_eq!(ta.skills, vec!["python-best-practices".to_string()]);
+        assert_eq!(ta.model, "deepseek-flash");
+        let tr = m.get_agent("test-review").unwrap();
+        assert!(tr.extra_packages.is_empty() && tr.mcp.is_empty() && tr.skills.is_empty());
+        assert_eq!(tr.model, "grok-4.7");
+        // P007：文档双 Agent（doc-fix=coding 家族供给；doc-review 极简）
+        let df = m.get_agent("doc-fix").unwrap();
+        assert_eq!(df.extra_packages, ca.extra_packages, "doc-fix 沿用 coding-agent 家族供给");
+        assert_eq!(df.mcp.len(), 2);
+        assert_eq!(df.model, "deepseek-flash");
+        let dr = m.get_agent("doc-review").unwrap();
+        assert!(dr.extra_packages.is_empty() && dr.mcp.is_empty() && dr.skills.is_empty());
+        assert_eq!(dr.model, "grok-4.7");
+    }
+
+    #[test]
+    fn testing_prompts_carry_protocol_and_discipline() {
+        // 黑盒硬禁令锚点（D001）
+        assert!(TEST_AGENT_PROMPT.contains("禁止读取任何实现文件内容"));
+        assert!(TEST_AGENT_PROMPT.contains("路径可以看，内容不能读"));
+        assert!(TEST_AGENT_PROMPT.contains("白名单"));
+        assert!(TEST_AGENT_PROMPT.contains("<stage-complete>"));
+        assert!(TEST_AGENT_PROMPT.contains("coverage-matrix"));
+        assert!(TEST_AGENT_PROMPT.contains("pytest-rerunfailures"));
+        assert!(TEST_AGENT_PROMPT.contains("tests/integration"));
+        assert!(TEST_AGENT_PROMPT.contains("Runbook"));
+        assert!(TEST_AGENT_PROMPT.contains("findings"));
+        assert!(TEST_AGENT_PROMPT.contains("严禁写单元测试"));
+        // reroute 协议锚点（D003）
+        assert!(TEST_REVIEW_PROMPT.contains("<reroute>"));
+        assert!(TEST_REVIEW_PROMPT.contains("test-side"));
+        assert!(TEST_REVIEW_PROMPT.contains("doc-side"));
+        assert!(TEST_REVIEW_PROMPT.contains("<stage-verdict>"));
+        assert!(TEST_REVIEW_PROMPT.contains("<next>"));
+        assert!(TEST_REVIEW_PROMPT.contains("业务关系"));
+        assert!(TEST_REVIEW_PROMPT.contains("极端用户面"));
+        assert!(TEST_REVIEW_PROMPT.contains("coverage-matrix"));
+        // 文档双 Agent 锚点（D004）
+        assert!(DOC_FIX_PROMPT.contains("只改文档，不改代码"));
+        assert!(DOC_FIX_PROMPT.contains("第三方"));
+        assert!(DOC_FIX_PROMPT.contains("Runbook"));
+        assert!(DOC_FIX_PROMPT.contains("findings"));
+        assert!(DOC_REVIEW_PROMPT.contains("plan tree"));
+        assert!(DOC_REVIEW_PROMPT.contains("Runbook"));
+        assert!(DOC_REVIEW_PROMPT.contains("findings"));
+        assert!(DOC_REVIEW_PROMPT.contains("<stage-verdict>"));
     }
 
     #[test]
