@@ -39,7 +39,7 @@ def main() -> int:
             #    AGENTS.md 在装包前落盘，不能当就绪信号——v4 实测竞态教训）
             ev = sse.wait_for(
                 lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 8,
-                timeout=600.0,
+                timeout=900.0,
             )
             elapsed = time.time() - t0
             r.check(

@@ -66,7 +66,7 @@ def main() -> int:
         status, _ = server.req("PUT", "/config/manifest", manifest, timeout=900.0)
         r.check(status == 202, f"manifest 受理（{time.time()-t0:.1f}s，八 profile 全供给）", f"status={status}")
         prof = server.home / ".devforge" / "profiles"
-        deadline = time.time() + 900
+        deadline = time.time() + 1800  # 今晚装包慢 2-3 倍实测：八 profile 全供给预算翻倍
         while time.time() < deadline:
             if all((prof / n / "settings.json").exists() for n in EIGHT):
                 break
