@@ -68,6 +68,8 @@ impl PlanAgentSession for RpcPlanSession {
 /// Review 的 RPC 会话（一次性实例，Drop 即杀进程——用完即弃 decisions/004）。
 pub struct RpcReviewSession {
     client: RpcClient,
+    /// 角色名（报错时指明是哪个审查会话）——C19-R2。
+    role: String,
 }
 
 impl ReviewSession for RpcReviewSession {
@@ -75,6 +77,15 @@ impl ReviewSession for RpcReviewSession {
         let id = self.client.prompt(instruction)?;
         let outcome = self.client.wait_settled()?; // Review 永不碰用户——无 UI 处理
         self.client.require_success(&outcome, &id)?;
+        // C19-R2（e2e test_19 实证）：审查进程可能“静默死亡”——会话正常结束但
+        // 未产出任何正文。空串不得当作合法审查结论（否那么保守解析会把它当成
+        // “协议违例”并错误回注给被审 Agent），必须作为基础设施故障上抛。
+        if outcome.text.trim().is_empty() {
+            return Err(crate::error::DevforgeError::System(format!(
+                "审查会话 `{}` 无有效回复（进程正常结束但未产出一字）——按基础设施故障处理，不作为审查结论",
+                self.role
+            )));
+        }
         Ok(outcome.text)
     }
 }
@@ -133,8 +144,9 @@ impl RpcReviewFactory {
 impl ReviewSessionFactory for RpcReviewFactory {
     fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
         let spec = (self.make_spec)();
+        let role = spec.role.clone();
         let client = RpcClient::spawn(spec)?;
-        Ok(Box::new(RpcReviewSession { client }))
+        Ok(Box::new(RpcReviewSession { client, role }))
     }
 }
 
@@ -225,5 +237,42 @@ mod tests {
         let response = fs::read_to_string(&capture).unwrap();
         assert!(response.contains("ui-1"), "应带原 request id: {response}");
         assert!(response.contains("完成"), "应带用户回答: {response}");
+    }
+
+    /// 回放：进程正常结束但不产出任何正文（C19-R2 现场：审查官静默退出）。
+    fn silent_review_script(dir: &Path) -> PathBuf {
+        let body = "read _cmd\n\
+                    cat <<'DEVFORGE_EOF'\n\
+                    {\"id\":\"req-1\",\"type\":\"response\",\"command\":\"prompt\",\"success\":true,\"data\":{\"disposition\":\"started\"}}\n\
+                    {\"type\":\"agent_settled\"}\n\
+                    DEVFORGE_EOF\n";
+        write_script(dir, body)
+    }
+
+    #[test]
+    fn empty_review_reply_is_infrastructure_error() {
+        // C19-R2：空回复不得当作「审查结论」（否则保守解析会误判为协议违例并回注被审 Agent）
+        let dir = tempfile::tempdir().unwrap();
+        let script = silent_review_script(dir.path());
+        let spec = SpawnSpec {
+            program: "sh".into(),
+            profile_dir: dir.path().join("profile"),
+            role: "coding-review".into(),
+            run_id: RunId::generate().0,
+            session_dir: dir.path().to_path_buf(),
+            working_dir: PathBuf::from("."),
+            extra_args: vec![script.to_string_lossy().into_owned()],
+        };
+        let mut cmd = Command::new("sh");
+        cmd.arg(&script);
+        let client = RpcClient::spawn_with_command(cmd, spec).unwrap();
+        let mut session = RpcReviewSession {
+            client,
+            role: "coding-review".into(),
+        };
+        let err = session.review("开始审查").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("无有效回复"), "应报空回复基础设施故障: {msg}");
+        assert!(msg.contains("coding-review"), "应指明角色: {msg}");
     }
 }

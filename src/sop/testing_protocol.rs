@@ -165,6 +165,8 @@ pub struct TestReviewReport {
     pub issues: Vec<String>,
     /// PASS 时可附的非阻塞建议。
     pub notes: Vec<String>,
+    /// 协议违例标记（C19-R1）：审查输出本身不合规，不是对测试的判定——编排层重跑审查。
+    pub protocol_violation: bool,
 }
 
 /// 解析 Test Review 文本。保守缺省与 coding parse_review_report 同哲学，另加：
@@ -193,6 +195,7 @@ pub fn parse_test_review_report(text: &str) -> TestReviewReport {
                     reroute: Reroute::TestSide,
                     issues: extract_lines(text, ISSUES_TAG),
                     notes: Vec::new(),
+                    protocol_violation: false,
                 };
                 report.reroute = Reroute::parse(extract_block(text, REROUTE_TAG));
                 report
@@ -232,6 +235,7 @@ pub fn parse_test_review_report(text: &str) -> TestReviewReport {
         verdict,
         next,
         reroute: Reroute::TestSide,
+        protocol_violation: false,
     };
     if report.verdict == StageVerdict::Fail {
         report.reroute = Reroute::parse(extract_block(text, REROUTE_TAG));
@@ -239,7 +243,8 @@ pub fn parse_test_review_report(text: &str) -> TestReviewReport {
     report
 }
 
-/// 保守 FAIL 报告（Test Review 形制）：协议违例原因作为 issue，驱动重审而非崩链。
+/// 保守 FAIL 报告（Test Review 形制）：reason 为审查输出违例原因，
+/// 标记 protocol_violation 让编排层重跑审查而非回注被测 Agent（C19-R1）。
 fn conservative_test(reason: &str) -> TestReviewReport {
     TestReviewReport {
         verdict: StageVerdict::Fail,
@@ -249,6 +254,7 @@ fn conservative_test(reason: &str) -> TestReviewReport {
             "{reason}。请原样重新提交完整协议块（此为审查输出协议问题，非测试问题）"
         )],
         notes: Vec::new(),
+        protocol_violation: true,
     }
 }
 
@@ -258,6 +264,8 @@ pub struct DocReviewReport {
     pub verdict: StageVerdict,
     pub issues: Vec<String>,
     pub notes: Vec<String>,
+    /// 协议违例标记（C19-R1）：输出不合规 → 编排层重跑审查，不回注 doc-fix  Agent。
+    pub protocol_violation: bool,
 }
 
 /// 解析 Doc Review 文本：协议块缺失/未知值 → 保守 FAIL（打回 doc-fix 重来）。
@@ -267,6 +275,7 @@ pub fn parse_doc_review_report(text: &str) -> DocReviewReport {
             verdict: StageVerdict::Fail,
             issues: vec!["Doc Review 输出缺 <stage-verdict> 协议块，保守按 FAIL 打回".into()],
             notes: Vec::new(),
+            protocol_violation: true,
         };
     };
     match verdict_raw {
@@ -274,11 +283,13 @@ pub fn parse_doc_review_report(text: &str) -> DocReviewReport {
             verdict: StageVerdict::Pass,
             issues: Vec::new(),
             notes: extract_lines(text, NOTES_TAG),
+            protocol_violation: false,
         },
         "FAIL" => DocReviewReport {
             verdict: StageVerdict::Fail,
             issues: extract_lines(text, ISSUES_TAG),
             notes: Vec::new(),
+            protocol_violation: false,
         },
         other => DocReviewReport {
             verdict: StageVerdict::Fail,
@@ -286,6 +297,7 @@ pub fn parse_doc_review_report(text: &str) -> DocReviewReport {
                 "未知 stage-verdict `{other}`（只认 PASS/FAIL），保守按 FAIL 打回"
             )],
             notes: Vec::new(),
+            protocol_violation: true,
         },
     }
 }

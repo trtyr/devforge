@@ -79,6 +79,9 @@ pub struct ReviewReport {
     pub issues: Vec<String>,
     /// PASS 时可附的非阻塞建议（advance 前先消化）
     pub notes: Vec<String>,
+    /// 协议违例标记（C19-R1）：审查输出本身不合规（缺协议块/未知值/自相矛盾），
+    /// **不是**对代码的判定。编排层据此重跑审查，绝不回注给被审 Agent。
+    pub protocol_violation: bool,
 }
 
 /// 解析 Review 文本为结构化报告。
@@ -110,6 +113,7 @@ pub fn parse_review_report(text: &str) -> Result<ReviewReport> {
                 next: NextAction::Fix,
                 issues: extract_lines(text, "issues"),
                 notes: Vec::new(),
+                protocol_violation: false,
             }),
             StageVerdict::Pass => Ok(conservative(
                 "stage-verdict=PASS 但缺 <next> 协议块（PASS 必须携带 fix|advance|finish 去向）",
@@ -145,10 +149,12 @@ pub fn parse_review_report(text: &str) -> Result<ReviewReport> {
         notes: extract_lines(text, NOTES_TAG),
         verdict,
         next,
+        protocol_violation: false,
     })
 }
 
-/// 保守 FAIL 报告：协议违例原因作为 issue，驱动重审而非崩链。
+/// 保守 FAIL 报告（协议违例）：原因是审查输出本身不合规，**不是**代码问题；
+/// 标记 `protocol_violation` 让编排层重跑审查，而不是把这条回注给被审 Agent（C19-R1）。
 fn conservative(reason: &str) -> ReviewReport {
     ReviewReport {
         verdict: StageVerdict::Fail,
@@ -157,6 +163,7 @@ fn conservative(reason: &str) -> ReviewReport {
             "{reason}。请原样重新提交完整协议块（此为审查输出协议问题，非代码问题）"
         )],
         notes: Vec::new(),
+        protocol_violation: true,
     }
 }
 
@@ -241,6 +248,7 @@ mod tests {
                 next: NextAction::Advance,
                 issues: vec![],
                 notes: vec!["建议补个边界测试".into(), "命名可以再收敛".into()],
+                protocol_violation: false,
             }
         );
     }

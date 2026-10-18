@@ -44,6 +44,9 @@ pub fn doc_review_instruction(workspace: &Path, round: usize) -> String {
 /// 打回回注前缀（doc-review FAIL）。
 pub const DOC_FIX_REMEDIATION_PREFIX: &str = "文档审查未通过，以下是必须修复的问题：";
 
+/// 协议违例重试上限（C19-R1）：超过即判基础设施故障，快速报错。
+pub const MAX_DOC_PROTOCOL_VIOLATIONS: usize = 3;
+
 /// 文档修补 SOP 报告。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DocFixReport {
@@ -83,6 +86,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocFixSopLoop<P, F> {
         self.agent.converse(&message, ui)?;
 
         // 审查循环：PASS 出口，FAIL 打回（回注问题清单）后重审
+        let mut violations = 0usize;
         loop {
             report.review_rounds += 1;
             let mut session = self.review_factory.open()?;
@@ -91,6 +95,18 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocFixSopLoop<P, F> {
             drop(session);
 
             let parsed = parse_doc_review_report(&review_text);
+            // C19-R1：审查输出本身不合规 → 重跑审查，不回注 doc-fix Agent
+            if parsed.protocol_violation {
+                violations += 1;
+                if violations > MAX_DOC_PROTOCOL_VIOLATIONS {
+                    return Err(crate::error::DevforgeError::System(format!(
+                        "文档审查连续 {} 轮输出协议违例（缺 stage-verdict），判定为基础设施故障，停止 run：{}",
+                        violations,
+                        parsed.issues.join("；")
+                    )));
+                }
+                continue;
+            }
             match parsed.verdict {
                 StageVerdict::Pass => return Ok(report),
                 StageVerdict::Fail => {
@@ -244,17 +260,30 @@ mod tests {
     }
 
     #[test]
-    fn conservative_missing_verdict_routes_to_fail() {
-        // 协议块缺失 → 保守 FAIL 打回（回注违例原因），不崩链
-        let agent = MockAgent::new(&["改完了。", "协议补上了……不对这是我的输出。改完了。"]);
+    fn protocol_violation_retries_review_not_agent() {
+        // C19-R1：doc-review 输出协议块缺失 → 重跑审查，不回注 doc-fix Agent
+        let agent = MockAgent::new(&["改完了。"]);
         let received = agent.received.clone();
         let mut factory = MockReviewFactory::new(&[NO_VERDICT, REVIEW_PASS]);
         let mut user = NoUser;
         let report =
             DocFixSopLoop::new(agent, &mut factory).run(&mut user, Path::new("/w"), "p", "t").unwrap();
-        assert_eq!(report.review_rounds, 2);
+        assert_eq!(report.review_rounds, 2, "违例后重跑第二轮审查");
+        assert_eq!(report.issues_total, 0, "违例不计入文档问题数");
         let received = received.borrow();
-        assert!(received[1].contains("缺 <stage-verdict>"));
+        assert_eq!(received.len(), 1, "只收到 kickoff，没收到违例回注");
+    }
+
+    #[test]
+    fn repeated_protocol_violations_fail_fast() {
+        // 连续违例超上限 → 基础设施故障报错，不无限重试
+        let agent = MockAgent::new(&["改完了。"]);
+        let mut factory = MockReviewFactory::new(&[NO_VERDICT, NO_VERDICT, NO_VERDICT, NO_VERDICT]);
+        let mut user = NoUser;
+        let err = DocFixSopLoop::new(agent, &mut factory)
+            .run(&mut user, Path::new("/w"), "p", "t")
+            .unwrap_err();
+        assert!(err.to_string().contains("协议违例"), "应报基础设施故障: {err}");
     }
 
     #[test]

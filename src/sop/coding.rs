@@ -66,6 +66,10 @@ fn advance_message(stage: u64, notes: &[String]) -> String {
     msg
 }
 
+/// 协议违例重试上限（C19-R1）：审查输出不合规（缺协议块/未知值/自相矛盾）时
+/// 重跑审查而不是回注被审 Agent；连续违例超过此数视为基础设施故障，快速报错。
+pub const MAX_PROTOCOL_VIOLATIONS: usize = 3;
+
 /// 编码 SOP 报告。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodingReport {
@@ -107,6 +111,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> CodingSopLoop<P, F> {
         let mut stages_completed = Vec::new();
         let mut review_rounds = 0usize;
         let mut issues_total = 0usize;
+        let mut protocol_violations = 0usize;
 
         loop {
             let text = self.agent.converse(&message, ui)?;
@@ -116,14 +121,35 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> CodingSopLoop<P, F> {
                 continue;
             };
 
-            // 本轮审查：全新实例，用完即弃
-            review_rounds += 1;
-            let mut session = self.review_factory.open()?;
-            let instruction = coding_review_instruction(workspace, review_rounds);
-            let review_text = session.review(&instruction)?;
-            drop(session);
+            // 本轮审查：全新实例，用完即弃。
+            // C19-R1：协议违例（审查输出本身不合规）→ 重跑本轮审查（新 fresh 实例），
+            // 绝不把违例问题当作代码问题回注给 Coding Agent。
+            let report = loop {
+                review_rounds += 1;
+                let mut session = self.review_factory.open()?;
+                let instruction = coding_review_instruction(workspace, review_rounds);
+                let review_text = session.review(&instruction)?;
+                drop(session);
 
-            let report = parse_review_report(&review_text)?;
+                let report = parse_review_report(&review_text)?;
+                if !report.protocol_violation {
+                    break report;
+                }
+                protocol_violations += 1;
+                if protocol_violations > MAX_PROTOCOL_VIOLATIONS {
+                    return Err(crate::error::DevforgeError::System(format!(
+                        "审查连续 {} 轮输出协议违例（缺少 stage-verdict/next 块），判定为基础设施故障，停止 run：{}",
+                        protocol_violations,
+                        report.issues.join("；")
+                    )));
+                }
+                tracing::warn!(
+                    component = "coding-sop",
+                    round = review_rounds,
+                    violations = protocol_violations,
+                    "审查输出协议违例，重跑本轮审查（不回注被审 Agent）"
+                );
+            };
             match (report.verdict, report.next) {
                 (crate::sop::coding_protocol::StageVerdict::Pass, NextAction::Finish) => {
                     stages_completed.push(stage);
@@ -368,21 +394,34 @@ mod tests {
     }
 
     #[test]
-    fn conservative_protocol_violation_routes_to_fix() {
-        // 审查输出协议违例（缺块）→ 解析器保守 FAIL+Fix → 回注重审（P8-ISSUE-10 家族）
-        let agent = MockAgent::new(&[
-            Turn::Say("<stage-complete>1</stage-complete>"),
-            Turn::ExpectContains(
-                "重新提交完整协议块",
-                "<stage-complete>1</stage-complete>",
-            ),
-        ]);
+    fn protocol_violation_retries_review_not_agent() {
+        // C19-R1：审查输出协议违例（缺块）→ **重跑审查**（新 fresh 实例），
+        // 不把「审查官输出格式问题」回注给被审 Agent；issues_total 也不应累计。
+        let agent = MockAgent::new(&[Turn::Say("<stage-complete>1</stage-complete>")]);
         let mut factory = MockReviewFactory::new(&["我忘了输出协议块", PASS_FINISH]);
         let mut user = NoUser;
         let report =
             CodingSopLoop::new(agent, &mut factory).run(&mut user, Path::new("/w"), "p", "t").unwrap();
         assert_eq!(report.stages_completed, vec![1]);
-        assert_eq!(report.review_rounds, 2);
-        assert_eq!(report.issues_total, 1);
+        assert_eq!(report.review_rounds, 2, "违例后重跑了第二轮审查");
+        assert_eq!(report.issues_total, 0, "违例不计入代码问题数");
+        assert_eq!(factory.opened.len(), 2, "两个审查实例都开过且均被丢弃");
+    }
+
+    #[test]
+    fn repeated_protocol_violations_fail_fast() {
+        // 连续违例超上限（3）→ 基础设施故障报错，不无限重试、不回注
+        let agent = MockAgent::new(&[Turn::Say("<stage-complete>1</stage-complete>")]);
+        let mut factory = MockReviewFactory::new(&[
+            "缺块1", "缺块2", "缺块3", "缺块4",
+        ]);
+        let mut user = NoUser;
+        let err = CodingSopLoop::new(agent, &mut factory)
+            .run(&mut user, Path::new("/w"), "p", "t")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("协议违例"),
+            "应报协议违例基础设施故障: {err}"
+        );
     }
 }

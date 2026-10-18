@@ -68,6 +68,9 @@ fn testing_advance_message(stage: u64, notes: &[String]) -> String {
     msg
 }
 
+/// 协议违例重试上限（C19-R1）：超过即判基础设施故障，快速报错。
+pub const MAX_TEST_PROTOCOL_VIOLATIONS: usize = 3;
+
 /// 测试 SOP 报告 / 进度账本（移交恢复时由编排层持有并回传）。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TestingReport {
@@ -132,7 +135,6 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
         let message = testing_kickoff(workspace, project, task);
         self.drive(ui, workspace, Step::Agent(message), TestingReport::default())
     }
-
     /// doc-fix 子 SOP 完成后恢复：对同一阶段发起全新审查（轮次全局递增）。
     ///
     /// 编排层（引擎）持有 [`TestingReport`] 账本，移交-恢复可循环多次
@@ -154,6 +156,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
         mut step: Step,
         mut report: TestingReport,
     ) -> Result<TestingOutcome> {
+        let mut violations = 0usize;
         loop {
             match step {
                 Step::Agent(message) => {
@@ -166,13 +169,33 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                     step = Step::Review(stage);
                 }
                 Step::Review(stage) => {
-                    report.review_rounds += 1;
-                    let mut session = self.review_factory.open()?;
-                    let review_text =
-                        session.review(&testing_review_instruction(workspace, report.review_rounds))?;
-                    drop(session);
+                    // C19-R1：协议违例（审查输出本身不合规）→ 重跑审查，不回注被测 Agent
+                    let parsed = loop {
+                        report.review_rounds += 1;
+                        let mut session = self.review_factory.open()?;
+                        let review_text = session
+                            .review(&testing_review_instruction(workspace, report.review_rounds))?;
+                        drop(session);
 
-                    let parsed = parse_test_review_report(&review_text);
+                        let parsed = parse_test_review_report(&review_text);
+                        if !parsed.protocol_violation {
+                            break parsed;
+                        }
+                        violations += 1;
+                        if violations > MAX_TEST_PROTOCOL_VIOLATIONS {
+                            return Err(crate::error::DevforgeError::System(format!(
+                                "测试审查连续 {} 轮输出协议违例（缺 stage-verdict/next），判定为基础设施故障，停止 run：{}",
+                                violations,
+                                parsed.issues.join("；")
+                            )));
+                        }
+                        tracing::warn!(
+                            component = "testing-sop",
+                            round = report.review_rounds,
+                            violations,
+                            "测试审查输出协议违例，重跑本轮审查（不回注被测 Agent）"
+                        );
+                    };
                     match (parsed.verdict, parsed.next) {
                         (StageVerdictRe::Pass, NextAction::Finish) => {
                             report.stages_completed.push(stage);
@@ -454,25 +477,33 @@ mod tests {
     }
 
     #[test]
-    fn conservative_violations_route_to_test_side_not_handoff() {
-        // 保守违规路由：协议块缺失/未知 reroute → 归一 test-side 退回，绝不触发移交
-        let agent = MockAgent::new(&[
-            Turn::Say("阶段 1 完成。\n<stage-complete>1</stage-complete>"),
-            Turn::ExpectContains(
-                "协议问题",
-                "补协议了。\n<stage-complete>1</stage-complete>",
-            ),
-        ]);
-        let no_verdict = "我说测试没问题。"; // 无协议块 → 保守 FAIL/TestSide
+    fn protocol_violation_retries_review_not_agent() {
+        // C19-R1：test-review 输出协议违例 → 重跑审查，不回注被测 Agent、不触发 doc-fix
+        let agent = MockAgent::new(&[Turn::Say("阶段 1 完成。\n<stage-complete>1</stage-complete>")]);
+        let received = agent.received.clone();
+        let no_verdict = "我说测试没问题。"; // 无协议块 → 保守 FAIL + protocol_violation
         let mut factory = MockReviewFactory::new(&[no_verdict, PASS_FINISH]);
         let mut user = NoUser;
         let outcome =
             TestingSopLoop::new(agent, &mut factory).run(&mut user, Path::new("/w"), "p", "t").unwrap();
         let TestingOutcome::Completed(report) = outcome else {
-            panic!("保守违规应走 test-side 退回而非移交");
+            panic!("违例重试后应正常收工");
         };
-        assert_eq!(report.review_rounds, 2);
-        assert_eq!(report.doc_fix_handoffs, 0);
+        assert_eq!(report.review_rounds, 2, "违例后重跑第二轮审查");
+        assert_eq!(report.issues_total, 0, "违例不计入测试问题数");
+        assert_eq!(report.doc_fix_handoffs, 0, "违例不触发 doc-fix");
+        assert_eq!(received.borrow().len(), 1, "只收到 kickoff，无违例回注");
+    }
+
+    #[test]
+    fn repeated_protocol_violations_fail_fast() {
+        let agent = MockAgent::new(&[Turn::Say("阶段 1 完成。\n<stage-complete>1</stage-complete>")]);
+        let mut factory = MockReviewFactory::new(&["缺块1", "缺块2", "缺块3", "缺块4"]);
+        let mut user = NoUser;
+        let err = TestingSopLoop::new(agent, &mut factory)
+            .run(&mut user, Path::new("/w"), "p", "t")
+            .unwrap_err();
+        assert!(err.to_string().contains("协议违例"), "应报基础设施故障: {err}");
     }
 
     #[test]
