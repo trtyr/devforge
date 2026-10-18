@@ -116,6 +116,180 @@ pub fn parse_finding_record(text: &str) -> FindingRecord {
     rec
 }
 
+// ===== Review 报告协议（P007 T003：D003 reroute 工具侧路由） =====
+
+use crate::sop::coding_protocol::{extract_block, extract_lines, NextAction, StageVerdict};
+
+/// 阶段完成标记解析复用：testing 与 coding 同一标记家族，单一实现不重复。
+pub use crate::sop::coding_protocol::parse_stage_complete;
+
+const STAGE_VERDICT_TAG: &str = "stage-verdict";
+const NEXT_TAG: &str = "next";
+const NOTES_TAG: &str = "notes";
+const ISSUES_TAG: &str = "issues";
+const REROUTE_TAG: &str = "reroute";
+
+/// reroute 路由标注（D003：test-side 退回测试 Agent；doc-side 转 doc-fix 子 SOP）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reroute {
+    TestSide,
+    DocSide,
+}
+
+impl Reroute {
+    /// 保守解析：缺失/未知值 → `TestSide`（语义安全：FAIL 自然先修测试，
+    /// doc-side 是升级动作，宁退回不滥升级）。
+    pub fn parse(text: Option<&str>) -> Self {
+        match text.map(str::trim) {
+            Some("doc-side") => Self::DocSide,
+            _ => Self::TestSide,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TestSide => "test-side",
+            Self::DocSide => "doc-side",
+        }
+    }
+}
+
+/// Test Review 解析后的结构化报告。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestReviewReport {
+    pub verdict: StageVerdict,
+    pub next: NextAction,
+    /// 仅 FAIL 时有意义；PASS 时恒为 TestSide（占位，路由器不读）。
+    pub reroute: Reroute,
+    /// FAIL 时的问题清单（按 reroute 路由回注）。
+    pub issues: Vec<String>,
+    /// PASS 时可附的非阻塞建议。
+    pub notes: Vec<String>,
+}
+
+/// 解析 Test Review 文本。保守缺省与 coding parse_review_report 同哲学，另加：
+/// FAIL 的 `<reroute>` 缺失/未知值 → 缺省 `TestSide`（不滥升级，D003）。
+pub fn parse_test_review_report(text: &str) -> TestReviewReport {
+    let Some(verdict_raw) = extract_block(text, STAGE_VERDICT_TAG) else {
+        return conservative_test("Test Review 输出缺 <stage-verdict> 协议块");
+    };
+    let verdict = match verdict_raw {
+        "PASS" => StageVerdict::Pass,
+        "FAIL" => StageVerdict::Fail,
+        other => {
+            return conservative_test(&format!(
+                "未知 stage-verdict `{other}`（只认 PASS/FAIL），保守按 FAIL 重审"
+            ));
+        }
+    };
+
+    let Some(next_raw) = extract_block(text, NEXT_TAG) else {
+        // FAIL 缺 next 缺省 Fix；PASS 缺 next 是协议违例（PASS 必须携带去向）
+        return match verdict {
+            StageVerdict::Fail => {
+                let mut report = TestReviewReport {
+                    verdict,
+                    next: NextAction::Fix,
+                    reroute: Reroute::TestSide,
+                    issues: extract_lines(text, ISSUES_TAG),
+                    notes: Vec::new(),
+                };
+                report.reroute = Reroute::parse(extract_block(text, REROUTE_TAG));
+                report
+            }
+            StageVerdict::Pass => conservative_test(
+                "stage-verdict=PASS 但缺 <next> 协议块（PASS 必须携带 fix|advance|finish 去向）",
+            ),
+        };
+    };
+    let next = match next_raw {
+        "fix" => NextAction::Fix,
+        "advance" => NextAction::Advance,
+        "finish" => NextAction::Finish,
+        other => {
+            return conservative_test(&format!(
+                "未知 next `{other}`（只认 fix/advance/finish），保守按 FAIL 重审"
+            ));
+        }
+    };
+
+    // 语义一致性：PASS+fix、FAIL+advance/finish 都是自我矛盾（与 coding 同源）
+    let contradictory = matches!(
+        (verdict.clone(), next),
+        (StageVerdict::Pass, NextAction::Fix)
+            | (StageVerdict::Fail, NextAction::Advance)
+            | (StageVerdict::Fail, NextAction::Finish)
+    );
+    if contradictory {
+        return conservative_test(&format!(
+            "协议矛盾：stage-verdict={verdict_raw} 与 next={next_raw} 不可能同时成立，保守按 FAIL 重审"
+        ));
+    }
+
+    let mut report = TestReviewReport {
+        issues: extract_lines(text, ISSUES_TAG),
+        notes: extract_lines(text, NOTES_TAG),
+        verdict,
+        next,
+        reroute: Reroute::TestSide,
+    };
+    if report.verdict == StageVerdict::Fail {
+        report.reroute = Reroute::parse(extract_block(text, REROUTE_TAG));
+    }
+    report
+}
+
+/// 保守 FAIL 报告（Test Review 形制）：协议违例原因作为 issue，驱动重审而非崩链。
+fn conservative_test(reason: &str) -> TestReviewReport {
+    TestReviewReport {
+        verdict: StageVerdict::Fail,
+        next: NextAction::Fix,
+        reroute: Reroute::TestSide,
+        issues: vec![format!(
+            "{reason}。请原样重新提交完整协议块（此为审查输出协议问题，非测试问题）"
+        )],
+        notes: Vec::new(),
+    }
+}
+
+/// Doc Review 解析后的结构化报告（D004：无 next/reroute，只有裁决+清单）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocReviewReport {
+    pub verdict: StageVerdict,
+    pub issues: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+/// 解析 Doc Review 文本：协议块缺失/未知值 → 保守 FAIL（打回 doc-fix 重来）。
+pub fn parse_doc_review_report(text: &str) -> DocReviewReport {
+    let Some(verdict_raw) = extract_block(text, STAGE_VERDICT_TAG) else {
+        return DocReviewReport {
+            verdict: StageVerdict::Fail,
+            issues: vec!["Doc Review 输出缺 <stage-verdict> 协议块，保守按 FAIL 打回".into()],
+            notes: Vec::new(),
+        };
+    };
+    match verdict_raw {
+        "PASS" => DocReviewReport {
+            verdict: StageVerdict::Pass,
+            issues: Vec::new(),
+            notes: extract_lines(text, NOTES_TAG),
+        },
+        "FAIL" => DocReviewReport {
+            verdict: StageVerdict::Fail,
+            issues: extract_lines(text, ISSUES_TAG),
+            notes: Vec::new(),
+        },
+        other => DocReviewReport {
+            verdict: StageVerdict::Fail,
+            issues: vec![format!(
+                "未知 stage-verdict `{other}`（只认 PASS/FAIL），保守按 FAIL 打回"
+            )],
+            notes: Vec::new(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +348,133 @@ mod tests {
         let rec = parse_finding_record(text);
         assert_eq!(rec.status, FindingStatus::Verified);
         assert_eq!(rec.disposition, "已补 02-api.md §3.2 错误码表");
+    }
+
+    // ===== Test Review 解析（T003：保守路径全覆盖） =====
+
+    #[test]
+    fn test_review_fail_with_doc_side_reroute() {
+        let text = "<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>\n\
+                    <reroute>doc-side</reroute>\n\
+                    <issues>- 缺分页查询场景\n- 错误码覆盖不足</issues>\n";
+        let r = parse_test_review_report(text);
+        assert_eq!(r.verdict, StageVerdict::Fail);
+        assert_eq!(r.next, NextAction::Fix);
+        assert_eq!(r.reroute, Reroute::DocSide);
+        assert_eq!(r.issues.len(), 2);
+        assert!(r.issues[0].contains("分页"));
+    }
+
+    #[test]
+    fn test_review_fail_missing_reroute_defaults_test_side() {
+        let text = "<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>\n<issues>- 断言与文档矛盾</issues>\n";
+        let r = parse_test_review_report(text);
+        assert_eq!(r.reroute, Reroute::TestSide, "缺失 → 保守 test-side（D003）");
+    }
+
+    #[test]
+    fn test_review_fail_invalid_reroute_defaults_test_side() {
+        let text = "<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>\n\
+                    <reroute>user-side</reroute>\n<issues>- 场景不合理</issues>\n";
+        let r = parse_test_review_report(text);
+        assert_eq!(r.reroute, Reroute::TestSide, "未知值 → 保守 test-side（不滥升级）");
+    }
+
+    #[test]
+    fn test_review_pass_advance_with_notes_reroute_placeholder() {
+        let text = "<stage-verdict>PASS</stage-verdict>\n<next>advance</next>\n\
+                    <reroute>doc-side</reroute>\n<notes>- 建议补超时用例</notes>\n";
+        let r = parse_test_review_report(text);
+        assert_eq!(r.verdict, StageVerdict::Pass);
+        assert_eq!(r.next, NextAction::Advance);
+        assert_eq!(r.reroute, Reroute::TestSide, "PASS 的 reroute 无意义，恒归位");
+        assert_eq!(r.notes, vec!["建议补超时用例"]);
+    }
+
+    #[test]
+    fn test_review_pass_finish() {
+        let text = "<stage-verdict>PASS</stage-verdict>\n<next>finish</next>\n";
+        let r = parse_test_review_report(text);
+        assert_eq!(r.next, NextAction::Finish);
+        assert!(r.issues.is_empty() && r.notes.is_empty());
+    }
+
+    #[test]
+    fn test_review_conservative_missing_verdict() {
+        let r = parse_test_review_report("没有协议块的回复");
+        assert_eq!(r.verdict, StageVerdict::Fail);
+        assert_eq!(r.next, NextAction::Fix);
+        assert_eq!(r.reroute, Reroute::TestSide);
+        assert!(r.issues[0].contains("缺 <stage-verdict>"), "违例原因作为 issue");
+    }
+
+    #[test]
+    fn test_review_conservative_unknown_verdict_and_next() {
+        let r = parse_test_review_report("<stage-verdict>OK</stage-verdict>\n<next>fix</next>\n");
+        assert_eq!(r.verdict, StageVerdict::Fail);
+        assert!(r.issues[0].contains("未知 stage-verdict"));
+        let r = parse_test_review_report("<stage-verdict>FAIL</stage-verdict>\n<next>skip</next>\n");
+        assert_eq!(r.next, NextAction::Fix);
+        assert!(r.issues[0].contains("未知 next"));
+    }
+
+    #[test]
+    fn test_review_conservative_pass_missing_next() {
+        let r = parse_test_review_report("<stage-verdict>PASS</stage-verdict>\n");
+        assert_eq!(r.verdict, StageVerdict::Fail, "PASS 缺去向 → 保守 FAIL");
+        assert!(r.issues[0].contains("缺 <next>"));
+    }
+
+    #[test]
+    fn test_review_conservative_fail_missing_next_defaults_fix() {
+        let text = "<stage-verdict>FAIL</stage-verdict>\n<reroute>doc-side</reroute>\n<issues>- 文档薄</issues>\n";
+        let r = parse_test_review_report(text);
+        assert_eq!(r.next, NextAction::Fix, "FAIL 缺 next 缺省 Fix");
+        assert_eq!(r.reroute, Reroute::DocSide);
+    }
+
+    #[test]
+    fn test_review_conservative_contradictions() {
+        let r = parse_test_review_report("<stage-verdict>PASS</stage-verdict>\n<next>fix</next>\n");
+        assert_eq!(r.verdict, StageVerdict::Fail);
+        assert!(r.issues[0].contains("协议矛盾"));
+        let r = parse_test_review_report("<stage-verdict>FAIL</stage-verdict>\n<next>finish</next>\n");
+        assert_eq!(r.verdict, StageVerdict::Fail);
+        assert!(r.issues[0].contains("协议矛盾"));
+    }
+
+    #[test]
+    fn stage_complete_reuse_across_sops() {
+        // testing 与 coding 同一标记家族：单一实现（re-export 不复制逻辑）
+        assert_eq!(parse_stage_complete("<stage-complete>3</stage-complete>"), Some(3));
+        assert_eq!(parse_stage_complete("没有标记"), None);
+    }
+
+    // ===== Doc Review 解析（D004） =====
+
+    #[test]
+    fn doc_review_pass_fail_and_conservative() {
+        let ok = parse_doc_review_report("<stage-verdict>PASS</stage-verdict>\n<notes>- 建议 Runbook 加端口说明</notes>");
+        assert_eq!(ok.verdict, StageVerdict::Pass);
+        assert_eq!(ok.notes.len(), 1);
+
+        let bad = parse_doc_review_report("<stage-verdict>FAIL</stage-verdict>\n<issues>- 缺种子数据节</issues>");
+        assert_eq!(bad.verdict, StageVerdict::Fail);
+        assert_eq!(bad.issues, vec!["缺种子数据节"]);
+
+        let missing = parse_doc_review_report("啥都没有");
+        assert_eq!(missing.verdict, StageVerdict::Fail, "协议块缺失 → 保守 FAIL");
+
+        let junk = parse_doc_review_report("<stage-verdict>MAYBE</stage-verdict>");
+        assert_eq!(junk.verdict, StageVerdict::Fail, "未知值 → 保守 FAIL");
+    }
+
+    #[test]
+    fn reroute_parse_direct() {
+        assert_eq!(Reroute::parse(Some("doc-side")), Reroute::DocSide);
+        assert_eq!(Reroute::parse(Some("test-side")), Reroute::TestSide);
+        assert_eq!(Reroute::parse(Some("  doc-side ")), Reroute::DocSide);
+        assert_eq!(Reroute::parse(None), Reroute::TestSide);
+        assert_eq!(Reroute::parse(Some("junk")), Reroute::TestSide);
     }
 }

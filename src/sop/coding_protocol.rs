@@ -161,7 +161,7 @@ fn conservative(reason: &str) -> ReviewReport {
 }
 
 /// 提取 `<tag>...</tag>` 块内文（trim）。缺失/未闭合 → None。
-fn extract_block<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+pub(crate) fn extract_block<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let pos = text.find(&open)?;
@@ -171,7 +171,7 @@ fn extract_block<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 }
 
 /// 提取 `<tag>` 块内清单行（去 `- ` 前缀，跳过空行）。缺失 → 空。
-fn extract_lines(text: &str, tag: &str) -> Vec<String> {
+pub(crate) fn extract_lines(text: &str, tag: &str) -> Vec<String> {
     extract_block(text, tag)
         .map(|body| {
             body.lines()
