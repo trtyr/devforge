@@ -5,12 +5,14 @@
 //! - [`coding_protocol`]：编码输出协议（阶段完成标记 + Review Report 块，P005）
 //! - [`coding`]：CodingSopLoop 状态机（阶段推进/打回/树完成，P005）
 //! - [`testing_protocol`]：测试阶段布局与 findings 台账协议（P007）
+//! - [`testing`]：TestingSopLoop 状态机（阶段推进/reroute 路由/doc-fix 移交，P007）
 
 pub mod coding;
 pub mod coding_protocol;
 pub mod output;
 pub mod planning;
 pub mod rpc_bridge;
+pub mod testing;
 pub mod testing_protocol;
 
 pub use coding::{
