@@ -35,26 +35,35 @@ def main() -> int:
             status, resp = server.req("PUT", "/config/manifest", manifest, timeout=300.0)
             r.check(status == 202, "PUT manifest == 202（异步受理，全供给）", f"status={status}")
 
-            # 2. 完成信号 = config.rendered SSE（render_all 串行装完四角色才发；
+            # 2. 完成信号 = config.rendered SSE（render_all 串行装完八角色才发；
             #    AGENTS.md 在装包前落盘，不能当就绪信号——v4 实测竞态教训）
             ev = sse.wait_for(
-                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 4,
-                timeout=420.0,
+                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 8,
+                timeout=600.0,
             )
             elapsed = time.time() - t0
             r.check(
                 ev is not None,
-                "config.rendered == 4（四角色渲染+安装全完成）",
+                "config.rendered == 8（八角色渲染+安装全完成）",
                 f"elapsed={elapsed:.0f}s, ev={ev}",
             )
 
-        # 2b. 四 profile 渲染齐（佐证）
+        # 2b. 八 profile 渲染齐（佐证）
         prof = server.home / ".devforge" / "profiles"
         all_done = all(
             (prof / n / "AGENTS.md").exists()
-            for n in ("plan-agent", "plan-review", "coding-agent", "coding-review")
+            for n in (
+                "plan-agent",
+                "plan-review",
+                "coding-agent",
+                "coding-review",
+                "test-agent",
+                "test-review",
+                "doc-fix",
+                "doc-review",
+            )
         )
-        r.check(all_done, "四 profile 全部渲染（含 coding-review，render_all 不中断）",
+        r.check(all_done, "八 profile 全部渲染（render_all 不中断）",
                 f"elapsed={elapsed:.0f}s")
 
         # 3. mcp.json（pi 原生 schema；decisions/007/013）

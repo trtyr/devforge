@@ -24,8 +24,17 @@ def main() -> int:
         agent_names = [a["name"] for a in body.get("agents", [])]
         r.check(
             agent_names
-            == ["plan-agent", "plan-review", "coding-agent", "coding-review"],
-            "默认四 Agent（P005 注册表扩容）", f"{agent_names}",
+            == [
+                "plan-agent",
+                "plan-review",
+                "coding-agent",
+                "coding-review",
+                "test-agent",
+                "test-review",
+                "doc-fix",
+                "doc-review",
+            ],
+            "默认八 Agent（P007 注册表扩容）", f"{agent_names}",
         )
         # 四件套原文照录校验（用户拍板清单）
         base = body.get("base_packages", [])

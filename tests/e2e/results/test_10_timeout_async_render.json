@@ -9,17 +9,17 @@
     {
       "name": "受理体标记 async",
       "ok": true,
-      "detail": "{'agents': 4, 'async': True, 'ok': True}"
+      "detail": "{'agents': 8, 'async': True, 'ok': True}"
     },
     {
       "name": "收到 config.rendered SSE 通知",
       "ok": true,
-      "detail": "{'rendered': 4, 'type': 'config.rendered'}"
+      "detail": "{'rendered': 8, 'type': 'config.rendered'}"
     },
     {
-      "name": "通知含渲染 profile 数（P005 后四 Agent）",
+      "name": "通知含渲染 profile 数（P007 后八 Agent）",
       "ok": true,
-      "detail": "{'rendered': 4, 'type': 'config.rendered'}"
+      "detail": "{'rendered': 8, 'type': 'config.rendered'}"
     },
     {
       "name": "任务启动受理 202",
@@ -29,7 +29,7 @@
     {
       "name": "超时后 run 进 Failed",
       "ok": true,
-      "detail": "{'current_run': 'cd80dbf6-d89e-4f32-a6d7-34b5cdd15ff0', 'plan_tree_dir': '/tmp/devforge-e2e-r_85budr/.devforge/plans/to/timeout-me', 'project': 'to', 'runs': [{'ended_at_ms': 1792272360860, 'id': 'cd80dbf6-d89e-4f32-a6d7-34b5cdd15ff0', 'started_at_ms': 1792272340739, 'status': 'Failed'}], 'task': 'timeout-me'}"
+      "detail": "{'current_run': 'b6bd2e72-6a3a-4d2c-85d3-e1fcdaed2b4c', 'plan_tree_dir': '/tmp/devforge-e2e-haxu9k6g/.devforge/plans/to/timeout-me', 'project': 'to', 'runs': [{'ended_at_ms': 1792334431349, 'id': 'b6bd2e72-6a3a-4d2c-85d3-e1fcdaed2b4c', 'started_at_ms': 1792334411227, 'status': 'Failed'}], 'task': 'timeout-me'}"
     },
     {
       "name": "超时收割及时（21s < 60s，deadline=20s）",
@@ -39,7 +39,7 @@
     {
       "name": "任务状态同步 Failed",
       "ok": true,
-      "detail": "status=200, task={'created_at_ms': 1792272340737, 'current_run': 'cd80dbf6-d89e-4f32-a6d7-34b5cdd15ff0', 'id': 'timeout-me', 'project': 'to', 'runs': ['cd80dbf6-d89e-4f32-a6d7-34b5cdd15ff0'], 'sop': 'planning', 'status': 'Failed', 'workspace': '/tmp/to-e2e'}"
+      "detail": "status=200, task={'created_at_ms': 1792334411224, 'current_run': 'b6bd2e72-6a3a-4d2c-85d3-e1fcdaed2b4c', 'id': 'timeout-me', 'project': 'to', 'runs': ['b6bd2e72-6a3a-4d2c-85d3-e1fcdaed2b4c'], 'sop': 'planning', 'status': 'Failed', 'workspace': '/tmp/to-e2e'}"
     }
   ],
   "issues": [],
