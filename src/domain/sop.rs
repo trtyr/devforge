@@ -21,6 +21,13 @@ pub const CODING_SOP: Sop = Sop {
     description: "Coding Agent 读 plan tree 自定阶段开发（代码+文档伴写+单测），Coding Review 逐轮审查 Report 驱动修复/推进/收工",
 };
 
+/// 内置 SOP：文档修补流水线（P007 D004 · 写文档模式：按 findings 补档 + doc-review 内置审查轮）。
+pub const DOC_FIX_SOP: Sop = Sop {
+    id: "doc-fix",
+    name: "文档修补流水线",
+    description: "Doc Fix Agent 按测试阶段 doc-side 发现补齐文档，Doc Review 内置审查（一致性/自洽/Runbook 契约）通过后流回测试环节",
+};
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sop {
     /// 内置标识（任务绑定用，如 `"planning"`）。
@@ -39,7 +46,7 @@ impl SopRegistry {
     /// 系统出厂内置的全部 SOP。
     pub fn builtin() -> Self {
         Self {
-            sops: vec![PLANNING_SOP, CODING_SOP],
+            sops: vec![PLANNING_SOP, CODING_SOP, DOC_FIX_SOP],
         }
     }
 
@@ -70,11 +77,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_sops_are_planning_and_coding() {
+    fn builtin_sops_are_planning_coding_and_doc_fix() {
         let reg = SopRegistry::builtin();
-        assert_eq!(reg.ids(), vec!["planning", "coding"]);
+        assert_eq!(reg.ids(), vec!["planning", "coding", "doc-fix"]);
         assert!(reg.validate("planning").is_ok());
         assert!(reg.validate("coding").is_ok());
+        assert!(reg.validate("doc-fix").is_ok());
     }
 
     #[test]

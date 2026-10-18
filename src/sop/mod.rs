@@ -6,9 +6,11 @@
 //! - [`coding`]：CodingSopLoop 状态机（阶段推进/打回/树完成，P005）
 //! - [`testing_protocol`]：测试阶段布局与 findings 台账协议（P007）
 //! - [`testing`]：TestingSopLoop 状态机（阶段推进/reroute 路由/doc-fix 移交，P007）
+//! - [`doc_fix`]：DocFixSopLoop 状态机（写文档模式 + doc-review 内置审查轮，P007 D004）
 
 pub mod coding;
 pub mod coding_protocol;
+pub mod doc_fix;
 pub mod output;
 pub mod planning;
 pub mod rpc_bridge;
