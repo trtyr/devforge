@@ -235,7 +235,27 @@ impl RunEngine for BuiltinRpcEngine {
 }
 
 impl BuiltinRpcEngine {
+    /// F1 修复（e2e F1-MISSING-PROFILE-HANG）：spawn 前校验目标 profile 已渲染——
+    /// 目录存在且含 settings.json（渲染器必然写出的最小标记）。缺失 → 立即报错
+    /// （run 将 Failed，错误指明缺失路径），杜绝真 pi 以空 agent-dir 启动后挂
+    /// Running 占住全局串行位、只能 cancel 解锁的静默卡死。
+    fn require_profile(&self, role: &str) -> Result<()> {
+        let dir = self.profile_root.join(role);
+        let marker = dir.join("settings.json");
+        if !marker.is_file() {
+            return Err(crate::error::DevforgeError::System(format!(
+                "profile `{}` 未渲染（缺 {}）——先 PUT /api/v1/config/manifest 完成安装渲染，再启动 run",
+                dir.display(),
+                marker.display()
+            )));
+        }
+        Ok(())
+    }
+
     fn run_planning(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
+        // F1：spawn 前门卫（agent + review 双角色），缺失即快速失败
+        self.require_profile("plan-agent")?;
+        self.require_profile("plan-review")?;
         // P8-ISSUE-04 修复：子进程工作目录 = plans/<项目>/<任务>/（decisions/002）
         let working_dir = self.plans_root.join(&task.project).join(&task.id);
         std::fs::create_dir_all(&working_dir).ctx("创建 plan root 目录")?;
@@ -285,6 +305,9 @@ impl BuiltinRpcEngine {
 
     /// 编码 SOP（P005）：黑板骨架 + CodeGraph 预检 + CodingSopLoop。
     fn run_coding(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
+        // F1：spawn 前门卫（agent + review 双角色），缺失即快速失败——先于一切副作用
+        self.require_profile("coding-agent")?;
+        self.require_profile("coding-review")?;
         if task.workspace.as_os_str().is_empty() {
             return Err(crate::error::DevforgeError::Store(format!(
                 "任务 `{}/{}` 无代码工作区（项目登记的 local_path 为空），编码 SOP 需要项目地址",
@@ -664,5 +687,75 @@ mod coding_engine_tests {
         let control = RunControl::new();
         let err = engine.execute(&task, &run, &control).unwrap_err();
         assert!(err.to_string().contains("未接线"));
+    }
+
+    // ---------- F1：spawn 前 profile 门卫（e2e F1-MISSING-PROFILE-HANG） ----------
+
+    fn f1_engine(profile_root: std::path::PathBuf, plans_root: std::path::PathBuf) -> BuiltinRpcEngine {
+        BuiltinRpcEngine {
+            profile_root,
+            session_root: PathBuf::from("/tmp"),
+            plans_root,
+            ui: Arc::new(UiRelay::new(Arc::new(EventBus::new()))),
+            codegraph_bin: PathBuf::from("codegraph"),
+        }
+    }
+
+    #[test]
+    fn profile_gate_passes_when_rendered() {
+        // 已渲染（目录 + settings.json 标记）→ 放行
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("coding-agent");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(profile.join("settings.json"), "{}").unwrap();
+        let engine = f1_engine(dir.path().to_path_buf(), PathBuf::from("/tmp"));
+        engine.require_profile("coding-agent").unwrap();
+    }
+
+    #[test]
+    fn profile_gate_fails_naming_missing_path() {
+        // 缺失 → 报错含角色目录与标记文件路径，指明先渲染
+        let dir = tempfile::tempdir().unwrap();
+        let engine = f1_engine(dir.path().to_path_buf(), PathBuf::from("/tmp"));
+        let err = engine.require_profile("coding-agent").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("coding-agent"), "报错应含角色目录: {msg}");
+        assert!(msg.contains("settings.json"), "报错应含缺失标记路径: {msg}");
+        assert!(msg.contains("未渲染"), "报错应说明未渲染: {msg}");
+    }
+
+    #[test]
+    fn run_coding_fails_before_side_effects_when_profiles_missing() {
+        // 编码 run 在 profile 缺失时立即失败（不再真起 pi 挂 Running），
+        // 且校验先于一切副作用：黑板骨架不应被创建
+        let dir = tempfile::tempdir().unwrap();
+        let plans = dir.path().join("plans");
+        let mut engine = f1_engine(dir.path().join("profiles"), plans.clone());
+        let task = Task::new("t", "p", "coding", 1);
+        let run = Run::new("p", "t");
+        let control = RunControl::new();
+        let err = engine.execute(&task, &run, &control).unwrap_err();
+        assert!(err.to_string().contains("未渲染"), "应报 profile 未渲染: {err}");
+        assert!(
+            !plans.join("p").join("t").exists(),
+            "校验应先于副作用：黑板不应被创建"
+        );
+    }
+
+    #[test]
+    fn run_planning_fails_before_side_effects_when_profiles_missing() {
+        // 规划路径同样受门卫保护：缺失即失败，plan root 不落盘
+        let dir = tempfile::tempdir().unwrap();
+        let plans = dir.path().join("plans");
+        let mut engine = f1_engine(dir.path().join("profiles"), plans.clone());
+        let task = Task::new("t", "p", "planning", 1);
+        let run = Run::new("p", "t");
+        let control = RunControl::new();
+        let err = engine.execute(&task, &run, &control).unwrap_err();
+        assert!(err.to_string().contains("未渲染"), "应报 profile 未渲染: {err}");
+        assert!(
+            !plans.join("p").join("t").exists(),
+            "校验应先于副作用：plan root 不应被创建"
+        );
     }
 }
