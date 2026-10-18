@@ -31,8 +31,10 @@ use crate::engine::client::RpcClient;
 use crate::engine::process::SpawnSpec;
 use crate::error::{Context as _, Result};
 use crate::sop::coding::CodingSopLoop;
+use crate::sop::doc_fix::DocFixSopLoop;
 use crate::sop::planning::{PlanningLoop, UserLink};
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
+use crate::sop::testing::{TestingOutcome, TestingSopLoop};
 
 // ---------- 事件总线（可观测域） ----------
 
@@ -211,7 +213,7 @@ pub fn preflight_codegraph(workspace: &Path, codegraph_bin: &Path) {
     }
 }
 
-/// 内置 SOP 的生产引擎：按 task.sop 分发（planning / coding），spawn 真 pi 子进程。
+/// 内置 SOP 的生产引擎：按 task.sop 分发（planning / coding / testing / doc-fix），spawn 真 pi 子进程。
 pub struct BuiltinRpcEngine {
     pub profile_root: PathBuf,
     pub session_root: PathBuf,
@@ -230,6 +232,8 @@ impl RunEngine for BuiltinRpcEngine {
         match task.sop.as_str() {
             "planning" => self.run_planning(task, run, control),
             "coding" => self.run_coding(task, run, control),
+            "testing" => self.run_testing(task, run, control),
+            "doc-fix" => self.run_doc_fix(task, run, control),
             other => Err(crate::error::DevforgeError::System(format!(
                 "SOP `{other}` 未接线编排器（注册表与引擎必须同步）"
             ))),
@@ -383,6 +387,210 @@ impl BuiltinRpcEngine {
                 Ok(RunOutcome::Completed)
             }
             Err(e) => self.map_intervention(control, "coding-engine", e),
+        }
+    }
+
+    /// testing run 的活性监视目录（含 doc-fix 移交会话——同 run 的活性整体，D011）。
+    fn testing_watch_dirs(&self) -> Vec<PathBuf> {
+        vec![
+            self.session_root.join("testing"),
+            self.session_root.join("testing-reviews"),
+            self.session_root.join("doc-fix"),
+            self.session_root.join("doc-reviews"),
+        ]
+    }
+
+    /// 独立 doc-fix run 的活性监视目录。
+    fn docfix_watch_dirs(&self) -> Vec<PathBuf> {
+        vec![
+            self.session_root.join("doc-fix"),
+            self.session_root.join("doc-reviews"),
+        ]
+    }
+
+    /// 测试 SOP（P007）：testing/ 骨架 + TestingSopLoop（doc-side 移交时编排 doc-fix 子 SOP，D004）。
+    fn run_testing(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
+        // F1：spawn 前门卫（agent + review 双角色），缺失即快速失败——先于一切副作用
+        self.require_profile("test-agent")?;
+        self.require_profile("test-review")?;
+        if task.workspace.as_os_str().is_empty() {
+            return Err(crate::error::DevforgeError::Store(format!(
+                "任务 `{}/{}` 无代码工作区，测试 SOP 需要项目地址（写测 + 起被测系统）",
+                task.project, task.id
+            )));
+        }
+        let blackboard = self.plans_root.join(&task.project).join(&task.id);
+        std::fs::create_dir_all(&blackboard).ctx("创建黑板目录")?;
+        crate::sop::testing_protocol::create_testing_skeleton(&blackboard).ctx("建 testing 骨架")?;
+        // 无 codegraph 预检——测试 Agent 不配代码事实层（D007），不需要索引
+
+        let agent_client = RpcClient::spawn(
+            SpawnSpec::new(
+                self.profile_root.join("test-agent"),
+                "test-agent",
+                run.id.0.clone(),
+                self.session_root.join("testing"),
+            )
+            .with_working_dir(blackboard.clone()),
+        )?;
+        let agent = RpcPlanSession::new(agent_client);
+        let test_review_factory = RpcReviewFactory::per_round_in(
+            self.profile_root.join("test-review"),
+            "test-review",
+            self.session_root.join("testing-reviews"),
+            blackboard.clone(),
+        );
+        let mut user = RelayUserLink {
+            relay: self.ui.clone(),
+        };
+
+        let run_id = run.id.0.clone();
+        let workspace = task.workspace.clone();
+        let project = task.project.clone();
+        let task_id = task.id.clone();
+        let docfix_profile = self.profile_root.join("doc-fix");
+        let doc_review_profile = self.profile_root.join("doc-review");
+        let docfix_sessions = self.session_root.join("doc-fix");
+        let doc_review_sessions = self.session_root.join("doc-reviews");
+        let watch_dirs = self.testing_watch_dirs();
+
+        let sop_result = run_with_watchdog(
+            control,
+            run_id.clone(),
+            self.idle_ms,
+            watch_dirs,
+            move || {
+                let mut sop_loop = TestingSopLoop::new(agent, test_review_factory);
+                let mut outcome = sop_loop.run(&mut user, &workspace, &project, &task_id)?;
+                loop {
+                    match outcome {
+                        TestingOutcome::Completed(final_report) => return Ok(final_report),
+                        TestingOutcome::DocSideHandoff { stage, issues, report } => {
+                            let mut acc = report;
+                            acc.doc_fix_handoffs += 1;
+                            tracing::info!(
+                                component = "testing-engine",
+                                stage,
+                                findings = ?issues,
+                                "doc-side 判定 → 触发 doc-fix 子 SOP"
+                            );
+                            // D004：doc-fix 定点修补（新会话）+ doc-review 内置审查轮
+                            let docfix_client = RpcClient::spawn(
+                                SpawnSpec::new(
+                                    docfix_profile.clone(),
+                                    "doc-fix",
+                                    run_id.clone(),
+                                    docfix_sessions.clone(),
+                                )
+                                .with_working_dir(blackboard.clone()),
+                            )?;
+                            let docfix_agent = RpcPlanSession::new(docfix_client);
+                            let doc_review_factory = RpcReviewFactory::per_round_in(
+                                doc_review_profile.clone(),
+                                "doc-review",
+                                doc_review_sessions.clone(),
+                                blackboard.clone(),
+                            );
+                            let mut fix_loop = DocFixSopLoop::new(docfix_agent, doc_review_factory);
+                            let fix_report =
+                                fix_loop.run(&mut user, &workspace, &project, &task_id)?;
+                            tracing::info!(
+                                component = "testing-engine",
+                                rounds = fix_report.review_rounds,
+                                issues = fix_report.issues_total,
+                                "doc-fix 过审，恢复测试同阶段重审"
+                            );
+                            outcome = sop_loop.resume_after_docfix(
+                                &mut user,
+                                &workspace,
+                                stage,
+                                acc.clone(),
+                            )?;
+                        }
+                    }
+                }
+            },
+        );
+
+        match sop_result {
+            Ok(report) => {
+                tracing::info!(
+                    component = "testing-engine",
+                    stages = ?report.stages_completed,
+                    rounds = report.review_rounds,
+                    issues = report.issues_total,
+                    handoffs = report.doc_fix_handoffs,
+                    "测试 SOP 通过"
+                );
+                Ok(RunOutcome::Completed)
+            }
+            Err(e) => self.map_intervention(control, "testing-engine", e),
+        }
+    }
+
+    /// 文档修补 SOP（P007 D004）：testing/ 骨架 + DocFixSopLoop（doc-review 内置审查）。
+    fn run_doc_fix(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
+        // F1：spawn 前门卫（agent + review 双角色），缺失即快速失败——先于一切副作用
+        self.require_profile("doc-fix")?;
+        self.require_profile("doc-review")?;
+        if task.workspace.as_os_str().is_empty() {
+            return Err(crate::error::DevforgeError::Store(format!(
+                "任务 `{}/{}` 无代码工作区，doc-fix triage 需要读代码核实事实",
+                task.project, task.id
+            )));
+        }
+        let blackboard = self.plans_root.join(&task.project).join(&task.id);
+        std::fs::create_dir_all(&blackboard).ctx("创建黑板目录")?;
+        crate::sop::testing_protocol::create_testing_skeleton(&blackboard).ctx("建 testing 骨架")?;
+
+        let agent_client = RpcClient::spawn(
+            SpawnSpec::new(
+                self.profile_root.join("doc-fix"),
+                "doc-fix",
+                run.id.0.clone(),
+                self.session_root.join("doc-fix"),
+            )
+            .with_working_dir(blackboard.clone()),
+        )?;
+        let agent = RpcPlanSession::new(agent_client);
+        let factory = RpcReviewFactory::per_round_in(
+            self.profile_root.join("doc-review"),
+            "doc-review",
+            self.session_root.join("doc-reviews"),
+            blackboard,
+        );
+        let mut user = RelayUserLink {
+            relay: self.ui.clone(),
+        };
+
+        let run_id = run.id.0.clone();
+        let workspace = task.workspace.clone();
+        let project = task.project.clone();
+        let task_id = task.id.clone();
+        let watch_dirs = self.docfix_watch_dirs();
+
+        let sop_result = run_with_watchdog(
+            control,
+            run_id,
+            self.idle_ms,
+            watch_dirs,
+            move || {
+                let mut sop_loop = DocFixSopLoop::new(agent, factory);
+                sop_loop.run(&mut user, &workspace, &project, &task_id)
+            },
+        );
+
+        match sop_result {
+            Ok(report) => {
+                tracing::info!(
+                    component = "docfix-engine",
+                    rounds = report.review_rounds,
+                    issues = report.issues_total,
+                    "文档修补 SOP 通过"
+                );
+                Ok(RunOutcome::Completed)
+            }
+            Err(e) => self.map_intervention(control, "docfix-engine", e),
         }
     }
 
@@ -1017,5 +1225,75 @@ mod coding_engine_tests {
             !plans.join("p").join("t").exists(),
             "校验应先于副作用：plan root 不应被创建"
         );
+    }
+
+    // ---------- P007 T006：testing / doc-fix 引擎接线 ----------
+
+    #[test]
+    fn run_testing_fails_before_side_effects_when_profiles_missing() {
+        // 测试 run 在 profile 缺失时立即失败，且 testing/ 骨架不应被创建
+        let dir = tempfile::tempdir().unwrap();
+        let plans = dir.path().join("plans");
+        let mut engine = f1_engine(dir.path().join("profiles"), plans.clone());
+        let task = Task::new("t", "p", "testing", 1);
+        let run = Run::new("p", "t");
+        let control = RunControl::new();
+        let err = engine.execute(&task, &run, &control).unwrap_err();
+        assert!(err.to_string().contains("未渲染"), "应报 profile 未渲染: {err}");
+        assert!(
+            !plans.join("p").join("t").exists(),
+            "校验应先于副作用：黑板不应被创建"
+        );
+    }
+
+    #[test]
+    fn run_doc_fix_fails_before_side_effects_when_profiles_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let plans = dir.path().join("plans");
+        let mut engine = f1_engine(dir.path().join("profiles"), plans.clone());
+        let task = Task::new("t", "p", "doc-fix", 1);
+        let run = Run::new("p", "t");
+        let control = RunControl::new();
+        let err = engine.execute(&task, &run, &control).unwrap_err();
+        assert!(err.to_string().contains("未渲染"), "应报 profile 未渲染: {err}");
+        assert!(!plans.join("p").join("t").exists(), "校验应先于副作用");
+    }
+
+    #[test]
+    fn testing_start_requires_workspace_after_profile_gate() {
+        // profile 已渲染但无工作区 → workspace 门（测试需要项目地址写测/起被测系统）
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = dir.path().join("profiles");
+        for role in ["test-agent", "test-review"] {
+            let p = profiles.join(role);
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join("settings.json"), "{}").unwrap();
+        }
+        let plans = dir.path().join("plans");
+        let mut engine = f1_engine(profiles, plans.clone());
+        let task = Task::new("t", "p", "testing", 1); // workspace 默认空
+        let run = Run::new("p", "t");
+        let control = RunControl::new();
+        let err = engine.execute(&task, &run, &control).unwrap_err();
+        assert!(err.to_string().contains("无代码工作区"), "应报 workspace 门: {err}");
+        assert!(
+            !plans.join("p").join("t").join("testing").exists(),
+            "workspace 门也应先于骨架创建"
+        );
+    }
+
+    #[test]
+    fn testing_watch_dirs_cover_handoff_sessions() {
+        // D011：testing run 的活性监视覆盖移交会话（doc-fix/doc-reviews 同 run 活性整体）
+        let engine = f1_engine(PathBuf::from("/tmp/profiles"), PathBuf::from("/tmp"));
+        let dirs = engine.testing_watch_dirs();
+        let names: Vec<_> = dirs.iter().map(|p| p.file_name().unwrap().to_str().unwrap()).collect();
+        assert_eq!(names, vec!["testing", "testing-reviews", "doc-fix", "doc-reviews"]);
+        let names = engine
+            .docfix_watch_dirs()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["doc-fix", "doc-reviews"]);
     }
 }

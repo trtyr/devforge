@@ -88,11 +88,14 @@ pub enum TestingOutcome {
     Completed(TestingReport),
     /// 审查判定 doc-side：编排层应触发 doc-fix 子 SOP，完成后调
     /// [`TestingSopLoop::resume_after_docfix`] 对同阶段重审（Agent 会话保持存活）。
+    /// `report` 是最新累计账本（轮次/问题数全局计数），编排层必须原样传回 resume。
     DocSideHandoff {
         /// 未通过审查的阶段号。
         stage: u64,
         /// 审查官列出的问题（doc-fix 的处置输入）。
         issues: Vec<String>,
+        /// 最新累计账本（编排层回传 resume 的凭据）。
+        report: TestingReport,
     },
 }
 
@@ -187,6 +190,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                                 return Ok(TestingOutcome::DocSideHandoff {
                                     stage,
                                     issues: parsed.issues,
+                                    report,
                                 });
                             }
                             step = Step::Agent(format!(
@@ -407,19 +411,14 @@ mod tests {
         let mut user = NoUser;
         let mut loop_ = TestingSopLoop::new(agent, &mut factory);
         let outcome = loop_.run(&mut user, Path::new("/w"), "p", "t").unwrap();
-        let TestingOutcome::DocSideHandoff { stage, issues } = outcome else {
+        let TestingOutcome::DocSideHandoff { stage, issues, report } = outcome else {
             panic!("应移交 doc-fix");
         };
         assert_eq!(stage, 1);
         assert_eq!(issues, vec!["文档缺分页接口描述"]);
+        assert_eq!(report.review_rounds, 1, "移交携带最新账本");
 
-        // resume：审查轮次递增到 2（工厂断言指令带「第 2 轮」），PASS 后收工
-        let report = TestingReport {
-            stages_completed: vec![],
-            review_rounds: 1,
-            issues_total: 1,
-            doc_fix_handoffs: 1,
-        };
+        // resume：原样回传账本，审查轮次递增到 2（工厂断言指令带「第 2 轮」），PASS 后收工
         let outcome = loop_
             .resume_after_docfix(&mut user, Path::new("/w"), stage, report)
             .unwrap();
@@ -441,16 +440,17 @@ mod tests {
         let mut user = NoUser;
         let mut loop_ = TestingSopLoop::new(agent, &mut factory);
         let first = loop_.run(&mut user, Path::new("/w"), "p", "t").unwrap();
-        let TestingOutcome::DocSideHandoff { stage, .. } = first else {
+        let TestingOutcome::DocSideHandoff { stage, report, .. } = first else {
             panic!("首次应移交");
         };
         let second = loop_
-            .resume_after_docfix(&mut user, Path::new("/w"), stage, TestingReport { review_rounds: 1, doc_fix_handoffs: 1, ..Default::default() })
+            .resume_after_docfix(&mut user, Path::new("/w"), stage, report)
             .unwrap();
-        let TestingOutcome::DocSideHandoff { stage: stage2, .. } = second else {
+        let TestingOutcome::DocSideHandoff { stage: stage2, report: report2, .. } = second else {
             panic!("恢复后仍可再移交（零上限）");
         };
         assert_eq!(stage2, 1);
+        assert_eq!(report2.review_rounds, 2, "账本轮次跨移交累计");
     }
 
     #[test]
