@@ -1,7 +1,6 @@
 # P007 Open Questions
 
-> 全部待用户拍板；拍板后移入 decisions/ 并回填 roadmap。
-> 2026-10-18 17:56 第二轮讨论后更新：calling→coding 修正（原 Q003 消解），红灯分类学与 review 双根因具体化（见 topics/testing-stage-design.md §四）。
+> **Q001-Q009 全部关账（2026-10-18 18:53）**；三项执行决策（doc-review 新 profile / findings 台账 / 启动沿用现状）同日拍板。决策全文已移入 decisions/README.md（D001-D012），roadmap 已定稿。本档留存作讨论轨迹。
 
 ## Q001 归因权与移交协议 —— ✅ 已拍板（2026-10-18 18:23）
 

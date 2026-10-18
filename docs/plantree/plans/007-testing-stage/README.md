@@ -1,6 +1,6 @@
 # P007 · Testing 阶段：Testing Agent + Testing Review
 
-> 状态：**规划中**（设计讨论已落档，open-questions 待拍板；开工门槛：coding 阶段 P005/P006 全部收官——用户 2026-10-18 拍板「等 coding 阶段全部完成之后就去搞测试阶段」）
+> 状态：**定稿（2026-10-18）**——Q001-Q009 全部关账，决策 D001-D012 落档 decisions/，roadmap 已定稿；待用户发令开工。
 
 ## Scope
 
@@ -12,8 +12,10 @@
 - 黑板 `testing/` 布局与协议（套件清单/运行报告/追溯矩阵/偏差留痕）
 - Testing Agent 行为剧本：文档驱动写测试（不看代码）、自起被测系统、自跑自收、可写度分级与「写不了」留痕移交
 - Testing Review Agent：对文档三判据（业务关系/用户场景/极端用户面）+ 覆盖判定操作化（追溯矩阵候选）
-- 红灯归因路由与 review FAIL 双根因路由（pending Q001/Q002）
-- calling agent 预留接口（视 Q003 定位拍板）
+- 红灯归因路由与 review FAIL 双根因路由（D001/D003：归因权归 coding agent，`<reroute>` 协议标签工具侧路由）
+- doc-fix 子 SOP（D004：写文档模式 + 内置 doc-review 审查轮）与 doc-review 新 profile（D008）
+- findings 台账（D009：testing/findings/ 一条一文件+状态机）
+- 文档质量门（D008）：coding review 增「照文档从零 boot」门禁 + Runbook 七件套契约
 - 供给：test-agent + test-review 双 profile（提示词纪律与 coding 反转；MCP/插件取舍 pending Q008）
 - 单测 + e2e 验证（test_17+ 系列脚本）
 
@@ -32,6 +34,7 @@
 
 ## 文件地图
 
-- `roadmap.md` — 任务分解草案（未定稿，待 Q 拍板）
-- `topics/testing-stage-design.md` — 设计讨论全记录（2026-10-18 用户口径 + 架构映射 + 差距分析）
-- `open-questions.md` — 待拍板问题清单
+- `roadmap.md` — 任务分解（定稿 T001-T008，M1-M3 里程碑）
+- `topics/testing-stage-design.md` — 设计讨论全记录（2026-10-18 用户口径 + 架构映射 + 差距分析 + 三轮裁定）
+- `open-questions.md` — Q001-Q009 全关账存档
+- `decisions/README.md` — D001-D012 决策全文
