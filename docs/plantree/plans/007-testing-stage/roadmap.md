@@ -18,7 +18,11 @@
 - [x] T005 doc-fix 子 SOP：DOC_FIX_SOP 注册（planning/coding/doc-fix）+ DocFixSopLoop（单轮工作→doc-review 内置审查→PASS 出口/FAIL 回注零上限）+ kickoff FINDINGS_DIR 常量化 —— commit `f4e32ce`
 - [x] T006 引擎接线：BuiltinRpcEngine 分发 testing/doc-fix + run_testing（doc-side 闭环编排：触发 doc-fix→过审→resume 同阶段重审，账本跨移交累计）+ run_doc_fix（独立触发）+ 监视目录（testing/testing-reviews/doc-fix/doc-reviews）+ 无 codegraph 预检（D007） —— commit `94f6a9c`
 - [x] T007 全量回归：bg_run 原始日志验真 cargo test **174 passed / 0 failed** + doctest 1 + clippy --all-targets **0 警告**（TEST_EXIT=0 / CLIPPY_EXIT=0，/tmp/p007-t007-regression.log）
-- [ ] T008 e2e 系列（test_17+：配置面/触发链/全链黑盒测试闭环）——**用户放行后的独立验证轮执行**（沿 P005 T008 先例）
+- [ ] T008 e2e 系列（test_17+：配置面/触发链/全链黑盒测试闭环）——**验证轮进行中（2026-10-19 00:35 暂停，只记录不修）**：
+  - [x] 前置：TESTING_SOP 注册缺口修复（commit `54e734f`）
+  - [x] test_17 配置面 **51P/0F**、test_18 触发链 **15P/0F**
+  - [ ] test_19 全链：中止（C19-R1 审查误路由 + C19-R2 静默退出 + 中转长 turn 停滞）——记录见 `evidence/e2e-t008-findings.md`，修复归下一阶段
+  - [ ] 全量 campaign + TEST_REPORT v5（待 C19-R1 修复后重跑）
 
 ## 里程碑口径
 
