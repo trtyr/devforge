@@ -19,7 +19,7 @@
     {
       "name": "plan_tree_dir 符合两层级约定（decisions/002）",
       "ok": true,
-      "detail": "actual=/tmp/devforge-e2e-x0dqghw9/.devforge/plans/p/t, expected=/tmp/devforge-e2e-x0dqghw9/.devforge/plans/p/t"
+      "detail": "actual=/tmp/devforge-e2e-rtbuir1e/.devforge/plans/p/t, expected=/tmp/devforge-e2e-rtbuir1e/.devforge/plans/p/t"
     },
     {
       "name": "GET graph == 200",
@@ -54,7 +54,7 @@
     {
       "name": "服务器 cwd 围栏就绪（e2e 落点对照用）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-x0dqghw9/server-cwd"
+      "detail": "/tmp/devforge-e2e-rtbuir1e/server-cwd"
     }
   ],
   "issues": [],

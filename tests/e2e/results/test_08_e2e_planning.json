@@ -29,27 +29,27 @@
     {
       "name": "会话文件持续增长（模型在慢生成而非死流）",
       "ok": true,
-      "detail": "增长曲线: [0, 75709, 115901, 131822, 144772, 153865, 164205, 175777]..."
+      "detail": "增长曲线: [0, 57084, 94152, 107393, 111447, 111447]"
     },
     {
       "name": "run.finished ok=True（规划 SOP 通过）",
       "ok": true,
-      "detail": "{'ok': True, 'project': 'demo-app', 'run_id': 'df7a500a-9186-4e92-88b7-01bbfa51fb4f', 'task': 'planning-run', 'type': 'run.finished'}"
+      "detail": "{'ok': True, 'project': 'demo-app', 'run_id': '8f74d460-8c05-488d-9059-81166e1ef729', 'task': 'planning-run', 'type': 'run.finished'}"
     },
     {
       "name": "时间线含 run.started",
       "ok": true,
-      "detail": "['project.created', 'task.created', 'run.started', 'config.rendered', 'ui.request', 'ui.request']..."
+      "detail": "['project.created', 'task.created', 'run.started', 'ui.request', 'ui.request', 'ui.request']..."
     },
     {
       "name": "时间线含 ui.request（Plan Agent 发起完成确认）",
       "ok": true,
-      "detail": "ui 事件数=7"
+      "detail": "ui 事件数=4"
     },
     {
       "name": "AI 应答全部送达（数量对齐）",
       "ok": true,
-      "detail": "answered=7, requested=7"
+      "detail": "answered=4, requested=4"
     },
     {
       "name": "时间线含 run.finished",
@@ -72,9 +72,9 @@
       "detail": ""
     },
     {
-      "name": "plan tree 落在约定路径（decisions/002）：/tmp/devforge-e2e-uj20rlv5/.devforge/plans/demo-app/planning-run",
+      "name": "plan tree 落在约定路径（decisions/002）：/tmp/devforge-e2e-0qu307uq/.devforge/plans/demo-app/planning-run",
       "ok": true,
-      "detail": "文件数=22"
+      "detail": "文件数=11"
     }
   ],
   "issues": [],

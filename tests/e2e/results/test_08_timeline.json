@@ -10,98 +10,59 @@
   },
   {
     "project": "demo-app",
-    "run_id": "df7a500a-9186-4e92-88b7-01bbfa51fb4f",
+    "run_id": "8f74d460-8c05-488d-9059-81166e1ef729",
     "task": "planning-run",
     "type": "run.started"
   },
   {
-    "rendered": 4,
-    "type": "config.rendered"
-  },
-  {
     "id": "ui-1",
     "options": [
-      "1. 全栈 Web 演示应用（推荐） — 前端页面 + 后端 API + 本地数据存储，作为可运行的功能演示。",
-      "2. 纯前端单页应用 — 只有浏览器端代码，数据用本地 mock 或 localStorage，无后端。",
-      "3. 命令行示例工具 — CLI 形式的示例程序，规划围绕命令、参数解析和输出。",
-      "4. 仅规划骨架，不实现代码 — 只产出 plan tree 文档，用于流程验证或模板示范。",
-      "5. Type something."
+      "1. 从零规划一个演示应用 — 没有既有代码，需要先定产品定位、核心功能与技术选型，再产出 roadmap。",
+      "2. 围绕已有想法梳理 MVP — 你已有大致产品构想，我负责把它拆成可执行的里程碑与任务。",
+      "3. 先搭规划树骨架 — 本次只建立 plan root 结构与基线，具体内容后续再补。",
+      "4. Type something."
     ],
-    "question": "[项目性质] 这个 demo-app 计划要覆盖什么？当前 workspace/demo-app 是空目录。",
+    "question": "[目标] 这次 demo-app 的规划目标是什么？",
     "type": "ui.request"
   },
   {
     "id": "ui-2",
     "options": [
-      "1. TypeScript + React + Node（推荐） — 主流前端栈，Node/Express 或类似后端，前后端同语言。",
-      "2. Python + FastAPI — Python 后端 API 为主，前端可用简单模板或不做。",
-      "3. 静态 HTML/CSS/JS — 零构建、双击即开，依赖最少。",
-      "4. 由规划决定，先不锁定 — 在 topics 里列为待决策项（open question），后续再定。",
+      "1. Web 全栈应用 — 浏览器前端 + 后端 API + 数据库的典型全栈形态。",
+      "2. 纯前端单页应用 — 仅浏览器端，数据放在本地或 mock，便于快速演示。",
+      "3. CLI / 服务端工具 — 命令行或后台服务，无图形界面。",
+      "4. 尚未确定 — 希望在规划中把形态作为待决策项列出，后续再拍板。",
       "5. Type something."
     ],
-    "question": "[技术栈] 计划中按哪种技术栈来写（影响 topics 里的实现方案与验收标准）？",
+    "question": "[产品形态] demo-app 期望的产品形态是什么？",
     "type": "ui.request"
   },
   {
     "id": "ui-3",
     "options": [
-      "1. 标准（推荐） — README + baseline + roadmap + topics + decisions + open-questions，约 8-12 个文件。",
-      "2. 轻量骨架 — 只有 README + roadmap + open-questions，约 3-4 个文件。",
-      "3. 完整 — 在标准之上再加 evidence/、history/、indexes/ 与按需拆分的 detail shard。",
+      "1. roadmap + 里程碑 + 任务 — 三层结构：目标/阶段/可执行任务，适合直接进入开发。",
+      "2. roadmap + 里程碑 — 只到阶段级，任务留待开发时再拆。",
+      "3. 只做基线与待决策 — 先把目标、范围、开放问题理清，不急着排任务。",
       "4. Type something."
     ],
-    "question": "[规划深度] plan tree 要做到什么深度？",
+    "question": "[规划粒度] 希望的规划深度到哪一层？",
     "type": "ui.request"
   },
   {
     "id": "ui-4",
     "options": [
-      "1. 脚手架 + 一个可交互页面（推荐） — 能跑起来、能看到主流程，不含认证与持久化。",
-      "2. 含 CRUD 与数据持久化 — 核心实体的增删改查 + 存储层，范围更大。",
-      "3. 含认证与多用户 — 登录、会话、用户隔离，规划与验收标准显著增加。",
+      "1. 确认完成，保留待决项 — 接受当前骨架，包括 Q001–Q004 作为待决项、实现类任务保持 Blocked。",
+      "2. 先补齐形态与范围 — 我继续问你形态与范围，把 Q001/Q002 收敛成决策后再收尾。",
+      "3. 简化：只保留最小骨架 — 砍到最小：只留 README 与 roadmap，删掉 topics/ideas/decisions 空壳。",
       "4. Type something."
     ],
-    "question": "[首版范围] 第一个里程碑（MVP）打算做到哪一步？",
-    "type": "ui.request"
-  },
-  {
-    "id": "ui-5",
-    "options": [
-      "1. 已完成（推荐） — 你已确认规划结果，不再增删文件。我输出完成标记。",
-      "2. 还想再改 — 保留现状，但你还想再看一轮内容或调整某一部分。",
-      "3. 先解决 open questions — 先回答 Q001/Q003 等关键问题，并把结论固化到 decisions 后再结束。",
-      "4. Type something."
-    ],
-    "question": "[是否完成] plan tree 已写入当前目录（17 个文件）。是否确认规划已完成？",
-    "type": "ui.request"
-  },
-  {
-    "id": "ui-6",
-    "options": [
-      "1. 选“创建”（推荐） — 表单 + POST /api/items，保留字段校验路径；PATCH 端点移出 MVP。",
-      "2. 选“切换状态” — 行内按钮 + PATCH /api/items/:id，实现更小，不覆盖输入校验。",
-      "3. 两者都要 — 两者都做，T005 范围扩大，roadmap 与验收标准需同步调整。",
-      "4. 保持未定 — 保持 8 条 open questions 不动，交由后续会话或编码 Agent 处理。",
-      "5. Type something."
-    ],
-    "question": "[写交互] Q003（写交互形态）现在定吗？它决定 PATCH 端点是否属于 MVP。",
-    "type": "ui.request"
-  },
-  {
-    "id": "ui-7",
-    "options": [
-      "1. 确认完成（推荐） — 两处语义矛盾已消除，接受修订结果。",
-      "2. 顺便定下 Q003 = 创建 — 把 Q003 定为“创建”（选项 A），并同步删掉条件端点表的 PATCH 行与相关断言。",
-      "3. 顺便定下 Q003 = 切换 — 把 Q003 定为“切换状态”（选项 B），并同步删掉 POST 行与字段级错误断言。",
-      "4. Type something."
-    ],
-    "question": "[确认完成] 两处矛盾已修订：非乐观更新升为 decision 003（唯一权威），端点表拆为“固定/条件”两组且 Q003 只阻 T005。是否确认完成？",
+    "question": "[是否完成] 本次规划是否到此完成？",
     "type": "ui.request"
   },
   {
     "ok": true,
     "project": "demo-app",
-    "run_id": "df7a500a-9186-4e92-88b7-01bbfa51fb4f",
+    "run_id": "8f74d460-8c05-488d-9059-81166e1ef729",
     "task": "planning-run",
     "type": "run.finished"
   }

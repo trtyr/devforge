@@ -34,12 +34,12 @@
     {
       "name": "plan-agent AGENTS.md 渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-lueksmf8/.devforge/profiles/plan-agent/AGENTS.md"
+      "detail": "/tmp/devforge-e2e-x08ajvpc/.devforge/profiles/plan-agent/AGENTS.md"
     },
     {
       "name": "plan-agent settings.json 渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-lueksmf8/.devforge/profiles/plan-agent/settings.json"
+      "detail": "/tmp/devforge-e2e-x08ajvpc/.devforge/profiles/plan-agent/settings.json"
     },
     {
       "name": "plan-agent settings 来自模型池（真 model_id）",
@@ -59,7 +59,7 @@
     {
       "name": "plan-agent 内置 plan-tree skill 兜底渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-lueksmf8/.devforge/profiles/plan-agent/skills/plan-tree/SKILL.md"
+      "detail": "/tmp/devforge-e2e-x08ajvpc/.devforge/profiles/plan-agent/skills/plan-tree/SKILL.md"
     },
     {
       "name": "plan-agent models.json 分发带 1M/64K 预算",
@@ -69,12 +69,12 @@
     {
       "name": "plan-review AGENTS.md 渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-lueksmf8/.devforge/profiles/plan-review/AGENTS.md"
+      "detail": "/tmp/devforge-e2e-x08ajvpc/.devforge/profiles/plan-review/AGENTS.md"
     },
     {
       "name": "plan-review settings.json 渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-lueksmf8/.devforge/profiles/plan-review/settings.json"
+      "detail": "/tmp/devforge-e2e-x08ajvpc/.devforge/profiles/plan-review/settings.json"
     },
     {
       "name": "plan-review settings 来自模型池（真 model_id）",
@@ -94,7 +94,7 @@
     {
       "name": "plan-review 内置 plan-tree skill 兜底渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-lueksmf8/.devforge/profiles/plan-review/skills/plan-tree/SKILL.md"
+      "detail": "/tmp/devforge-e2e-x08ajvpc/.devforge/profiles/plan-review/skills/plan-tree/SKILL.md"
     },
     {
       "name": "plan-review models.json 分发带 1M/64K 预算",
@@ -109,7 +109,7 @@
     {
       "name": "PUT 同步落盘清单真源",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-lueksmf8/.devforge/manifest.json"
+      "detail": "/tmp/devforge-e2e-x08ajvpc/.devforge/manifest.json"
     }
   ],
   "issues": [],

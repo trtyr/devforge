@@ -69,7 +69,7 @@
     {
       "name": "八 profile 全部渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-77u34368/.devforge/profiles"
+      "detail": "/tmp/devforge-e2e-zmtbxe5a/.devforge/profiles"
     },
     {
       "name": "test-agent 提示词锚点：禁止读取任何实现文件内容",
@@ -219,22 +219,22 @@
     {
       "name": "test-agent python 章程全量（SKILL+references+scripts）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-77u34368/.devforge/profiles/test-agent/skills/python-best-practices"
+      "detail": "/tmp/devforge-e2e-zmtbxe5a/.devforge/profiles/test-agent/skills/python-best-practices"
     },
     {
       "name": "doc-fix 四语言 skills",
       "ok": true,
-      "detail": "{'rust-best-practices', 'go-best-practices', 'python-best-practices', 'ts-js-best-practices'}"
+      "detail": "{'go-best-practices', 'python-best-practices', 'ts-js-best-practices', 'rust-best-practices'}"
     },
     {
       "name": "test-review 无 skills（极简）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-77u34368/.devforge/profiles/test-review/skills"
+      "detail": "/tmp/devforge-e2e-zmtbxe5a/.devforge/profiles/test-review/skills"
     },
     {
       "name": "doc-review 无 skills（极简）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-77u34368/.devforge/profiles/doc-review/skills"
+      "detail": "/tmp/devforge-e2e-zmtbxe5a/.devforge/profiles/doc-review/skills"
     },
     {
       "name": "test-agent models.json 带 1M/64K 预算",

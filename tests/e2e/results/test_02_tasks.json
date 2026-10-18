@@ -14,22 +14,22 @@
     {
       "name": "创建任务 == 201",
       "ok": true,
-      "detail": "status=201, body={'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'workspace': '/tmp/e2e-p1', 'status': 'Pending', 'created_at_ms': 1792272325450, 'current_run': None, 'runs': []}"
+      "detail": "status=201, body={'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'workspace': '/tmp/e2e-p1', 'status': 'Pending', 'created_at_ms': 1792341654085, 'current_run': None, 'runs': []}"
     },
     {
       "name": "新任务状态 Pending",
       "ok": true,
-      "detail": "{'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'workspace': '/tmp/e2e-p1', 'status': 'Pending', 'created_at_ms': 1792272325450, 'current_run': None, 'runs': []}"
+      "detail": "{'id': 'mvp', 'project': 'p1', 'sop': 'planning', 'workspace': '/tmp/e2e-p1', 'status': 'Pending', 'created_at_ms': 1792341654085, 'current_run': None, 'runs': []}"
     },
     {
       "name": "coding SOP 任务 == 201（P005 注册表扩容）",
       "ok": true,
-      "detail": "status=201, body={'id': 't2', 'project': 'p1', 'sop': 'coding', 'workspace': '/tmp/e2e-p1', 'status': 'Pending', 'created_at_ms': 1792272325451, 'current_run': None, 'runs': []}"
+      "detail": "status=201, body={'id': 't2', 'project': 'p1', 'sop': 'coding', 'workspace': '/tmp/e2e-p1', 'status': 'Pending', 'created_at_ms': 1792341654086, 'current_run': None, 'runs': []}"
     },
     {
       "name": "未知 SOP == 400",
       "ok": true,
-      "detail": "status=400, body={'error': '配置错误: 未知 SOP `ghost`——SOP 无管理面，只有内置注册的可用: [\"planning\", \"coding\"]'}"
+      "detail": "status=400, body={'error': '配置错误: 未知 SOP `ghost`——SOP 无管理面，只有内置注册的可用: [\"planning\", \"coding\", \"testing\", \"doc-fix\"]'}"
     },
     {
       "name": "同项目重复任务 == 409",

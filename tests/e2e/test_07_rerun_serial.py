@@ -164,6 +164,12 @@ def main() -> int:
         run1_status = runs_body["runs"][0]["status"]
 
         status, _ = server.req("POST", "/projects/p/tasks/t1/start")
+        # 串行位释放是异步的（cancel 受理后 run 记录才转 Failed）：重试等待，
+        # 避免把「刚 cancel 完的微秒级窗口」误判成产品缺陷（v4 同代码 17P/0F，本轮实测踩中）
+        t0 = time.time()
+        while status == 409 and time.time() - t0 < 20:
+            time.sleep(0.5)
+            status, _ = server.req("POST", "/projects/p/tasks/t1/start")
         r.check(status == 202, "终态后重跑 start == 202", f"status={status}")
         t0 = time.time()
         while time.time() - t0 < 60:

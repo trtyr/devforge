@@ -9,7 +9,7 @@
     {
       "name": "coding-agent profile 就绪",
       "ok": true,
-      "detail": "/var/tmp/devforge-e2e-7wajjrw6/.devforge/profiles/coding-agent"
+      "detail": "/tmp/devforge-e2e-zbq61rxs/.devforge/profiles/coding-agent"
     },
     {
       "name": "项目创建",

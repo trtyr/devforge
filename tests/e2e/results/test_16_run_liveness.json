@@ -9,7 +9,7 @@
     {
       "name": "plan-agent profile 就绪",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-pbkoudhm/.devforge/profiles/plan-agent"
+      "detail": "/tmp/devforge-e2e-y2kwfdcw/.devforge/profiles/plan-agent"
     },
     {
       "name": "planning start == 202",
@@ -19,17 +19,17 @@
     {
       "name": "run 已创建",
       "ok": true,
-      "detail": "run_id=b9156305-72db-41ed-a34e-3f530b05319c"
+      "detail": "run_id=5a32dc7b-4481-4203-8640-127df234dee3"
     },
     {
       "name": "真 pi 进程在跑（可被外部观测）",
       "ok": true,
-      "detail": "pid=270270"
+      "detail": "pid=364619"
     },
     {
       "name": "会话文件已在增长（run 先活着再被杀）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-pbkoudhm/.devforge/sessions/plan"
+      "detail": "/tmp/devforge-e2e-y2kwfdcw/.devforge/sessions/plan"
     },
     {
       "name": "会话平线超阈 → 失活收割 run Failed（D002；进程存活但沉默，时序符合闲置阈值）",
@@ -44,7 +44,7 @@
     {
       "name": "对照组：真 pi 在跑",
       "ok": true,
-      "detail": "pid=270294"
+      "detail": "pid=364641"
     },
     {
       "name": "未配置 IDLE_MS 时平线不自动收割（零硬限制默认）",

@@ -14,12 +14,12 @@
     {
       "name": "任务 workspace 快照项目 local_path（decisions/001）",
       "ok": true,
-      "detail": "{'id': 'flow', 'project': 'demo-app', 'sop': 'planning', 'workspace': '/tmp/pi/01a1450b-6d3e-77bc-a7c1-bbb88d566132/devforge-e2e-1plw4tpz/workspace/demo-app', 'status': 'Pending', 'created_at_ms': 1792265292048, 'current_run': None, 'runs': []}"
+      "detail": "{'id': 'flow', 'project': 'demo-app', 'sop': 'planning', 'workspace': '/tmp/devforge-e2e-z_bdtl4i/workspace/demo-app', 'status': 'Pending', 'created_at_ms': 1792342854456, 'current_run': None, 'runs': []}"
     },
     {
       "name": "未知 sop 覆盖 == 400",
       "ok": true,
-      "detail": "status=400, body={'error': '配置错误: 未知 SOP `ghost`——SOP 无管理面，只有内置注册的可用: [\"planning\", \"coding\"]'}"
+      "detail": "status=400, body={'error': '配置错误: 未知 SOP `ghost`——SOP 无管理面，只有内置注册的可用: [\"planning\", \"coding\", \"testing\", \"doc-fix\"]'}"
     },
     {
       "name": "start sop=coding == 202",
@@ -32,29 +32,32 @@
       "detail": "sop=coding"
     },
     {
-      "name": "cancel 挂 Running 的编码 run == 200（F1 解锁）",
+      "name": "未渲染 profile 下 start 仍受理 == 202",
       "ok": true,
-      "detail": "status=200"
+      "detail": "status=202"
     },
     {
-      "name": "cancel 后编码 run 进 Failed",
+      "name": "未渲染 profile 的编码 run 快速 Failed（F1 修复回归）",
       "ok": true,
-      "detail": "final=Failed"
+      "detail": "final=Failed, elapsed=0.0s"
     },
     {
-      "name": "无 body start == 202（沿用注册 sop）",
+      "name": "秒级失败（无真 pi 挂 Running 占串行槽）",
+      "ok": true,
+      "detail": "elapsed=0.0s"
+    },
+    {
+      "name": "任务终态同步 Failed",
+      "ok": true,
+      "detail": "status=Failed"
+    },
+    {
+      "name": "无 body start == 202（沿用注册 sop；Failed 可重跑）",
       "ok": true,
       "detail": "status=202"
     }
   ],
-  "issues": [
-    {
-      "id": "F1-MISSING-PROFILE-HANG",
-      "severity": "high",
-      "desc": "未渲染 profile 时编码 run 不快速失败：spawn 不校验 profile 目录，真 pi 以缺失 agent-dir 启动并挂 Running 占住串行槽；需 cancel 解锁。证据：本脚本第 3 节 + runs JSON。",
-      "evidence": ""
-    }
-  ],
-  "passed": 9,
+  "issues": [],
+  "passed": 11,
   "failed": 0
 }

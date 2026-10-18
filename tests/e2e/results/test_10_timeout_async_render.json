@@ -29,7 +29,7 @@
     {
       "name": "超时后 run 进 Failed",
       "ok": true,
-      "detail": "{'current_run': 'b6bd2e72-6a3a-4d2c-85d3-e1fcdaed2b4c', 'plan_tree_dir': '/tmp/devforge-e2e-haxu9k6g/.devforge/plans/to/timeout-me', 'project': 'to', 'runs': [{'ended_at_ms': 1792334431349, 'id': 'b6bd2e72-6a3a-4d2c-85d3-e1fcdaed2b4c', 'started_at_ms': 1792334411227, 'status': 'Failed'}], 'task': 'timeout-me'}"
+      "detail": "{'current_run': '0d24933d-368d-4146-842b-cd0eb09b1e53', 'plan_tree_dir': '/tmp/devforge-e2e-2giox8v0/.devforge/plans/to/timeout-me', 'project': 'to', 'runs': [{'ended_at_ms': 1792342235680, 'id': '0d24933d-368d-4146-842b-cd0eb09b1e53', 'started_at_ms': 1792342215558, 'status': 'Failed'}], 'task': 'timeout-me'}"
     },
     {
       "name": "超时收割及时（21s < 60s，deadline=20s）",
@@ -39,7 +39,7 @@
     {
       "name": "任务状态同步 Failed",
       "ok": true,
-      "detail": "status=200, task={'created_at_ms': 1792334411224, 'current_run': 'b6bd2e72-6a3a-4d2c-85d3-e1fcdaed2b4c', 'id': 'timeout-me', 'project': 'to', 'runs': ['b6bd2e72-6a3a-4d2c-85d3-e1fcdaed2b4c'], 'sop': 'planning', 'status': 'Failed', 'workspace': '/tmp/to-e2e'}"
+      "detail": "status=200, task={'created_at_ms': 1792342215556, 'current_run': '0d24933d-368d-4146-842b-cd0eb09b1e53', 'id': 'timeout-me', 'project': 'to', 'runs': ['0d24933d-368d-4146-842b-cd0eb09b1e53'], 'sop': 'planning', 'status': 'Failed', 'workspace': '/tmp/to-e2e'}"
     }
   ],
   "issues": [],

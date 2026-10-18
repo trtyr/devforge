@@ -19,7 +19,7 @@
     {
       "name": "spawn 工作目录已创建（plans/rc/cancel-me）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-j4ts9ows/.devforge/plans/rc/cancel-me"
+      "detail": "/tmp/devforge-e2e-6ot2v_1v/.devforge/plans/rc/cancel-me"
     },
     {
       "name": "cancel 端点受理 200",
@@ -29,12 +29,12 @@
     {
       "name": "取消后 run 进 Failed",
       "ok": true,
-      "detail": "{'current_run': 'a4d8e9ab-a2e6-46cb-9a5b-d69969620d6f', 'plan_tree_dir': '/tmp/devforge-e2e-j4ts9ows/.devforge/plans/rc/cancel-me', 'project': 'rc', 'runs': [{'ended_at_ms': 1792272229853, 'id': 'a4d8e9ab-a2e6-46cb-9a5b-d69969620d6f', 'started_at_ms': 1792272229850, 'status': 'Failed'}], 'task': 'cancel-me'}"
+      "detail": "{'current_run': '65835839-57c5-4921-973f-93a291c03adf', 'plan_tree_dir': '/tmp/devforge-e2e-6ot2v_1v/.devforge/plans/rc/cancel-me', 'project': 'rc', 'runs': [{'ended_at_ms': 1792342199276, 'id': '65835839-57c5-4921-973f-93a291c03adf', 'started_at_ms': 1792342199274, 'status': 'Failed'}], 'task': 'cancel-me'}"
     },
     {
       "name": "任务状态同步 Failed",
       "ok": true,
-      "detail": "status=200, task={'created_at_ms': 1792272229849, 'current_run': 'a4d8e9ab-a2e6-46cb-9a5b-d69969620d6f', 'id': 'cancel-me', 'project': 'rc', 'runs': ['a4d8e9ab-a2e6-46cb-9a5b-d69969620d6f'], 'sop': 'planning', 'status': 'Failed', 'workspace': '/tmp/rc-e2e'}"
+      "detail": "status=200, task={'created_at_ms': 1792342199273, 'current_run': '65835839-57c5-4921-973f-93a291c03adf', 'id': 'cancel-me', 'project': 'rc', 'runs': ['65835839-57c5-4921-973f-93a291c03adf'], 'sop': 'planning', 'status': 'Failed', 'workspace': '/tmp/rc-e2e'}"
     },
     {
       "name": "无活动 run 时 cancel == 404",
@@ -47,13 +47,13 @@
       "id": "OBS-SESSION",
       "severity": "low",
       "desc": "取消早于 pi 首个会话文件落盘（正常时序：pi 启动需数秒，cancel 先至）；spawn 实证由 plan root 目录创建与 ledger 标记覆盖",
-      "evidence": "/tmp/devforge-e2e-j4ts9ows/.devforge/sessions/plan 无 jsonl"
+      "evidence": "/tmp/devforge-e2e-6ot2v_1v/.devforge/sessions/plan 无 jsonl"
     },
     {
       "id": "OBS-STDERR",
       "severity": "low",
       "desc": "pi-stderr.log 未落盘——pi 全程静默或取消早于首行 stderr（soft 行为，非缺陷；落盘机制由单测 stderr_lines_land_in_session_log 覆盖）",
-      "evidence": "/tmp/devforge-e2e-j4ts9ows/.devforge/sessions/plan/pi-stderr.log 不存在"
+      "evidence": "/tmp/devforge-e2e-6ot2v_1v/.devforge/sessions/plan/pi-stderr.log 不存在"
     }
   ],
   "passed": 8,

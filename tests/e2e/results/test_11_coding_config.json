@@ -7,14 +7,14 @@
       "detail": "status=202"
     },
     {
-      "name": "config.rendered == 4（四角色渲染+安装全完成）",
+      "name": "config.rendered == 8（八角色渲染+安装全完成）",
       "ok": true,
-      "detail": "elapsed=119s, ev={'rendered': 4, 'type': 'config.rendered'}"
+      "detail": "elapsed=602s, ev={'rendered': 8, 'type': 'config.rendered'}"
     },
     {
-      "name": "四 profile 全部渲染（含 coding-review，render_all 不中断）",
+      "name": "八 profile 全部渲染（render_all 不中断）",
       "ok": true,
-      "detail": "elapsed=119s"
+      "detail": "elapsed=602s"
     },
     {
       "name": "coding-agent mcp.json 含 codegraph serve --mcp",
@@ -44,42 +44,42 @@
     {
       "name": "coding-agent: rust-best-practices 原样落盘",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-gau4d1nv/.devforge/profiles/coding-agent/skills/rust-best-practices/SKILL.md"
+      "detail": "/tmp/devforge-e2e-16pgg9ds/.devforge/profiles/coding-agent/skills/rust-best-practices/SKILL.md"
     },
     {
       "name": "coding-agent: go-best-practices 原样落盘",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-gau4d1nv/.devforge/profiles/coding-agent/skills/go-best-practices/SKILL.md"
+      "detail": "/tmp/devforge-e2e-16pgg9ds/.devforge/profiles/coding-agent/skills/go-best-practices/SKILL.md"
     },
     {
       "name": "coding-agent: ts-js 双文件原样落盘",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-gau4d1nv/.devforge/profiles/coding-agent/skills/ts-js-best-practices"
+      "detail": "/tmp/devforge-e2e-16pgg9ds/.devforge/profiles/coding-agent/skills/ts-js-best-practices"
     },
     {
       "name": "coding-agent: python 章程全量（SKILL+references+scripts）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-gau4d1nv/.devforge/profiles/coding-agent/skills/python-best-practices"
+      "detail": "/tmp/devforge-e2e-16pgg9ds/.devforge/profiles/coding-agent/skills/python-best-practices"
     },
     {
       "name": "coding-review: rust-best-practices 原样落盘",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-gau4d1nv/.devforge/profiles/coding-review/skills/rust-best-practices/SKILL.md"
+      "detail": "/tmp/devforge-e2e-16pgg9ds/.devforge/profiles/coding-review/skills/rust-best-practices/SKILL.md"
     },
     {
       "name": "coding-review: go-best-practices 原样落盘",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-gau4d1nv/.devforge/profiles/coding-review/skills/go-best-practices/SKILL.md"
+      "detail": "/tmp/devforge-e2e-16pgg9ds/.devforge/profiles/coding-review/skills/go-best-practices/SKILL.md"
     },
     {
       "name": "coding-review: ts-js 双文件原样落盘",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-gau4d1nv/.devforge/profiles/coding-review/skills/ts-js-best-practices"
+      "detail": "/tmp/devforge-e2e-16pgg9ds/.devforge/profiles/coding-review/skills/ts-js-best-practices"
     },
     {
       "name": "coding-review: python 章程全量（SKILL+references+scripts）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-gau4d1nv/.devforge/profiles/coding-review/skills/python-best-practices"
+      "detail": "/tmp/devforge-e2e-16pgg9ds/.devforge/profiles/coding-review/skills/python-best-practices"
     },
     {
       "name": "规划 profile skills 不受扩容影响",
@@ -119,7 +119,7 @@
     {
       "name": "pi-lens 依赖 @ast-grep/cli 二进制真落盘（ENOSPC 修复回归）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-gau4d1nv/.devforge/profiles/coding-agent/npm/node_modules/@ast-grep/cli/ast-grep"
+      "detail": "/tmp/devforge-e2e-16pgg9ds/.devforge/profiles/coding-agent/npm/node_modules/@ast-grep/cli/ast-grep"
     },
     {
       "name": "coding-review 亦登记 pi-lens（D014 双 profile 供给）",
