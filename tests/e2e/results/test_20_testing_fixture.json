@@ -1,0 +1,113 @@
+{
+  "script": "test_20_testing_fixture",
+  "checks": [
+    {
+      "name": "PUT 剥包 manifest == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "八 profile 渲染完成（剥包快路径）",
+      "ok": true,
+      "detail": "{'rendered': 8, 'type': 'config.rendered'}"
+    },
+    {
+      "name": "测试侧补偿（配置全量复刻）",
+      "ok": true,
+      "detail": "['models.json', 'auth.json', 'settings.json', 'plugins-config', 'real-skill']"
+    },
+    {
+      "name": "项目 calc-app 创建（local_path=fixture 工作区）",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "任务 t1 创建",
+      "ok": true,
+      "detail": "status=201, body={'id': 't1', 'project': 'calc-app', 'sop': 'planning', 'workspace': '/tmp/devforge-e2e-lb2x76xo/workspace/calc-app', 'status': 'Pending', 'created_at_ms': 1792354576818, 'current_run': None, 'runs': []}"
+    },
+    {
+      "name": "预置文档就位（coding/docs/01-calc-spec.md）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "start sop=testing == 202（testing 阶段点火）",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "testing run 终态 Settled（实际 Settled，耗时 650s）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "任务终态 Completed（实际 Completed）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "testing/stages.md 存在（阶段自划分）",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-lb2x76xo/.devforge/plans/calc-app/t1/testing"
+    },
+    {
+      "name": "testing/todo.md 存在",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-lb2x76xo/.devforge/plans/calc-app/t1/testing"
+    },
+    {
+      "name": "coverage-matrix.md 追溯矩阵存在（Q007）",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-lb2x76xo/.devforge/plans/calc-app/t1/testing"
+    },
+    {
+      "name": "testing/reports/ 审查报告至少一份",
+      "ok": true,
+      "detail": "['review-3.md', 'stage-3.md', 'review-2.md', 'stage-2.md', 'review-1.md', 'stage-1.md']"
+    },
+    {
+      "name": "findings 条数=2（0 合法：实现符合文档）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "工作区 tests/ 有 Python 测试文件（D010 黑盒套件进仓库）",
+      "ok": true,
+      "detail": "['tests/e2e/test_cli_streams.py', 'tests/e2e/test_cli_errors.py', 'tests/e2e/test_cli_boundaries.py', 'tests/e2e/test_cli_mul_div.py', 'tests/e2e/test_cli_add_sub.py', 'tests/integration/test_runbook_env.py']"
+    },
+    {
+      "name": "tests/ 分层目录=['__pycache__', 'e2e', 'integration']",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "工作区新增测试提交（D009；含 fixture 基线 ≥2 条）",
+      "ok": true,
+      "detail": "commits=['b2fe593 test(stage-1): black-box harness, Runbook smoke, add/sub contract', 'f3b5410 fixture: calc CLI']"
+    },
+    {
+      "name": "测试会话工具取证: ['bash', 'codemode', 'edit', 'read', 'write']",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "测试 Agent 核心工具真实调用",
+      "ok": true,
+      "detail": "['bash', 'codemode', 'edit', 'read', 'write']"
+    },
+    {
+      "name": "未越界调用 codegraph/pi-lens（D007 供给未配）",
+      "ok": true,
+      "detail": "banned=[]"
+    },
+    {
+      "name": "AI 应答与 ui.request 对齐（全代理）",
+      "ok": true,
+      "detail": "answered=0, requested=0"
+    }
+  ],
+  "issues": [],
+  "passed": 21,
+  "failed": 0
+}

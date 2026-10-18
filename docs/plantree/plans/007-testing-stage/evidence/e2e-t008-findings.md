@@ -42,6 +42,8 @@
 
 **建议（下一阶段）**：RPC 会话在 EOF 且无 assistant 消息时应报错（区别于「有回复但不合规」），错误需带 stderr 尾部。
 
+**修复（commit `7e7200a`）**：`RpcReviewSession` 增 `role` 字段；成功结束但正文为空时报错（"审查会话 `X` 无有效回复…按基础设施故障处理"），空串不再作为审查结论进入解析。单测：`empty_review_reply_is_infrastructure_error`（静默退出回放脚本）。
+
 ### OBS-C19-STALL · 中转长 turn 停滞（环境，已知家族 P8-ISSUE-06）
 
 coder 收到返工指令后 49 分钟未完成单个 turn：会话文件冻结、进程 59% CPU。与前几轮观测同族（慢滴式 keepalive 打穿 idle 超时）。**按 D002 哲学不自动杀**（进程活着），本次由用户裁定人工停止。
@@ -53,5 +55,5 @@ coder 收到返工指令后 49 分钟未完成单个 turn：会话文件冻结�
 ## 四、对 P007 结论的影响
 
 - 测试阶段的**配置面与触发面已实证**（test_17 51P、test_18 15P，八 profile 供给契约全绿）。
-- 测试阶段的**全链闭环未验证**（test_19 被 C19-R1 阻断）。即：Test Agent 真实跑起来的链路（写测→自起→自跑→审查→doc-side 移交）尚未取证。
-- C19-R1 属编码 SOP 的路由缺陷被测试轮暴露，与本轮新增的 testing/doc-fix 代码无关（新增部分单测 174 全绿）。
+- 测试阶段的**全链闭环**首轮被 C19-R1 阻断；C19-R1/R2 已修（commit `7e7200a`），随后重跑 test_19 验证（结果见 TEST_REPORT v5）。
+- C19-R1 属编码/测试 SOP 的共同路由缺陷，被测试轮暴露；修复覆盖三个循环（coding/testing/doc-fix）。

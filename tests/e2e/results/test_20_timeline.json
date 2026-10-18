@@ -1,0 +1,28 @@
+[
+  {
+    "rendered": 8,
+    "type": "config.rendered"
+  },
+  {
+    "project": "calc-app",
+    "type": "project.created"
+  },
+  {
+    "project": "calc-app",
+    "task": "t1",
+    "type": "task.created"
+  },
+  {
+    "project": "calc-app",
+    "run_id": "6e9d6a05-eadf-400c-93a5-68c4ec4fc7fc",
+    "task": "t1",
+    "type": "run.started"
+  },
+  {
+    "ok": true,
+    "project": "calc-app",
+    "run_id": "6e9d6a05-eadf-400c-93a5-68c4ec4fc7fc",
+    "task": "t1",
+    "type": "run.finished"
+  }
+]

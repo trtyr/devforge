@@ -1,0 +1,79 @@
+[
+  {
+    "project": "demo-app",
+    "type": "project.created"
+  },
+  {
+    "project": "demo-app",
+    "task": "planning-run",
+    "type": "task.created"
+  },
+  {
+    "project": "demo-app",
+    "run_id": "053b1930-8f05-4c65-927d-b4dcdbc010b4",
+    "task": "planning-run",
+    "type": "run.started"
+  },
+  {
+    "id": "ui-1",
+    "options": [
+      "1. 从零规划 demo-app — 为 workspace/demo-app 从零设计一个演示应用的整体方案（技术栈、模块、里程碑）",
+      "2. 我有明确需求要规划 — 你先描述具体功能需求，我据此产出 plan tree",
+      "3. 先搭 plan tree 骨架 — 只建立 plan tree 骨架（README/baseline/roadmap 等空结构），内容后续填充",
+      "4. Type something."
+    ],
+    "question": "[规划对象] 这次要为 demo-app 规划什么？",
+    "type": "ui.request"
+  },
+  {
+    "id": "ui-2",
+    "options": [
+      "1. React + Node + SQLite (Recommended) — TypeScript + React 前端，Node/Express 后端，SQLite 存储",
+      "2. Next.js 全栈 — Next.js 全栈，Prisma + PostgreSQL",
+      "3. Python + FastAPI — Python FastAPI 后端 + 简单前端",
+      "4. 先不定，留作开放问题 — 规划中不锁定技术栈，作为待定项写入 open questions",
+      "5. Type something."
+    ],
+    "question": "[技术栈] demo-app 的技术栈倾向？",
+    "type": "ui.request"
+  },
+  {
+    "id": "ui-3",
+    "options": [
+      "1. 完整 plan tree (Recommended) — README + baseline + roadmap + topics + decisions + open-questions + evidence，随时可进入实现",
+      "2. 精简版 — README + roadmap + open-questions，最小可读",
+      "3. 完整 + 执行就绪检查 — 完整树 + 每个任务带验收标准和验证路径，可直接交给执行 Agent",
+      "4. Type something."
+    ],
+    "question": "[深度] 希望 plan tree 做到多详细？",
+    "type": "ui.request"
+  },
+  {
+    "id": "ui-4",
+    "options": [
+      "1. 完成，可以结束 — plan tree 已可交付，无需改动",
+      "2. 完成，并确认技术栈 — 按 TS + React + Express + SQLite 锁定，把 decisions/001 改为 Accepted、Q001 关闭",
+      "3. 还要调整 — 告诉我哪个文件/哪个部分需要调整，我继续修改",
+      "4. Type something."
+    ],
+    "question": "[是否完成] plan tree 已产出到 planning-run/，现在可以结束了吗？",
+    "type": "ui.request"
+  },
+  {
+    "rendered": 8,
+    "type": "config.rendered"
+  },
+  {
+    "ok": true,
+    "project": "demo-app",
+    "run_id": "053b1930-8f05-4c65-927d-b4dcdbc010b4",
+    "task": "planning-run",
+    "type": "run.finished"
+  },
+  {
+    "project": "demo-app",
+    "run_id": "342809bd-d588-4ade-85f0-173e34ad7932",
+    "task": "planning-run",
+    "type": "run.started"
+  }
+]
