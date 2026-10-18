@@ -24,8 +24,10 @@
   - [x] **test_20 测试阶段本体 fixture 路线 21P/0F**（650s 三阶段全绿：stages/矩阵/2 条 doc-side 发现/tests 分层/commit 锚/黑盒纪律）
   - [x] C19-R1/R2 审查路由与静默退出修复（commit `7e7200a`，单测 178 全绿）
   - [ ] test_19 三段全链：编码段 3h 窗口两次用尽（环境慢），全链见证留待下一轮（建议 ≥6h 窗口或 fixture 化）
+  - [x] **test_21 编码→测试交接 18P/1F**（编码 44min Settled→交接 202→测试段 4 阶段/6 轮审查/4 commit/20 测试文件；仅 3600s 窗口不够）
   - [x] 既有 18 脚本校准+重跑（250P/0F；test_14 沿用 v4 结果）
-- [ ] 待办（下一轮）：C19-CODE-TIMEOUT 全链见证；CAL-19-RENDER 装包缓存；OBS-TEST-VENV 依赖获取口径
+- [x] **窗口口径结论（写进 TEST_REPORT v5）**：coding ≥10800s、testing ≥10800s、全供给渲染 ≥1800s
+- [ ] 待办（下一轮）：test_19 三段全链见证（≥6h 或 fixture 化）；CAL-19-RENDER 装包缓存；OBS-TEST-VENV 依赖获取口径
 
 ## 里程碑口径
 

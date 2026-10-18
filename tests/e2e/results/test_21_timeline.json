@@ -1,0 +1,34 @@
+[
+  {
+    "rendered": 8,
+    "type": "config.rendered"
+  },
+  {
+    "project": "wc-lite",
+    "type": "project.created"
+  },
+  {
+    "project": "wc-lite",
+    "task": "t1",
+    "type": "task.created"
+  },
+  {
+    "project": "wc-lite",
+    "run_id": "b0ad94c9-9498-4e8a-a153-1509c4b07065",
+    "task": "t1",
+    "type": "run.started"
+  },
+  {
+    "ok": true,
+    "project": "wc-lite",
+    "run_id": "b0ad94c9-9498-4e8a-a153-1509c4b07065",
+    "task": "t1",
+    "type": "run.finished"
+  },
+  {
+    "project": "wc-lite",
+    "run_id": "dbb2d8d5-6e0c-444a-8423-94528b84ee31",
+    "task": "t1",
+    "type": "run.started"
+  }
+]

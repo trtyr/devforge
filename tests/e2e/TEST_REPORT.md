@@ -30,8 +30,9 @@
 | **test_18_sop_registry** | **testing/doc-fix 触发链（P007 新增）** | **15 PASS / 0 FAIL** | 注册/触发/切换/四 SOP 拒绝面 |
 | test_19_testing_full_chain | 三段跨 SOP 全链（真模型） | 16 PASS / 10 FAIL | **编码段 3h 窗口未收尾，testing 段未轮到**（见 §四 C19-CODE-TIMEOUT） |
 | **test_20_testing_fixture** | **测试阶段本体（P007 新增，fixture 路线）** | **21 PASS / 0 FAIL** | **650s 三阶段全绿，见 §二** |
+| **test_21_coding_to_testing** | **编码→测试交接（P007 新增）** | **18 PASS / 1 FAIL** | 编码 44min Settled；testing 60min 窗口未收尾（见 §二·B） |
 | test_14_coding_full_chain | 编码全链 | 未跑（沿用 v4 结果 25P/0F） | 本轮新增改动仅协议路由，由单测 + test_12/13/15 覆盖；编码链耗时 3h+ 与 test_19 冲突 |
-| **合计（本轮 fresh）** | | **287 PASS / 10 FAIL** | 10 FAIL 全属 test_19 编码段超窗（同一根因） |
+| **合计（本轮 fresh）** | | **305 PASS / 11 FAIL** | 11 FAIL 全属「窗口预算」同族（test_19 编码段 10 + test_21 测试段 1） |
 
 Rust 单测：**178 passed / 0 failed** + doctest 1，clippy --all-targets **0 警告**（`7e7200a`，bg_run 原始日志验真）。
 
@@ -60,6 +61,28 @@ Rust 单测：**178 passed / 0 failed** + doctest 1，clippy --all-targets **0 �
 
 **doc-fix 移交未触发**：review 三轮全 PASS，未出现 doc-side 判定——与「发现只在测试/审查阶段触发移交」的预期一致（观察项，非缺陷）。
 
+## 二·B 编码→测试交接实证（test_21，1h44m）
+
+**方法**：预置小 plan tree（`wordcount-lite`：零依赖 CLI，验收点 6 条）+ 空工作区，直接 `start {"sop":"coding"}` → 真编码 → `start {"sop":"testing"}` → 真测试。绕开规划段与大体量编码，专验 P007 最关键的衔接。
+
+**编码段**：Settled，**2620s（44min）**；黑板 `coding/stages.md` 落盘，伴写文档 **4 篇**（01-contract / 02-architecture / 03-testing / 04-runbook —— D004 的 Runbook 约定真实出现）。
+
+**交接**：`start {"sop":"testing"}` → **202**，同任务切 SOP 成功。
+
+**测试段（60min 窗口内未收尾，但工作量大且方向正确）**：
+
+| 证据 | 内容 |
+|------|------|
+| 阶段推进 | `stages.md` 自划 4 阶段；审查推进到**第 4 阶段第 6 轮** |
+| 审查真实在把关 | review-1 判 **FAIL(test-side)**：抓出「追溯矩阵撒谎行」+ `--verbose` 位置越界断言；review-3 判 FAIL：抓出 U+2000–U+200A 缺 8 个码点 + 矩阵撒谎行 → **Q007 矩阵审计设计当场生效** |
+| commit 锚（D009） | `20f441e`（阶段1 PASS）→ `4f44ede` / `067d407`（阶段2）→ `8f953e4`（阶段3），逐阶段 PASS 后提交 |
+| 测试体量 | 工作区 `test_*.py` **20 个**（含 `tests/integration/` 与 `tests/e2e/` 分层 + `conftest.py`） |
+| 发现台账 | `F001-verbose-elapsed-on-output-failure.md`（1 条） |
+| 黑盒纪律 | 测试会话无 codegraph/pi-lens 调用 |
+| 交接面 | 审查引用 `coding/docs/01-contract.md §x` / `04-runbook.md §x` —— **文档即测试输入**（D001 落到实处） |
+
+结论：交接与测试阶段在真编码产物上成立；未收尾属**窗口预算**（详见 §四 C21-TEST-TIMEOUT），同 C14 家族。
+
 ## 三、C19-R1/R2 修复与验证
 
 | 缺陷 | 修复（commit `7e7200a`） | 验证 |
@@ -75,10 +98,12 @@ Rust 单测：**178 passed / 0 failed** + doctest 1，clippy --all-targets **0 �
 2. **CAL-19-RENDER（环境/性能）**：八 profile 全供给渲染 >20 分钟（装包比 v4 慢 2-3 倍）；全供给预算已提至 1800s。建议后续缓存或预装。
 3. **OBS-C19-STALL（环境，已知家族 P8-ISSUE-06）**：单 turn 长停滞（会话冻结 + 进程高 CPU）。本轮 C19-R2 修复后，同类静默消失会以明确错误暴露，不再污染审查结论。
 4. **OBS-TEST-VENV（观察）**：test_20 中测试 Agent 为跑 pytest 在仓库内建 `.venv` 并安装依赖（网络可用时）。属 agent 自主行为，不影响黑盒纪律；下一轮可考虑在文档 Runbook 模板中约定依赖获取方式。
+5. **C21-TEST-TIMEOUT（窗口预算）**：test_21 测试段 60min 窗口用尽时仍在第 4 阶段第 6 轮（已落 4 个 commit / 20 个测试文件 / 矩阵审计打回两次），非停滀非故障；**生产口径 confirmation：测试阶段窗口应 ≥10800s**（与 D011「最慢阶段」一致，本轮 3600s 是 e2e 预算压缩所致）。
 
 ## 五、结论
 
 - **测试阶段（P007）核心机制已实证**：配置面 51P、触发链 15P、本体闭环 21P——Test Agent 真的读文档写测试、自起自跑、维护追溯矩阵、产出中性发现，Test Review 按文档三判据审完并 finish。
 - **真缺陷 0**（本轮）；C19-R1/R2 两项产品缺陷已在轮内修复并由单测 + 现场回归覆盖。
-- **遗留**：三段全链（规划→编码→testing 一次走通）未在本轮取得见证——卡在编码段耗时上；测试阶段本体已用 fixture 独立取证（`test_20`）。下一轮若要拿全链见证，建议：单跑 test_19 并把编码窗口提到 ≥6h，或降低代码体量（fixture 化）。
+- **遗留**：三段全链（规划→编码→testing 一次走通）未在本轮取得见证——卡在编码段耗时上；但**「编码→测试」交接已在真编码产物上拿到见证（test_21：编码 44min Settled → 交接 202 → 测试段 4 阶段/6 轮审查/4 commit/20 测试文件）**，测试阶段本体另由 fixture 路线独立取证（`test_20` 650s 全绿）。
+- **窗口口径结论**：coding ≥10800s（v4 先例）、testing ≥10800s（本轮 test_21 实证 3600s 不够）；全供给渲染预算 ≥1800s。
 - **单测门禁**：178 passed / 0 failed + clippy 0 警告。

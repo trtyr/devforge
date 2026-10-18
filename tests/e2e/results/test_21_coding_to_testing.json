@@ -1,0 +1,110 @@
+{
+  "script": "test_21_coding_to_testing",
+  "checks": [
+    {
+      "name": "PUT 剥包 manifest == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "八 profile 渲染完成（剥包快路径）",
+      "ok": true,
+      "detail": "{'rendered': 8, 'type': 'config.rendered'}"
+    },
+    {
+      "name": "测试侧补偿（配置全量复刻）",
+      "ok": true,
+      "detail": "['models.json', 'auth.json', 'settings.json', 'plugins-config', 'real-skill']"
+    },
+    {
+      "name": "项目创建（local_path=工作区）",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "任务 t1 创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "预置小 plan tree 就位",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "start sop=coding == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "编码 run Settled（实际 Settled，2620s）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "编码段 stages.md 存在",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-yzc59j0a/.devforge/plans/wc-lite/t1/coding"
+    },
+    {
+      "name": "伴写文档 4 篇（D004）",
+      "ok": true,
+      "detail": "['04-runbook.md', '03-testing.md', '02-architecture.md', '01-contract.md']"
+    },
+    {
+      "name": "start sop=testing == 202（编码→测试交接）",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "testing run 在窗口内结束",
+      "ok": false,
+      "detail": ""
+    },
+    {
+      "name": "testing/stages.md 存在",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-yzc59j0a/.devforge/plans/wc-lite/t1/testing"
+    },
+    {
+      "name": "coverage-matrix.md 存在",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-yzc59j0a/.devforge/plans/wc-lite/t1/testing"
+    },
+    {
+      "name": "testing/reports 至少一份",
+      "ok": true,
+      "detail": "['review-6.md', 'review-5.md', 'review-4.md', 'review-3.md', 'review-2.md', 'review-1.md']"
+    },
+    {
+      "name": "工作区有实现代码（1 个 .py）",
+      "ok": true,
+      "detail": "['wc_lite.py']"
+    },
+    {
+      "name": "工作区有测试（20 个 test_*.py）",
+      "ok": true,
+      "detail": "['tests/test_process.py', 'tests/test_contract.py', 'tests/test_cli.py', 'tests/test_io.py', 'tests/test_counts.py', 'tests/e2e/test_verbose_output_failure.py']"
+    },
+    {
+      "name": "工作区有 commit 留痕（D009）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "测试会话未越界调用 codegraph/pi-lens（D007）",
+      "ok": true,
+      "detail": "banned=[]"
+    }
+  ],
+  "issues": [
+    {
+      "id": "C21-TEST-TIMEOUT",
+      "severity": "high",
+      "desc": "测试段 3600.0s 未结束（增长 [(3551, 1885034), (3561, 1885034), (3571, 1885034), (3581, 1885034), (3591, 1885034)]）",
+      "evidence": ""
+    }
+  ],
+  "passed": 18,
+  "failed": 1
+}
