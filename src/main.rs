@@ -29,6 +29,12 @@ async fn main() -> anyhow::Result<()> {
     let sessions_root = root.join("sessions");
 
     // 生产引擎：规划 SOP 的 RPC 接线
+    // 失活收割阈值（006 decisions/002）：DEVFORGE_RUN_IDLE_MS 显式开启（ms，>0），
+    // 默认 None = 永不因无进展自动杀 run（零硬限制哲学；慢而活着的 run 不误伤）
+    let idle_ms = std::env::var("DEVFORGE_RUN_IDLE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|n| *n > 0);
     let bus = std::sync::Arc::new(devforge::server::EventBus::new());
     let ui = Arc::new(devforge::server::UiRelay::new(bus.clone()));
     let engine_profiles = profiles_root.clone();
@@ -42,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
             plans_root: engine_plans.clone(),
             ui: engine_ui.clone(),
             codegraph_bin: std::path::PathBuf::from("codegraph"),
+            idle_ms,
         })
     });
 

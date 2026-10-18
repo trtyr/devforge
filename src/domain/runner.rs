@@ -11,11 +11,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 单 run 的干预控制面（P8-ISSUE-01 修复：取消端点 + 可选超时的载体）。
 /// 零硬限制哲学：deadline 默认 None（不限时）；超时/取消均为显式外部干预。
+/// 超时机制重设计（006 decisions/002）：墙钟预算（显式 opt-in）与失活收割
+/// （会话无进展，显式 opt-in）分离；stalled 标记由 watchdog 在失活收割时置位，
+/// 让 map_intervention 给出明确的 Failed 原因而非底层 RPC 噪音。
 pub struct RunControl {
     /// 取消标志（cancel 端点置位）。
     pub cancel: AtomicBool,
     /// 绝对截止时间（epoch ms）；None = 不限时。
     pub deadline_ms: Option<u64>,
+    /// 失活标志：watchdog 判定「会话无进展超过闲置阈值」并收割时置位。
+    pub stalled: AtomicBool,
 }
 
 impl Default for RunControl {
@@ -29,6 +34,7 @@ impl RunControl {
         Self {
             cancel: AtomicBool::new(false),
             deadline_ms: None,
+            stalled: AtomicBool::new(false),
         }
     }
 
@@ -47,6 +53,15 @@ impl RunControl {
 
     pub fn timed_out(&self, now_ms: u64) -> bool {
         matches!(self.deadline_ms, Some(dl) if now_ms >= dl)
+    }
+
+    /// watchdog 失活收割时置位。
+    pub fn mark_stalled(&self) {
+        self.stalled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_stalled(&self) -> bool {
+        self.stalled.load(Ordering::SeqCst)
     }
 }
 

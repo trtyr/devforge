@@ -220,6 +220,9 @@ pub struct BuiltinRpcEngine {
     pub ui: Arc<UiRelay>,
     /// codegraph 可执行（测试注入假脚本用；默认 "codegraph"）。
     pub codegraph_bin: PathBuf,
+    /// 失活收割阈值 ms（None = 不做活性收割，永不自动杀——零硬限制哲学；
+    /// DEVFORGE_RUN_IDLE_MS 显式开启）。006 decisions/002：墙钟超时与失活收割分离。
+    pub idle_ms: Option<u64>,
 }
 
 impl RunEngine for BuiltinRpcEngine {
@@ -284,10 +287,16 @@ impl BuiltinRpcEngine {
         // scope 返回后才置位，而 scope 要等 watchdog 退出——正常完成必死锁，
         // 第 18/19/20 三试 verdict 后挂起的真因）。
         let run_id = run.id.0.clone();
-        let sop_result = run_with_watchdog(control, run_id.clone(), || {
-            let mut sop_loop = PlanningLoop::new(plan, factory);
-            sop_loop.run(&mut user)
-        });
+        let sop_result = run_with_watchdog(
+            control,
+            run_id.clone(),
+            self.idle_ms,
+            vec![self.session_root.join("plan"), self.session_root.join("reviews")],
+            || {
+                let mut sop_loop = PlanningLoop::new(plan, factory);
+                sop_loop.run(&mut user)
+            },
+        );
 
         match sop_result {
             Ok(report) => {
@@ -348,10 +357,19 @@ impl BuiltinRpcEngine {
         let workspace = task.workspace.clone();
         let project = task.project.clone();
         let task_id = task.id.clone();
-        let sop_result = run_with_watchdog(control, run_id, || {
-            let mut sop_loop = CodingSopLoop::new(agent, factory);
-            sop_loop.run(&mut user, &workspace, &project, &task_id)
-        });
+        let sop_result = run_with_watchdog(
+            control,
+            run_id,
+            self.idle_ms,
+            vec![
+                self.session_root.join("coding"),
+                self.session_root.join("coding-reviews"),
+            ],
+            || {
+                let mut sop_loop = CodingSopLoop::new(agent, factory);
+                sop_loop.run(&mut user, &workspace, &project, &task_id)
+            },
+        );
 
         match sop_result {
             Ok(report) => {
@@ -373,6 +391,10 @@ impl BuiltinRpcEngine {
         if control.is_cancelled() {
             Ok(RunOutcome::Failed {
                 reason: "已取消（cancel 端点）".into(),
+            })
+        } else if control.is_stalled() {
+            Ok(RunOutcome::Failed {
+                reason: "已失活（会话无进展超过闲置阈值，被 watchdog 终止）".into(),
             })
         } else if control.timed_out(crate::domain::now_ms()) {
             Ok(RunOutcome::Failed {
@@ -641,14 +663,58 @@ pub fn run_in_background(
 // 台账条目类型在本模块的再导出（spawn 侧调用方记录用）
 pub use crate::engine::ledger::LedgerEntry as SpawnLedgerEntry;
 
-/// SOP 执行 + 取消/超时看门狗。
+/// 会话目录指纹：递归累加 (文件长度, mtime 纳秒) 的 FNV-1a 混合。
+/// 任一文件被追加/触碰都会改变指纹——活性检测的「进展」信号
+/// （006 decisions/002：会话增长=活，平线=失活）。
+fn session_fingerprint(dirs: &[PathBuf]) -> u64 {
+    fn walk(dir: &Path, hash: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                walk(&path, hash);
+            } else {
+                let nanos = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                for b in meta.len().to_le_bytes() {
+                    *hash ^= b as u64;
+                    *hash = hash.wrapping_mul(0x100000001b3);
+                }
+                for b in nanos.to_le_bytes() {
+                    *hash ^= b as u64;
+                    *hash = hash.wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+    }
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
+    for d in dirs {
+        walk(d, &mut hash);
+    }
+    hash
+}
+
+/// SOP 执行 + 取消/超时/失活看门狗。
 ///
 /// 契约：`f` 返回后立刻置位 done（在 scope 闭包内），watchdog ≤300ms 退出、scope join 才能返回——
 /// 否则 done 置位不可达（在 scope 返回后）而 scope 等 watchdog，正常完成必死锁
 /// （第 18/19/20 试 verdict 后挂起的真因）。
+///
+/// 失活收割（006 decisions/002）：`idle_ms` 为 Some 时，监控 `watch_dirs` 的会话文件指纹；
+/// 任一变化即刷新进展时钟，平线超过阈值 → mark_stalled + 杀自家 pi——只杀「真死」的 run，
+/// 慢而活着的 run（含长流式生成中的增长）永不误伤；None = 不做活性收割。
 fn run_with_watchdog<T>(
     control: &RunControl,
     run_id: String,
+    idle_ms: Option<u64>,
+    watch_dirs: Vec<PathBuf>,
     f: impl FnOnce() -> T,
 ) -> T {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -657,11 +723,14 @@ fn run_with_watchdog<T>(
     let done_main = done.clone();
     std::thread::scope(|scope| {
         scope.spawn(move || {
+            let mut last_fp = session_fingerprint(&watch_dirs);
+            let mut last_progress = crate::domain::now_ms();
             loop {
                 if done_wd.load(Ordering::SeqCst) {
                     return;
                 }
-                if control.is_cancelled() || control.timed_out(crate::domain::now_ms()) {
+                let now = crate::domain::now_ms();
+                if control.is_cancelled() || control.timed_out(now) {
                     let killed = crate::engine::ledger::scan_and_kill_run(&run_id);
                     if killed > 0 {
                         tracing::warn!(
@@ -672,6 +741,31 @@ fn run_with_watchdog<T>(
                         );
                     }
                     return;
+                }
+                if let Some(idle) = idle_ms {
+                    let fp = session_fingerprint(&watch_dirs);
+                    if fp != last_fp {
+                        last_fp = fp;
+                        last_progress = now;
+                    } else if now.saturating_sub(last_progress) > idle {
+                        control.mark_stalled();
+                        tracing::warn!(
+                            component = "planning-engine",
+                            run_id = %run_id,
+                            idle_ms = idle,
+                            "会话无进展超过闲置阈值，失活收割"
+                        );
+                        let killed = crate::engine::ledger::scan_and_kill_run(&run_id);
+                        if killed > 0 {
+                            tracing::warn!(
+                                component = "planning-engine",
+                                run_id = %run_id,
+                                killed,
+                                "失活收割：SIGKILL 自家 run 进程"
+                            );
+                        }
+                        return;
+                    }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(300));
             }
@@ -694,7 +788,7 @@ mod watchdog_tests {
         // 回归（verdict 后挂起）：f 正常返回后 scope join 必须解锁（旧实现此处死锁）
         let control = RunControl::new();
         let start = Instant::now();
-        let out = run_with_watchdog(&control, "watchdog-regression".into(), || {
+        let out = run_with_watchdog(&control, "watchdog-regression".into(), None, vec![], || {
             std::thread::sleep(Duration::from_millis(400));
             42
         });
@@ -712,9 +806,96 @@ mod watchdog_tests {
         let control = RunControl::new();
         control.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         let start = Instant::now();
-        let out = run_with_watchdog(&control, "watchdog-cancel".into(), || 7);
+        let out = run_with_watchdog(&control, "watchdog-cancel".into(), None, vec![], || 7);
         assert_eq!(out, 7);
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    // ---------- 失活收割（006 decisions/002：默认不杀，显式闲置阈值才判死） ----------
+
+    #[test]
+    fn session_fingerprint_changes_on_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let watch = dir.path().join("coding");
+        std::fs::create_dir_all(&watch).unwrap();
+        let fp0 = session_fingerprint(std::slice::from_ref(&watch));
+        std::fs::write(watch.join("s.jsonl"), b"hello").unwrap();
+        let fp1 = session_fingerprint(std::slice::from_ref(&watch));
+        assert_ne!(fp0, fp1, "新建文件应改变指纹");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(watch.join("s.jsonl"), b"hello world").unwrap();
+        let fp2 = session_fingerprint(&[watch]);
+        assert_ne!(fp1, fp2, "追加增长应改变指纹");
+    }
+
+    #[test]
+    fn idle_configured_growth_keeps_run_alive() {
+        // 增长=活：会话文件持续增长时，闲置阈值再小也不收割（慢而活着永不误伤）
+        let dir = tempfile::tempdir().unwrap();
+        let watch = dir.path().join("coding");
+        std::fs::create_dir_all(&watch).unwrap();
+        let writer = watch.clone();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_w = stop.clone();
+        let grower = std::thread::spawn(move || {
+            let mut i = 0u32;
+            while !stop_w.load(std::sync::atomic::Ordering::SeqCst) {
+                let mut f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(writer.join("s.jsonl"))
+                    .unwrap();
+                use std::io::Write;
+                let _ = writeln!(f, "line {i}");
+                i += 1;
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+        });
+        let control = RunControl::new();
+        run_with_watchdog(
+            &control,
+            "liveness-growth".into(),
+            Some(600),
+            vec![watch],
+            || std::thread::sleep(Duration::from_millis(1200)),
+        );
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        grower.join().unwrap();
+        assert!(!control.is_stalled(), "持续增长的会话不应被失活收割");
+    }
+
+    #[test]
+    fn idle_configured_flatline_gets_harvested() {
+        // 平线超阈=死：会话无进展超过闲置阈值 → watchdog 置 stalled 并收割
+        let dir = tempfile::tempdir().unwrap();
+        let watch = dir.path().join("coding");
+        std::fs::create_dir_all(&watch).unwrap();
+        let control = RunControl::new();
+        run_with_watchdog(
+            &control,
+            "liveness-flatline".into(),
+            Some(400),
+            vec![watch],
+            || std::thread::sleep(Duration::from_millis(1500)),
+        );
+        assert!(control.is_stalled(), "平线超阈应被失活收割");
+    }
+
+    #[test]
+    fn idle_unconfigured_never_harvests() {
+        // 未设置不超时：不做活性收割，静默会话也永不自动杀（零硬限制哲学）
+        let dir = tempfile::tempdir().unwrap();
+        let watch = dir.path().join("coding");
+        std::fs::create_dir_all(&watch).unwrap();
+        let control = RunControl::new();
+        run_with_watchdog(
+            &control,
+            "liveness-off".into(),
+            None,
+            vec![watch],
+            || std::thread::sleep(Duration::from_millis(900)),
+        );
+        assert!(!control.is_stalled(), "未配置闲置阈值时永不失活收割");
     }
 }
 
@@ -758,6 +939,7 @@ mod coding_engine_tests {
             plans_root: PathBuf::from("/tmp"),
             ui: Arc::new(UiRelay::new(Arc::new(EventBus::new()))),
             codegraph_bin: PathBuf::from("codegraph"),
+            idle_ms: None,
         };
         let task = Task::new("t", "p", "ghost", 1);
         let run = Run::new("p", "t");
@@ -775,6 +957,7 @@ mod coding_engine_tests {
             plans_root,
             ui: Arc::new(UiRelay::new(Arc::new(EventBus::new()))),
             codegraph_bin: PathBuf::from("codegraph"),
+            idle_ms: None,
         }
     }
 
