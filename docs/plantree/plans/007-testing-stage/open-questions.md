@@ -41,9 +41,13 @@
 
 采纳（用户拍板）。黑板活表格 `testing/coverage-matrix.md`：文档章节↔需求点↔测试用例↔状态四列；测试 Agent 写测时维护，test-review 审计（抓漏行+抓撒谎行）；保守规则：文档有而矩阵无 → 默认零覆盖。收益：覆盖判定查表化、FAIL 证据具体化、根因按行标（衔接 Q002）、流水线管理面可查产物（RTM 教科书实践）。
 
-## Q008 测试 Agent 供给取舍
+## Q008 测试 Agent 供给取舍 —— ✅ 已拍板（2026-10-18 18:52）
 
-不看代码 → codegraph（代码事实层）对 test-agent 无意义甚至违纪，默认**不给**；context7/web tools（运行面对接与库文档查询）是否保留？python-best-practices skill（写 Python 测试）建议保留。test-review 同议。
+原则：**context7/web 是外部世界的知识，给；codegraph/pi-lens 是产品内部的捷径，扣**（工具箱形状=角色边界，供给即纪律）。
+
+- test-agent：base 四件套照常 + extras [rpiv-todo, rpiv-ask-user-question] + MCP context7 + skill 仅 python-best-practices（rust/go/ts 不给）
+- test-review：无插件、极简（核心工具自带，可配 context7）
+- **不给**：codegraph、pi-lens（代码事实层工具，黑盒纪律下纯诱惑通道）、plan-tree skill（读不写，黑板自有协议）
 
 ## Q009 flaky 去抖策略
 
