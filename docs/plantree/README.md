@@ -24,7 +24,9 @@ DevForge：AI 自动化开发流水线——**服务器形态的编排平台**�
 | P002 | [config-management](plans/002-config-management/README.md) | config | Done | 随 P001 落地（src/config 渲染器+清单） | 991acaf | —— |
 | P003 | [api-server](plans/003-api-server/README.md) | server | Done | 随 P001 落地（src/server 五能力域） | 991acaf | —— |
 | P004 | [project-task-sop](plans/004-project-task-sop/README.md) | 三层对象管理 | Planning | CRUD+单 run 引擎已随 P001 落地；并发调度未动 | —— | 多任务并发调度设计 |
-| P005 | [coding-stage](plans/005-coding-stage/README.md) | sop/config/server | In Progress | 设计定稿（四口子已拍板），待用户过目开工 | 2026-10-18 plan tree 落档 | T002 黑板约定与协议扩展 |
+| P005 | [coding-stage](plans/005-coding-stage/README.md) | sop/config/server | Done | Coding SOP 全链 e2e 实证（v3 183P/0F，Settled+Completed 见证） | db262bf | —— |
+| P006 | [coding-hardening](plans/006-coding-hardening/README.md) | sop/server/config | In Progress | 四项修复落地（F1/F2/P3/超时重设计），v4 e2e campaign 收官中 | 04b5d5b | TEST_REPORT v4 |
+| P007 | [testing-stage](plans/007-testing-stage/README.md) | sop/config/server | Planning | 设计讨论落档，Q001-Q008 待拍板 | 2026-10-18 设计记录 | coding 收官后定稿开工 |
 
 ## Baseline
 
