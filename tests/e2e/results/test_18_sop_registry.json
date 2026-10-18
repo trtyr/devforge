@@ -1,0 +1,83 @@
+{
+  "script": "test_18_sop_registry",
+  "checks": [
+    {
+      "name": "项目 demo-app 创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "planning 任务创建（链头）",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "doc-fix 任务创建（注册表已含 doc-fix）",
+      "ok": true,
+      "detail": "status=201, body={'id': 't-fix', 'project': 'demo-app', 'sop': 'doc-fix', 'workspace': '/tmp/devforge-e2e-5meywbk5/workspace/demo-app', 'status': 'Pending', 'created_at_ms': 1792334760937, 'current_run': None, 'runs': []}"
+    },
+    {
+      "name": "未知 sop == 400",
+      "ok": true,
+      "detail": "status=400"
+    },
+    {
+      "name": "拒绝清单含 planning（注册表四 SOP）",
+      "ok": true,
+      "detail": "{'error': '配置错误: 未知 SOP `ghost`——SOP 无管理面，只有内置注册的可用: [\"planning\", \"coding\", \"testing\", \"doc-fix\"]'}"
+    },
+    {
+      "name": "拒绝清单含 coding（注册表四 SOP）",
+      "ok": true,
+      "detail": "{'error': '配置错误: 未知 SOP `ghost`——SOP 无管理面，只有内置注册的可用: [\"planning\", \"coding\", \"testing\", \"doc-fix\"]'}"
+    },
+    {
+      "name": "拒绝清单含 testing（注册表四 SOP）",
+      "ok": true,
+      "detail": "{'error': '配置错误: 未知 SOP `ghost`——SOP 无管理面，只有内置注册的可用: [\"planning\", \"coding\", \"testing\", \"doc-fix\"]'}"
+    },
+    {
+      "name": "拒绝清单含 doc-fix（注册表四 SOP）",
+      "ok": true,
+      "detail": "{'error': '配置错误: 未知 SOP `ghost`——SOP 无管理面，只有内置注册的可用: [\"planning\", \"coding\", \"testing\", \"doc-fix\"]'}"
+    },
+    {
+      "name": "start sop=testing == 202（TESTING_SOP 注册+触发面）",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "任务 sop 已切换为 testing",
+      "ok": true,
+      "detail": "sop=testing"
+    },
+    {
+      "name": "未渲染 profile 下 testing run 快速 Failed（F1 门卫，槽即时释放）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "start sop=doc-fix == 202（DOC_FIX_SOP 触发面）",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "任务 sop 已切换为 doc-fix",
+      "ok": true,
+      "detail": "sop=doc-fix"
+    },
+    {
+      "name": "doc-fix run 快速 Failed（F1 门卫）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "无 body start == 202（沿用注册 sop；Failed 可重跑）",
+      "ok": true,
+      "detail": "status=202"
+    }
+  ],
+  "issues": [],
+  "passed": 15,
+  "failed": 0
+}

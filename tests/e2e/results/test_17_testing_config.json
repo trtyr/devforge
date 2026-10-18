@@ -1,0 +1,263 @@
+{
+  "script": "test_17_testing_config",
+  "checks": [
+    {
+      "name": "test-agent 差异化包 = todo + ask-user（无 pi-lens）",
+      "ok": true,
+      "detail": "['npm:@juicesharp/rpiv-todo', 'npm:@juicesharp/rpiv-ask-user-question']"
+    },
+    {
+      "name": "test-agent MCP 仅 context7（codegraph 黑盒不给）",
+      "ok": true,
+      "detail": "['context7']"
+    },
+    {
+      "name": "test-agent skills 仅 python-best-practices",
+      "ok": true,
+      "detail": "['python-best-practices']"
+    },
+    {
+      "name": "test-agent → deepseek-flash",
+      "ok": true,
+      "detail": "deepseek-flash"
+    },
+    {
+      "name": "test-review 极简（无包/无 MCP/无 skills）",
+      "ok": true,
+      "detail": "{'name': 'test-review', 'role_prompt': '# Test Review Agent（测试审查 Agent）\\n\\n你是 devforge 系统的测试审查 Agent。无状态、用完即弃：只管审查、只出报告，不推进进度，不与用户交互。\\n\\n## 审查输入\\n\\nkickoff 消息告知：黑板路径（当前目录，含 testing/ 子树与文档）、代码工作区路径、本轮阶段号与轮次号。通读文档（plan tree + coding/docs/）、testing/stages.md、testing/todo.md、本阶段测试代码、testing/coverage-matrix.md。\\n\\n## 审查面（逐项过，不许跳）\\n\\n1. **对文档三判据**：测试是否真正反映文档描述的业务关系；是否覆盖文档的用户场景；是否覆盖极端用户面（边界/错误路径/非法输入）。\\n2. **追溯矩阵审计**：对文档逐节核对 testing/coverage-matrix.md——抓漏行（文档有矩阵无）、抓撒谎行（标 covered 实无测试）；文档有而矩阵无 → 默认零覆盖。\\n3. **实地验证**：测试要真的跑（按 Runbook 起被测系统跑 pytest），不许只看代码脑补通过；抽验「全绿」声明。\\n4. **黑盒纪律审计**：测试断言了文档未承诺的行为 → 视为疑似偷看实现，打回。\\n5. **todo 实物审计**：对照 testing/todo.md 逐项验实物——没做到的不许算完成。\\n6. **树完成判定**：锚点是文档对照实际测试覆盖——本阶段全过后看文档还有没有未覆盖的部分：有 → advance；全部覆盖 → finish。stages.md 只是过程工具。\\n\\n## 根因判定（FAIL 时必须标注）\\n\\n- **test-side**：测试漏了文档明确写的场景 / 断言与文档矛盾 / 场景不合理 / 疑似偷看——退回测试 Agent 修复。\\n- **doc-side**：测试本身合格但覆盖上不去，根因是文档缺失/歧义/错误——转 doc-fix 补档（<issues> 写清缺哪些文档内容）。\\n\\n## 输出协议（强制，逐字遵守）\\n\\n先写报告到 testing/reports/review-<轮次>.md（轮次号在 kickoff 消息里给出；含逐项审查结论与证据），然后回复末尾输出协议块：\\n\\n<stage-verdict>PASS或FAIL</stage-verdict>\\n<next>fix或advance或finish</next>\\n\\n- FAIL 时：协议块后另起一行 <reroute>test-side或doc-side</reroute>，再另起 <issues> 逐条列问题。\\n- PASS 且进入下阶段时：可另起 <notes> 列非阻塞建议（测试 Agent 会先消化再进下一阶段）。\\n- 语义必须自洽：PASS 配 advance 或 finish；FAIL 只配 fix 且必带 <reroute>。\\n- FAIL 缺 <reroute> 或值非法时，系统按 test-side 处理（保守规则）。\\n- 没有协议块的审查视为无效，必须重写回复补上。\\n', 'extra_packages': [], 'model': 'grok-4.7', 'skills': []}"
+    },
+    {
+      "name": "test-review → grok-4.7",
+      "ok": true,
+      "detail": "grok-4.7"
+    },
+    {
+      "name": "doc-fix 沿用 coding-agent 家族供给（triage 需读代码）",
+      "ok": true,
+      "detail": "['npm:@juicesharp/rpiv-ask-user-question', 'npm:@juicesharp/rpiv-todo', 'npm:pi-lens']"
+    },
+    {
+      "name": "doc-fix 双 MCP（codegraph+context7）",
+      "ok": true,
+      "detail": "['codegraph', 'context7']"
+    },
+    {
+      "name": "doc-fix 四语言 skills",
+      "ok": true,
+      "detail": "['rust-best-practices', 'go-best-practices', 'python-best-practices', 'ts-js-best-practices']"
+    },
+    {
+      "name": "doc-review 极简",
+      "ok": true,
+      "detail": "{'name': 'doc-review', 'role_prompt': '# Doc Review Agent（文档审查 Agent）\\n\\n你是 devforge 系统的文档审查 Agent。无状态、用完即弃：只审文档、只出报告，不改文档，不与用户交互。\\n\\n## 审查输入\\n\\nkickoff 消息告知：黑板路径、代码工作区路径、本轮 doc-fix 的 findings 清单（testing/findings/）。通读修订后的文档（coding/docs/）、plan tree、findings 各文件。\\n\\n## 审查面（逐项过，不许跳）\\n\\n1. **findings 处置完整性**：每条 doc-side finding 是否都有对应文档处置（回写摘要）——漏一条即 FAIL。\\n2. **plan tree 一致性**：修订后的文档与 plan tree 需求无冲突；冲突即 FAIL。\\n3. **内部自洽**：文档前后无矛盾、接口描述与行为语义一致。\\n4. **Runbook 七件套契约**：环境要求/依赖安装（逐条可执行）/配置项（必填+默认值+示例）/启停命令+预期输出+健康检查/种子数据/测试运行方式/公开接口清单（端点·参数·响应·错误码）——缺一件即 FAIL。\\n5. **第三方可测标准**：第三方能否完全基于文档写测试。\\n\\n## 输出协议（强制，逐字遵守）\\n\\n先写报告到 testing/reports/doc-review-<轮次>.md（轮次号在 kickoff 消息里给出），然后回复末尾输出协议块：\\n\\n<stage-verdict>PASS或FAIL</stage-verdict>\\n\\n- FAIL 时：协议块后另起 <issues> 逐条列问题（回注 doc-fix 修订）。\\n- PASS 时：可另起 <notes> 列非阻塞建议。\\n- 保守规则：协议块缺失或语义不明 → 按 FAIL 处理。\\n- 没有协议块的审查视为无效，必须重写回复补上。\\n', 'extra_packages': [], 'model': 'grok-4.7', 'skills': []}"
+    },
+    {
+      "name": "doc-review → grok-4.7",
+      "ok": true,
+      "detail": "grok-4.7"
+    },
+    {
+      "name": "PUT 剥包 manifest == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "config.rendered == 8（八角色渲染全完成，剥包快路径）",
+      "ok": true,
+      "detail": "elapsed=0s, ev={'rendered': 8, 'type': 'config.rendered'}"
+    },
+    {
+      "name": "八 profile 全部渲染",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-77u34368/.devforge/profiles"
+    },
+    {
+      "name": "test-agent 提示词锚点：禁止读取任何实现文件内容",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-agent 提示词锚点：路径可以看，内容不能读",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-agent 提示词锚点：白名单",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-agent 提示词锚点：<stage-complete>N</stage-complete>",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-agent 提示词锚点：coverage-matrix",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-agent 提示词锚点：tests/integration",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-agent 提示词锚点：pytest-rerunfailures",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-agent 提示词锚点：Runbook",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-agent 提示词锚点：findings",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-agent 提示词锚点：严禁写单元测试",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-review 提示词锚点：<reroute>test-side或doc-side</reroute>",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-review 提示词锚点：<stage-verdict>PASS或FAIL</stage-verdict>",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-review 提示词锚点：<next>fix或advance或finish</next>",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-review 提示词锚点：业务关系",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-review 提示词锚点：极端用户面",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-review 提示词锚点：coverage-matrix",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-fix 提示词锚点：只改文档，不改代码",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-fix 提示词锚点：第三方",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-fix 提示词锚点：Runbook",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-fix 提示词锚点：findings",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-review 提示词锚点：plan tree",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-review 提示词锚点：Runbook",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-review 提示词锚点：findings",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-review 提示词锚点：<stage-verdict>PASS或FAIL</stage-verdict>",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-agent mcp.json 仅 context7（无 codegraph）",
+      "ok": true,
+      "detail": "['context7']"
+    },
+    {
+      "name": "doc-fix mcp.json 双 MCP + 遥测关闭（D013）",
+      "ok": true,
+      "detail": "['codegraph', 'context7']"
+    },
+    {
+      "name": "test-review 无 mcp.json（极简供给）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-review 无 mcp.json（极简供给）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-agent skills 目录仅 python",
+      "ok": true,
+      "detail": "{'python-best-practices'}"
+    },
+    {
+      "name": "test-agent python 章程全量（SKILL+references+scripts）",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-77u34368/.devforge/profiles/test-agent/skills/python-best-practices"
+    },
+    {
+      "name": "doc-fix 四语言 skills",
+      "ok": true,
+      "detail": "{'rust-best-practices', 'go-best-practices', 'python-best-practices', 'ts-js-best-practices'}"
+    },
+    {
+      "name": "test-review 无 skills（极简）",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-77u34368/.devforge/profiles/test-review/skills"
+    },
+    {
+      "name": "doc-review 无 skills（极简）",
+      "ok": true,
+      "detail": "/tmp/devforge-e2e-77u34368/.devforge/profiles/doc-review/skills"
+    },
+    {
+      "name": "test-agent models.json 带 1M/64K 预算",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-review models.json 带 1M/64K 预算",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-fix models.json 带 1M/64K 预算",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-review models.json 带 1M/64K 预算",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "issues": [],
+  "passed": 51,
+  "failed": 0
+}

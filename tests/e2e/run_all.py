@@ -34,6 +34,9 @@ SCRIPTS = [
     ("test_14_coding_full_chain.py", 3600, "P005 编码全链（真 pi + 真模型；内部超时更宽）"),
     ("test_15_coding_run_control.py", 600, "P005 编码运行控制面：cancel→Failed/终态 404"),
     ("test_16_run_liveness.py", 600, "006 运行活性面：失活收割（IDLE_MS opt-in）/默认不杀/cancel 恢复"),
+    ("test_17_testing_config.py", 300, "P007 测试配置面：四新 profile 供给(D007)/黑盒纪律锚点/mcp 有无矩阵/skills 矩阵"),
+    ("test_18_sop_registry.py", 300, "P007 触发链：testing/doc-fix 注册与触发/未知 SOP 拒绝面"),
+    ("test_19_testing_full_chain.py", 10800, "P007 全链黑盒闭环（真 pi + 真模型；规划→编码→testing；doc-fix 移交若触发则验证；D011 窗口慷慨）"),
 ]
 
 
