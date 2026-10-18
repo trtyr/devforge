@@ -5,9 +5,9 @@
 
 ## Q001 归因权与移交协议（原「红灯归因」）
 
-测试报 FAIL 三分类：A 测试自身错（修自己重跑）/ B 系统行为与文档不符（中性发现记录）/ C 环境抖动（去抖）。B 类「改码还是改档」的裁决权给 **coding agent**（唯一看得见两侧的角色），测试侧只交中性发现+复现证据。
+测试报 FAIL 三分类：A 测试自身错（修自己重跑）/ B 系统行为与文档不符（中性发现记录）/ C 环境抖动（去抖）。B 类「改码还是改档」的裁决权给 **coding agent**（唯一看得见两侧的角色），测试侧只交中性发现+复现证据（用户已听懂类比：质检员只记录不符，判定权在懂产线又懂说明书的人）。
 
-**待确认**：① triage 权归 coding agent 是否采纳；② 发现记录的字段口径（文档出处/预期/实测/复现步骤/严重度）。
+**待确认**：机制已向用户讲透，待点头后落 decisions。发现记录字段口径（文档出处/预期/实测/复现步骤/严重度）随定稿细化。
 
 ## Q002 review FAIL 双根因路由
 
@@ -15,18 +15,13 @@ review FAIL 拆两路：根因①测试的错（漏场景/断言与文档矛盾/
 
 **待确认**：路由拆分是否采纳；review Report 协议需承载根因标注（test-side / doc-side）。
 
-## Q003 「写文档模式」的实现位（原 calling 阶段消解后）
+## Q003 「写文档模式」实现位 —— ✅ 已拍板（2026-10-18 18:21）
 
-移交对象已定为 coding agent。残留问题：写文档模式是 coding agent 的**模式位**（同 SOP 内 kickoff 携带 mode=doc-fix）还是**独立子 SOP**（doc-fix SOP，跨 SOP 触发复用现有机制）？
+**独立子 SOP**（用户拍板）。形状：注册进 SopRegistry（如 `doc-fix`），跨 SOP 触发 `start {"sop":"doc-fix"}`，复用 watchdog/黑板/审查全套。定稿时落 decisions/。
 
-*助手倾向：独立子 SOP 更贴现有机器（SopRegistry + start{sop} 直接复用，watchdog/黑板/审查全套免费）。*
+## Q004 测试代码落地 —— ✅ 已拍板（2026-10-18 18:21，用户授权助手定）
 
-## Q004 测试代码落地（部分已定）
-
-已定：Python 编写；进仓库专门位置；用于端到端与集成测试。
-业界惯例：`tests/{unit,integration,e2e}/` 三层目录 + pytest marker + `tests/AGENTS.md` 约定文档；coding 写 unit/、testing 写 integration/+e2e/ 同树不打架。
-
-**待确认**：目录名（`tests/integration`+`tests/e2e` vs 单一 `tests/blackbox/`）；commit-on-pass 沿用 D009。
+**已定**：Python 编写；进仓库专门位置；`tests/integration/` + `tests/e2e/` 分层（pytest marker），coding 写 `tests/unit/`（助手决定，业界三层惯例+与 devforge 自身 tests/e2e 互镜像）；commit-on-pass 沿用 D009；抄 tests/AGENTS.md 约定文档惯例。
 
 ## Q005 「不看代码」的工程边界
 
