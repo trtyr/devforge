@@ -450,6 +450,83 @@ impl ServerState {
     }
 }
 
+// ---------- 启动入口：token 配置解析（P3：env + CLI 双入口） ----------
+
+/// 从启动参数解析 `--token <v>` / `--token=<v>`（首个命中生效；无则 None）。
+pub fn parse_token_flag(args: &[String]) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(a) = iter.next() {
+        if let Some(v) = a.strip_prefix("--token=") {
+            return Some(v.to_string());
+        }
+        if a == "--token" {
+            return iter.next().cloned();
+        }
+    }
+    None
+}
+
+/// 启动 token 解析：CLI > env > 无；空串视为未设置（防空 token 锁死）。
+pub fn resolve_startup_token(cli: Option<String>, env: Option<String>) -> Option<String> {
+    let non_empty = |s: String| (!s.trim().is_empty()).then_some(s);
+    cli.and_then(non_empty).or_else(|| env.and_then(non_empty))
+}
+
+#[cfg(test)]
+mod startup_token_tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn token_flag_space_form() {
+        assert_eq!(parse_token_flag(&args(&["--token", "abc"])), Some("abc".into()));
+    }
+
+    #[test]
+    fn token_flag_eq_form() {
+        assert_eq!(parse_token_flag(&args(&["--token=xyz"])), Some("xyz".into()));
+    }
+
+    #[test]
+    fn token_flag_absent() {
+        assert_eq!(parse_token_flag(&args(&["--port", "1"])), None);
+        assert_eq!(parse_token_flag(&[]), None);
+    }
+
+    #[test]
+    fn token_flag_dangling_value_is_none() {
+        // `--token` 无后继值 → None（不 panic）
+        assert_eq!(parse_token_flag(&args(&["--token"])), None);
+    }
+
+    #[test]
+    fn startup_token_cli_wins_over_env() {
+        assert_eq!(
+            resolve_startup_token(Some("cli".into()), Some("env".into())),
+            Some("cli".into())
+        );
+    }
+
+    #[test]
+    fn startup_token_env_used_when_no_cli() {
+        assert_eq!(
+            resolve_startup_token(None, Some("env".into())),
+            Some("env".into())
+        );
+    }
+
+    #[test]
+    fn startup_token_empty_is_unset() {
+        // 空串/纯空白视为未设置——防空 token 把服务锁死
+        assert_eq!(resolve_startup_token(Some("  ".into()), None), None);
+        assert_eq!(resolve_startup_token(None, Some("".into())), None);
+        assert_eq!(resolve_startup_token(None, None), None);
+    }
+}
+
 pub fn build_router(state: SharedState) -> Router {
     let api = Router::new()
         // 编排控制

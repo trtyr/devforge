@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
     let home = std::env::var("HOME").context("读取 HOME 环境变量")?;
     let root = std::path::Path::new(&home).join(".devforge");
 
@@ -61,13 +62,14 @@ async fn main() -> anyhow::Result<()> {
         .manifest_path
         .lock()
         .expect("manifest_path 锁") = Some(manifest_path);
-    // P3-ISSUE-03 修复：token 配置入口（DEVFORGE_TOKEN 环境变量；未设即放行，Q003）
-    // + run 超时（P8-ISSUE-01）：默认不限时（零硬限制），DEVFORGE_RUN_TIMEOUT_MS 显式开启
-    // （两者在 Arc 分享前经 get_mut 注入）
+    // P3-ISSUE-03 修复：token 配置入口（CLI --token > DEVFORGE_TOKEN 环境变量；
+    // 未设即放行，Q003）+ run 超时（P8-ISSUE-01）：默认不限时（零硬限制），
+    // DEVFORGE_RUN_TIMEOUT_MS 显式开启（两者在 Arc 分享前经 get_mut 注入）
     if let Some(s) = std::sync::Arc::get_mut(&mut state) {
-        if let Ok(t) = std::env::var("DEVFORGE_TOKEN")
-            && !t.is_empty()
-        {
+        if let Some(t) = devforge::server::resolve_startup_token(
+            devforge::server::parse_token_flag(&args),
+            std::env::var("DEVFORGE_TOKEN").ok(),
+        ) {
             s.token = Some(t);
         }
         if let Ok(ms) = std::env::var("DEVFORGE_RUN_TIMEOUT_MS")

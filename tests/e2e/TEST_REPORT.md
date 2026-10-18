@@ -100,10 +100,11 @@
 - 转正依据：v3 同二进制同脚本给足 7200s 后 **21P/0F 全链走通**——纯窗口预算问题，非产品缺陷
 - 证据：`results/test_14_coding_full_chain.json` v2/v3 两份 + `results/test_14_run.log`、`results/test_14_run2.log`
 
-### P3-ISSUE-03（medium）
+### P3-ISSUE-03（medium → 勘误：大部分判旧）
 
-- 描述：token 鉴权预留位无启动配置入口（main.rs 恒置 None，无 env/CLI 参数），401 强制路径无法端到端验证（单测已覆盖逻辑）
+- 原描述：token 鉴权预留位无启动配置入口（main.rs 恒置 None，无 env/CLI 参数），401 强制路径无法端到端验证（单测已覆盖逻辑）
 - 证据：`results/test_04_auth.json`
+- **勘误（2026-10-18 coding 阶段核实）**：env 入口（`DEVFORGE_TOKEN`）早在 991acaf 修复阶段已落 main.rs，401 生效/放行双路径单测亦在——test_04 的记录为判旧。真实缺口仅剩 CLI 参数，已在 coding 阶段补齐（`--token <v>/--token=<v>`，CLI > env，空串视为未设）
 
 ### P1-CAL-01（info，校准记录非缺陷）
 
@@ -142,7 +143,7 @@
 | agent 实际调用 codegraph_explore/context7 工具 | mcp.json 已渲染且进程应已拉起，但本轮未观测会话内真实工具调用（可下轮审计会话 jsonl 里的 toolCall 名） |
 | D014 pi-lens 诊断层实战效果 | 同 F2——配置面已验，运行面未验 |
 | 真人 UI 弹窗交互路径 | 全程 AI 代理（委托），真人点选路径未人工过 |
-| 401 强制鉴权路径 | P3-ISSUE-03 无配置入口 |
+| 401 强制鉴权路径 | 原记 P3-ISSUE-03——勘误后仅 CLI 参数缺位，已补（见 §四勘误） |
 
 ### 真缺陷（待修，本轮不修）
 
