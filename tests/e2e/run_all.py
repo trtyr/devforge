@@ -33,6 +33,7 @@ SCRIPTS = [
     ("test_13_coding_preflight.py", 300, "P005 引擎预检：工作区无索引→init+黑板骨架"),
     ("test_14_coding_full_chain.py", 3600, "P005 编码全链（真 pi + 真模型；内部超时更宽）"),
     ("test_15_coding_run_control.py", 600, "P005 编码运行控制面：cancel→Failed/终态 404"),
+    ("test_16_run_liveness.py", 600, "006 运行活性面：失活收割（IDLE_MS opt-in）/默认不杀/cancel 恢复"),
 ]
 
 

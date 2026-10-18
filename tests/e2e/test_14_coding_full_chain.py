@@ -13,8 +13,8 @@
 3. 工作区留痕：真代码 + git commit（D009 阶段 PASS 即 commit）
 4. 交互代理：ui.request 全部由 AI 应答（含偏差协议的 ask-user-question）
 
-已知降级（F2，记录不修）：pi-lens/rpiv-todo 安装失败 → 编码 Agent 无诊断/todo 插件，
-todo 纪律退化为 todo.md 纯文件路径（P005 预案）。
+供给升级（006）：pi-lens/rpiv-todo 真装不剥（F2 已根因定论非上游缺陷），
+链尾扫描编码会话 toolCall 命名空间作为插件/MCP 工具可见性证据。
 """
 
 import json
@@ -51,13 +51,10 @@ def main() -> int:
     try:
         server.start()
 
-        # ---- manifest：真 key；F2 规避剥全部安装包（渲染面完整，插件降级已注明） ----
+        # ---- manifest：真 key；全供给真装（006 供给升级：不剥包，F2 已定论非上游缺陷） ----
         key = real_api_key("newapi")
         _, manifest = server.req("GET", "/config/manifest")
         manifest["api_key"] = key
-        manifest["base_packages"] = []
-        for a in manifest["agents"]:
-            a["extra_packages"] = []
         t0 = time.time()
         status, _ = server.req("PUT", "/config/manifest", manifest, timeout=600.0)
         r.check(status == 202, f"manifest 受理（{time.time()-t0:.1f}s）", f"status={status}")
@@ -189,6 +186,43 @@ def main() -> int:
         commits = [l for l in log.stdout.splitlines() if l.strip()]
         r.check(len(commits) >= 1, "工作区有 git commit 留痕（D009）",
                 f"commits={commits[:5]}")
+
+        # ---- 供给与工具可见性取证（006 供给升级） ----
+        # 1) 供给件真落盘：pi-lens 的 @ast-grep/cli 二进制在 coding-agent profile
+        astgrep = server.home / ".devforge" / "profiles" / "coding-agent" / "npm" / "node_modules" / "@ast-grep" / "cli" / "ast-grep"
+        r.check(astgrep.exists(), "pi-lens 供给真落盘（全供给跑）", f"{astgrep}")
+        # 2) 会话 toolCall 命名空间扫描（插件/MCP 工具可见性证据）
+        import re
+        tool_names: set[str] = set()
+        sessions_dir = server.home / ".devforge" / "sessions" / "coding"
+        for jf in sessions_dir.glob("*.jsonl"):
+            try:
+                for line in jf.read_text(errors="replace").splitlines():
+                    for m in re.finditer(r'"name"\s*:\s*"([^"]+)"', line):
+                        tool_names.add(m.group(1))
+            except OSError:
+                pass
+        r.check(
+            True,
+            f"编码会话工具命名空间取证: {sorted(tool_names)[:20]}",
+            "",
+        )
+        has_core = any(n in tool_names for n in ("read", "write", "edit", "bash"))
+        r.check(
+            has_core,
+            "编码 Agent 核心工具真实调用（会话 toolCall 实证）",
+            f"namespaces={sorted(tool_names)[:10]}",
+        )
+        mcp_called = sorted(n for n in tool_names if n.startswith("mcp__"))
+        plugin_called = sorted(
+            n for n in tool_names
+            if not n.startswith("mcp__") and ("lens" in n.lower() or "todo" in n.lower())
+        )
+        r.check(
+            True,
+            f"MCP 工具调用={mcp_called or '无'} / 插件工具调用={plugin_called or '无'}（agent 自主选择，计数不计 FAIL）",
+            "",
+        )
 
         # 交互代理对齐
         types = [e.get("type") for e in timeline]

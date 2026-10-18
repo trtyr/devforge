@@ -2,16 +2,14 @@
 """test_11 · P005 编码 SOP 配置面：manifest PUT 渲染四 profile 的编码专属产物。
 
 覆盖功能点（对照 P005 plan tree topics/agent-supply.md + decisions/007/013/014）：
+- 全供给安装：base_packages + extra_packages（rpiv-todo/pi-lens）真装不剥——
+  F2 已根因定论（006 decisions/001：/tmp ENOSPC 被上游吞错伪装，非上游缺陷），
+  健康盘面下全供给安装回归
 - mcp.json：coding 双 profile 含 codegraph（stdio + 遥测关闭）与 context7；
   规划 profile 不生成该文件（decisions/007 per-agent stdio + 配置统一入渲染）
 - 四语言 skills 真内容落盘（vendor 原样，decisions/006）
 - 双提示词协议锚点（stage-complete / stage-verdict）
-
-执行期发现（记录不修）：
-- F2：pi-lens 的 npm 依赖 @ast-grep/cli postinstall 在本机失败（手工复现：
-  "Failed to move @ast-grep/cli binaries into place"）→ 安装器报错 → render_all
-  中断 → 后续 profile（coding-review）不渲染。因此本脚本剥离全部安装包验证
-  纯渲染面；「pi-lens 真实安装+RPC 可见性」作为 F2 挂起项归报告。
+- 插件装机证据：settings.json packages 登记 + node_modules 落盘
 """
 
 import json
@@ -20,7 +18,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import Reporter, Server  # noqa: E402
+from common import Reporter, Server, SseStream  # noqa: E402
 
 
 def main() -> int:
@@ -29,28 +27,35 @@ def main() -> int:
     try:
         server.start()
 
-        # 1. PUT：剥全部安装包（F2 规避），纯渲染面验证（零网络，秒级）
+        # 1. PUT：全供给真装（F2 已定论非上游缺陷，006 decisions/001；
+        #    git clone SoL-Pi + npm install pi-lens 需要网络，预算 300s）
         _, manifest = server.req("GET", "/config/manifest")
-        manifest["base_packages"] = []
-        for a in manifest["agents"]:
-            a["extra_packages"] = []
-        status, resp = server.req("PUT", "/config/manifest", manifest, timeout=120.0)
-        r.check(status == 202, "PUT manifest == 202（异步受理）", f"status={status}")
+        t0 = time.time()
+        with SseStream(server) as sse:
+            status, resp = server.req("PUT", "/config/manifest", manifest, timeout=300.0)
+            r.check(status == 202, "PUT manifest == 202（异步受理，全供给）", f"status={status}")
 
-        # 2. 四 profile 渲染齐（coding-review/AGENTS.md 是最后一个产物=全齐标记）
-        prof = server.home / ".devforge" / "profiles"
-        deadline = time.time() + 60
-        all_done = False
-        while time.time() < deadline:
-            all_done = all(
-                (prof / n / "AGENTS.md").exists()
-                for n in ("plan-agent", "plan-review", "coding-agent", "coding-review")
+            # 2. 完成信号 = config.rendered SSE（render_all 串行装完四角色才发；
+            #    AGENTS.md 在装包前落盘，不能当就绪信号——v4 实测竞态教训）
+            ev = sse.wait_for(
+                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 4,
+                timeout=420.0,
             )
-            if all_done:
-                break
-            time.sleep(1)
+            elapsed = time.time() - t0
+            r.check(
+                ev is not None,
+                "config.rendered == 4（四角色渲染+安装全完成）",
+                f"elapsed={elapsed:.0f}s, ev={ev}",
+            )
+
+        # 2b. 四 profile 渲染齐（佐证）
+        prof = server.home / ".devforge" / "profiles"
+        all_done = all(
+            (prof / n / "AGENTS.md").exists()
+            for n in ("plan-agent", "plan-review", "coding-agent", "coding-review")
+        )
         r.check(all_done, "四 profile 全部渲染（含 coding-review，render_all 不中断）",
-                f"elapsed={time.time()-t0 if (t0:=time.time()) else 0:.0f}s")
+                f"elapsed={elapsed:.0f}s")
 
         # 3. mcp.json（pi 原生 schema；decisions/007/013）
         ca = prof / "coding-agent"
@@ -115,13 +120,26 @@ def main() -> int:
         r.check("<stage-verdict>PASS或FAIL</stage-verdict>" in cr_prompt, "review 提示词含 Report 协议")
         r.check("对照实际代码与文档" in cr_prompt, "review 提示词含树完成锚点（D011）")
 
-        # 6. F2 立档（记录不修）
-        r.issue(
-            "F2-PI-LENS-NPM-FAIL", "high",
-            "pi-lens 的 npm 依赖 @ast-grep/cli postinstall 本机失败（Failed to move binaries），"
-            "致安装器报错且 render_all 中断——后续 profile 不渲染、config.rendered 缺失。"
-            "影响：D014 诊断层在真实安装路径不可用（需上游/环境修复）。"
-            "证据：手工 `npm install pi-lens` 复现 + 本轮 render_all 中断现场。",
+        # 6. 插件装机证据（供给升级回归：pi-lens/rpiv-todo 真装不剥）
+        ca_settings = json.loads((ca / "settings.json").read_text())
+        pkgs = " ".join(str(p) for p in ca_settings.get("packages", []))
+        r.check(
+            "pi-lens" in pkgs and "rpiv-todo" in pkgs,
+            "coding-agent settings 登记双插件（rpiv-todo/pi-lens）",
+            f"packages={ca_settings.get('packages')}",
+        )
+        astgrep = ca / "npm" / "node_modules" / "@ast-grep" / "cli" / "ast-grep"
+        r.check(
+            astgrep.exists(),
+            "pi-lens 依赖 @ast-grep/cli 二进制真落盘（ENOSPC 修复回归）",
+            f"{astgrep}",
+        )
+        cr_settings = json.loads((prof / "coding-review" / "settings.json").read_text())
+        cr_pkgs = " ".join(str(p) for p in cr_settings.get("packages", []))
+        r.check(
+            "pi-lens" in cr_pkgs,
+            "coding-review 亦登记 pi-lens（D014 双 profile 供给）",
+            f"packages={cr_settings.get('packages')}",
         )
 
     finally:
