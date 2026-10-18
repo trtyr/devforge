@@ -106,3 +106,32 @@ Review Agent 根据文档判断测试写得全不全、场景合不合理、覆�
 **Doc2Test（ASE '26，2026-10-07 发表，工业界多 Agent 文档驱动 E2E 测试生成）**——与本设计同构的外部验证：需求分析 → 上下文感知 → 代码生成+自愈循环三阶段；90 次独立运行 94.4% 生成成功率、180 个注入回归检出 98.9%、token 比 zero-shot 单 prompt 省 86%；三个月 nightly Jenkins 运营，维护成本 −2.6 人日/sprint，flaky 率 11.4%→4.6%。可借鉴：① 阶段分离（分析/感知/生成/自愈）对应我们「读文档→写→跑→审」；② **flaky 是真实痛点**，需重跑去抖机制（同一用例失败先重跑 N 次再判红，防环境抖动污染 B 类归因）。
 
 **Python 测试套件布局惯例**（IBM/mcp-context-forge tests/AGENTS.md、relaydeck TESTING.md 等）：仓库根 `tests/` 下 `unit/ integration/ e2e/` 三层分目录 + pytest marker 分层；**tests/AGENTS.md**（给 AI 助手看的测试约定文档）惯例直接可抄；HTTP 黑盒用 httpx/requests。与本项目咬合：coding 阶段已定「只写单测禁 e2e」→ coding 写 `tests/unit/`，testing 阶段写 `tests/integration/ + tests/e2e/`，同树不打架。
+
+## 五、第三轮裁定（2026-10-18 18:17，用户拍板）
+
+### 5.1 「牛逼文档」的结构性保证（回应用户「从 coding 阶段就给我保证」）
+
+**coding 阶段 review 门禁加一关：照文档从零 boot。** review agent 开干净环境严格照文档 Runbook 走（装依赖→配置→启动→健康检查→种子数据），跑不起来 = 文档 FAIL，coder 修档，阶段不过。效果：「文档不对退回 coding」从常规手段降级为保底——能走出 coding 阶段的文档已被第三方视角从零跑通。
+
+**Runbook 章节契约（钉死）**：环境要求 / 依赖安装（逐条可复制执行）/ 配置项（必填+默认值+示例）/ 启动停止命令+预期输出+健康检查 / 种子数据初始化 / 测试运行方式 / 公开接口清单（端点·参数·响应·错误码——黑盒测试直接原料）。
+
+### 5.2 完成定义（拍板）
+
+review PASS + **自制计划全部完成**（stages/todo 全勾，同 coding 的树完成锦点）+ 全绿（发现全部处置：修复/改档复测/用户明示接受——处置后自然绿）。不允许带红收官。
+
+### 5.3 执行方式（拍板：与 coding 同模）
+
+- kickoff（文档路径+workspace+黑板）→ 测试 Agent 通读文档 → 自判体量 → **自划分 N 阶段**（按文档领域切）→ stages.md + todo.md（rpiv-todo）
+- 每阶段：写该领域测试 → 自起被测系统自跑自收 → 落测试报告 → `<stage-complete>N</stage-complete>` → fresh test-review 审一轮 → FAIL 退回修 / PASS 推进 / 末阶段 Finish
+- 工具供给同 coding：rpiv-todo + read/write/edit（黑板文档与测试报告）+ bash
+
+### 5.4 时长预算（拍板）
+
+不设墙钟超时，只看活性——会话还在长即正常，平线超阈才收割（D002 哲学直接继承，IDLE_MS 可选默认永不杀）。
+
+### 5.5 环境与数据（默认设计待确认）
+
+- 测试阶段**从仓库重新 checkout 全新代码**，严格照文档跑起被测系统（「光看文档能否从零跑通」本身即对文档的最狠检验）
+- 每用例自造数据自清理，用例间独立不连坐
+- 性能/安全/混沌明确出界（MVP 只做功能正确性）
+- 回归门禁（未来接口）：测试套件成为仓库常驻回归资产，未来 coding 完成定义可加「不破坏既有 e2e」——MVP 不做，接口预留
