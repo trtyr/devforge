@@ -297,7 +297,19 @@ pub fn duplicated_content(docs_dir: &Path) -> Result<Vec<String>> {
             continue;
         };
         let mut local: BTreeSet<String> = BTreeSet::new();
+        let mut in_fence = false;
         for line in text.lines() {
+            if line.trim_start().starts_with("```") {
+                in_fence = !in_fence;
+                continue;
+            }
+            // 代码示例在几篇文档里重复是正常的（同一个调用例），不是「拄了两遍解释」
+            if in_fence {
+                continue;
+            }
+            if looks_like_index(line) {
+                continue;
+            }
             let n = normalize_line(line);
             if n.chars().count() >= 40 {
                 local.insert(n);
@@ -326,6 +338,25 @@ pub fn duplicated_content(docs_dir: &Path) -> Result<Vec<String>> {
 fn normalize_line(raw: &str) -> String {
     let t = raw.trim().trim_start_matches(['-', '*', '>']).trim();
     t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 导航索引行（大量 markdown 链接）不算重复：它本来就该在多个文档里指同一批叶子。
+fn looks_like_index(raw: &str) -> bool {
+    let mut link_chars = 0;
+    let mut depth = false;
+    for c in raw.chars() {
+        if c == '[' {
+            depth = true;
+        }
+        if depth {
+            link_chars += 1;
+        }
+        if c == ')' {
+            depth = false;
+        }
+    }
+    let total = raw.chars().count().max(1);
+    link_chars * 2 >= total
 }
 
 /// 未被任何文档提及的单元（供引擎在终审前定位返工范围）。
