@@ -26,6 +26,20 @@ RESULTS_DIR = Path(__file__).resolve().parent / "results"
 # 环境性错误退出码（脚本自身跑崩，区别于功能 FAIL）
 ENV_ERROR = 2
 
+# e2e 隔离 HOME 的落点。默认 /var/tmp（真磁盘），不再用 /tmp：
+# 本机 /tmp 是 tmpfs（systemd tmp.mount，size ≈ 半内存 ≈ 3.9G），
+# 一轮全供给跑要 2.5G（profiles 918M + 工作区 + 会话），一开跑就把额度顶到 77%，
+# 且写进去的文件同时吃内存（006 decisions/001：e2e HOME 应迁 /var/tmp，本次落地）。
+E2E_HOME_ROOT = os.environ.get("DEVFORGE_E2E_HOME_ROOT", "/var/tmp")
+
+
+def mkdtemp_home() -> str:
+    """在 E2E_HOME_ROOT 下建随机隔离 HOME；根目录不可写时回落 TMPDIR。"""
+    try:
+        return tempfile.mkdtemp(prefix="devforge-e2e-", dir=E2E_HOME_ROOT)
+    except OSError:
+        return tempfile.mkdtemp(prefix="devforge-e2e-")
+
 
 def free_port() -> int:
     s = socket.socket()
@@ -41,9 +55,10 @@ class Server:
     def __init__(self, port: int | None = None, home: str | None = None,
                  env_extra: dict[str, str] | None = None):
         self.port = port or free_port()
-        # home 优先级：显式参数 > DEVFORGE_E2E_HOME 环境变量（外滩应答器与测试绑同一隔离 HOME）> 随机临时目录
+        # home 优先级：显式参数 > DEVFORGE_E2E_HOME 环境变量（外滩应答器与测试绑同一隔离 HOME）
+        #             > E2E_HOME_ROOT 下随机目录（默认 /var/tmp，绝不再落 /tmp 内存盘）
         self.home = Path(home) if home else Path(
-            os.environ.get("DEVFORGE_E2E_HOME") or tempfile.mkdtemp(prefix="devforge-e2e-")
+            os.environ.get("DEVFORGE_E2E_HOME") or mkdtemp_home()
         )
         self.proc: subprocess.Popen | None = None
         self.log_path = self.home / "server-stderr.log"

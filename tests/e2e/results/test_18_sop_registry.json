@@ -14,7 +14,7 @@
     {
       "name": "doc-fix 任务创建（注册表已含 doc-fix）",
       "ok": true,
-      "detail": "status=201, body={'id': 't-fix', 'project': 'demo-app', 'sop': 'doc-fix', 'workspace': '/tmp/devforge-e2e-6kak7xdv/workspace/demo-app', 'status': 'Pending', 'created_at_ms': 1792378030350, 'current_run': None, 'runs': []}"
+      "detail": "status=201, body={'id': 't-fix', 'project': 'demo-app', 'sop': 'doc-fix', 'workspace': '/var/tmp/devforge-e2e-wk54ukzh/workspace/demo-app', 'status': 'Pending', 'created_at_ms': 1792406544726, 'current_run': None, 'runs': []}"
     },
     {
       "name": "未知 sop == 400",

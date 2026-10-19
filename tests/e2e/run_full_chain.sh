@@ -4,7 +4,8 @@
 set -u
 cd "$(dirname "$0")"
 
-CHAIN_HOME="$(mktemp -d /tmp/devforge-e2e-chain-XXXXXXXX)"
+# /tmp 是 tmpfs（size ≈ 半内存 ≈ 3.9G），全供给跑会顶爆——隔离 HOME 落 /var/tmp（006 decisions/001）
+CHAIN_HOME="$(mktemp -d /var/tmp/devforge-e2e-chain-XXXXXXXX)"
 export DEVFORGE_E2E_HOME="$CHAIN_HOME"
 echo "[chain] HOME=$CHAIN_HOME"
 
