@@ -28,7 +28,7 @@
   - [x] 既有 18 脚本校准+重跑（250P/0F；test_14 沿用 v4 结果）
 - [x] **窗口口径结论（写进 TEST_REPORT v5）**：coding ≥10800s、testing ≥10800s、全供给渲染 ≥1800s
 - [x] **遗留收尾（2026-10-19 10:40-12:00，goal `mvenh4xy-bga86x`，6/6）**：
-  - [x] CAL-19-RENDER 装包提速：`render_all` 串行→有界并发（4 worker，返回值保持清单顺序、失败按序上抛）；渲染幂等（已装齐 + 双记录完整 → 跳过 `pi install`，清单变更/记录缺失 → 重装）；单测 +5，**183 过 0 挂 clippy 0**（commit `c692851`）
+  - [x] CAL-19-RENDER 装包提速：`render_all` 串行→有界并发（4 worker，返回值保持清单顺序、失败按序上抛）；渲染幂等（已装齐 + 双记录完整 → 跳过 `pi install`，清单变更/记录缺失 → 重装）；单测 +5，**183 过 0 挂 clippy 0**（commit `c692851`）；**真装包实测**（同机同网络）：首次全量八 profile **65.4s**，同清单二次复用 **0.1s**（旧串行基线 >20min）
   - [x] OBS-TEST-VENV 依赖获取口径：TEST_AGENT 增「隔离环境装（.venv）/不得改实现与运行依赖/进报告/文档没写就记 doc-side」；DOC_FIX+DOC_REVIEW 七件套补「测试依赖获取与隔离方式」；CODING_REVIEW 补「照文档从零 boot」门禁+七件套全文（顺带补齐 P007 设计已定、提示词里却缺的尾巴）；test_17 锚点 +4 → **55P/0F**（commit `b959478`）
   - [x] 窗口预算落地：test_21 两段各 10800s、run_all 预算 25200s，TEST_REPORT 口径同步（同上 commit）
   - [x] 测试侧竞态封口：`common.start_tolerant()`（终态后重跑遇 409 重试 ≤20s），test_07/12/18 落地；**17P/11P/15P 全绿**（commit `1b596a4`）
