@@ -107,8 +107,11 @@ async fn main() -> anyhow::Result<()> {
         let modules = inv.entries.iter().filter(|e| matches!(e.kind, devforge::docgen::inventory::EntryKind::Module)).count();
         let symbols = inv.entries.iter().filter(|e| matches!(e.kind, devforge::docgen::inventory::EntryKind::Symbol)).count();
         let entries = inv.entries.iter().filter(|e| matches!(e.kind, devforge::docgen::inventory::EntryKind::Entry)).count();
+        let configs = inv.entries.iter().filter(|e| matches!(e.kind, devforge::docgen::inventory::EntryKind::Config)).count();
+        let data = inv.entries.iter().filter(|e| matches!(e.kind, devforge::docgen::inventory::EntryKind::Data)).count();
+        let behaviors = inv.entries.iter().filter(|e| matches!(e.kind, devforge::docgen::inventory::EntryKind::Behavior)).count();
         println!(
-            "清单：{} 条目（module {modules} / symbol {symbols} / entry {entries}），单元水位 {}",
+            "清单：{} 条目（module {modules} / symbol {symbols} / entry {entries} / config {configs} / data {data} / behavior {behaviors}），单元水位 {}",
             inv.entries.len(),
             inv.meta.unit_seq
         );

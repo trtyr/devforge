@@ -175,9 +175,183 @@ impl Inventory {
     }
 }
 
+/// 约定面抽取（T002）：源代码里读的环境变量键 → 配置项条目。
+pub fn config_keys(lang: Lang, text: &str) -> Vec<(usize, String)> {
+    let markers: &[&str] = match lang {
+        Lang::Python => &["os.environ.get(", "os.environ[", "os.getenv("],
+        Lang::TsJs => &["process.env.", "process.env["],
+        Lang::Go => &["os.Getenv(", "os.LookupEnv("],
+        Lang::Rust => &["env::var(", "env::var_os("],
+        Lang::Other => &[],
+    };
+    let mut out = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        for name in keys_after(line, markers) {
+            out.push((idx + 1, name));
+        }
+    }
+    out
+}
+
+/// 环境变量样板文件（.env.example / .env.sample）里的键。
+pub fn env_file_keys(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let s = line.trim();
+        if s.is_empty() || s.starts_with('#') {
+            continue;
+        }
+        let s = s.strip_prefix("export ").unwrap_or(s);
+        if let Some((k, _)) = s.split_once('=') {
+            let k = k.trim();
+            if !k.is_empty()
+                && k.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+            {
+                out.push((idx + 1, k.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// 数据层（T002）：SQL DDL 里的表/视图名。
+pub fn sql_objects(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let lower = line.trim().to_ascii_lowercase();
+        let rest = match lower
+            .strip_prefix("create table ")
+            .or_else(|| lower.strip_prefix("create view "))
+        {
+            Some(r) => r,
+            None => continue,
+        };
+        let rest = rest.trim_start_matches("if not exists ").trim();
+        let name = rest
+            .split(|c: char| c.is_whitespace() || c == '(')
+            .next()
+            .unwrap_or("")
+            .trim_matches(|c| c == '"' || c == '`' || c == ';' || c == '\'');
+        if !name.is_empty() {
+            out.push((idx + 1, name.to_string()));
+        }
+    }
+    out
+}
+
+/// 构建/启动命令（T002）：Makefile 目标。
+pub fn make_targets(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        if line.starts_with('\t') || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((head, _)) = line.split_once(':') else {
+            continue;
+        };
+        let name = head.trim();
+        if !name.is_empty()
+            && !name.contains('=')
+            && !name.contains(' ')
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        {
+            out.push((idx + 1, name.to_string()));
+        }
+    }
+    out
+}
+
+/// 构建/启动命令（T002）：package.json 的 scripts 名。
+pub fn package_scripts(text: &str) -> Vec<(usize, String)> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let Some(scripts) = v.get("scripts").and_then(|s| s.as_object()) else {
+        return Vec::new();
+    };
+    scripts
+        .keys()
+        .map(|k| {
+            let line = text
+                .lines()
+                .position(|l| l.contains(&format!("\"{k}\"")))
+                .map(|i| i + 1)
+                .unwrap_or(1);
+            (line, k.clone())
+        })
+        .collect()
+}
+
+/// 从一行里抽标记后面的键（跳过空白与引号/括号，取到下一个引号/边界）。
+fn keys_after(line: &str, markers: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    for m in markers {
+        let mut from = 0;
+        while let Some(pos) = line[from..].find(m) {
+            let start = from + pos + m.len();
+            let mut s = line[start..].trim_start();
+            for p in ["[\"", "['", "(\"", "('", "[", "(", "\"", "'"] {
+                if let Some(r) = s.strip_prefix(p) {
+                    s = r;
+                    break;
+                }
+            }
+            let end = s.find(['"', '\'', ')', ']', ',', ';', ' ', '}']).unwrap_or(s.len());
+            let name = &s[..end];
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+                && !out.iter().any(|e| e == name)
+            {
+                out.push(name.to_string());
+            }
+            from = start;
+        }
+    }
+    out
+}
+
+/// 约定面文件（不走源文件扫描的）：Makefile / package.json / env 样板 / SQL。
+pub fn scan_support_files(root: &Path) -> Result<Vec<String>> {
+    const NAMES: &[&str] = &["Makefile", "makefile", "package.json"];
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if p.is_dir() {
+                if is_skipped_dir(&name) {
+                    continue;
+                }
+                stack.push(p);
+                continue;
+            }
+            let name_is = NAMES.contains(&name.as_str())
+                || name.ends_with(".sql")
+                || name.ends_with(".env.example")
+                || name.ends_with(".env.sample");
+            if name_is
+                && let Ok(stripped) = p.strip_prefix(root)
+            {
+                out.push(norm(stripped));
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 /// 从磁盘机械构建清单（启发式 v1）。
-pub fn build_inventory(root: &Path) -> Result<Inventory> {
-    let root = root
+pub fn build_inventory(root: &Path) -> Result<Inventory> {    let root = root
         .canonicalize()
         .ctx(format!("解析仓库根 {}", root.display()))?;
     let files = scan_source_files(&root)?;
@@ -223,6 +397,18 @@ pub fn build_inventory(root: &Path) -> Result<Inventory> {
                         unit_id: String::new(),
                     });
                 }
+                for (line, name) in config_keys(*lang, &text) {
+                    entries.push(InventoryEntry {
+                        id: format!("cfg:{rel}:{name}"),
+                        kind: EntryKind::Config,
+                        path: rel.clone(),
+                        line,
+                        canonical_name: name,
+                        aliases: Vec::new(),
+                        status: Coverage::Uncovered,
+                        unit_id: String::new(),
+                    });
+                }
             }
         }
 
@@ -240,6 +426,50 @@ pub fn build_inventory(root: &Path) -> Result<Inventory> {
         }
     }
 
+    for rel in scan_support_files(&root)? {
+        let abs = root.join(&rel);
+        let Ok(text) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        let file = Path::new(&rel)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let mut push = |kind: EntryKind, line: usize, name: String, prefix: &str| {
+            entries.push(InventoryEntry {
+                id: format!("{prefix}:{rel}:{name}"),
+                kind,
+                path: rel.clone(),
+                line,
+                canonical_name: name,
+                aliases: Vec::new(),
+                status: Coverage::Uncovered,
+                unit_id: String::new(),
+            });
+        };
+        if file.ends_with(".env.example") || file.ends_with(".env.sample") {
+            for (line, name) in env_file_keys(&text) {
+                push(EntryKind::Config, line, name, "cfg");
+            }
+        }
+        if file.ends_with(".sql") {
+            for (line, name) in sql_objects(&text) {
+                push(EntryKind::Data, line, name, "data");
+            }
+        }
+        if file == "Makefile" || file == "makefile" {
+            for (line, name) in make_targets(&text) {
+                push(EntryKind::Behavior, line, name, "cmd");
+            }
+        }
+        if file == "package.json" {
+            for (line, name) in package_scripts(&text) {
+                push(EntryKind::Behavior, line, name, "cmd");
+            }
+        }
+    }
+
     let mut inv = Inventory {
         meta: InventoryMeta {
             root: root.display().to_string(),
@@ -253,20 +483,26 @@ pub fn build_inventory(root: &Path) -> Result<Inventory> {
     Ok(inv)
 }
 
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    "__pycache__",
+    "venv",
+    "env",
+    "vendor",
+    "docs",
+];
+
+/// 扫描时跳过的目录（隐藏目录 + 依赖/产物目录 + 文档目录）。
+fn is_skipped_dir(name: &str) -> bool {
+    name.starts_with('.') || SKIP_DIRS.contains(&name) || name.ends_with(".venv")
+}
+
 /// 扫描源文件（跳过隐藏目录与构建/依赖目录），返回相对路径 + 语言。
 pub fn scan_source_files(root: &Path) -> Result<Vec<(String, Lang)>> {
-    const SKIP_DIRS: &[&str] = &[
-        "node_modules",
-        "target",
-        "dist",
-        "build",
-        "out",
-        "__pycache__",
-        "venv",
-        "env",
-        "vendor",
-        "docs",
-    ];
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(cur) = stack.pop() {
@@ -281,7 +517,7 @@ pub fn scan_source_files(root: &Path) -> Result<Vec<(String, Lang)>> {
                 continue;
             }
             if path.is_dir() {
-                if SKIP_DIRS.contains(&name.as_str()) || name.ends_with(".venv") || name == ".venv" {
+                if is_skipped_dir(&name) {
                     continue;
                 }
                 stack.push(path);
@@ -425,7 +661,11 @@ pub fn public_symbols(lang: Lang, text: &str) -> Vec<(usize, String)> {
 pub fn assign_units(inv: &mut Inventory) {
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (idx, e) in inv.entries.iter().enumerate() {
-        if e.kind != EntryKind::Module {
+        let grouped = matches!(
+            e.kind,
+            EntryKind::Module | EntryKind::Config | EntryKind::Data | EntryKind::Behavior
+        );
+        if !grouped {
             continue;
         }
         groups.entry(group_of(&e.path)).or_default().push(idx);
@@ -469,7 +709,7 @@ pub fn assign_units(inv: &mut Inventory) {
         .map(|e| (e.path.clone(), e.unit_id.clone()))
         .collect();
     for e in &mut inv.entries {
-        if e.kind != EntryKind::Module
+        if !matches!(e.kind, EntryKind::Module)
             && let Some(u) = module_units.get(&e.path)
         {
             e.unit_id = u.clone();
@@ -1040,5 +1280,100 @@ mod tests {
             .collect();
         assert!(names.contains(&"Run") && names.contains(&"Serve"));
         assert!(!names.contains(&"hidden"));
+    }
+
+    // ---- T002 约定面：配置键 / 数据层 / 构建启动命令 ----
+
+    #[test]
+    fn config_keys_cover_four_languages() {
+        let py = config_keys(
+            Lang::Python,
+            "import os\nkey = os.environ.get(\"PY_KEY\")\nother = os.getenv('PY_ALT')\n",
+        );
+        assert!(py.iter().any(|(_, k)| k == "PY_KEY"));
+        assert!(py.iter().any(|(_, k)| k == "PY_ALT"));
+        let ts = config_keys(Lang::TsJs, "const a = process.env.TS_KEY;\nconst b = process.env['TS_ALT'];\n");
+        assert!(ts.iter().any(|(_, k)| k == "TS_KEY"));
+        assert!(ts.iter().any(|(_, k)| k == "TS_ALT"));
+        let rs = config_keys(Lang::Rust, "let a = std::env::var(\"RUST_KEY\");\n");
+        assert!(rs.iter().any(|(_, k)| k == "RUST_KEY"));
+        let go = config_keys(Lang::Go, "v := os.Getenv(\"GO_KEY\")\n");
+        assert!(go.iter().any(|(_, k)| k == "GO_KEY"));
+    }
+
+    #[test]
+    fn env_example_keys_ignore_comments_and_blank_lines() {
+        let keys = env_file_keys("# 注释\n\nDB_URL=postgres://x\nexport API_TOKEN=\"t\"\nBROKEN LINE\n");
+        let names: Vec<&str> = keys.iter().map(|(_, k)| k.as_str()).collect();
+        assert_eq!(names, vec!["DB_URL", "API_TOKEN"]);
+        assert_eq!(keys[0].0, 3, "行号应是原文件行号");
+    }
+
+    #[test]
+    fn sql_ddl_yields_tables_and_views() {
+        let objs = sql_objects(
+            "CREATE TABLE users (id int);\ncreate table if not exists books(id int);\nCREATE VIEW v_books AS SELECT 1;\n",
+        );
+        let names: Vec<&str> = objs.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, vec!["users", "books", "v_books"]);
+    }
+
+    #[test]
+    fn make_targets_and_package_scripts_extracted() {
+        let mk = make_targets("all: build\n\tcc -o x x.c\nrun: all\n\t./x\nVAR = 1\n");
+        let names: Vec<&str> = mk.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, vec!["all", "run"]);
+        let pkg = package_scripts(
+            r#"{"name":"x","scripts":{"dev":"vite","build":"vite build"}}"#,
+        );
+        let pnames: Vec<&str> = pkg.iter().map(|(_, n)| n.as_str()).collect();
+        assert!(pnames.contains(&"dev") && pnames.contains(&"build"));
+    }
+
+    #[test]
+    fn convention_entries_land_in_inventory_with_units() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "src/app.py", "import os\nV = os.getenv(\"APP_KEY\")\n");
+        touch(tmp.path(), ".env.example", "APP_KEY=x\n");
+        touch(tmp.path(), "db/schema.sql", "CREATE TABLE notes (id int);\n");
+        touch(tmp.path(), "Makefile", "run:\n\tpython -m app\n");
+        let inv = build_inventory(tmp.path()).unwrap();
+        let cfg: Vec<&str> = inv
+            .entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Config)
+            .map(|e| e.canonical_name.as_str())
+            .collect();
+        assert!(cfg.contains(&"APP_KEY"), "{cfg:?}");
+        assert!(inv
+            .entries
+            .iter()
+            .any(|e| e.kind == EntryKind::Data && e.canonical_name == "notes"));
+        assert!(inv
+            .entries
+            .iter()
+            .any(|e| e.kind == EntryKind::Behavior && e.canonical_name == "run"));
+        // 单元覆盖：约定面条目必须挂到单元，不得空着（否则永远没单元能覆盖它）
+        assert!(
+            inv.entries.iter().all(|e| !e.unit_id.is_empty()),
+            "有条目缺 unit_id：{:?}",
+            inv.entries
+                .iter()
+                .filter(|e| e.unit_id.is_empty())
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        // 同文件内的配置项应与该文件的模块同单元
+        let app_unit = inv
+            .entries
+            .iter()
+            .find(|e| e.kind == EntryKind::Module && e.path == "src/app.py")
+            .map(|e| e.unit_id.clone())
+            .unwrap();
+        assert!(inv
+            .entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Config && e.path == "src/app.py")
+            .all(|e| e.unit_id == app_unit));
     }
 }

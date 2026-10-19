@@ -16,7 +16,7 @@ pub enum DocLevel {
     Essential,
     /// + 模块行为语义、配置项、错误码、数据模型（默认）
     Complete,
-    /// + 算法/状态机/权限矩阵（机械覆盖口径同 complete）
+    /// + 构建/启动命令等约定面行为（机械覆盖口径 = complete + behavior）
     Detailed,
 }
 
@@ -32,9 +32,18 @@ impl DocLevel {
     fn requires(self, kind: EntryKind) -> bool {
         match self {
             Self::Essential => kind == EntryKind::Entry,
-            Self::Complete | Self::Detailed => matches!(
+            Self::Complete => matches!(
                 kind,
-                EntryKind::Entry | EntryKind::Module | EntryKind::Symbol
+                EntryKind::Entry | EntryKind::Module | EntryKind::Symbol | EntryKind::Config | EntryKind::Data
+            ),
+            Self::Detailed => matches!(
+                kind,
+                EntryKind::Entry
+                    | EntryKind::Module
+                    | EntryKind::Symbol
+                    | EntryKind::Config
+                    | EntryKind::Data
+                    | EntryKind::Behavior
             ),
         }
     }
