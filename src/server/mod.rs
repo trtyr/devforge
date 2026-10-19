@@ -413,6 +413,11 @@ impl BuiltinRpcEngine {
         std::fs::create_dir_all(workspace.join(DOCS_DIR)).ctx("建产出目录")?;
         std::fs::create_dir_all(&meta_dir).ctx("建 _meta 目录")?;
         inv.save(&meta_dir.join("inventory.json"))?;
+        std::fs::write(
+            meta_dir.join("glossary.md"),
+            crate::docgen::inventory::export_glossary(&inv),
+        )
+        .ctx("写词表")?;
         let findings = crate::docgen::inventory::check_closures(&workspace, &inv)?;
         let mut gate = String::from("# 门 0 闭包校验（引擎侧）\n\n");
         for f in &findings {

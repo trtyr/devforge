@@ -595,6 +595,41 @@ pub fn check_closures(root: &Path, inv: &Inventory) -> Result<Vec<ClosureFinding
     Ok(findings)
 }
 
+/// 词表导出（D011）：清单即词表，`glossary.md` 只是它的自动视图（不手写）。
+pub fn export_glossary(inv: &Inventory) -> String {
+    let mut out = String::from("# 词表（由 inventory 自动导出，勿手改）\n\n");
+    let mut by_unit: BTreeMap<String, Vec<&InventoryEntry>> = BTreeMap::new();
+    for e in &inv.entries {
+        if e.kind == EntryKind::Symbol {
+            by_unit.entry(e.unit_id.clone()).or_default().push(e);
+        }
+    }
+    for (unit, mut items) in by_unit {
+        items.sort_by(|a, b| a.canonical_name.cmp(&b.canonical_name));
+        let title = if unit.is_empty() { "未分组" } else { &unit };
+        out.push_str(&format!("## {title}\n\n"));
+        for e in items {
+            let alias = if e.aliases.is_empty() {
+                String::new()
+            } else {
+                format!("（别名：{}）", e.aliases.join(", "))
+            };
+            out.push_str(&format!(
+                "- `{}` — `{}:{}`{alias}\n",
+                e.canonical_name, e.path, e.line
+            ));
+        }
+        out.push('\n');
+    }
+    if !inv.meta.unsupported_languages.is_empty() {
+        out.push_str(&format!(
+            "## 未支持符号抽取的语言（缺口）\n\n{}\n",
+            inv.meta.unsupported_languages.join(", ")
+        ));
+    }
+    out
+}
+
 /// 解析一个文件的 import/use/mod，返回仓库内被依赖文件的相对路径。
 pub fn resolve_imports(lang: Lang, rel: &str, text: &str, root: &Path) -> Vec<String> {
     let mut out = BTreeSet::new();
@@ -912,6 +947,17 @@ mod tests {
         assert!(findings
             .iter()
             .any(|f| f.closure == Closure::EntryReachability && f.message.contains("没有入口点")));
+    }
+
+    #[test]
+    fn glossary_is_derived_from_inventory() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "core/a.py", "def alpha():\n    pass\n\nclass Beta:\n    pass\n");
+        let inv = build_inventory(tmp.path()).unwrap();
+        let g = export_glossary(&inv);
+        assert!(g.contains("自动导出"));
+        assert!(g.contains("`alpha`") && g.contains("`Beta`"));
+        assert!(g.contains("core/a.py:"), "必须带证据指针: {g}");
     }
 
     #[test]

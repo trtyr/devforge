@@ -22,6 +22,8 @@ pub enum Check {
     Entity,
     /// 置信度诚实性（t8）：标 🟢 必须给得出证据
     Confidence,
+    /// Mermaid 源码可解析（t9 / D005）
+    Mermaid,
     /// 禁写内容（TODO/超长代码块/日志粘贴）——提示级
     Banned,
 }
@@ -34,6 +36,7 @@ impl Check {
             Check::Runbook => "runbook",
             Check::Entity => "entity",
             Check::Confidence => "confidence",
+            Check::Mermaid => "mermaid",
             Check::Banned => "banned",
         }
     }
@@ -238,6 +241,7 @@ fn lint_with(docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport>
         if doc.entry_type.is_some() {
             check_confidence(&doc, file, &mut report);
         }
+        check_mermaid(&doc, file, &mut report);
         for (idx, line) in doc.lines.iter().enumerate() {
             if line.contains('🔴') && !line.trim_start().starts_with("```") {
                 gap_hits.push((file.clone(), idx + 1));
@@ -302,6 +306,63 @@ fn check_confidence(doc: &ParsedDoc, file: &Path, report: &mut LintReport) {
     }
 }
 
+/// Mermaid 源码校验（D005）：只产源码不渲染，但源码必须能解析——
+/// 首行必须是已知图类型关键字，空块或未闭合 = FAIL。
+fn check_mermaid(doc: &ParsedDoc, file: &Path, report: &mut LintReport) {
+    const KINDS: &[&str] = &[
+        "graph",
+        "flowchart",
+        "sequenceDiagram",
+        "classDiagram",
+        "erDiagram",
+        "stateDiagram",
+        "gantt",
+        "pie",
+        "mindmap",
+        "timeline",
+        "journey",
+        "gitGraph",
+    ];
+    let mut fence_start: Option<usize> = None;
+    let mut first_line: Option<String> = None;
+    let mut body_lines = 0usize;
+    for (idx, line) in doc.lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            if let Some(start) = fence_start.take() {
+                let ok = first_line
+                    .as_deref()
+                    .map(|l| KINDS.iter().any(|k| l.starts_with(k)))
+                    .unwrap_or(false);
+                if body_lines == 0 || !ok {
+                    report.fail(
+                        file,
+                        start,
+                        Check::Mermaid,
+                        "Mermaid 块无法解析：需非空且首行以 graph/flowchart/sequenceDiagram/classDiagram/erDiagram/stateDiagram 等开头",
+                    );
+                }
+                first_line = None;
+                body_lines = 0;
+            } else if trimmed.trim_start_matches('`').trim() == "mermaid" {
+                fence_start = Some(idx + 1);
+            }
+            continue;
+        }
+        if fence_start.is_some() {
+            if !trimmed.is_empty() && first_line.is_none() {
+                first_line = Some(trimmed.to_string());
+            }
+            if !trimmed.is_empty() {
+                body_lines += 1;
+            }
+        }
+    }
+    if let Some(start) = fence_start {
+        report.fail(file, start, Check::Mermaid, "Mermaid 块未闭合");
+    }
+}
+
 /// 可重放命令前缀（与契约里“重放命令”一致）。
 fn is_replayable_command(token: &str) -> bool {
     const CMDS: &[&str] = &[
@@ -351,6 +412,8 @@ fn is_runbook(file: &Path) -> bool {
 #[derive(Debug, Clone)]
 struct Heading {
     text: String,
+    /// 1-based 行号
+    line: usize,
 }
 
 struct ParsedDoc {
@@ -382,7 +445,7 @@ impl ParsedDoc {
         }
 
         let mut in_fence = false;
-        for line in lines.iter().skip(body_start) {
+        for (idx, line) in lines.iter().enumerate().skip(body_start) {
             let trimmed = line.trim_start();
             if trimmed.starts_with("```") {
                 in_fence = !in_fence;
@@ -394,7 +457,10 @@ impl ParsedDoc {
             if let Some(rest) = trimmed.strip_prefix('#') {
                 let text = rest.trim_start_matches('#').trim().to_string();
                 if !text.is_empty() {
-                    headings.push(Heading { text });
+                    headings.push(Heading {
+                        text,
+                        line: idx + 1,
+                    });
                 }
             }
         }
@@ -407,13 +473,33 @@ impl ParsedDoc {
     }
 
     fn has_section(&self, keywords: &[&str]) -> bool {
-        self.headings.iter().any(|h| {
+        self.find_section(keywords).is_some()
+    }
+
+    /// 找到匹配关键词的标题索引。
+    fn find_section(&self, keywords: &[&str]) -> Option<usize> {
+        self.headings.iter().position(|h| {
             let lower = h.text.to_ascii_lowercase();
             keywords.iter().any(|kw| {
                 let kw_lower = kw.to_ascii_lowercase();
                 h.text.contains(kw) || lower.contains(&kw_lower)
             })
         })
+    }
+
+    /// 该标题下的正文是否为空（下一个标题之前全是空行）。
+    fn is_section_empty(&self, heading_index: usize) -> bool {
+        let start = self.headings[heading_index].line; // 1-based → lines[start] 是下一行
+        let end = self
+            .headings
+            .get(heading_index + 1)
+            .map(|h| h.line - 1)
+            .unwrap_or(self.lines.len());
+        let end = end.min(self.lines.len());
+        if start >= end {
+            return true;
+        }
+        self.lines[start..end].iter().all(|l| l.trim().is_empty())
     }
 }
 
@@ -422,30 +508,41 @@ fn check_required_sections(doc: &ParsedDoc, file: &Path, report: &mut LintReport
         return; // 未声明类型：本节无法机械判定（实体检查接清单后再管）
     };
     let mut missing = Vec::new();
+    let mut empty: Vec<(&str, usize)> = Vec::new();
     for (name, keywords) in ty.required_sections() {
-        if !doc.has_section(keywords) {
-            missing.push(*name);
+        match doc.find_section(keywords) {
+            None => missing.push(*name),
+            Some(idx) if doc.is_section_empty(idx) => empty.push((*name, doc.headings[idx].line)),
+            Some(_) => {}
         }
-    }
-    if missing.is_empty() {
-        return;
     }
     let severity = if ty == EntryType::Internal {
         Severity::Warn
     } else {
         Severity::Fail
     };
-    report.push(
-        file,
-        1,
-        Check::RequiredSection,
-        severity,
-        format!(
-            "条目类型 {:?} 缺必填节：{}（不适用须写 `N/A` 并给理由，省略不算）",
-            ty,
-            missing.join(" / ")
-        ),
-    );
+    if !missing.is_empty() {
+        report.push(
+            file,
+            1,
+            Check::RequiredSection,
+            severity,
+            format!(
+                "条目类型 {:?} 缺必填节：{}（不适用须写 `N/A` 并给理由，省略不算）",
+                ty,
+                missing.join(" / ")
+            ),
+        );
+    }
+    for (name, line) in empty {
+        report.push(
+            file,
+            line,
+            Check::RequiredSection,
+            severity,
+            format!("必填节「{name}」为空：不适用请写 `N/A` 并给理由"),
+        );
+    }
 }
 
 fn check_links(doc: &ParsedDoc, file: &Path, report: &mut LintReport) {
@@ -1299,6 +1396,52 @@ mod tests {
         );
         write(tmp.path(), "_meta/gaps.md", "# 缺口\n\n- 设计意图（a.md）\n");
         assert!(lint_docs(tmp.path()).unwrap().passed());
+    }
+
+    // ===== t9：汇编 / Mermaid / 空节 =====
+
+    #[test]
+    fn mermaid_block_must_start_with_diagram_kind() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "arch.md",
+            "# 架构\n\n```mermaid\nflowchart TD\n  A --> B\n```\n",
+        );
+        assert!(lint_docs(tmp.path()).unwrap().passed());
+
+        write(
+            tmp.path(),
+            "bad.md",
+            "# 架构\n\n```mermaid\n这不是图源码\n```\n",
+        );
+        let report = lint_docs(tmp.path()).unwrap();
+        assert!(report
+            .failures()
+            .any(|v| v.check == Check::Mermaid && v.line == 3));
+    }
+
+    #[test]
+    fn empty_mermaid_block_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "e.md", "# e\n\n```mermaid\n```\n");
+        let report = lint_docs(tmp.path()).unwrap();
+        assert!(report.failures().any(|v| v.check == Check::Mermaid));
+    }
+
+    #[test]
+    fn required_section_with_empty_body_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "e.md",
+            "---\ntype: function\n---\n\n# f\n\n## 摘要\n做一件事。\n\n## 行为语义\n\n## 参数\nN/A（无参数）\n\n## 返回\nint\n\n## 异常\n不抛异常\n",
+        );
+        let report = lint_docs(tmp.path()).unwrap();
+        let v: Vec<_> = report.failures().collect();
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(v[0].message.contains("为空"), "{}", v[0].message);
+        assert_eq!(v[0].line, 10);
     }
 
     #[test]
