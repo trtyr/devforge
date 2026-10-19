@@ -27,6 +27,7 @@ DevForge：AI 自动化开发流水线——**服务器形态的编排平台**�
 | P005 | [coding-stage](plans/005-coding-stage/README.md) | sop/config/server | Done | Coding SOP 全链 e2e 实证（v3 183P/0F，Settled+Completed 见证） | db262bf | —— |
 | P006 | [coding-hardening](plans/006-coding-hardening/README.md) | sop/server/config | In Progress | 四项修复落地（F1/F2/P3/超时重设计），v4 e2e campaign 收官中 | 04b5d5b | TEST_REPORT v4 |
 | P007 | [testing-stage](plans/007-testing-stage/README.md) | sop/config/server | Ready | 定稿（Q001-Q009 关账，D001-D012 落档，T001-T008 分解完） | 2026-10-18 定稿 commit | 用户发令开工 |
+| P008 | [doc-from-zero](plans/008-doc-from-zero/README.md) | sop/config | Planning | 框架草案（四阶段：清单→并行写作→汇编→三查审计） | 2026-10-19 立项 | 用户看完框架后拍 Q001-Q006 |
 
 ## Baseline
 
