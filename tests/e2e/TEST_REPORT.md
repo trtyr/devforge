@@ -95,9 +95,9 @@ Rust 单测：**178 passed / 0 failed** + doctest 1，clippy --all-targets **0 �
 ## 四、本轮记录项（只记录不修）
 
 1. **C19-CODE-TIMEOUT（环境/窗口）**：`test_19` 编码段 3h 窗口用尽仍未收尾（今晚真模型明显慢于 v4：编码会话 90 分钟仍在 Stage 1 修复轮）。依 v2→v3→v4 先例属窗口预算问题，非产品缺陷；**但连挂两次（3h/3h）值得下一次换 ≥6h 窗口或改用更快的模型档位单独验一次全链**。证据：`results/test_19_testing_full_chain.json`、`/var/tmp/p007-e2e-t008/test19/`。
-2. **CAL-19-RENDER（环境/性能）**：八 profile 全供给渲染 >20 分钟（装包比 v4 慢 2-3 倍）；全供给预算已提至 1800s。建议后续缓存或预装。
+2. **CAL-19-RENDER（已修，commit `c692851`）**：八 profile 全供给渲染 >20 分钟（装包比 v4 慢 2-3 倍）——`render_all` 改有界并发（4 worker）+ 渲染幂等（已装齐跳过装包），单测 +5；e2e 预算仍保留 1800s 兜底。
 3. **OBS-C19-STALL（环境，已知家族 P8-ISSUE-06）**：单 turn 长停滞（会话冻结 + 进程高 CPU）。本轮 C19-R2 修复后，同类静默消失会以明确错误暴露，不再污染审查结论。
-4. **OBS-TEST-VENV（观察）**：test_20 中测试 Agent 为跑 pytest 在仓库内建 `.venv` 并安装依赖（网络可用时）。属 agent 自主行为，不影响黑盒纪律；下一轮可考虑在文档 Runbook 模板中约定依赖获取方式。
+4. **OBS-TEST-VENV（已定口，commit `b959478`）**：test_20 中测试 Agent 为跑 pytest 在仓库内建 `.venv` 并装依赖。现口径：隔离环境可行，但**不得改动被测系统实现与运行依赖**，装了什么必须进阶段报告；文档 Runbook 没写清测试依赖获取方式 → 记 doc-side 发现（不再自行拍口径）。
 5. **C21-TEST-TIMEOUT（窗口预算）**：test_21 测试段 60min 窗口用尽时仍在第 4 阶段第 6 轮（已落 4 个 commit / 20 个测试文件 / 矩阵审计打回两次），非停滀非故障；**生产口径 confirmation：测试阶段窗口应 ≥10800s**（与 D011「最慢阶段」一致，本轮 3600s 是 e2e 预算压缩所致）。
 6. **测试侧竞态清单（2026-10-19 扫查，非产品缺陷）**：「终态后重跑 start」与「cancel 受理→run 转 Failed→串行守卫可见」之间存在亚秒级窗口，早到的 start 会吃 409「已有运行中的任务」。影响面：test_07（首个踩中，已修）、test_12（F1 回归后无 body start）、test_18（testing/doc-fix 触发链两处）；其余脚本无「终态后重跑」动作（test_09/13/15/16 只收场不重跑，test_08/10/11/14/17/19/20/21 单次 start）。统一收敛为共享 helper `common.start_tolerant()`（409 重试 ≤20s，超时才把原响应交给断言）——不改产品语义（MVP 串行守卫 + 409 本就可重试）。
 
