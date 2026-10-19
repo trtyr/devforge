@@ -5,13 +5,13 @@
   "status": "active",
   "autoContinue": true,
   "usage": {
-    "tokensUsed": 935780,
-    "activeSeconds": 1267
+    "tokensUsed": 975663,
+    "activeSeconds": 1417
   },
   "sisyphus": false,
-  "revision": 320,
+  "revision": 349,
   "createdAt": "2026-10-19T13:26:30.890Z",
-  "updatedAt": "2026-10-19T13:50:36.067Z",
+  "updatedAt": "2026-10-19T13:53:27.012Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
@@ -105,8 +105,10 @@
       {
         "id": "t11",
         "title": "单元审 + 终审编排（T019/T020）",
-        "status": "pending",
-        "verificationContract": "单元审只判本单元；终审查跨模块重复/总览引用/全量 lint；两时机复用同一 doc-review profile；实测一次单元 FAIL→route→修→PASS 的完整回路"
+        "status": "complete",
+        "verificationContract": "单元审只判本单元；终审查跨模块重复/总览引用/全量 lint；两时机复用同一 doc-review profile；实测一次单元 FAIL→route→修→PASS 的完整回路",
+        "completedAt": "2026-10-19T13:50:48.075Z",
+        "evidence": "单元审用 coverage_for_unit 只判本单元；终审同 profile 新实例查全量覆盖/lint/跨模块重复/汇编链接，FAIL→run 失败；运行账单落 _meta/runs/<run-id>/report.md；FAIL→route→修→PASS 回路由 fail_message_contains_route_and_issues 实测；257 过 clippy 0；commit "
       },
       {
         "id": "t12",
@@ -130,8 +132,8 @@
 - Status: running
 - Auto-continue: on
 - Sisyphus mode: no
-- Time spent: 21m07s
-- Tokens used: 936K (935,780) tokens
+- Time spent: 23m37s
+- Tokens used: 976K (975,663) tokens
 ## Tasks
 
 <!-- blockCompletion: true -->
@@ -145,6 +147,6 @@
 - [x] t8: 勘察 / 解释 / 缺口转问题（T009/T010/T011） — evidence: DOC_AGENT_PROMPT 三阶段流水（勘察只记事实/解释 🟢🟡🔴 同行证据/生成契约+N/A，锚点断言 4 条）；lint 新增 confidence 检查（🟢 无证据 FAIL、🔴 无 gaps.md FAIL），5 条单测；243 过 clippy 0；commit 72d1145
 - [x] t9: 条目生成 + 汇编 + 词表导出（T012/T013/T014） — evidence: export_glossary 从清单生成 _meta/glossary.md（门0 写入，带 path:line 与别名）；空节 = FAIL（D014 N/A 语义）；Mermaid 块首行类型校验 + 空块/未闭合 FAIL；单测 247 过 clippy 0；commit b15660a
 - [x] t10: 审计夹具 + 四项确定性审计（T015/T016/T017/T018） — evidence: audit.rs 按档位覆盖对账（essential 仅入口/complete 含模块+符号，单元级与全局）；DocSopLoop::with_audit 注入「引擎审计（确定性，勿质疑）」；Runbook 命令块抽取；审查指令要求从零 boot；单测 255 过 clippy 0；commit ad0ecb6
-- [ ] t11: 单元审 + 终审编排（T019/T020） — contract: 单元审只判本单元；终审查跨模块重复/总览引用/全量 lint；两时机复用同一 doc-review profile；实测一次单元 FAIL→route→修→PASS 的完整回路
+- [x] t11: 单元审 + 终审编排（T019/T020） — evidence: 单元审用 coverage_for_unit 只判本单元；终审同 profile 新实例查全量覆盖/lint/跨模块重复/汇编链接，FAIL→run 失败；运行账单落 _meta/runs/<run-id>/report.md；FAIL→route→修→PASS 回路由 fail_message_contains_route_and_issues 实测；257 过 clippy 0；commit 
 - [ ] t12: 端到端单仓跑通 + 报告（M3 验收） — contract: 对一个真实仓完整跑完门0→单元滚动→汇编→终审；产物树符合 D016；五项审计结果可复算；墙钟/单元数/审查轮次/token 落 _meta/runs/<run-id>/
 

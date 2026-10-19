@@ -37,6 +37,53 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(if report.passed() { 0 } else { 1 });
     }
 
+    if args.first().map(String::as_str) == Some("doc-audit") {
+        // 五项审计里的机械部分可复算入口（覆盖 + 跨模块重复）。
+        // 形态：`devforge doc-audit <docs_dir> --repo <root> [--level complete]`，退出码 1 = 覆盖不完整。
+        let Some(docs) = args.get(1) else {
+            eprintln!("用法: devforge doc-audit <docs_dir> --repo <root> [--level essential|complete|detailed]");
+            std::process::exit(2);
+        };
+        let docs = std::path::PathBuf::from(docs);
+        let repo = args
+            .iter()
+            .position(|a| a == "--repo")
+            .and_then(|i| args.get(i + 1))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let level = args
+            .iter()
+            .position(|a| a == "--level")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| devforge::docgen::audit::DocLevel::parse(s))
+            .unwrap_or(devforge::docgen::audit::DocLevel::Complete);
+        let inv_path = docs.join("_meta/inventory.json");
+        let inv = devforge::docgen::inventory::Inventory::load(&inv_path)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let cov = devforge::docgen::audit::coverage(&inv, &docs, level)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        print!("{}", cov.render());
+        let dups = devforge::docgen::audit::duplicate_mentions(&docs, &inv)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        if dups.is_empty() {
+            println!("跨模块重复：无");
+        } else {
+            println!("跨模块重复：");
+            for d in &dups {
+                println!("- {d}");
+            }
+        }
+        let index = devforge::docgen::lint::EntityIndex::build(&repo, Some(&inv))
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let lint = devforge::docgen::lint::lint_docs_with_entities(&docs, &index)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        for v in lint.violations() {
+            println!("{}", v.render());
+        }
+        println!("{}", lint.summary());
+        std::process::exit(if cov.passed() && lint.passed() { 0 } else { 1 });
+    }
+
     if args.first().map(String::as_str) == Some("doc-inventory") {
         // 清单（分母）机械抽取 + 三道闭包校验（D002/D013）。
         // 形态：`devforge doc-inventory <repo> [--out <dir>]`，退出码 1 = 闭包不过。

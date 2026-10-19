@@ -24,7 +24,7 @@ from common import Reporter, Server, SseStream, UiAutoPilot, compensate_profile,
 
 EIGHT = (
     "plan-agent", "plan-review", "coding-agent", "coding-review",
-    "test-agent", "test-review", "doc-fix", "doc-review",
+    "test-agent", "test-review", "doc-fix", "doc-agent", "doc-review",
 )
 CODE_TIMEOUT = 10800.0  # 180 分钟（与 test_19 同口径：编码阶段生产口径 ≥10800s）
 TEST_TIMEOUT = 10800.0  # 180 分钟（D011 最慢阶段；test_21 实测 3600s 不够——真实编码产物文档量大）
@@ -91,7 +91,7 @@ def main() -> int:
             status, _ = server.req("PUT", "/config/manifest", manifest, timeout=300.0)
             r.check(status == 202, "PUT 剥包 manifest == 202", f"status={status}")
             ev = sse.wait_for(
-                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 8,
+                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 9,
                 timeout=300.0,
             )
             r.check(ev is not None, "八 profile 渲染完成（剥包快路径）", f"{ev}")

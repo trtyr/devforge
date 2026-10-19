@@ -34,6 +34,7 @@ EIGHT = (
     "test-agent",
     "test-review",
     "doc-fix",
+    "doc-agent",
     "doc-review",
 )
 TEST_TIMEOUT = 5400.0  # 90 分钟：fixture 体量小，只验机制
@@ -160,10 +161,10 @@ def main() -> int:
             status, _ = server.req("PUT", "/config/manifest", manifest, timeout=300.0)
             r.check(status == 202, "PUT 剥包 manifest == 202", f"status={status}")
             ev = sse.wait_for(
-                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 8,
+                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 9,
                 timeout=300.0,
             )
-            r.check(ev is not None, "八 profile 渲染完成（剥包快路径）", f"{ev}")
+            r.check(ev is not None, "九 profile 渲染完成（剥包快路径）", f"{ev}")
         prof = server.home / ".devforge" / "profiles"
         compensated = compensate_profile(server)
         r.check(

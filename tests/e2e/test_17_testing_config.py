@@ -29,6 +29,7 @@ EIGHT = (
     "test-agent",
     "test-review",
     "doc-fix",
+    "doc-agent",
     "doc-review",
 )
 
@@ -98,13 +99,13 @@ def main() -> int:
             status, resp = server.req("PUT", "/config/manifest", stripped, timeout=120.0)
             r.check(status == 202, "PUT 剥包 manifest == 202", f"status={status}")
             ev = sse.wait_for(
-                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 8,
+                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 9,
                 timeout=120.0,
             )
             elapsed = time.time() - t0
             r.check(
                 ev is not None,
-                "config.rendered == 8（八角色渲染全完成，剥包快路径）",
+                "config.rendered == 9（九角色渲染全完成，剥包快路径）",
                 f"elapsed={elapsed:.0f}s, ev={ev}",
             )
 

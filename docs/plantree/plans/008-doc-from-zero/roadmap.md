@@ -1,45 +1,38 @@
-# doc-from-zero · 路线图（已定稿，待执行）
+# doc-from-zero · 路线图（实施中）
 
-> 2026-10-19 框架期结束：Q001–Q013 全关，决策 D001–D020 落定。本文件是**可开工的任务清单**，当前**未执行**。
+> 2026-10-19 框架期结束（Q001–Q013 全关，D001–D020 落定）；当夜进入实施，M0–M3 主体已落地。
 > 顺序按依赖排：Phase 0 → A → B → C → D → E → F → G，前一阶段 M 达成才进下一阶段。
 
 ## Phase 0 · 共用资产（先于一切；同时是 P005/P007 的增量）
 
-- [ ] **(T000a) `doc-contract` 落成 skill** — 内容即 `topics/doc-contract.md`：六类条目模板、六条反模式、真实性规则。供 coding / coding-review / doc-fix / P008 四方共用。
+- [x] **(T000a) `doc-contract` 落成 skill** — `assets/skills/doc-contract/SKILL.md`；coding-agent / coding-review / doc-fix / doc-review 四处共用（commit `080c1ff`）。
   - 验收：skill 可被渲染进 profile；同一份文本四处引用无副本。
-- [ ] **(T000b) `doc-lint` 最小版（引擎侧脚本，D008）** — 五项检查：实体存在性（幽灵实体 FAIL）、必填节（D014 分级表）、链接/锚点可解析、Runbook 七件套、禁写内容扫描（建议级）。
-  - 验收：对一份已知有缺陷的文档能报出**具体行号 + 违例类型**，退出码可判（0 = 通过）。
-  - **依赖 T001**（实体存在性要靠清单核对）。
-- [ ] **(T000c) 接入既有链路** — coding 提示词加一行引用契约；预审门加「doc-lint 零违规」；coding-review 增加文档复核面。
-  - 验收：coding 链路跑通 doc-lint（退出码入 stages.md 证据）。
+- [x] **(T000b) `doc-lint` 最小版（引擎侧）** — `src/docgen/lint.rs` + CLI `devforge doc-lint`；必填节/链接/Runbook/禁写/实体/置信度/Mermaid（commit `b6c3330`、`a5f80e5`、`72d1145`、`b15660a`）。
+- [x] **(T000c) 接入既有链路** — 预审加第四条（doc-lint 退出码 0 + 证据落 stages.md），coding-review 增 doc-lint 复核（commit `f96c77a`）。
 
 ## Phase A · 清单（分母）
 
-- [ ] **(T001) inventory 抽取器（引擎侧）** — codegraph 模块树 + 入口点（入度 0 + 框架 router 识别）+ 符号表；产出 `_meta/inventory.json`（条目 = id / kind / path:line / canonical_name / aliases / status）。
-  - 验收：一个真实中型仓跑出清单；条目全部带证据指针。
-- [ ] **(T002) 约定面抽取** — 配置键（env/配置文件/schema）、构建与启动命令、数据层（DDL/模型/迁移）。
-  - 验收：三类的条目数与人工抽查一致（抽查 10%，漏项为 0）。
-- [ ] **(T003) 测试即可执行规格** — 从测试用例反抽"行为条目"（只取语义，不照抄断言）。
-  - 验收：每条行为条目可回指到测试文件:行。
-- [ ] **(T003b) `doc_level` 三档生效** — 默认 `complete`（D007）；档位决定条目集合，不改变"集合内 100%"。
-- [ ] **(T003c) 三道闭包校验（引擎侧，D002）** — 入口可达闭包 / 文件覆盖 / 符号覆盖。
-  - 验收：故意从清单里删掉一个模块，校验必须报错。
-- [ ] **(T003d) 编号预分配** — 门 0 一次性分配单元 ID 与文档编号（D020），局部重跑不漂移。
+- [x] **(T001) inventory 抽取器（引擎侧）** — `src/docgen/inventory.rs` + CLI `devforge doc-inventory`；真实仓实测 531 条目（commit `51abc8d`）。
+  - **v1 限制（诚实登记）**：靠行首启发式抽公开符号，无 tree-sitter；codegraph 只记 `meta.codegraph_indexed`，本版未消费其图。
+- [ ] **(T002) 约定面抽取** — 配置键 / 构建启动命令 / 数据层（DDL/模型/迁移）——**未实现**，下一轮补。
+- [ ] **(T003) 测试即可执行规格** — 从测试反抽行为条目——**未实现**，下一轮补。
+- [x] **(T003b) `doc_level` 三档生效** — `audit::DocLevel`（essential 仅 entry / complete 含 module+symbol）。
+- [x] **(T003c) 三道闭包校验** — 入口可达 / 文件覆盖 / 符号覆盖，反向验证有单测（删模块/删符号必报错）。
+- [x] **(T003d) 编号预分配** — `assign_units` 幂等，单测断言两次调用结果一致。
 
 ## Phase B · 编排与供给（骨架）
 
-- [ ] **(T004) 新 profile `doc-agent`** — 供给按 D018（deepseek-flash / high / codegraph+context7 / 语言 best-practices / coding 同款包）。
-- [ ] **(T005) 改 `doc-review` 供给** — 加 codegraph、thinking_level=medium（D012/D018）；`doc-fix` 不动。
-  - 验收：单元测试断言两个 profile 的 mcp / thinking / model 符合 D018。
-- [ ] **(T006) 注册 SOP `doc-from-zero`** — `SopRegistry` 注册 + `start {"sop":"doc-from-zero"}` 触发；复用串行 guard、watchdog、黑板、事件流。
-- [ ] **(T007) 协议与路由** — `<doc-complete>` / `<doc-verdict>` / `<route>`（D020）；缺/非法 route → phase3；违例上限 3。
-- [ ] **(T008) 检查点与幂等续跑** — `docs/contexts/_meta/state.json`（D016）；一单元一提交；`--only <unit>` 单点重派。
+- [x] **(T004) 新 profile `doc-agent`** — deepseek-flash / high / codegraph+context7 / doc-contract+四语言 skills / coding 同款包（commit `4d2a634`）。
+- [x] **(T005) 改 `doc-review` 供给** — 加 codegraph，thinking=medium，不给 context7（同上 commit）。
+- [x] **(T006) 注册 SOP `doc-from-zero`** — SopRegistry 5 个；`start` 返回 202 有单测（commit `04af7f4`）。
+- [x] **(T007) 协议与路由** — `<doc-complete>` / `<doc-verdict>` / `<route>`；缺/非法 route 保守 phase3；违例上限 3（同上）。
+- [x] **(T008) 检查点与幂等续跑** — `_meta/state.json`；`DEVFORGE_DOC_ONLY` 单点重派（同上）。
 
 ## Phase C · 勘察与解释（事实 / 推断分离）
 
-- [ ] **(T009) 勘察步骤** — 一模块一会话、只记事实、禁止写"为什么"；单次上下文≈4K 片段 + 图查询补（D010）。
-- [ ] **(T010) 解释步骤** — 业务规则/状态机/权限矩阵；每条断言标 🟢/🟡/🔴（D006：正文极简 + 旁挂表）。
-- [ ] **(T011) 🔴 缺口转问题** — 写入 `_meta/gaps.md`，交调用方。
+- [x] **(T009) 勘察步骤** — 提示词写死「只记事实、禁写为什么」，产物 `_meta/facts/<unit>.md`（commit `72d1145`）。
+- [x] **(T010) 解释步骤** — 每条断言 🟢/🟡/🔴；🟢 同行必须给 `path:line` 或可重放命令（lint 强制检查）。
+- [x] **(T011) 🔴 缺口转问题** — 写 `_meta/gaps.md`；文档有 🔴 却无 gaps.md → lint FAIL。
 
 ## Phase D · 生成与汇编
 
@@ -49,16 +42,16 @@
 
 ## Phase E · 审计（doc-review + 引擎）
 
-- [ ] **(T015) 引擎侧审计夹具** — doc-lint 报告注入审查输入（D012），含违例行号与退出码。
-- [ ] **(T016) 覆盖审计** — 清单 ↔ 文档逐条对账（限定档位条目集合）；缺一条 = FAIL（D013）。
-- [ ] **(T017) 真实性 + 置信度诚实性** — 实体存在率 100%；标 🟢 给不出 path:line = FAIL（最严重）。
-- [ ] **(T018) 可跑审计** — 照 Runbook 从零 boot（装依赖→配置→启动→健康检查→种子数据）。
-- [ ] **(T019) 终审（全局）** — 跨模块重复、总览引用有效性、全量 lint；D010 的第二时机。
-- [ ] **(T020) 单元审（局部）** — 只判本单元覆盖/必填节/置信度；产出 PASS/FAIL + route。
+- [x] **(T015) 引擎侧审计夹具** — 引擎每轮注入覆盖+lint+Runbook 命令块，冠以「确定性、勿质疑」（commit `ad0ecb6`）。
+- [x] **(T016) 覆盖审计** — `docgen/audit.rs` 按档位取集合逐条对账；单元级与全局两种。
+- [x] **(T017) 真实性 + 置信度诚实性** — lint 实体检查 + 🟢 必须同行给证据（t4/t8）。
+- [x] **(T018) 可跑审计** — 引擎抽 Runbook 命令块注入审查，审查官逐条从零 boot（诚实边界：执行是审查侧判定）。
+- [x] **(T019) 终审（全局）** — 循环后同 profile 新实例；跨模块重复/全量 lint/覆盖；FAIL 即 run 失败（commit `0cc9106`）。
+- [x] **(T020) 单元审（局部）** — `coverage_for_unit` + 单元范围指令；FAIL→route→修→PASS 有实测回路。
 
 ## Phase F · 接入与实证
 
-- [ ] **(T021) 端到端实证** — 拿一个真实陌生库（无文档、无 git）跑全链，落盘：墙钟 / 模块数 / 单元数 / 审查轮次 / token 账单（`_meta/runs/<run-id>/`）。
+- [ ] **(T021) 端到端实证** — fixture `test_22_doc_from_zero.py` 已就位，首轮运行中（结果以运行日志为准）。
   - 验收：五类审计可复算；`gaps.md` 存在且每条有原因。
 - [ ] **(T022) 速度校准** — 用实测数据定门 0 与单元批量的运行参数（不设产品侧硬超时，沿 D002/P007 口径）。
 
@@ -71,10 +64,10 @@
 
 ## Milestones
 
-- **M0**（Phase 0）：契约 + doc-lint 可用，coding 链路已接入。
-- **M1**（Phase A）：清单可机械产出且三道闭包校验为真。
-- **M2**（Phase B+C）：SOP 可被 API 触发，单元能滚动并断点续跑。
-- **M3**（Phase D+E）：产出的文档能过五项审计（覆盖/完整性/真实性/置信度诚实性/可跑）。
+- **M0**（Phase 0）：契约 + doc-lint 可用，coding 链路已接入 ✅
+- **M1**（Phase A）：清单可机械产出且三道闭包校验为真 ✅（T002/T003 待补）
+- **M2**（Phase B+C）：SOP 可被 API 触发，单元能滚动并断点续跑 ✅
+- **M3**（Phase D+E）：产出的文档能过五项审计 ✅（机械部分；端到端见证见 M4）
 - **M4**（Phase F）：真实陌生库端到端有实证数据。
 - **M5**（Phase G）：增量模式跑通。
 

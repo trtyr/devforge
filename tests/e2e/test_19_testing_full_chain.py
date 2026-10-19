@@ -41,6 +41,7 @@ EIGHT = (
     "test-agent",
     "test-review",
     "doc-fix",
+    "doc-agent",
     "doc-review",
 )
 
