@@ -57,16 +57,21 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 
 ## 文件地图
 
-- `topics/design-framework.md` — 框架全文（四阶段、判定口径、与 doc-init skill 的差异）
+- `topics/design-framework.md` — 框架全文（五阶段、完备性自证、路由、检查点）
 - `topics/doc-contract.md` — **跨 SOP 共用的文档契约草案**（条目模板/反模式/真实性规则/doc-lint 规格）
+- `decisions/README.md` — D001（本 SOP 为唯一权威，doc-init 退役）/ D002（吸收其工程教训为红线）
 - `open-questions.md` — 待拍问题（Q001+）
 - `roadmap.md` — 任务分解（草案，未定稿）
+
+## 关键前提
+
+**文档体系唯一权威 = 本 plan（D001，2026-10-19 用户拍板）**；旧 `doc-init` skill 退役，其六节格式与标记契约**不再作为约束**，但其工程教训以 D002 吸收为红线（证据下限/防伪标记/编号稳定/幂等重跑/只读/不回显任务书）。
 
 ## Scope
 
 **In（未来）：** 第二条 SOP 的完整设计——inventory 抽取器、并行写作编排、三查审计、Runbook 约定、产物布局。
 
 **Out：**
-- 改写现有 `doc-init` skill（它是本 SOP 的参考实现，不是被替换对象）
-- 文档的长期维护/过期检测（未来另议）
+- 改写现有 `doc-init` skill——**已拍板退役（D001）**，不并行维护两套
+- 文档的长期维护/过期检测（见 Q013）
 - 非代码资产（设计稿/数据库 dump）的文档化
