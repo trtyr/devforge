@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Reporter, Server, SseStream, UiAutoPilot, compensate_profile, real_api_key  # noqa: E402
 
 PLAN_TIMEOUT = 2400.0     # 规划段：40 分钟（沿 test_08/test_14 口径）
-CODE_TIMEOUT = 10800.0    # 编码段：180 分钟（test_14 v4 同款，加窗先例）
+CODE_TIMEOUT = 21600.0    # 编码段：360 分钟（2026-10-19 两次 3h 窗口均未收尾的实际教训：真模型慢时需要 6h）
 TEST_TIMEOUT = 10800.0    # 测试段：180 分钟（D011 最慢阶段；写测+起系统+跑测+审查多轮）
 
 EIGHT = (

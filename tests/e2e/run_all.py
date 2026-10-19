@@ -36,7 +36,7 @@ SCRIPTS = [
     ("test_16_run_liveness.py", 600, "006 运行活性面：失活收割（IDLE_MS opt-in）/默认不杀/cancel 恢复"),
     ("test_17_testing_config.py", 300, "P007 测试配置面：四新 profile 供给(D007)/黑盒纪律锚点/mcp 有无矩阵/skills 矩阵"),
     ("test_18_sop_registry.py", 300, "P007 触发链：testing/doc-fix 注册与触发/未知 SOP 拒绝面"),
-    ("test_19_testing_full_chain.py", 28800, "P007 全链黑盒闭环（真 pi + 真模型；规划→编码→testing 三段跨 SOP；doc-fix 移交若触发则验证；最慢 6-8h 量级）"),
+    ("test_19_testing_full_chain.py", 43200, "P007 全链黑盒闭环（真 pi + 真模型；规划→编码→testing 三段跨 SOP；编码窗口 6h/doc-fix 移交若触发则验证；最慢 10h 量级）"),
     ("test_20_testing_fixture.py", 7200, "P007 测试阶段本体（fixture 路线）：预置被测系统+文档，验 stages/矩阵/发现/tests 落仓/审查闭环"),
     ("test_21_coding_to_testing.py", 25200, "P007 编码→测试交接（预置小 plan tree + 真 coding + 真 testing；两段各 10800s 窗口）"),
 ]
