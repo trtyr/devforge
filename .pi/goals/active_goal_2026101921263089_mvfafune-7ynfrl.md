@@ -5,13 +5,13 @@
   "status": "active",
   "autoContinue": true,
   "usage": {
-    "tokensUsed": 817329,
-    "activeSeconds": 808
+    "tokensUsed": 860075,
+    "activeSeconds": 901
   },
   "sisyphus": false,
-  "revision": 252,
+  "revision": 267,
   "createdAt": "2026-10-19T13:26:30.890Z",
-  "updatedAt": "2026-10-19T13:42:07.958Z",
+  "updatedAt": "2026-10-19T13:43:53.475Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
@@ -73,8 +73,10 @@
       {
         "id": "t7",
         "title": "SOP 注册 + 协议块 + 检查点续跑（T006/T007/T008）",
-        "status": "pending",
-        "verificationContract": "start {\"sop\":\"doc-from-zero\"} 返回 202；<doc-complete>/<doc-verdict>/<route> 三块解析有单测；缺/非法 route 保守回 phase3；_meta/state.json 可断点续跑且 --only 单点重派幂等"
+        "status": "complete",
+        "verificationContract": "start {\"sop\":\"doc-from-zero\"} 返回 202；<doc-complete>/<doc-verdict>/<route> 三块解析有单测；缺/非法 route 保守回 phase3；_meta/state.json 可断点续跑且 --only 单点重派幂等",
+        "completedAt": "2026-10-19T13:42:23.918Z",
+        "evidence": "doc-protocol 三块解析 9 单测；DocSopLoop 7 单测（含 state 续跑/--only 幂等/违例重跑审查/编号漂移拒绝）；API start 202 单测；engine 门0 建清单+闭包+单元；238 过 clippy 0；commit 04af7f4"
       },
       {
         "id": "t8",
@@ -122,8 +124,8 @@
 - Status: running
 - Auto-continue: on
 - Sisyphus mode: no
-- Time spent: 13m28s
-- Tokens used: 817K (817,329) tokens
+- Time spent: 15m01s
+- Tokens used: 860K (860,075) tokens
 ## Tasks
 
 <!-- blockCompletion: true -->
@@ -133,7 +135,7 @@
 - [x] t4: doc-lint 实体存在性 + 同名异写检测（接清单） — evidence: EntityIndex + check_entities（路径/行号/标识符），alias 只提示；作用域限 type: 条目；真实 plan 文档 85→0 失败（4 条提示为契约表内 TODO 字样）；幽灵样本 2/2 抓到带行号；6 条单测；220 过 clippy 0；commit a5f80e5
 - [x] t5: 契约接入 coding 链路（T000c） — evidence: CODING_AGENT_PROMPT 预审新增第四条（doc-contract skill + devforge doc-lint --repo 退出码必须 0 + 证据落 stages.md），stage-complete 条件改四条；CODING_REVIEW_PROMPT 新增第 6 项 doc-lint 复核（自己跑一遍）；单测锚点 +5；220 过 clippy 0；commit f9
 - [x] t6: doc-agent profile 新建 + doc-review 供给改造（T004/T005） — evidence: doc-agent 新 profile（deepseek-flash/high/codegraph+context7/doc-contract+四语言 skills/coding 同款包）+ DOC_AGENT_PROMPT 10 条硬约束锚点；doc-review 增 codegraph 保持 medium 不给 context7；9 profile 渲染通过；221 过 clippy 0；co
-- [ ] t7: SOP 注册 + 协议块 + 检查点续跑（T006/T007/T008） — contract: start {"sop":"doc-from-zero"} 返回 202；<doc-complete>/<doc-verdict>/<route> 三块解析有单测；缺/非法 route 保守回 phase3；_meta/state.json 可断点续跑且 --only 单点重派幂等
+- [x] t7: SOP 注册 + 协议块 + 检查点续跑（T006/T007/T008） — evidence: doc-protocol 三块解析 9 单测；DocSopLoop 7 单测（含 state 续跑/--only 幂等/违例重跑审查/编号漂移拒绝）；API start 202 单测；engine 门0 建清单+闭包+单元；238 过 clippy 0；commit 04af7f4
 - [ ] t8: 勘察 / 解释 / 缺口转问题（T009/T010/T011） — contract: 勘察产出只记事实（抽查不含因果解释）；解释每条断言带置信度；标 🟢 的必须能给出 path:line 或重放命令；🔴 全部进 _meta/gaps.md
 - [ ] t9: 条目生成 + 汇编 + 词表导出（T012/T013/T014） — contract: 生成遵守必填节表且不适用处写 N/A；汇编层只合成不新增事实（抽查可溯源到叶子）；图为 Mermaid 源码；glossary.md 为清单自动导出且与清单一致
 - [ ] t10: 审计夹具 + 四项确定性审计（T015/T016/T017/T018） — contract: doc-lint 报告由引擎生成并注入审查输入；覆盖审计按档位条目集合对账（缺一条 FAIL）；真实性 100%；标 🟢 给不出证据判 FAIL；Runbook 从零 boot 可执行

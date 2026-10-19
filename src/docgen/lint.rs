@@ -20,6 +20,8 @@ pub enum Check {
     Runbook,
     /// 实体存在性 / 同名异写（t4）
     Entity,
+    /// 置信度诚实性（t8）：标 🟢 必须给得出证据
+    Confidence,
     /// 禁写内容（TODO/超长代码块/日志粘贴）——提示级
     Banned,
 }
@@ -31,6 +33,7 @@ impl Check {
             Check::Link => "link",
             Check::Runbook => "runbook",
             Check::Entity => "entity",
+            Check::Confidence => "confidence",
             Check::Banned => "banned",
         }
     }
@@ -220,6 +223,7 @@ pub fn lint_docs_with_entities(docs_dir: &Path, index: &EntityIndex) -> Result<L
 fn lint_with(docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport> {
     let mut report = LintReport::default();
     let files = collect_markdown(docs_dir)?;
+    let mut gap_hits: Vec<(PathBuf, usize)> = Vec::new();
     for file in &files {
         let text = std::fs::read_to_string(file)
             .ctx(format!("读取文档 {}", file.display()))?;
@@ -231,14 +235,81 @@ fn lint_with(docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport>
         if let Some(index) = index {
             check_entities(&doc, file, index, &mut report);
         }
+        if doc.entry_type.is_some() {
+            check_confidence(&doc, file, &mut report);
+        }
+        for (idx, line) in doc.lines.iter().enumerate() {
+            if line.contains('🔴') && !line.trim_start().starts_with("```") {
+                gap_hits.push((file.clone(), idx + 1));
+            }
+        }
         if is_runbook(file) {
             check_runbook(&doc, file, &mut report);
+        }
+    }
+    // 🔴 缺口必须有 gaps.md 登记（D013：不许静默缺口）
+    if !gap_hits.is_empty() {
+        let candidates = [
+            docs_dir.join("gaps.md"),
+            docs_dir.join("_meta/gaps.md"),
+        ];
+        if !candidates.iter().any(|p| p.exists()) {
+            for (file, line) in &gap_hits {
+                report.fail(
+                    file,
+                    *line,
+                    Check::Confidence,
+                    "标 🔴 GAP 但缺 gaps.md 登记（缺口必须写成问题，不许静默）",
+                );
+            }
         }
     }
     report
         .violations
         .sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     Ok(report)
+}
+
+/// 置信度诚实性（t8）：标 🟢 CONFIRMED 的行必须同行给出 `path:line` 或可重放命令。
+fn check_confidence(doc: &ParsedDoc, file: &Path, report: &mut LintReport) {
+    let mut in_fence = false;
+    for (idx, line) in doc.lines.iter().enumerate() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let marked = line.contains('🟢') || line.to_ascii_uppercase().contains("CONFIRMED");
+        if !marked {
+            continue;
+        }
+        let has_evidence = inline_code_spans(line).iter().any(|span| {
+            let s = span.trim();
+            split_path_line(s).is_some()
+                || looks_like_path(s)
+                || is_replayable_command(s)
+        });
+        if !has_evidence {
+            report.fail(
+                file,
+                idx + 1,
+                Check::Confidence,
+                "标 🟢 CONFIRMED 但给不出 `path:line` 或可重放命令（最严重类 FAIL）",
+            );
+        }
+    }
+}
+
+/// 可重放命令前缀（与契约里“重放命令”一致）。
+fn is_replayable_command(token: &str) -> bool {
+    const CMDS: &[&str] = &[
+        "devforge", "python", "python3", "pytest", "cargo", "npm", "pnpm", "yarn", "curl", "wget",
+        "git", "bash", "sh", "make", "go", "node", "docker", "psql", "sqlite3", "redis-cli",
+    ];
+    let first = token.split_whitespace().next().unwrap_or("");
+    CMDS.contains(&first)
 }
 
 /// 递归收集 `*.md`（跳过隐藏目录与 `node_modules`/`target`）。
@@ -1162,6 +1233,72 @@ mod tests {
         let index = EntityIndex::build(repo.path(), None).unwrap();
         let report = lint_docs_with_entities(&docs, &index).unwrap();
         assert!(report.passed(), "代码块内不查实体: {:?}", report.violations());
+    }
+
+    // ===== t8：置信度诚实性 / 缺口登记 =====
+
+    #[test]
+    fn green_mark_with_path_line_passes() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "a.md",
+            "---\ntype: internal\n---\n\n# a\n\n🟢 入口在 `src/core.py:3`。\n",
+        );
+        let report = lint_docs(tmp.path()).unwrap();
+        assert!(report.passed(), "{:?}", report.violations());
+    }
+
+    #[test]
+    fn green_mark_with_replayable_command_passes() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "a.md",
+            "---\ntype: internal\n---\n\n# a\n\n🟢 可重放：`python -m pytest -q`。\n",
+        );
+        assert!(lint_docs(tmp.path()).unwrap().passed());
+    }
+
+    #[test]
+    fn green_mark_without_evidence_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "a.md",
+            "---\ntype: internal\n---\n\n# a\n\n🟢 这里肯定是对的。\n",
+        );
+        let report = lint_docs(tmp.path()).unwrap();
+        let v: Vec<_> = report.failures().collect();
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!(v[0].check, Check::Confidence);
+        assert_eq!(v[0].line, 7);
+    }
+
+    #[test]
+    fn red_gap_without_gaps_file_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "a.md",
+            "---\ntype: internal\n---\n\n# a\n\n🔴 设计意图看不出来。\n",
+        );
+        let report = lint_docs(tmp.path()).unwrap();
+        assert!(report
+            .failures()
+            .any(|v| v.check == Check::Confidence && v.message.contains("gaps.md")));
+    }
+
+    #[test]
+    fn red_gap_with_gaps_file_passes() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "a.md",
+            "---\ntype: internal\n---\n\n# a\n\n🔴 设计意图看不出来。\n",
+        );
+        write(tmp.path(), "_meta/gaps.md", "# 缺口\n\n- 设计意图（a.md）\n");
+        assert!(lint_docs(tmp.path()).unwrap().passed());
     }
 
     #[test]

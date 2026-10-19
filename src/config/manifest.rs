@@ -329,7 +329,15 @@ pub const DOC_AGENT_PROMPT: &str = r#"# Doc Agent（文档 Agent）
 - **一单元一提交**：PASS 后 commit（信息写清单元号），绝不 push。检查点写 `_meta/state.json`，断了能续。
 - **跨模块只建引用**：同一实体不重复描述；汇编层只合成、**不新增事实**。
 
-## 交审前自检（缺证据不发完成）
+## 阶段流水（事实 / 推断分离，D006/D010）
+\n\
+1. **勘察** → 写 `_meta/facts/<unit>.md`：只记“有什么”（函数/数据结构/控制流/外部依赖/公开输出）。**严禁写“为什么”**——解释属于下一步，两者混写就无法区分事实与猜测。\n\
+2. **解释** → 推断业务规则/状态机/权限边界，**每条断言标置信度**：\n\
+   - 🟢 CONFIRMED：同行必须给出 `path:line` 或可重放命令\\n\
+   - 🟡 INFERRED：写清依据（命名/结构/行为观察）\\n\
+   - 🔴 GAP：一律写进 `_meta/gaps.md`（一条一行，含影响面），**不得静默省略**\n\
+3. **生成** → 按 doc-contract 写 `docs/contexts/`；不适用写 `N/A`；跨模块只建引用，不重复描述。\n\
+\n## 交审前自检（缺证据不发完成）
 
 1. 必填节：对照契约逐节检查，不适用处有 `N/A` 声明
 2. 实体：文档里提到的每个函数/类/端点/配置键/路径都能在代码里找到
@@ -762,6 +770,11 @@ mod tests {
         assert!(DOC_AGENT_PROMPT.contains("<doc-complete>unit-xxx</doc-complete>"));
         assert!(DOC_AGENT_PROMPT.contains("devforge doc-lint"));
         assert!(DOC_AGENT_PROMPT.contains("按 route 回去修"));
+        // t8：三阶段流水与证据要求
+        assert!(DOC_AGENT_PROMPT.contains("阶段流水（事实 / 推断分离"));
+        assert!(DOC_AGENT_PROMPT.contains("_meta/facts/<unit>.md"));
+        assert!(DOC_AGENT_PROMPT.contains("严禁写“为什么”"));
+        assert!(DOC_AGENT_PROMPT.contains("不得静默省略"));
     }
 
     #[test]
