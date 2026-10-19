@@ -41,7 +41,9 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 ## 研究依据（2026-10-19 检索）
 
 - **CodeWiki**（[arXiv 2510.24428](https://arxiv.org/html/2510.24428v6)）：依赖图 → Tarjan 缩点 → 拓扑找入口（入度 0）→ 模块树（**叶子 ≤32K tokens，下派 ≤3 层**）→ 叶子 agent（四件输入）→ **父文档由子文档合成**；跨模块引用登记表防重复；评估=分层 rubric + 三厂商判官投票（68.79% vs DeepWiki 64.06%；脚本语言强、C/C++ 弱）。**注意：它的 rubric 是由官方文档反推的，无文档场景不可照搬**；且全文未报耗时/成本。
-- **DocAgent**（[ACL 2025 demo](https://aclanthology.org/2025.acl-demo.44.pdf)）：拓扑序写文档（消融：乱序写事实准确性 94.6%→86.8%）；Reader/Searcher/Writer/Verifier 分工；三维评估 = 完整性（AST 机械检查）+ 有用性（LLM 判官）+ **真实性（实体存在率，防幻觉）**。
+- **DocAgent**（[ACL 2025 demo](https://aclanthology.org/2025.acl-demo.44.pdf)）：**逐组件条目**级（Repo-Level Doc = ✗）；拓扑序写文档（消融：乱序写真实性 94.64%→86.75%）；Reader/Searcher/Writer/Verifier/Orchestrator 分工（Reader↔Searcher 可多轮）；三维评估 = 完整性（**AST 机械** 0.934）+ 有用性（判官 3.88）+ **真实性（实体存在率 95.74%，Chat 基线仅 61.10%、FIM 45.04%）**。
+
+**两者定位**：**CodeWiki 管结构**（模块树/分层汇编），**DocAgent 管条目**（单点质量与反幻觉）——P008 两条都吃。
 - 补充：[从边缘进入陌生代码库](https://understandlegacycode.com/blog/dive-into-an-unfamiliar-codebase-from-its-edges/)（入口点优先）；[scope-discoverer 类 agent](https://github.com/shinpr/claude-code-workflows/blob/main/agents/scope-discoverer.md)（多来源功能范围发现）。
 
 详细精读结论（可借用/不可照搬两张表）见 `topics/design-framework.md` §五·B。
