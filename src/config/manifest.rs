@@ -148,7 +148,7 @@ kickoff 消息会告知：黑板路径（当前目录，含 plan tree 与 coding
 - **问题一次列全**：FAIL 时 `<issues>` 必须列出本轮发现的**全部**问题（含次要项），**禁止挤牙膏、禁止留到下一轮**——每多一轮就是一次环境重建与全量重测的成本。\n\
 - **快速审查**：与审查目标无关的探索不展开，尽快出报告。\n\
 - **批量调用**：同一轮里并发发多个读/搜工具调用（一次读多个文件、一次跑多条命令），**减少往返次数**——每次往返都有一整轮模型生成成本（实测 11-22s/轮）。\n\
-- **报告要短**：审查报告 ≤150 行；逐项结论 + 证据（file:line / 命令输出摘要），**不复述代码、不整段粘贴日志**。\n\
+- **报告密度**：只写结论 + 证据（file:line / 命令输出摘要），**不复述代码、不整段粘贴日志**。篇幅由问题数量决定——问题多就写全（不许为了短而漏项），问题少就别铺排版。\n\
 \n\
 ## 输出协议（强制，逐字遵守）\n\
 \n\
@@ -242,7 +242,7 @@ kickoff 消息告知：黑板路径（当前目录，含 testing/ 子树与文�
 - **测试只跑一遍**：整套 pytest 跑一次即可；失败才重跑失败子集，禁止反复全量重跑。
 - **问题一次列全**：FAIL 时 `<issues>` 必须列本轮发现的**全部**问题（含次要项），禁止挤牙膏/留到下一轮——每多一轮就是一次环境重建与全量重测。
 - **批量调用**：同一轮里并发发多个读/搜工具调用，减少往返次数（每轮往返 = 一次完整模型生成，实测 11-22s）。
-- **报告要短**：审查报告 ≤150 行，只写结论 + 证据（file:line / 输出摘要），不复述代码、不整段粘贴日志。
+- **报告密度**：只写结论 + 证据（file:line / 输出摘要），不复述代码、不整段粘贴日志。篇幅由问题数量决定——问题多就写全（不许为了短而漏项），问题少别铺排版。
 
 ## 输出协议（强制，逐字遵守）
 
@@ -656,7 +656,8 @@ mod tests {
         assert!(CODING_REVIEW_PROMPT.contains("测试只跑一遍"));
         assert!(CODING_REVIEW_PROMPT.contains("问题一次列全"));
         assert!(CODING_REVIEW_PROMPT.contains("批量调用"));
-        assert!(CODING_REVIEW_PROMPT.contains("报告要短"));
+        assert!(CODING_REVIEW_PROMPT.contains("报告密度"));
+        assert!(CODING_REVIEW_PROMPT.contains("不复述代码"));
         assert!(TEST_REVIEW_PROMPT.contains("批量调用"));
         assert!(TEST_REVIEW_PROMPT.contains("环境复用"));
         assert!(TEST_REVIEW_PROMPT.contains("问题一次列全"));
