@@ -5,13 +5,13 @@
   "status": "active",
   "autoContinue": true,
   "usage": {
-    "tokensUsed": 883121,
-    "activeSeconds": 1019
+    "tokensUsed": 910350,
+    "activeSeconds": 1163
   },
   "sisyphus": false,
-  "revision": 286,
+  "revision": 303,
   "createdAt": "2026-10-19T13:26:30.890Z",
-  "updatedAt": "2026-10-19T13:46:04.453Z",
+  "updatedAt": "2026-10-19T13:48:40.124Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
@@ -89,8 +89,10 @@
       {
         "id": "t9",
         "title": "条目生成 + 汇编 + 词表导出（T012/T013/T014）",
-        "status": "pending",
-        "verificationContract": "生成遵守必填节表且不适用处写 N/A；汇编层只合成不新增事实（抽查可溯源到叶子）；图为 Mermaid 源码；glossary.md 为清单自动导出且与清单一致"
+        "status": "complete",
+        "verificationContract": "生成遵守必填节表且不适用处写 N/A；汇编层只合成不新增事实（抽查可溯源到叶子）；图为 Mermaid 源码；glossary.md 为清单自动导出且与清单一致",
+        "completedAt": "2026-10-19T13:46:12.306Z",
+        "evidence": "export_glossary 从清单生成 _meta/glossary.md（门0 写入，带 path:line 与别名）；空节 = FAIL（D014 N/A 语义）；Mermaid 块首行类型校验 + 空块/未闭合 FAIL；单测 247 过 clippy 0；commit b15660a"
       },
       {
         "id": "t10",
@@ -126,8 +128,8 @@
 - Status: running
 - Auto-continue: on
 - Sisyphus mode: no
-- Time spent: 16m59s
-- Tokens used: 883K (883,121) tokens
+- Time spent: 19m23s
+- Tokens used: 910K (910,350) tokens
 ## Tasks
 
 <!-- blockCompletion: true -->
@@ -139,7 +141,7 @@
 - [x] t6: doc-agent profile 新建 + doc-review 供给改造（T004/T005） — evidence: doc-agent 新 profile（deepseek-flash/high/codegraph+context7/doc-contract+四语言 skills/coding 同款包）+ DOC_AGENT_PROMPT 10 条硬约束锚点；doc-review 增 codegraph 保持 medium 不给 context7；9 profile 渲染通过；221 过 clippy 0；co
 - [x] t7: SOP 注册 + 协议块 + 检查点续跑（T006/T007/T008） — evidence: doc-protocol 三块解析 9 单测；DocSopLoop 7 单测（含 state 续跑/--only 幂等/违例重跑审查/编号漂移拒绝）；API start 202 单测；engine 门0 建清单+闭包+单元；238 过 clippy 0；commit 04af7f4
 - [x] t8: 勘察 / 解释 / 缺口转问题（T009/T010/T011） — evidence: DOC_AGENT_PROMPT 三阶段流水（勘察只记事实/解释 🟢🟡🔴 同行证据/生成契约+N/A，锚点断言 4 条）；lint 新增 confidence 检查（🟢 无证据 FAIL、🔴 无 gaps.md FAIL），5 条单测；243 过 clippy 0；commit 72d1145
-- [ ] t9: 条目生成 + 汇编 + 词表导出（T012/T013/T014） — contract: 生成遵守必填节表且不适用处写 N/A；汇编层只合成不新增事实（抽查可溯源到叶子）；图为 Mermaid 源码；glossary.md 为清单自动导出且与清单一致
+- [x] t9: 条目生成 + 汇编 + 词表导出（T012/T013/T014） — evidence: export_glossary 从清单生成 _meta/glossary.md（门0 写入，带 path:line 与别名）；空节 = FAIL（D014 N/A 语义）；Mermaid 块首行类型校验 + 空块/未闭合 FAIL；单测 247 过 clippy 0；commit b15660a
 - [ ] t10: 审计夹具 + 四项确定性审计（T015/T016/T017/T018） — contract: doc-lint 报告由引擎生成并注入审查输入；覆盖审计按档位条目集合对账（缺一条 FAIL）；真实性 100%；标 🟢 给不出证据判 FAIL；Runbook 从零 boot 可执行
 - [ ] t11: 单元审 + 终审编排（T019/T020） — contract: 单元审只判本单元；终审查跨模块重复/总览引用/全量 lint；两时机复用同一 doc-review profile；实测一次单元 FAIL→route→修→PASS 的完整回路
 - [ ] t12: 端到端单仓跑通 + 报告（M3 验收） — contract: 对一个真实仓完整跑完门0→单元滚动→汇编→终审；产物树符合 D016；五项审计结果可复算；墙钟/单元数/审查轮次/token 落 _meta/runs/<run-id>/

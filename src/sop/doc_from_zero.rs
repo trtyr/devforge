@@ -86,8 +86,9 @@ pub fn doc_kickoff(repo: &Path, unit: &str, doc_level: &str) -> String {
 pub fn doc_review_instruction(unit: &str, round: usize) -> String {
     format!(
         "你是文档审查 Agent（第 {round} 轮，审单元 `{unit}`）。\
-\n审查面：覆盖（清单条目 ↔ 文档）、完整性（必填节/NA 规则）、真实性（实体存在）、置信度诚实性（标 🟢 必须给得出 path:line）、可跑（Runbook 七件套）。\
-\n先写 {META_DIR}/../_meta/reviews/review-{round}.md（或 kickoff 指定处），再输出协议块：<doc-verdict>PASS|FAIL</doc-verdict> + <route>...</route> + <issues>...</issues>。"
+\n审查面：覆盖（清单条目 ↔ 文档，按档位集合）、完整性（必填节 / N-A 规则）、真实性（实体存在）、置信度诚实性（标 🟢 必须给得出 path:line）、可跑（**照 Runbook 从零 boot 一遍**：装依赖→配置→启动→健康检查→种子数据，跑不起来 = FAIL）。\
+\n先写 {META_DIR}/../_meta/reviews/review-{round}.md（或 kickoff 指定处），再输出协议块：<doc-verdict>PASS|FAIL</doc-verdict> + <route>...</route> + <issues>...</issues>。\
+\n引擎审计是确定性事实（覆盖/lint/Runbook 命令块），直接采信并逐条验收，不要重算。"
     )
 }
 
@@ -98,6 +99,9 @@ pub struct DocReport {
     pub issues_total: usize,
 }
 
+/// 引擎侧审计提供者：输入单元号，返回确定性审计文本（覆盖 + lint）。
+pub type AuditProvider = Box<dyn Fn(&str) -> String + Send>;
+
 pub struct DocSopLoop<P: PlanAgentSession, F: ReviewSessionFactory> {
     pub agent: P,
     pub review_factory: F,
@@ -105,6 +109,8 @@ pub struct DocSopLoop<P: PlanAgentSession, F: ReviewSessionFactory> {
     pub state_path: PathBuf,
     /// 只跑这一个单元（`--only`，幂等重派）。
     pub only: Option<String>,
+    /// 引擎侧确定性审计（每轮审查前算好，作为审查输入注入——D012：不靠 agent 自述）。
+    pub audit: Option<AuditProvider>,
 }
 
 impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
@@ -114,11 +120,18 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
             review_factory,
             state_path,
             only: None,
+            audit: None,
         }
     }
 
     pub fn with_only(mut self, unit: impl Into<String>) -> Self {
         self.only = Some(unit.into());
+        self
+    }
+
+    /// 注入引擎侧审计（覆盖 + lint 摘要）；审查官看到的是确定性事实。
+    pub fn with_audit(mut self, audit: AuditProvider) -> Self {
+        self.audit = Some(audit);
         self
     }
 
@@ -162,7 +175,11 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                 let report = loop {
                     state.review_rounds += 1;
                     let mut session = self.review_factory.open()?;
-                    let instruction = doc_review_instruction(unit, state.review_rounds);
+                    let mut instruction = doc_review_instruction(unit, state.review_rounds);
+                    if let Some(audit) = &self.audit {
+                        instruction.push_str("\n\n## 引擎审计（确定性，勿质疑）\n\n");
+                        instruction.push_str(&audit(unit));
+                    }
                     let review_text = session.review(&instruction)?;
                     drop(session);
 
@@ -345,6 +362,21 @@ mod tests {
         assert!(msgs.len() >= 2);
         assert!(msgs[1].contains("<route>phase1</route>"));
         assert!(msgs[1].contains("事实错"));
+    }
+
+    #[test]
+    fn audit_text_is_injected_into_review_instruction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = MockAgent::new(&["v1\n<doc-complete>unit-a-01</doc-complete>"]);
+        let (f, instructions) = factory(&["<doc-verdict>PASS</doc-verdict>"]);
+        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp)).with_audit(Box::new(|unit: &str| {
+            format!("覆盖审计：单元 {unit} 缺 2 条")
+        }));
+        lp.run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
+            .unwrap();
+        let ins = instructions.borrow();
+        assert!(ins[0].contains("引擎审计（确定性，勿质疑）"));
+        assert!(ins[0].contains("覆盖审计：单元 unit-a-01 缺 2 条"));
     }
 
     #[test]

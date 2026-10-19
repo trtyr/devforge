@@ -472,6 +472,41 @@ impl BuiltinRpcEngine {
             relay: self.ui.clone(),
         };
         let state_path = workspace.join(STATE_FILE);
+        // 审查输入注入（D012）：每轮把覆盖 + lint 的确定性结果算好给审查官
+        let audit_inv = inv.clone();
+        let audit_ws = workspace.clone();
+        let audit_index = crate::docgen::lint::EntityIndex::build(&workspace, Some(&inv))?;
+        let audit: Box<dyn Fn(&str) -> String + Send> = Box::new(move |unit: &str| {
+            let mut out = String::new();
+            let docs = audit_ws.join(DOCS_DIR);
+            if let Ok(cov) = crate::docgen::audit::coverage_for_unit(
+                &audit_inv,
+                &docs,
+                crate::docgen::audit::DocLevel::Complete,
+                unit,
+            ) {
+                out.push_str(&cov.render());
+            }
+            match crate::docgen::lint::lint_docs_with_entities(&docs, &audit_index) {
+                Ok(report) => {
+                    out.push_str(&report.summary());
+                    out.push('\n');
+                    for v in report.violations() {
+                        out.push_str(&format!("- {}\n", v.render()));
+                    }
+                }
+                Err(e) => out.push_str(&format!("lint 执行失败：{e}\n")),
+            }
+            if let Ok(cmds) = crate::docgen::audit::runbook_commands(&docs)
+                && !cmds.is_empty()
+            {
+                out.push_str("\nRunbook 可执行命令块（审查时逐条从零 boot）：\n");
+                for c in cmds {
+                    out.push_str(&format!("- ```\n{c}\n```\n"));
+                }
+            }
+            out
+        });
         let only = std::env::var("DEVFORGE_DOC_ONLY")
             .ok()
             .filter(|s| !s.trim().is_empty());
@@ -482,7 +517,7 @@ impl BuiltinRpcEngine {
             self.idle_ms,
             vec![self.session_root.join("doc"), self.session_root.join("doc-reviews")],
             || {
-                let mut sop_loop = DocSopLoop::new(agent, factory, state_path);
+                let mut sop_loop = DocSopLoop::new(agent, factory, state_path).with_audit(audit);
                 if let Some(unit) = only {
                     sop_loop = sop_loop.with_only(unit);
                 }
