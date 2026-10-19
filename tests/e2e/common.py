@@ -77,9 +77,15 @@ class Server:
                 f"服务器二进制不存在: {SERVER_BIN}（先 cargo build，或跑 run_all.py）"
             )
         self.home.mkdir(parents=True, exist_ok=True)
+        # 包管理缓存指向宿主目录（隔离 HOME 会丢掉 ~/.cache 与 ~/.npm——
+        # 每轮审查重装依赖时都得从网络拉，实测每轮白花 1-3 分钟）
+        host_cache = Path(os.environ.get("DEVFORGE_E2E_HOST_CACHE", Path.home() / ".cache"))
+        host_npm = Path(os.environ.get("DEVFORGE_E2E_HOST_NPM", Path.home() / ".npm"))
         env = {
             **{k: v for k, v in os.environ.items() if k != "HOME"},
             "HOME": str(self.home),
+            "PIP_CACHE_DIR": str(host_cache / "pip"),
+            "npm_config_cache": str(host_npm),
             "DEVFORGE_ADDR": f"127.0.0.1:{self.port}",
             **self.env_extra,
         }

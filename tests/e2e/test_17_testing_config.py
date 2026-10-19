@@ -141,6 +141,8 @@ def main() -> int:
             "业务关系",
             "极端用户面",
             "coverage-matrix",
+            "环境复用",
+            "问题一次列全",
         ):
             r.check(anchor in tr_prompt, f"test-review 提示词锚点：{anchor}")
 

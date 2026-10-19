@@ -143,6 +143,9 @@ kickoff 消息会告知：黑板路径（当前目录，含 plan tree 与 coding
 \n\
 - **codegraph-first**：MCP 调用显式传 projectPath=<代码工作区>；用 explore 建立结构认知、核波及面、验证对接。返回源码视为已读；⚠️ 新鲜度标记的文件改用 Read。\n\
 - **实地验证**：单测要真的跑（在代码工作区跑），不许只看代码脑补通过。\n\
+- **环境复用（省时硬纪律）**：工作区里已有的虚拟环境 / 已装依赖（`.venv/`、`node_modules/` 等）**直接用，严禁每轮重建**；装包前先查是否已装（`python -c \"import x\"`、`--version`），只补缺的。每轮从零建环境 + 全量重装 = 白烧几分钟。\n\
+- **测试只跑一遍**：整套测试跑一次即可；只有失败时才重跑失败子集，禁止反复全量重跑同一命令。\n\
+- **问题一次列全**：FAIL 时 `<issues>` 必须列出本轮发现的**全部**问题（含次要项），**禁止挤牙膏、禁止留到下一轮**——每多一轮就是一次环境重建与全量重测的成本。\n\
 - **快速审查**：与审查目标无关的探索不展开，尽快出报告。\n\
 \n\
 ## 输出协议（强制，逐字遵守）\n\
@@ -230,6 +233,12 @@ kickoff 消息告知：黑板路径（当前目录，含 testing/ 子树与文�
 
 - **test-side**：测试漏了文档明确写的场景 / 断言与文档矛盾 / 场景不合理 / 疑似偷看——退回测试 Agent 修复。
 - **doc-side**：测试本身合格但覆盖上不去，根因是文档缺失/歧义/错误——转 doc-fix 补档（<issues> 写清缺哪些文档内容）。
+
+## 审查纪律（省时硬纪律，与编码审查同口径）
+
+- **环境复用**：工作区已有的虚拟环境 / 已装依赖（`.venv/`、`node_modules/`）直接用，**严禁每轮重建**；装包前先查是否已装，只补缺的。
+- **测试只跑一遍**：整套 pytest 跑一次即可；失败才重跑失败子集，禁止反复全量重跑。
+- **问题一次列全**：FAIL 时 `<issues>` 必须列本轮发现的**全部**问题（含次要项），禁止挤牙膏/留到下一轮——每多一轮就是一次环境重建与全量重测。
 
 ## 输出协议（强制，逐字遵守）
 
@@ -625,6 +634,12 @@ mod tests {
         assert!(TEST_REVIEW_PROMPT.contains("业务关系"));
         assert!(TEST_REVIEW_PROMPT.contains("极端用户面"));
         assert!(TEST_REVIEW_PROMPT.contains("coverage-matrix"));
+        // 省时硬纪律（2026-10-19 实测：审查占编码墙钟 68%）：环境复用/只跑一遍/一次列全
+        assert!(CODING_REVIEW_PROMPT.contains("环境复用"));
+        assert!(CODING_REVIEW_PROMPT.contains("测试只跑一遍"));
+        assert!(CODING_REVIEW_PROMPT.contains("问题一次列全"));
+        assert!(TEST_REVIEW_PROMPT.contains("环境复用"));
+        assert!(TEST_REVIEW_PROMPT.contains("问题一次列全"));
         // 文档双 Agent 锚点（D004）
         assert!(DOC_FIX_PROMPT.contains("只改文档，不改代码"));
         assert!(DOC_FIX_PROMPT.contains("第三方"));

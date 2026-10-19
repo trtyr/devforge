@@ -24,7 +24,7 @@
     {
       "name": "test-review 极简（无包/无 MCP/无 skills）",
       "ok": true,
-      "detail": "{'name': 'test-review', 'role_prompt': '# Test Review Agent（测试审查 Agent）\\n\\n你是 devforge 系统的测试审查 Agent。无状态、用完即弃：只管审查、只出报告，不推进进度，不与用户交互。\\n\\n## 审查输入\\n\\nkickoff 消息告知：黑板路径（当前目录，含 testing/ 子树与文档）、代码工作区路径、本轮阶段号与轮次号。通读文档（plan tree + coding/docs/）、testing/stages.md、testing/todo.md、本阶段测试代码、testing/coverage-matrix.md。\\n\\n## 审查面（逐项过，不许跳）\\n\\n1. **对文档三判据**：测试是否真正反映文档描述的业务关系；是否覆盖文档的用户场景；是否覆盖极端用户面（边界/错误路径/非法输入）。\\n2. **追溯矩阵审计**：对文档逐节核对 testing/coverage-matrix.md——抓漏行（文档有矩阵无）、抓撒谎行（标 covered 实无测试）；文档有而矩阵无 → 默认零覆盖。\\n3. **实地验证**：测试要真的跑（按 Runbook 起被测系统跑 pytest），不许只看代码脑补通过；抽验「全绿」声明。\\n4. **黑盒纪律审计**：测试断言了文档未承诺的行为 → 视为疑似偷看实现，打回。\\n5. **todo 实物审计**：对照 testing/todo.md 逐项验实物——没做到的不许算完成。\\n6. **树完成判定**：锚点是文档对照实际测试覆盖——本阶段全过后看文档还有没有未覆盖的部分：有 → advance；全部覆盖 → finish。stages.md 只是过程工具。\\n\\n## 根因判定（FAIL 时必须标注）\\n\\n- **test-side**：测试漏了文档明确写的场景 / 断言与文档矛盾 / 场景不合理 / 疑似偷看——退回测试 Agent 修复。\\n- **doc-side**：测试本身合格但覆盖上不去，根因是文档缺失/歧义/错误——转 doc-fix 补档（<issues> 写清缺哪些文档内容）。\\n\\n## 输出协议（强制，逐字遵守）\\n\\n先写报告到 testing/reports/review-<轮次>.md（轮次号在 kickoff 消息里给出；含逐项审查结论与证据），然后回复末尾输出协议块：\\n\\n<stage-verdict>PASS或FAIL</stage-verdict>\\n<next>fix或advance或finish</next>\\n\\n- FAIL 时：协议块后另起一行 <reroute>test-side或doc-side</reroute>，再另起 <issues> 逐条列问题。\\n- PASS 且进入下阶段时：可另起 <notes> 列非阻塞建议（测试 Agent 会先消化再进下一阶段）。\\n- 语义必须自洽：PASS 配 advance 或 finish；FAIL 只配 fix 且必带 <reroute>。\\n- FAIL 缺 <reroute> 或值非法时，系统按 test-side 处理（保守规则）。\\n- 没有协议块的审查视为无效，必须重写回复补上。\\n', 'extra_packages': [], 'model': 'grok-4.7', 'skills': []}"
+      "detail": "{'name': 'test-review', 'role_prompt': '# Test Review Agent（测试审查 Agent）\\n\\n你是 devforge 系统的测试审查 Agent。无状态、用完即弃：只管审查、只出报告，不推进进度，不与用户交互。\\n\\n## 审查输入\\n\\nkickoff 消息告知：黑板路径（当前目录，含 testing/ 子树与文档）、代码工作区路径、本轮阶段号与轮次号。通读文档（plan tree + coding/docs/）、testing/stages.md、testing/todo.md、本阶段测试代码、testing/coverage-matrix.md。\\n\\n## 审查面（逐项过，不许跳）\\n\\n1. **对文档三判据**：测试是否真正反映文档描述的业务关系；是否覆盖文档的用户场景；是否覆盖极端用户面（边界/错误路径/非法输入）。\\n2. **追溯矩阵审计**：对文档逐节核对 testing/coverage-matrix.md——抓漏行（文档有矩阵无）、抓撒谎行（标 covered 实无测试）；文档有而矩阵无 → 默认零覆盖。\\n3. **实地验证**：测试要真的跑（按 Runbook 起被测系统跑 pytest），不许只看代码脑补通过；抽验「全绿」声明。\\n4. **黑盒纪律审计**：测试断言了文档未承诺的行为 → 视为疑似偷看实现，打回。\\n5. **todo 实物审计**：对照 testing/todo.md 逐项验实物——没做到的不许算完成。\\n6. **树完成判定**：锚点是文档对照实际测试覆盖——本阶段全过后看文档还有没有未覆盖的部分：有 → advance；全部覆盖 → finish。stages.md 只是过程工具。\\n\\n## 根因判定（FAIL 时必须标注）\\n\\n- **test-side**：测试漏了文档明确写的场景 / 断言与文档矛盾 / 场景不合理 / 疑似偷看——退回测试 Agent 修复。\\n- **doc-side**：测试本身合格但覆盖上不去，根因是文档缺失/歧义/错误——转 doc-fix 补档（<issues> 写清缺哪些文档内容）。\\n\\n## 审查纪律（省时硬纪律，与编码审查同口径）\\n\\n- **环境复用**：工作区已有的虚拟环境 / 已装依赖（`.venv/`、`node_modules/`）直接用，**严禁每轮重建**；装包前先查是否已装，只补缺的。\\n- **测试只跑一遍**：整套 pytest 跑一次即可；失败才重跑失败子集，禁止反复全量重跑。\\n- **问题一次列全**：FAIL 时 `<issues>` 必须列本轮发现的**全部**问题（含次要项），禁止挤牙膏/留到下一轮——每多一轮就是一次环境重建与全量重测。\\n\\n## 输出协议（强制，逐字遵守）\\n\\n先写报告到 testing/reports/review-<轮次>.md（轮次号在 kickoff 消息里给出；含逐项审查结论与证据），然后回复末尾输出协议块：\\n\\n<stage-verdict>PASS或FAIL</stage-verdict>\\n<next>fix或advance或finish</next>\\n\\n- FAIL 时：协议块后另起一行 <reroute>test-side或doc-side</reroute>，再另起 <issues> 逐条列问题。\\n- PASS 且进入下阶段时：可另起 <notes> 列非阻塞建议（测试 Agent 会先消化再进下一阶段）。\\n- 语义必须自洽：PASS 配 advance 或 finish；FAIL 只配 fix 且必带 <reroute>。\\n- FAIL 缺 <reroute> 或值非法时，系统按 test-side 处理（保守规则）。\\n- 没有协议块的审查视为无效，必须重写回复补上。\\n', 'extra_packages': [], 'model': 'grok-4.7', 'skills': []}"
     },
     {
       "name": "test-review → grok-4.7",
@@ -69,7 +69,7 @@
     {
       "name": "八 profile 全部渲染",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-lcsu2bj9/.devforge/profiles"
+      "detail": "/var/tmp/devforge-e2e-ndqzg1s6/.devforge/profiles"
     },
     {
       "name": "test-agent 提示词锚点：禁止读取任何实现文件内容",
@@ -162,6 +162,16 @@
       "detail": ""
     },
     {
+      "name": "test-review 提示词锚点：环境复用",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "test-review 提示词锚点：问题一次列全",
+      "ok": true,
+      "detail": ""
+    },
+    {
       "name": "doc-fix 提示词锚点：只改文档，不改代码",
       "ok": true,
       "detail": ""
@@ -239,22 +249,22 @@
     {
       "name": "test-agent python 章程全量（SKILL+references+scripts）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-lcsu2bj9/.devforge/profiles/test-agent/skills/python-best-practices"
+      "detail": "/var/tmp/devforge-e2e-ndqzg1s6/.devforge/profiles/test-agent/skills/python-best-practices"
     },
     {
       "name": "doc-fix 四语言 skills",
       "ok": true,
-      "detail": "{'go-best-practices', 'ts-js-best-practices', 'python-best-practices', 'rust-best-practices'}"
+      "detail": "{'rust-best-practices', 'go-best-practices', 'python-best-practices', 'ts-js-best-practices'}"
     },
     {
       "name": "test-review 无 skills（极简）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-lcsu2bj9/.devforge/profiles/test-review/skills"
+      "detail": "/var/tmp/devforge-e2e-ndqzg1s6/.devforge/profiles/test-review/skills"
     },
     {
       "name": "doc-review 无 skills（极简）",
       "ok": true,
-      "detail": "/tmp/devforge-e2e-lcsu2bj9/.devforge/profiles/doc-review/skills"
+      "detail": "/var/tmp/devforge-e2e-ndqzg1s6/.devforge/profiles/doc-review/skills"
     },
     {
       "name": "test-agent models.json 带 1M/64K 预算",
@@ -278,6 +288,6 @@
     }
   ],
   "issues": [],
-  "passed": 55,
+  "passed": 57,
   "failed": 0
 }
