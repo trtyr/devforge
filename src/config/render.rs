@@ -341,6 +341,22 @@ mod tests {
     }
 
     #[test]
+    fn doc_contract_skill_renders_into_coding_profile() {
+        // P008 T000a：契约必须真落到 profile 的 skills/ 下（而不只写在清单里）
+        let manifest = ConfigManifest::builtin();
+        let root = tempfile::tempdir().unwrap();
+        let r = Renderer {
+            manifest: &manifest,
+            installer: &FakeInstaller,
+            skills_source: None,
+        };
+        let profile = r.render_agent(root.path(), "coding-agent").unwrap();
+        let body = fs::read_to_string(profile.join("skills/doc-contract/SKILL.md")).unwrap();
+        assert!(body.starts_with("---"));
+        assert!(body.contains("必填"));
+    }
+
+    #[test]
     fn dual_records_carry_base_plus_extra() {
         let manifest = ConfigManifest::builtin();
         let root = tempfile::tempdir().unwrap();

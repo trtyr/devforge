@@ -490,6 +490,7 @@ impl ConfigManifest {
                     extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
                     model: "deepseek-flash".into(),
                     skills: vec![
+                        "doc-contract".into(),
                         "rust-best-practices".into(),
                         "go-best-practices".into(),
                         "python-best-practices".into(),
@@ -504,6 +505,7 @@ impl ConfigManifest {
                     extra_packages: CODING_REVIEW_EXTRA.iter().map(|s| s.to_string()).collect(),
                     model: "grok-4.7".into(),
                     skills: vec![
+                        "doc-contract".into(),
                         "rust-best-practices".into(),
                         "go-best-practices".into(),
                         "python-best-practices".into(),
@@ -538,6 +540,7 @@ impl ConfigManifest {
                     extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
                     model: "deepseek-flash".into(),
                     skills: vec![
+                        "doc-contract".into(),
                         "rust-best-practices".into(),
                         "go-best-practices".into(),
                         "python-best-practices".into(),
@@ -551,7 +554,7 @@ impl ConfigManifest {
                     role_prompt: DOC_REVIEW_PROMPT.into(),
                     extra_packages: vec![],
                     model: "grok-4.7".into(),
-                    skills: vec![],
+                    skills: vec!["doc-contract".into()],
                     mcp: vec![],
                     thinking_level: Some("medium".into()),
                 },
@@ -648,8 +651,23 @@ mod tests {
         assert_eq!(df.mcp.len(), 2);
         assert_eq!(df.model, "deepseek-flash");
         let dr = m.get_agent("doc-review").unwrap();
-        assert!(dr.extra_packages.is_empty() && dr.mcp.is_empty() && dr.skills.is_empty());
+        // P008 T000a：doc-review 也拿 doc-contract（它是审查用规则书，不是写作技能）
+        assert!(dr.extra_packages.is_empty() && dr.mcp.is_empty());
+        assert_eq!(dr.skills, vec!["doc-contract".to_string()]);
         assert_eq!(dr.model, "grok-4.7");
+    }
+
+    #[test]
+    fn doc_contract_skill_is_shared_by_four_profiles() {
+        // P008 T000a：一份契约四处共用，不允许某处漏掉（否则就是四份措辞漂移的起点）
+        let m = ConfigManifest::builtin();
+        for name in ["coding-agent", "coding-review", "doc-fix", "doc-review"] {
+            let a = m.get_agent(name).unwrap();
+            assert!(
+                a.skills.iter().any(|s| s == "doc-contract"),
+                "{name} 缺少 doc-contract skill"
+            );
+        }
     }
 
     #[test]

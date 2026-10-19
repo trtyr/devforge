@@ -6,11 +6,15 @@
 /// 内置 plan-tree skill 正文（assets/ 随仓库走，编译期嵌入）。
 pub const PLAN_TREE_SKILL_MD: &str = include_str!("../../assets/skills/plan-tree/SKILL.md");
 
+/// 内置 doc-contract skill 正文（P008 T000a：跨 SOP 共用的文档契约）。
+pub const DOC_CONTRACT_SKILL_MD: &str = include_str!("../../assets/skills/doc-contract/SKILL.md");
+
 /// 返回内置 skill 的文件清单（相对 skill 目录的路径 → 文件内容）。
 /// 未收录的 skill 返回 None（调用方回落占位行为）。
 pub fn builtin_skill_files(skill: &str) -> Option<Vec<(&'static str, &'static str)>> {
     match skill {
         "plan-tree" => Some(vec![("SKILL.md", PLAN_TREE_SKILL_MD)]),
+        "doc-contract" => Some(vec![("SKILL.md", DOC_CONTRACT_SKILL_MD)]),
         other => builtin_language_files(other),
     }
 }
@@ -120,6 +124,20 @@ mod tests {
         assert!(body.starts_with("---"), "应有 frontmatter");
         assert!(body.contains("# plan-tree"));
         assert!(body.contains("目录约定"), "应有结构约定正文");
+    }
+
+    #[test]
+    fn doc_contract_skill_carries_frontmatter_templates_and_rules() {
+        // P008 T000a：契约必须自带四样东西，少一样就是四处漂移的起点
+        let files = builtin_skill_files("doc-contract").expect("doc-contract 应有内置资产");
+        let (_, body) = files.iter().find(|(name, _)| *name == "SKILL.md").unwrap();
+        assert!(body.starts_with("---"), "需带 frontmatter 供 skill 加载器识别");
+        assert!(body.contains("name: doc-contract"));
+        assert!(body.contains("必填"), "需含必填节规则");
+        assert!(body.contains("N/A"), "需含 N/A 声明规则（省略不等于不适用）");
+        assert!(body.contains("反模式"), "需含反模式表");
+        assert!(body.contains("path:line"), "需含真实性回指要求");
+        assert!(body.contains("Runbook 七件套"), "需含 Runbook 门禁条目");
     }
 
     #[test]
