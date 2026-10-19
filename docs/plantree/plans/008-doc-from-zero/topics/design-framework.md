@@ -23,30 +23,61 @@
 | 无实体真实性校验 | 幻觉 API/函数名无人拦截 |
 | 写作串行 | 天然的并行工作被串起来做 |
 
-## 三、五阶段框架（事实 / 推断分离）
+## 三、Agent 编制：两类，就两类
+
+> 沿用开发链（plan/coding/testing）的同一套骨架：**一个干活的 + 一个审查的**，循环推进，PASS 才落地。
+> 下面「五阶段」不是五个 agent，而是**干活 agent 内部的五个步骤**；审查 agent 在检查点介入。
+
+| profile | 干什么 | 供给 |
+|---|---|---|
+| **doc-agent**（干活） | 清单 → 勘察 → 解释 → 写作 → 汇编 | `codegraph` + `context7` MCP（与 coding-agent 同款）、写作类 skills |
+| **doc-review**（审查） | 五项审计 + 跑 doc-lint，出 verdict + route | `codegraph` MCP（查实体存在性必须有） |
+
+**循环**（与 coding SOP 同构）：
+
+```
+doc-agent 交一个单元（模块/条目批次）
+   ↓
+<doc-complete>unit-N + 落盘证据
+   ↓
+doc-review 审：跑 doc-lint + 五项审计
+   ↓
+PASS → 提交 + 下一单元        FAIL → <issues> 全量列 + <route> 回该阶段
+```
+
+- **审查角色不可省**：自己写自己审等于自证（GitLab playbook：约束要进门禁，不进提示词）。
+- **审查只判不写**：审查 agent 给问题与证据，改由 doc-agent 做——否则文档会两极风格。
+- **失败路由**（沿用 D002）：清单缺口→phase0、事实错→phase1、置信度标错→phase2、契约/链接/Runbook→phase3；route 缺失或非法保守回 phase3；协议违例上限复用 `MAX_PROTOCOL_VIOLATIONS = 3`。
+
+> **codegraph 不是外部工具，是我们给 agent 的 MCP 配置**（`codegraph_mcp()`，stdio `codegraph serve --mcp`，`CODEGRAPH_TELEMETRY=0`）。沿用 decisions/013：**引擎侧预检 `init`，agent 不自行 init**；所有调用显式 `projectPath=<被 document 的项目>`（agent 的 cwd 是黑板）。
+
+## 四、五阶段（doc-agent 的内部步骤，事实 / 推断分离）
 
 > 结构借 Reversa（勘察→挖掘→解释→生成→审查）＋ CodeWiki（模块树/汇编）＋ DocAgent（条目严谨度），三者合并为下面的骨架。
 
-### 阶段 0 · 清单（inventory）——机械，不花模型时间
+### 阶段 0 · 清单（inventory）——机械优先，codegraph 为主
 
-抽取管线（借 CodeWiki 的成熟做法，附录 C 算法）：
+**算法在 codegraph 里，不在我们手里**：它已经把 AST → 依赖图 → SCC 缩点 → 拓扑排序 → 入口点识别这条链做完了（20+ 语言、router 识别 17 个框架）。所以阶段 0 的动作是：
 
-1. AST 解析全仓 → **依赖图**
-2. **Tarjan 找强连通分量（环）→ 缩点 → DAG**（互相调用的代码不会卡死流程）
-3. 拓扑排序，**入度 0 = 入口点**（main / API 路由 / CLI / 公开导出）——这是"从零开始"唯一不靠猜的锚点
-4. 以入口点为根递归切**功能内聚的模块树**，**叶子 ≤ 32K tokens**（CodeWiki 实测量，直接借用）
-5. 若叶子仍超限：按**圈复杂度 / 嵌套深度 / 语义多样性 / 上下文占用**四类可计算判据下派子模块，**深度上限 3 层**
+1. **引擎侧预检**：有 `.codegraph/` 就直接用；没有则**引擎先 `codegraph init`**（decisions/013：agent 不自行 init，免得每个单元都重建索引）
+2. **agent 调 MCP 建图**：`codegraph files` / `query` / `explore` / `node`，显式 `projectPath=<目标项目>`
+   - 入口点来源：入度为 0 的符号 + **框架 router 识别**（HTTP 路由）+ CLI 入口 + 公开导出
+   - 模块树：按目录/模块边界切，**叶子 ≤ 32K tokens**（CodeWiki 实测量）
+   - 叶子仍超限时：按**圈复杂度 / 嵌套深度 / 语义多样性 / 上下文占用**四类可计算判据下派子模块，**深度上限 3 层**
+3. **机械补漏（codegraph 不管的部分）**：配置键（env/配置文件/schema）、构建与启动命令、数据层（表/模型/迁移）、测试用例名与断言语义
+4. **闭包校验（引擎侧工具，不由 agent 自证）**：入口可达闭包 / 文件覆盖 / 符号覆盖——三道都过，清单才能当分母（D002）
 
 抽取来源（按可靠性排序）：
 
 | 来源 | 得到什么 |
 |------|----------|
-| 依赖图（codegraph / AST） | 模块树、组件、入度为 0 的**入口点** |
-| 入口扫描 | main / CLI 子命令 / HTTP 路由 / 事件处理器 / 公开导出 |
+| codegraph MCP | 模块树、组件、入度为 0 的**入口点**、调用关系、影响面 |
+| 框架 router 识别 | HTTP 路由 → handler 对应关系（17 个框架：Rails/Spring/Play/Gin/Express/Next/Axum…） |
 | 配置与清单 | 配置键、默认值、必需项（env/配置文件/schema） |
 | 数据层 | 表结构 / 模型定义 / 迁移（若有） |
 | 构建与运行 | 构建脚本、启动命令、镜像/编排文件 |
 | 测试 | **测试即可执行规格**：用例名与断言的语义（不是照抄） |
+| **codegraph 不支持的语言** | 登记为缺口，**不假装支持**（D004） |
 
 产出 `inventory.md|json`：每条 = ID + 类型（入口/模块/配置/数据/行为）+ 位置（file:line）+ 状态（未覆盖/已覆盖）。
 **这份清单是后续一切判定的分母。** 入口点条目要标 `kind=entry`——写作时优先。

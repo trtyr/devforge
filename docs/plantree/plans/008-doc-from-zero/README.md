@@ -31,9 +31,20 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 
 **共用资产**：`topics/doc-contract.md`（条目模板 + doc-lint 规格）不只用于本 SOP——coding 写文档、coding-review 审文档、doc-fix 补文档都用同一份，避免四份措辞漂移。
 
-## 四阶段框架（草案，未定稿）
+## Agent 编制（两类，沿用开发链骨架）
 
-> 已按 Reversa 重构为**五阶段**：事实与推断分离，每条断言带置信度。详见 `topics/design-framework.md` §三。
+> **一个干活的 + 一个审查的**，循环推进，PASS 才落地。下面五个阶段是**干活 agent 的内部步骤**，不是五个 agent。
+
+| profile | 干什么 | 供给 |
+|---|---|---|
+| **doc-agent**（干活） | 清单 → 勘察 → 解释 → 写作 → 汇编 | `codegraph` + `context7` MCP（与 coding-agent 同款） |
+| **doc-review**（审查） | 五项审计 + 跑 doc-lint → verdict + route | `codegraph` MCP（查实体存在性） |
+
+**codegraph 是我们给 agent 的 MCP 配置**（`codegraph_mcp()`），不是外部工具；沿用 decisions/013：引擎侧预检 `init`，agent 不自行 init，调用显式 `projectPath=<目标项目>`。
+
+## 五阶段（doc-agent 内部步骤，草案，未定稿）
+
+> 事实与推断分离，每条断言带置信度。详见 `topics/design-framework.md` §四。
 
 | 阶段 | 输入 | 产出 | 关键点 |
 |------|------|------|--------|
@@ -41,7 +52,7 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 | 1 · 勘察 | inventory + 模块树 | 每模块事实记录（有什么，**不解释**） | **一模块一会话**；同层可并行 |
 | 2 · 解释 | 勘察结果 | 业务规则/状态机/权限矩阵（**🟢/🟡/🔴，旁挂证据表**） | 无 git 时禁止声称“已知设计意图”，一律 🟡 |
 | 3 · 生成/汇编 | 事实 + 推断 | **`<项目>/docs/contexts/`** 下的条目文档 + 总览 + **Mermaid 图源码** | 只合成不新增事实；上层可追溯叶子 |
-| 4 · 审计 | 全部产物 | 通过/打回 + `gaps.md` | 覆盖 + 完整性 + 真实性 + 置信度诚实性 + 可跑（**工具：devforge 侧 doc-lint**） |
+| 4 · 审计 | 全部产物 | 通过/打回 + `gaps.md` | **doc-review** 跑：覆盖 + 完整性 + 真实性 + 置信度诚实性 + 可跑（**工具：devforge 侧 doc-lint**） |
 
 ## 研究依据（2026-10-19 检索）
 
@@ -57,9 +68,9 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 
 ## 文件地图
 
-- `topics/design-framework.md` — 框架全文（五阶段、完备性自证、路由、检查点）
+- `topics/design-framework.md` — 框架全文（双 Agent 编制、五阶段、完备性自证、路由、检查点）
 - `topics/doc-contract.md` — **跨 SOP 共用的文档契约草案**（条目模板/反模式/真实性规则/doc-lint 规格）
-- `decisions/README.md` — D001（本 SOP 为唯一权威，doc-init 退役）/ D002（吸收其工程教训为红线）
+- `decisions/README.md` — D001（本 SOP 为唯一权威）/ D002（红线）/ D003-D008（落点、codegraph、画图、置信度、档位、doc-lint）/ D009（双 Agent 编制）
 - `open-questions.md` — 待拍问题（Q001+）
 - `roadmap.md` — 任务分解（草案，未定稿）
 

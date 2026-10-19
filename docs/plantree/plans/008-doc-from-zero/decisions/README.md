@@ -54,3 +54,10 @@
 
 - **决策**：检查工具由我们在 devforge 侧实现，作用于任意目标工作区；**不往被 document 的仓库里塞脚本**（除 `docs/contexts/` 外不写文件）。
 - **为什么**：保持目标仓库干净；工具随系统升级，不用在每个项目里维护副本。
+
+## D009 · 双 Agent 编制：doc-agent（干活）+ doc-review（审查）
+
+- **决策**（用户拍板 2026-10-19 20:56）：沿用开发链的极简架构——**两类 Agent**：一个写文档的、一个检查文档的。五个阶段是**干活 agent 的内部步骤**，不是五个 agent。
+- **供给**：doc-agent 拿 `codegraph` + `context7` MCP（与 coding-agent 同款配置）；doc-review 拿 `codegraph`（查实体存在性必须有）。
+- **为什么**：① 自己写自己审 = 自证（GitLab playbook：约束要进门禁）；② 每多一个角色就多一份提示词漂移与上下文传递成本；③ 开发链已验证同一套循环（stage-verdict + route + issues 全量）能跑通。
+- **后果**：审查只判不写（改由 doc-agent 做，避免风格两极）；失败路由复用 D002 的 route 表；协议违例上限 `MAX_PROTOCOL_VIOLATIONS = 3`。
