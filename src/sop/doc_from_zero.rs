@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Context as _, DevforgeError, Result};
 use crate::sop::doc_protocol::{
-    MAX_DOC_PROTOCOL_VIOLATIONS, DocRoute, DocVerdict, parse_doc_complete, parse_doc_review,
+    MAX_DOC_PROTOCOL_VIOLATIONS, DocVerdict, parse_doc_complete, parse_doc_review,
 };
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
 
@@ -226,13 +226,9 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                             round = state.review_rounds,
                             "单元通过并落盘"
                         );
-                        if report.route == DocRoute::Finish {
-                            return Ok(DocReport {
-                                units_done: state.done,
-                                review_rounds: state.review_rounds,
-                                issues_total: state.issues_total,
-                            });
-                        }
+                        // PASS + route=finish 只意味着「这个单元收口了」，**不是整个 run 结束**。
+                        // 2026-10-19 实测：审查官对第一个单元就回了 finish，旧逻辑直接 return，
+                        // 后面的 unit-root-02 压根没写，run 却报了 Settled。
                         break;
                     }
                     DocVerdict::Fail => {
@@ -355,6 +351,26 @@ mod tests {
         assert_eq!(rep.review_rounds, 2);
         let saved = DocState::load(&state_path(&tmp));
         assert_eq!(saved.done, units);
+    }
+
+    #[test]
+    fn pass_with_finish_route_does_not_end_the_run() {
+        // 2026-10-19 实测：审查官对第一个单元就回 PASS+finish，旧逻辑直接 return，
+        // 第二个单元压根没写，run 却报 Settled。
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = MockAgent::new(&[
+            "写完 A\n<doc-complete>unit-a-01</doc-complete>",
+            "写完 B\n<doc-complete>unit-b-02</doc-complete>",
+        ]);
+        let (f, _) = factory(&[
+            "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
+            "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
+        ]);
+        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
+        let units = vec!["unit-a-01".to_string(), "unit-b-02".to_string()];
+        let rep = lp.run(&mut NoUser, tmp.path(), &units, "complete").unwrap();
+        assert_eq!(rep.units_done, units, "finish 只收口本单元，不得结束整个 run");
+        assert_eq!(rep.review_rounds, 2);
     }
 
     #[test]

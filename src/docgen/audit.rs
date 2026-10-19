@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::docgen::inventory::{EntryKind, Inventory};
+use crate::docgen::inventory::{EntryKind, Inventory, InventoryEntry};
 use crate::error::{Context as _, Result};
 
 /// 文档档位（D007：默认 complete）。
@@ -111,21 +111,14 @@ fn kind_str(kind: EntryKind) -> &'static str {
 
 /// 覆盖对账：按档位取条目集合，逐条查是否在 docs 目录下被提及。
 pub fn coverage(inv: &Inventory, docs_dir: &Path, level: DocLevel) -> Result<CoverageReport> {
-    let corpus = collect_text(docs_dir)?;
+    let docs = collect_docs(docs_dir)?;
     let mut report = CoverageReport::default();
     for e in &inv.entries {
         if !level.requires(e.kind) {
             continue;
         }
         report.required += 1;
-        // 模块：认路径或模块名；符号：认规范名（大小写敏感，避免误判）
-        let hit = match e.kind {
-            EntryKind::Module => {
-                corpus.contains(&e.path) || corpus.contains(&e.canonical_name)
-            }
-            _ => corpus.contains(&e.canonical_name),
-        };
-        if hit {
+        if entry_covered(&docs, e) {
             report.covered += 1;
         } else {
             report.missing.push(CoverageMiss {
@@ -148,18 +141,14 @@ pub fn coverage_for_unit(
     level: DocLevel,
     unit: &str,
 ) -> Result<CoverageReport> {
-    let corpus = collect_text(docs_dir)?;
+    let docs = collect_docs(docs_dir)?;
     let mut report = CoverageReport::default();
     for e in inv.entries.iter().filter(|e| e.unit_id == unit) {
         if !level.requires(e.kind) {
             continue;
         }
         report.required += 1;
-        let hit = match e.kind {
-            EntryKind::Module => corpus.contains(&e.path) || corpus.contains(&e.canonical_name),
-            _ => corpus.contains(&e.canonical_name),
-        };
-        if hit {
+        if entry_covered(&docs, e) {
             report.covered += 1;
         } else {
             report.missing.push(CoverageMiss {
@@ -175,14 +164,68 @@ pub fn coverage_for_unit(
     Ok(report)
 }
 
-fn collect_text(dir: &Path) -> Result<String> {
-    let mut out = String::new();
-    let files = collect_markdown(dir)?;
-    for f in files {
-        out.push_str(&std::fs::read_to_string(&f).ctx(format!("读文档 {}", f.display()))?);
-        out.push('\n');
+/// 解析后的文档：全文 + frontmatter 的 type + 首个标题。
+struct DocFile {
+    text: String,
+    ty: Option<String>,
+    heading: Option<String>,
+}
+
+fn collect_docs(dir: &Path) -> Result<Vec<DocFile>> {
+    let mut out = Vec::new();
+    for f in collect_markdown(dir)? {
+        let text = std::fs::read_to_string(&f).ctx(format!("读文档 {}", f.display()))?;
+        let ty = frontmatter_type(&text);
+        let heading = text
+            .lines()
+            .find(|l| l.trim_start().starts_with('#'))
+            .map(|l| l.trim().trim_start_matches('#').trim().to_string());
+        out.push(DocFile { text, ty, heading });
     }
     Ok(out)
+}
+
+fn frontmatter_type(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    for l in lines {
+        let t = l.trim();
+        if t == "---" {
+            break;
+        }
+        if let Some(v) = t.strip_prefix("type:") {
+            return Some(v.trim().trim_matches(['"', '\'']).to_lowercase());
+        }
+    }
+    None
+}
+
+/// 条目是否真被文档覆盖。
+///
+/// 模块必须有一篇**自称模块文档**（frontmatter `type: module`）并提到它，
+/// 或者有文档**链接**到它；只在 Runbook 里被顺手提一句不算。
+/// 反例（2026-10-19 实测）：某单元整个被跳过，但它的 `main.py` 在 Runbook 代码块里
+/// 出现过一行，旧口径就把它算成已覆盖——分母没洞，覆盖却假了。
+fn entry_covered(docs: &[DocFile], e: &InventoryEntry) -> bool {
+    match e.kind {
+        EntryKind::Module => {
+            docs.iter().any(|d| {
+                let names_it = d.text.contains(&e.path) || d.text.contains(&e.canonical_name);
+                let self_declared = matches!(d.ty.as_deref(), Some("module") | Some("模块"));
+                let titled = d
+                    .heading
+                    .as_deref()
+                    .map(|h| h.contains(&e.canonical_name) || h.contains(&e.path))
+                    .unwrap_or(false);
+                names_it && (self_declared || titled)
+            }) || docs
+                .iter()
+                .any(|d| d.text.contains(&format!("]({}", e.path)))
+        }
+        _ => docs.iter().any(|d| d.text.contains(&e.canonical_name)),
+    }
 }
 
 fn collect_markdown(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -416,7 +459,7 @@ mod tests {
         write_doc(
             tmp.path(),
             "all.md",
-            "# all\n\n`src/main.py` / `src/core.py`：`create_note` 与 `orphan_fn`。\n",
+            "---\ntype: module\n---\n\n# all\n\n`src/main.py` / `src/core.py`：`create_note` 与 `orphan_fn`。\n",
         );
         let inv = build_inventory(tmp.path()).unwrap();
         let rep = coverage(&inv, &tmp.path().join("docs/contexts"), DocLevel::Complete).unwrap();
@@ -516,6 +559,42 @@ mod tests {
         write_doc(tmp.path(), "_meta/y.md", &format!("# y\n\n{para}\n"));
         let dups = duplicated_content(&tmp.path().join("docs/contexts")).unwrap();
         assert!(dups.is_empty(), "元数据与短行不应计入: {dups:?}");
+    }
+
+    #[test]
+    fn module_mentioned_only_in_prose_is_not_covered() {
+        use crate::docgen::inventory::Coverage;
+        let m = InventoryEntry {
+            id: "mod:src/core.py".into(),
+            kind: EntryKind::Module,
+            path: "src/core.py".into(),
+            line: 1,
+            canonical_name: "core".into(),
+            aliases: Vec::new(),
+            status: Coverage::Uncovered,
+            unit_id: "unit-src-01".into(),
+        };
+        // 只在一篇普通文档（如 Runbook）里被提一句：不算覆盖
+        let prose = vec![DocFile {
+            text: "启动：`python -m src.core`\n".into(),
+            ty: None,
+            heading: Some("Runbook".into()),
+        }];
+        assert!(!entry_covered(&prose, &m));
+        // 有一篇标题就是它（无论 type 写没写）：算覆盖
+        let module_doc = vec![DocFile {
+            text: "# core\n\n`src/core.py` 的职责。\n".into(),
+            ty: None,
+            heading: Some("core".into()),
+        }];
+        assert!(entry_covered(&module_doc, &m));
+        // 被链接指向：也算覆盖（总览/索引本身就是入口）
+        let linked = vec![DocFile {
+            text: "- [core](src/core.py)\n".into(),
+            ty: None,
+            heading: Some("索引".into()),
+        }];
+        assert!(entry_covered(&linked, &m));
     }
 
     #[test]

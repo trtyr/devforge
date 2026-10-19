@@ -1,0 +1,148 @@
+{
+  "script": "test_22_doc_from_zero",
+  "checks": [
+    {
+      "name": "PUT 剥包 manifest == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "九 profile 渲染完成（剥包快路径）",
+      "ok": true,
+      "detail": "{'rendered': 9, 'type': 'config.rendered'}"
+    },
+    {
+      "name": "测试侧补偿（配置全量复刻）",
+      "ok": true,
+      "detail": "['models.json', 'auth.json', 'settings.json', 'plugins-config', 'real-skill']"
+    },
+    {
+      "name": "fixture 初始无文档",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "fixture 初始无 git 历史",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "项目 book-app 创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "任务 d1（sop=doc-from-zero）创建",
+      "ok": true,
+      "detail": "status=201, body={'id': 'd1', 'project': 'book-app', 'sop': 'doc-from-zero', 'workspace': '/var/tmp/devforge-e2e-_n04cc72/workspace/book-app', 'status': 'Pending', 'created_at_ms': 1792418587395, 'current_run': None, 'runs': []}"
+    },
+    {
+      "name": "start doc-from-zero == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "run 终态 Settled（耗时 900s）",
+      "ok": true,
+      "detail": "final=Settled"
+    },
+    {
+      "name": "产物目录 docs/contexts 存在（D016）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "门 0：inventory.json 落盘",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "清单含 fixture 的模块条目（3）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "清单：每个 module 都有单元编号（D020）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "门 0：glossary.md 自动导出",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "门 0：闭包校验证据落盘",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "检查点 state.json 落盘",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "至少一个单元通过审查并落盘（['unit-booklib-01']）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "正文文档存在（9 篇）",
+      "ok": true,
+      "detail": "[PosixPath('/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/README.md'), PosixPath('/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/runbook.md'), PosixPath('/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/overview.md'), PosixPath('/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/internal.md'), PosixPath('/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/package-boundary.md')]"
+    },
+    {
+      "name": "运行账单目录 _meta/runs/<run-id>/ 存在",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "运行账单 report.md 存在",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "账单含审查轮次",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "账单含完成单元",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-agent 会话有内容",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-review 会话有内容",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "`/home/trtyr/code-work/devforge/target/debug/devforge` 存在（审计可复算）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "doc-audit 复算退出码 0（覆盖 + lint）",
+      "ok": true,
+      "detail": "rc=0\nstdout=space/book-app/docs/contexts/booklib/errors.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/internal.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/list-books.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/overview.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/package-boundary.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/runbook.md\n- `list_books` 在 9 个文档中重复出现：/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/README.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/add-book.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/data-model.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/errors.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/internal.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/list-books.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/overview.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/package-boundary.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/runbook.md\n- `main` 在 3 个文档中重复出现：/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/README.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/booklib/package-boundary.md, /var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/runbook.md\n跨模块重复正文：无\n/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/_meta/reviews/final.md:26 [banned] 未完成标记（TODO/TBD/待补充）——未完成就是未完成，不许伪装\n/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/_meta/reviews/review-1.md:23 [banned] 未完成标记（TODO/TBD/待补充）——未完成就是未完成，不许伪装\n/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/_meta/runs/02abfe13-0126-4119-a896-fd825e93f858/report.md:15 [banned] 未完成标记（TODO/TBD/待补充）——未完成就是未完成，不许伪装\ndoc-lint: 0 个失败 / 3 个提示 → 通过\n\nstderr="
+    },
+    {
+      "name": "doc-audit 输出覆盖结论",
+      "ok": true,
+      "detail": "/reviews/final.md:26 [banned] 未完成标记（TODO/TBD/待补充）——未完成就是未完成，不许伪装\n/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/_meta/reviews/review-1.md:23 [banned] 未完成标记（TODO/TBD/待补充）——未完成就是未完成，不许伪装\n/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/_meta/runs/02abfe13-0126-4119-a896-fd825e93f858/report.md:15 [banned] 未完成标记（TODO/TBD/待补充）——未完成就是未完成，不许伪装\ndoc-lint: 0 个失败 / 3 个提示 → 通过\n"
+    },
+    {
+      "name": "doc-audit 输出 lint 结论",
+      "ok": true,
+      "detail": "/reviews/final.md:26 [banned] 未完成标记（TODO/TBD/待补充）——未完成就是未完成，不许伪装\n/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/_meta/reviews/review-1.md:23 [banned] 未完成标记（TODO/TBD/待补充）——未完成就是未完成，不许伪装\n/var/tmp/devforge-e2e-_n04cc72/workspace/book-app/docs/contexts/_meta/runs/02abfe13-0126-4119-a896-fd825e93f858/report.md:15 [banned] 未完成标记（TODO/TBD/待补充）——未完成就是未完成，不许伪装\ndoc-lint: 0 个失败 / 3 个提示 → 通过\n"
+    }
+  ],
+  "issues": [],
+  "passed": 28,
+  "failed": 0
+}

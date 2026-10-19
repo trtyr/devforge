@@ -2,21 +2,21 @@
   "version": 3,
   "id": "mvfafune-7ynfrl",
   "objective": "在 devforge 内实现第二条 SOP「doc-from-zero」到 M3：可被 API 触发、按四道门滚动产出目标项目的 docs/contexts/ 文档体系，并通过五项确定性审计（覆盖/完整性/真实性/置信度诚实性/可跑）。",
-  "status": "active",
-  "autoContinue": true,
+  "status": "paused",
+  "autoContinue": false,
   "usage": {
-    "tokensUsed": 1754237,
-    "activeSeconds": 1897
+    "tokensUsed": 2103065,
+    "activeSeconds": 1924
   },
   "sisyphus": false,
-  "revision": 512,
+  "revision": 535,
   "createdAt": "2026-10-19T13:26:30.890Z",
-  "updatedAt": "2026-10-19T14:02:57.099Z",
+  "updatedAt": "2026-10-19T14:18:20.098Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
-    "generation": "0d7a89bc-7ce1-4d37-9291-8b02f648a902",
-    "used": 8,
+    "generation": "c3a04f1d-fb14-4f32-9f2c-22a1952e2119",
+    "used": 11,
     "phase": "idle",
     "repairUsed": false
   },
@@ -120,7 +120,10 @@
     "blockCompletion": true,
     "proposedAt": "2026-10-19T13:26:06.113Z"
   },
-  "activePath": ".pi/goals/active_goal_2026101921263089_mvfafune-7ynfrl.md"
+  "activePath": ".pi/goals/active_goal_2026101921263089_mvfafune-7ynfrl.md",
+  "stopReason": "agent",
+  "pauseReason": "t12 的端到端见证（test_22，真模型跑 doc-from-zero 全链）正在后台运行，预计 30–90 分钟；等待期间每个 goal checkpoint 重发 ~170k token 上下文却无事可做（本 turn 已实测 174k/turn）。任务本身未受阻：后台任务完成会自动通知并唤醒本会话，届时回填证据、勾 t12、收口。为避免空转烧 token，先暂停；跑完后我回报结果，需要继续时请 /goal-resume。",
+  "pauseSuggestedAction": "等 test_22 后台任务通知后回填 evidence/t021-m3-e2e.md 并收口 t12；之后 /goal-resume 让审计员过一遍。"
 }
 
 # Goal Prompt
@@ -129,11 +132,11 @@
 
 ## Progress
 
-- Status: running
-- Auto-continue: on
+- Status: paused (agent)
+- Auto-continue: off
 - Sisyphus mode: no
-- Time spent: 31m37s
-- Tokens used: 1.8M (1,754,237) tokens
+- Time spent: 32m04s
+- Tokens used: 2.1M (2,103,065) tokens
 ## Tasks
 
 <!-- blockCompletion: true -->
@@ -150,3 +153,5 @@
 - [x] t11: 单元审 + 终审编排（T019/T020） — evidence: 单元审用 coverage_for_unit 只判本单元；终审同 profile 新实例查全量覆盖/lint/跨模块重复/汇编链接，FAIL→run 失败；运行账单落 _meta/runs/<run-id>/report.md；FAIL→route→修→PASS 回路由 fail_message_contains_route_and_issues 实测；257 过 clippy 0；commit 
 - [ ] t12: 端到端单仓跑通 + 报告（M3 验收） — contract: 对一个真实仓完整跑完门0→单元滚动→汇编→终审；产物树符合 D016；五项审计结果可复算；墙钟/单元数/审查轮次/token 落 _meta/runs/<run-id>/
 
+- Agent pause reason: t12 的端到端见证（test_22，真模型跑 doc-from-zero 全链）正在后台运行，预计 30–90 分钟；等待期间每个 goal checkpoint 重发 ~170k token 上下文却无事可做（本 turn 已实测 174k/turn）。任务本身未受阻：后台任务完成会自动通知并唤醒本会话，届时回填证据、勾 t12、收口。为避免空转烧 token，先暂停；跑完后我回报结果，需要继续时请 /goal-resume。
+- Agent suggests: 等 test_22 后台任务通知后回填 evidence/t021-m3-e2e.md 并收口 t12；之后 /goal-resume 让审计员过一遍。

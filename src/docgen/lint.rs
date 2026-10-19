@@ -135,6 +135,8 @@ pub enum EntryType {
     Config,
     Model,
     ErrorCode,
+    /// 模块/包：一篇文档说的是一个文件或包（覆盖审计认它作「自报家门」）
+    Module,
     /// 内部/私有符号：必填节只记提示，不 FAIL（D014）
     Internal,
 }
@@ -148,6 +150,7 @@ impl EntryType {
             "config" | "配置" | "配置项" => Some(Self::Config),
             "model" | "data" | "数据模型" => Some(Self::Model),
             "error" | "error-code" | "错误码" => Some(Self::ErrorCode),
+            "module" | "package" | "模块" | "包" => Some(Self::Module),
             "internal" | "private" | "内部" => Some(Self::Internal),
             _ => None,
         }
@@ -197,6 +200,11 @@ impl EntryType {
             Self::Internal => &[
                 ("摘要", &["摘要", "概述", "说明"]),
                 ("行为语义", &["行为", "语义"]),
+            ],
+            Self::Module => &[
+                ("职责", &["职责", "作用", "定位"]),
+                ("公开成员", &["公开成员", "导出", "对外接口"]),
+                ("依赖", &["依赖", "引用", "上游"]),
             ],
         }
     }
@@ -1200,6 +1208,24 @@ mod tests {
         write(tmp.path(), "weird.md", "---\ntype: ghost\ntitle: x\n");
         let report = lint_docs(tmp.path()).unwrap();
         assert!(report.passed());
+    }
+
+    #[test]
+    fn module_doc_requires_responsibility_sections() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "m.md",
+            "---\ntype: module\n---\n\n# m\n\n## 职责\n负责 A。\n",
+        );
+        let report = lint_docs(tmp.path()).unwrap();
+        assert!(
+            report
+                .failures()
+                .any(|v| v.check == Check::RequiredSection && v.message.contains("公开成员")),
+            "{:?}",
+            report.violations()
+        );
     }
 
     #[test]
