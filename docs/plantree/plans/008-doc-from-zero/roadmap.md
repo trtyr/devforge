@@ -2,6 +2,12 @@
 
 > 框架期草案：只在用户拍板 Q001-Q006 后才拆实卡。**当前不执行。**
 
+## Phase 0 · 共用资产（先于一切：契约与门禁）
+
+- [ ] (T000a) `doc-contract` 落成 skill（内容即 `topics/doc-contract.md`）
+- [ ] (T000b) `doc-lint` 最小版：实体存在性 + 必填节 + 链接可解析（先 Python/TS）
+- [ ] (T000c) 接入既有链路：coding 提示词一行引用 + 预审门加「doc-lint 零违规」；coding-review 增加复核面
+
 ## Phase A · 清单（denominator）
 
 - [ ] (T001) inventory 抽取器：codegraph 模块树 + 入口点（入度 0）落成结构化清单
@@ -27,6 +33,8 @@
 - [ ] (T012) 与 doc-init skill 的关系落地（Q003）
 
 ## Milestones
+
+- **M0**（Phase 0）：契约 + doc-lint 落地，coding 链路用上（P008 的前置，也是 P005/P007 的增量）
 
 - M1（A 段）：清单能机械产出，且覆盖一个真实中型库
 - M2（B+C 段）：能产出通过三查审计的文档体系

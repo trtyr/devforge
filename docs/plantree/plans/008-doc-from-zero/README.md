@@ -29,6 +29,8 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 
 三条判定都是**确定性/可复核**的，不依赖模型「感觉写全了」。
 
+**共用资产**：`topics/doc-contract.md`（条目模板 + doc-lint 规格）不只用于本 SOP——coding 写文档、coding-review 审文档、doc-fix 补文档都用同一份，避免四份措辞漂移。
+
 ## 四阶段框架（草案，未定稿）
 
 | 阶段 | 输入 | 产出 | 关键点 |
@@ -51,6 +53,7 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 ## 文件地图
 
 - `topics/design-framework.md` — 框架全文（四阶段、判定口径、与 doc-init skill 的差异）
+- `topics/doc-contract.md` — **跨 SOP 共用的文档契约草案**（条目模板/反模式/真实性规则/doc-lint 规格）
 - `open-questions.md` — 待拍问题（Q001+）
 - `roadmap.md` — 任务分解（草案，未定稿）
 
