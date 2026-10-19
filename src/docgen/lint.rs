@@ -18,6 +18,8 @@ pub enum Check {
     Link,
     /// Runbook 七件套不全
     Runbook,
+    /// 实体存在性 / 同名异写（t4）
+    Entity,
     /// 禁写内容（TODO/超长代码块/日志粘贴）——提示级
     Banned,
 }
@@ -28,6 +30,7 @@ impl Check {
             Check::RequiredSection => "required-section",
             Check::Link => "link",
             Check::Runbook => "runbook",
+            Check::Entity => "entity",
             Check::Banned => "banned",
         }
     }
@@ -204,8 +207,17 @@ const RUNBOOK_SECTIONS: &[(&str, &[&str])] = &[
     ("公开接口清单", &["公开接口", "接口清单", "端点", "api"]),
 ];
 
-/// 对 `docs_dir` 下的全部 markdown 跑四类检查。
+/// 对 `docs_dir` 下的全部 markdown 跑四类结构检查（无实体索引，t2 行为）。
 pub fn lint_docs(docs_dir: &Path) -> Result<LintReport> {
+    lint_with(docs_dir, None)
+}
+
+/// 带实体索引的完整检查（t4）：结构四类 + 实体存在性 + 同名异写。
+pub fn lint_docs_with_entities(docs_dir: &Path, index: &EntityIndex) -> Result<LintReport> {
+    lint_with(docs_dir, Some(index))
+}
+
+fn lint_with(docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport> {
     let mut report = LintReport::default();
     let files = collect_markdown(docs_dir)?;
     for file in &files {
@@ -216,6 +228,9 @@ pub fn lint_docs(docs_dir: &Path) -> Result<LintReport> {
         check_required_sections(&doc, file, &mut report);
         check_links(&doc, file, &mut report);
         check_banned(&doc, file, &mut report);
+        if let Some(index) = index {
+            check_entities(&doc, file, index, &mut report);
+        }
         if is_runbook(file) {
             check_runbook(&doc, file, &mut report);
         }
@@ -612,6 +627,263 @@ fn is_identifier_like(token: &str) -> bool {
     has_alpha && code_shape
 }
 
+/// 实体索引：从源码语料建“什么名字/路径在代码里真实存在”（t4）。
+///
+/// 真相源选**源码语料**而不是清单符号表：符号表只收公开符号且靠启发式，
+/// 拿它当唯一真相会把合法的内部标识符误报成幽灵实体。
+#[derive(Debug, Default, Clone)]
+pub struct EntityIndex {
+    names: BTreeSet<String>,
+    paths: BTreeSet<String>,
+    /// alias → canonical（同名异写提示用，D011）
+    aliases: std::collections::BTreeMap<String, String>,
+}
+
+impl EntityIndex {
+    /// 扫仓库源文件建索引；`inv` 提供别名登记（可缺）。
+    pub fn build(
+        root: &Path,
+        inv: Option<&crate::docgen::inventory::Inventory>,
+    ) -> Result<Self> {
+        let root = root
+            .canonicalize()
+            .ctx(format!("解析仓库根 {}", root.display()))?;
+        let files = crate::docgen::inventory::scan_source_files(&root)?;
+        let mut names = BTreeSet::new();
+        let mut paths = BTreeSet::new();
+        for (rel, _) in &files {
+            paths.insert(rel.clone());
+            if let Some(base) = rel.rsplit('/').next() {
+                paths.insert(base.to_string());
+                if let Some(stem) = base.rsplit_once('.').map(|(s, _)| s) {
+                    names.insert(stem.to_string());
+                }
+            }
+            if let Ok(text) = std::fs::read_to_string(root.join(rel)) {
+                for token in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+                    if token.len() >= 3 {
+                        names.insert(token.to_string());
+                    }
+                }
+            }
+        }
+        let mut aliases = std::collections::BTreeMap::new();
+        if let Some(inv) = inv {
+            for e in &inv.entries {
+                for alias in &e.aliases {
+                    aliases.insert(alias.clone(), e.canonical_name.clone());
+                }
+            }
+        }
+        Ok(Self { names, paths, aliases })
+    }
+
+    pub fn has_name(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+
+    pub fn has_path(&self, path: &str) -> bool {
+        self.paths.contains(path) || self.paths.iter().any(|p| p.ends_with(&format!("/{path}")))
+    }
+
+    pub fn alias_of(&self, name: &str) -> Option<&str> {
+        self.aliases.get(name).map(String::as_str)
+    }
+}
+
+/// 不是实体引用的词（语言关键字/字面量/HTTP 方法）。
+const NON_ENTITY_WORDS: &[&str] = &[
+    "true", "false", "null", "none", "self", "cls", "this", "return", "def", "class",
+    "import", "from", "async", "await", "lambda", "pass", "const", "let", "var", "function",
+    "export", "default", "public", "private", "void", "string", "number", "boolean", "int",
+    "str", "list", "dict", "any", "optional", "GET", "POST", "PUT", "DELETE", "PATCH",
+    "HEAD", "OPTIONS", "localhost",
+];
+
+fn check_entities(doc: &ParsedDoc, file: &Path, index: &EntityIndex, report: &mut LintReport) {
+    // 实体检查只对**声明了条目类型的文档**生效（契约条目）；
+    // 总览/Runbook/plan 设计文档自由引用概念，强制实体检查只会制造噪音。
+    let entry_scope = doc.entry_type.is_some();
+    let mut in_fence = false;
+    for (idx, line) in doc.lines.iter().enumerate() {
+        let no = idx + 1;
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for span in inline_code_spans(line) {
+            let span = span.trim();
+            if span.is_empty() || span.contains(char::is_whitespace) {
+                continue;
+            }
+            // 协议块/占位符/命令行参数不是实体引用
+            if span.starts_with(['-', '$', '#', '@', '|']) || span.starts_with("http") {
+                continue;
+            }
+            if span.contains(['<', '>', '|']) {
+                continue;
+            }
+            let cleaned = span.trim_end_matches(')').trim_end_matches('(');
+            if is_placeholder(cleaned) {
+                continue;
+            }
+            // 实体检查只对声明了条目类型的契约文档生效（见函数头注释）
+            if !entry_scope {
+                continue;
+            }
+            if let Some((path, line_ref)) = split_path_line(cleaned) {
+                if find_existing(file, path).is_none() {
+                    report.fail(
+                        file,
+                        no,
+                        Check::Entity,
+                        format!("幽灵路径：{path} 在代码中不存在"),
+                    );
+                    continue;
+                }
+                if let Some(n) = line_ref
+                    && !path_line_in_range(file, path, n)
+                {
+                    report.fail(
+                        file,
+                        no,
+                        Check::Entity,
+                        format!("{path}:{n} 行号超出文件范围"),
+                    );
+                }
+                continue;
+            }
+            if looks_like_path(cleaned) {
+                if find_existing(file, cleaned).is_none() {
+                    report.fail(
+                        file,
+                        no,
+                        Check::Entity,
+                        format!("幽灵路径：{cleaned} 在代码中不存在"),
+                    );
+                }
+                continue;
+            }
+            if !looks_like_entity_token(cleaned) {
+                continue;
+            }
+            if let Some(canonical) = index.alias_of(cleaned) {
+                report.warn(
+                    file,
+                    no,
+                    Check::Entity,
+                    format!("同名异写：`{cleaned}` 是 `{canonical}` 的别名，建议用规范名"),
+                );
+                continue;
+            }
+            if index.has_name(cleaned) {
+                continue;
+            }
+            report.fail(
+                file,
+                no,
+                Check::Entity,
+                format!("幽灵实体：`{cleaned}` 在代码中找不到"),
+            );
+        }
+    }
+}
+
+/// 占位符（不是实体）：`N/A`、`N`、`TODO` 类。
+fn is_placeholder(token: &str) -> bool {
+    matches!(token, "N/A" | "N" | "n/a")
+        || token.chars().all(|c| c.is_ascii_uppercase() || c == '/')
+}
+
+/// 从文档所在目录逐级向上找目标文件（文档里的相对路径以文档为锚）。
+fn find_existing(doc_file: &Path, rel: &str) -> Option<PathBuf> {
+    let mut base = doc_file.parent();
+    while let Some(dir) = base {
+        let candidate = dir.join(rel);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        base = dir.parent();
+    }
+    None
+}
+
+/// 单行内所有 `` `...` `` 内容（不处理跨行）。
+fn inline_code_spans(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('`') {
+        let after = &rest[start + 1..];
+        match after.find('`') {
+            Some(end) => {
+                out.push(after[..end].to_string());
+                rest = &after[end + 1..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+fn split_path_line(token: &str) -> Option<(&str, Option<usize>)> {
+    let (path, tail) = token.rsplit_once(':')?;
+    if tail.is_empty() || !tail.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    if !looks_like_path(path) {
+        return None;
+    }
+    Some((path, tail.parse().ok()))
+}
+
+fn path_line_in_range(doc_file: &Path, path: &str, n: usize) -> bool {
+    // 相对文档所在目录逐级向上找目标文件
+    let mut base = doc_file.parent();
+    while let Some(dir) = base {
+        let candidate = dir.join(path);
+        if let Ok(text) = std::fs::read_to_string(&candidate) {
+            return text.lines().count() >= n.max(1);
+        }
+        base = dir.parent();
+    }
+    false
+}
+
+fn looks_like_path(token: &str) -> bool {
+    if token.contains('/') {
+        return true;
+    }
+    const EXTS: &[&str] = &[
+        "md", "py", "rs", "ts", "tsx", "js", "jsx", "json", "toml", "yaml", "yml", "sh",
+        "sql", "go", "java", "cs", "php", "rb", "c", "h", "cpp", "kt", "swift",
+    ];
+    match token.rsplit_once('.') {
+        Some((_, ext)) => EXTS.contains(&ext.to_ascii_lowercase().as_str()),
+        None => false,
+    }
+}
+
+fn looks_like_entity_token(token: &str) -> bool {
+    if token.len() < 3 || token.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    if !token.chars().any(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    if !token
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == ':' || c == '.' || c == '$')
+    {
+        return false;
+    }
+    !NON_ENTITY_WORDS
+        .iter()
+        .any(|w| w.eq_ignore_ascii_case(token))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -776,6 +1048,120 @@ mod tests {
             .violations()
             .iter()
             .any(|v| v.check == Check::RequiredSection && v.severity == Severity::Warn));
+    }
+
+    // ===== t4：实体存在性 / 同名异写 =====
+
+    fn fixture_repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("src/core.py"),
+            "def create_note(title):\n    return title\n\nclass NoteStore:\n    pass\n",
+        )
+        .unwrap();
+        tmp
+    }
+
+    #[test]
+    fn real_entities_pass_with_zero_false_positives() {
+        let repo = fixture_repo();
+        let docs = repo.path().join("docs/contexts");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("core.md"),
+            "---\ntype: internal\n---\n\n# core\n\n入口 `create_note()` 写入 `NoteStore`，源码在 `src/core.py`，参见 `src/core.py:1`。\n",
+        )
+        .unwrap();
+        let index = EntityIndex::build(repo.path(), None).unwrap();
+        let report = lint_docs_with_entities(&docs, &index).unwrap();
+        assert!(report.passed(), "不得有误报: {:?}", report.violations());
+    }
+
+    #[test]
+    fn ghost_symbol_is_reported_with_line() {
+        let repo = fixture_repo();
+        let docs = repo.path().join("docs/contexts");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("ghost.md"),
+            "---\ntype: internal\n---\n\n# ghost\n\n下面这个函数不存在：`ghost_function_xyz`。\n",
+        )
+        .unwrap();
+        let index = EntityIndex::build(repo.path(), None).unwrap();
+        let report = lint_docs_with_entities(&docs, &index).unwrap();
+        let hit = report
+            .failures()
+            .find(|v| v.message.contains("ghost_function_xyz"))
+            .expect("必须报幽灵实体");
+        assert_eq!(hit.check, Check::Entity);
+        assert_eq!(hit.line, 7, "行号要指向引用处（frontmatter 占 4 行）");
+    }
+
+    #[test]
+    fn ghost_path_is_reported() {
+        let repo = fixture_repo();
+        let docs = repo.path().join("docs/contexts");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("p.md"), "---\ntype: internal\n---\n\n# p\n\n见 `src/nowhere.py`。\n").unwrap();
+        let index = EntityIndex::build(repo.path(), None).unwrap();
+        let report = lint_docs_with_entities(&docs, &index).unwrap();
+        assert!(report
+            .failures()
+            .any(|v| v.check == Check::Entity && v.message.contains("幽灵路径")));
+    }
+
+    #[test]
+    fn out_of_range_line_reference_is_reported() {
+        let repo = fixture_repo();
+        let docs = repo.path().join("docs/contexts");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("l.md"), "---\ntype: internal\n---\n\n# l\n\n见 `src/core.py:999`。\n").unwrap();
+        let index = EntityIndex::build(repo.path(), None).unwrap();
+        let report = lint_docs_with_entities(&docs, &index).unwrap();
+        assert!(report
+            .failures()
+            .any(|v| v.message.contains("行号超出文件范围")));
+    }
+
+    #[test]
+    fn alias_usage_is_warning_not_failure() {
+        let repo = fixture_repo();
+        let docs = repo.path().join("docs/contexts");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("a.md"),
+            "---\ntype: internal\n---\n\n# a\n\n用 `create_note`（别名 `addNote` 也出现过）。\n",
+        )
+        .unwrap();
+        let mut inv = crate::docgen::inventory::build_inventory(repo.path()).unwrap();
+        for e in &mut inv.entries {
+            if e.canonical_name == "create_note" {
+                e.aliases.push("addNote".into());
+            }
+        }
+        let index = EntityIndex::build(repo.path(), Some(&inv)).unwrap();
+        let report = lint_docs_with_entities(&docs, &index).unwrap();
+        assert!(report.passed(), "别名只是提示: {:?}", report.violations());
+        assert!(report
+            .violations()
+            .iter()
+            .any(|v| v.check == Check::Entity && v.message.contains("同名异写")));
+    }
+
+    #[test]
+    fn fenced_code_is_not_entity_checked() {
+        let repo = fixture_repo();
+        let docs = repo.path().join("docs/contexts");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            docs.join("code.md"),
+            "# code\n\n```bash\ncurl -X POST `ghost_thing`\n```\n",
+        )
+        .unwrap();
+        let index = EntityIndex::build(repo.path(), None).unwrap();
+        let report = lint_docs_with_entities(&docs, &index).unwrap();
+        assert!(report.passed(), "代码块内不查实体: {:?}", report.violations());
     }
 
     #[test]

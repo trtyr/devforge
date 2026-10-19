@@ -278,3 +278,4 @@
 {"type":"task_list_set","goalId":"mvfafune-7ynfrl","taskCount":12,"blockCompletion":true,"at":"2026-10-19T13:26:30.890Z"}
 {"type":"task_complete","goalId":"mvfafune-7ynfrl","taskId":"t1","evidence":"assets/skills/doc-contract/SKILL.md 落地 + skill_assets 注册 + 四个 profile(coding-agent/coding-review/doc-fix/doc-review) 共用；单测 188 过 0 挂 clippy 0；commit 080c1ff","at":"2026-10-19T13:28:37.523Z"}
 {"type":"task_complete","goalId":"mvfafune-7ynfrl","taskId":"t2","evidence":"src/docgen/lint.rs 四类检查 + CLI 子命令；一正一反样本实测：好样本 exit 0，坏样本 3 条违例带 文件:行号 exit 1（log /tmp/bg-run/917c35/bg_9yd24ykb.log）；单测 200 过 clippy 0；commit b6c3330","at":"2026-10-19T13:30:44.379Z"}
+{"type":"task_complete","goalId":"mvfafune-7ynfrl","taskId":"t3","evidence":"src/docgen/inventory.rs + CLI：真实仓 531 条目(module84/symbol444/entry3)，三道闭包可跑，src 不可达 0（47 项均为 vendored 模板）；反向验证由 4 条单测覆盖（删模块/删符号必须报错）；assign_units 两次调用结果一致；214 过 clippy 0；commit 51abc8d","at":"2026-10-19T13:34:09.248Z"}

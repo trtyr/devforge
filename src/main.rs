@@ -14,8 +14,22 @@ async fn main() -> anyhow::Result<()> {
             .get(1)
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("docs/contexts"));
-        let report = devforge::docgen::lint::lint_docs(&dir)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        // --repo <root>：启用实体存在性/同名异写检查（以源码语料为真相源）
+        let repo = args
+            .iter()
+            .position(|a| a == "--repo")
+            .and_then(|i| args.get(i + 1))
+            .map(std::path::PathBuf::from);
+        let report = match repo {
+            Some(repo) => {
+                let index = devforge::docgen::lint::EntityIndex::build(&repo, None)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                devforge::docgen::lint::lint_docs_with_entities(&dir, &index)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?
+            }
+            None => devforge::docgen::lint::lint_docs(&dir)
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+        };
         for v in report.violations() {
             println!("{}", v.render());
         }
