@@ -7,10 +7,14 @@
 //! - [`testing_protocol`]：测试阶段布局与 findings 台账协议（P007）
 //! - [`testing`]：TestingSopLoop 状态机（阶段推进/reroute 路由/doc-fix 移交，P007）
 //! - [`doc_fix`]：DocFixSopLoop 状态机（写文档模式 + doc-review 内置审查轮，P007 D004）
+//! - [`doc_from_zero`]：DocSopLoop 状态机（门0→单元滚动→审查，P008）
+//! - [`doc_protocol`]：doc-from-zero 三块协议（doc-complete / doc-verdict / route，P008）
 
 pub mod coding;
 pub mod coding_protocol;
 pub mod doc_fix;
+pub mod doc_from_zero;
+pub mod doc_protocol;
 pub mod output;
 pub mod planning;
 pub mod rpc_bridge;
@@ -33,3 +37,9 @@ pub use planning::{
     PLAN_KICKOFF, REMEDIATION_PREFIX, REVIEW_INSTRUCTION,
 };
 pub use rpc_bridge::{RpcPlanSession, RpcReviewFactory, RpcReviewSession};
+
+pub use doc_from_zero::{
+    DocReport, DocSopLoop, DocState, DOCS_DIR as DOCGEN_DOCS_DIR, DOC_CONTINUE_NUDGE,
+    DOC_REMEDIATION_PREFIX, STATE_FILE as DOCGEN_STATE_FILE,
+};
+pub use doc_protocol::{parse_doc_complete, parse_doc_review, DocRoute, DocVerdict, DocReviewReport};

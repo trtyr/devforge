@@ -271,6 +271,31 @@ async fn task_creation_validates() {
 }
 
 #[tokio::test]
+async fn start_doc_from_zero_sop_returns_202() {
+    // P008 T006：新 SOP 注册后能被 API 触发（引擎 mock，立即完成）
+    let f = fixture();
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks", Some(json!({"id": "d", "sop": "doc-from-zero"}))).await;
+
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/d/start", None).await;
+    assert_eq!(resp.status(), 202);
+
+    let mut settled = false;
+    for _ in 0..100 {
+        let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/d/runs", None).await;
+        let body = body_json(resp).await;
+        if body["runs"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
+            && body["runs"][0]["status"] == "Settled"
+        {
+            settled = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(settled, "run 应在超时前 Settled");
+}
+
+#[tokio::test]
 async fn start_task_runs_engine_and_records() {
     let f = fixture();
     send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;

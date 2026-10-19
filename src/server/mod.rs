@@ -32,6 +32,7 @@ use crate::engine::process::SpawnSpec;
 use crate::error::{Context as _, Result};
 use crate::sop::coding::CodingSopLoop;
 use crate::sop::doc_fix::DocFixSopLoop;
+use crate::sop::doc_from_zero::{DOCS_DIR, META_DIR, DocSopLoop, STATE_FILE};
 use crate::sop::planning::{PlanningLoop, UserLink};
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
 use crate::sop::testing::{TestingOutcome, TestingSopLoop};
@@ -234,6 +235,7 @@ impl RunEngine for BuiltinRpcEngine {
             "coding" => self.run_coding(task, run, control),
             "testing" => self.run_testing(task, run, control),
             "doc-fix" => self.run_doc_fix(task, run, control),
+            "doc-from-zero" => self.run_doc_from_zero(task, run, control),
             other => Err(crate::error::DevforgeError::System(format!(
                 "SOP `{other}` 未接线编排器（注册表与引擎必须同步）"
             ))),
@@ -387,6 +389,114 @@ impl BuiltinRpcEngine {
                 Ok(RunOutcome::Completed)
             }
             Err(e) => self.map_intervention(control, "coding-engine", e),
+        }
+    }
+
+    /// doc-from-zero SOP（P008）：门 0（清单 + 闭包 + 单元）→ DocSopLoop 逐单元滚动。
+    fn run_doc_from_zero(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
+        self.require_profile("doc-agent")?;
+        self.require_profile("doc-review")?;
+        if task.workspace.as_os_str().is_empty() {
+            return Err(crate::error::DevforgeError::Store(format!(
+                "任务 `{}/{}` 无代码工作区，doc-from-zero 需要项目地址",
+                task.project, task.id
+            )));
+        }
+        let blackboard = self.plans_root.join(&task.project).join(&task.id);
+        std::fs::create_dir_all(&blackboard).ctx("创建黑板目录")?;
+        preflight_codegraph(&task.workspace, &self.codegraph_bin);
+
+        // 门 0（引擎侧，不靠 agent 自证）：清单 + 三道闭包 + 单元编号
+        let workspace = task.workspace.clone();
+        let inv = crate::docgen::inventory::build_inventory(&workspace)?;
+        let meta_dir = workspace.join(META_DIR);
+        std::fs::create_dir_all(workspace.join(DOCS_DIR)).ctx("建产出目录")?;
+        std::fs::create_dir_all(&meta_dir).ctx("建 _meta 目录")?;
+        inv.save(&meta_dir.join("inventory.json"))?;
+        let findings = crate::docgen::inventory::check_closures(&workspace, &inv)?;
+        let mut gate = String::from("# 门 0 闭包校验（引擎侧）\n\n");
+        for f in &findings {
+            gate.push_str(&format!(
+                "- {}:{} [{}] {}\n",
+                f.path,
+                f.line,
+                f.closure.as_str(),
+                f.message
+            ));
+        }
+        if findings.is_empty() {
+            gate.push_str("三道闭包全过。\n");
+        } else {
+            gate.push_str("\n> 以上为机器发现：写文档时逐条取舍，确属不可达/不支持的写进 gaps.md，不得静默忽略。\n");
+        }
+        std::fs::write(meta_dir.join("gate0-closures.md"), gate).ctx("写门0证据")?;
+
+        let mut units: Vec<String> = inv
+            .entries
+            .iter()
+            .filter(|e| e.kind == crate::docgen::inventory::EntryKind::Module)
+            .map(|e| e.unit_id.clone())
+            .filter(|u| !u.is_empty())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        units.sort();
+        if units.is_empty() {
+            return Err(crate::error::DevforgeError::System(
+                "门 0 未产出任何单元（清单为空或全部未分组）".into(),
+            ));
+        }
+
+        let agent_client = RpcClient::spawn(
+            SpawnSpec::new(
+                self.profile_root.join("doc-agent"),
+                "doc-agent",
+                run.id.0.clone(),
+                self.session_root.join("doc"),
+            )
+            .with_working_dir(blackboard.clone()),
+        )?;
+        let agent = RpcPlanSession::new(agent_client);
+        let factory = RpcReviewFactory::per_round_in(
+            self.profile_root.join("doc-review"),
+            "doc-review",
+            self.session_root.join("doc-reviews"),
+            blackboard,
+        );
+        let mut user = RelayUserLink {
+            relay: self.ui.clone(),
+        };
+        let state_path = workspace.join(STATE_FILE);
+        let only = std::env::var("DEVFORGE_DOC_ONLY")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let run_id = run.id.0.clone();
+        let sop_result = run_with_watchdog(
+            control,
+            run_id,
+            self.idle_ms,
+            vec![self.session_root.join("doc"), self.session_root.join("doc-reviews")],
+            || {
+                let mut sop_loop = DocSopLoop::new(agent, factory, state_path);
+                if let Some(unit) = only {
+                    sop_loop = sop_loop.with_only(unit);
+                }
+                sop_loop.run(&mut user, &workspace, &units, "complete")
+            },
+        );
+
+        match sop_result {
+            Ok(report) => {
+                tracing::info!(
+                    component = "doc-engine",
+                    units = ?report.units_done,
+                    rounds = report.review_rounds,
+                    issues = report.issues_total,
+                    "doc-from-zero SOP 通过"
+                );
+                Ok(RunOutcome::Completed)
+            }
+            Err(e) => self.map_intervention(control, "doc-engine", e),
         }
     }
 
