@@ -242,6 +242,39 @@ pub fn runbook_commands(docs_dir: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// 跨模块重复提及（终审用）：同一符号名出现在 ≥2 个模块文档里，说明该实体被重复描述。
+pub fn duplicate_mentions(docs_dir: &Path, inv: &Inventory) -> Result<Vec<String>> {
+    let files = collect_markdown(docs_dir)?;
+    let mut out = Vec::new();
+    for e in &inv.entries {
+        if e.kind != EntryKind::Symbol || e.canonical_name.len() < 4 {
+            continue;
+        }
+        let mut files_hit = Vec::new();
+        for f in &files {
+            // 元数据目录不参与（词表/置信度表天然会列全部名字）
+            if f.components().any(|c| c.as_os_str() == "_meta") {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(f)
+                && text.contains(&e.canonical_name)
+            {
+                files_hit.push(f.display().to_string());
+            }
+        }
+        if files_hit.len() >= 2 {
+            out.push(format!(
+                "`{}` 在 {} 个文档中重复出现：{}",
+                e.canonical_name,
+                files_hit.len(),
+                files_hit.join(", ")
+            ));
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 /// 未被任何文档提及的单元（供引擎在终审前定位返工范围）。
 pub fn uncovered_units(report: &CoverageReport) -> BTreeSet<String> {
     report
@@ -275,8 +308,11 @@ mod tests {
 
     fn write_doc(repo: &Path, name: &str, body: &str) {
         let dir = repo.join("docs/contexts");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(name), body).unwrap();
+        let target = dir.join(name);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(target, body).unwrap();
     }
 
     #[test]
@@ -353,6 +389,26 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert!(cmds[0].contains("pip install"));
         assert!(cmds[0].contains("python -m app"));
+    }
+
+    #[test]
+    fn duplicate_mentions_flags_repeated_symbol() {
+        let tmp = fixture();
+        write_doc(tmp.path(), "a.md", "# a\n\n`create_note` 在这里。\n");
+        write_doc(tmp.path(), "b.md", "# b\n\n`create_note` 又写了一次。\n");
+        let inv = build_inventory(tmp.path()).unwrap();
+        let dups = duplicate_mentions(&tmp.path().join("docs/contexts"), &inv).unwrap();
+        assert!(dups.iter().any(|d| d.contains("create_note")), "{dups:?}");
+    }
+
+    #[test]
+    fn duplicate_mentions_ignores_meta_dir() {
+        let tmp = fixture();
+        write_doc(tmp.path(), "a.md", "# a\n\n`create_note`\n");
+        write_doc(tmp.path(), "_meta/glossary.md", "# 词表\n\n`create_note`\n");
+        let inv = build_inventory(tmp.path()).unwrap();
+        let dups = duplicate_mentions(&tmp.path().join("docs/contexts"), &inv).unwrap();
+        assert!(dups.is_empty(), "元数据不应参与重复判定: {dups:?}");
     }
 
     #[test]

@@ -33,7 +33,7 @@ use crate::error::{Context as _, Result};
 use crate::sop::coding::CodingSopLoop;
 use crate::sop::doc_fix::DocFixSopLoop;
 use crate::sop::doc_from_zero::{DOCS_DIR, META_DIR, DocSopLoop, STATE_FILE};
-use crate::sop::planning::{PlanningLoop, UserLink};
+use crate::sop::planning::{PlanningLoop, ReviewSessionFactory, UserLink};
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
 use crate::sop::testing::{TestingOutcome, TestingSopLoop};
 
@@ -476,6 +476,7 @@ impl BuiltinRpcEngine {
         let audit_inv = inv.clone();
         let audit_ws = workspace.clone();
         let audit_index = crate::docgen::lint::EntityIndex::build(&workspace, Some(&inv))?;
+        let final_index = audit_index.clone();
         let audit: Box<dyn Fn(&str) -> String + Send> = Box::new(move |unit: &str| {
             let mut out = String::new();
             let docs = audit_ws.join(DOCS_DIR);
@@ -511,6 +512,13 @@ impl BuiltinRpcEngine {
             .ok()
             .filter(|s| !s.trim().is_empty());
         let run_id = run.id.0.clone();
+        // 终审（t11）：同一 profile、新实例；捕获所需路径（闭包外先克隆）
+        let final_review_root = self.profile_root.join("doc-review");
+        let final_session_root = self.session_root.join("doc-reviews");
+        let final_blackboard = self.plans_root.join(&task.project).join(&task.id);
+        let final_ws = workspace.clone();
+        let final_inv = inv.clone();
+        let final_run_id = run.id.0.clone();
         let sop_result = run_with_watchdog(
             control,
             run_id,
@@ -521,7 +529,72 @@ impl BuiltinRpcEngine {
                 if let Some(unit) = only {
                     sop_loop = sop_loop.with_only(unit);
                 }
-                sop_loop.run(&mut user, &workspace, &units, "complete")
+                let report = sop_loop.run(&mut user, &workspace, &units, "complete")?;
+
+                // ---- 终审（跨模块 / 汇编引用 / 全量 lint 与覆盖）----
+                let docs = final_ws.join(DOCS_DIR);
+                let mut full = String::new();
+                if let Ok(cov) = crate::docgen::audit::coverage(
+                    &final_inv,
+                    &docs,
+                    crate::docgen::audit::DocLevel::Complete,
+                ) {
+                    full.push_str(&cov.render());
+                    full.push('\n');
+                }
+                match crate::docgen::lint::lint_docs_with_entities(&docs, &final_index) {
+                    Ok(r) => {
+                        full.push_str(&r.summary());
+                        full.push('\n');
+                        for v in r.violations() {
+                            full.push_str(&format!("- {}\n", v.render()));
+                        }
+                    }
+                    Err(e) => full.push_str(&format!("终审 lint 失败：{e}\n")),
+                }
+                if let Ok(dups) = crate::docgen::audit::duplicate_mentions(&docs, &final_inv)
+                    && !dups.is_empty()
+                {
+                    full.push_str("\n跨模块重复名单：\n");
+                    for d in dups {
+                        full.push_str(&format!("- {d}\n"));
+                    }
+                }
+
+                let mut final_factory =
+                    RpcReviewFactory::per_round_in(final_review_root, "doc-review", final_session_root, final_blackboard);
+                let mut session = final_factory.open()?;
+                let final_text = session.review(&crate::sop::doc_from_zero::doc_final_instruction(&full))?;
+                drop(session);
+                let verdict = crate::sop::doc_protocol::parse_doc_review(&final_text)?;
+
+                // 运行账单（t12）：墙钟/单元/轮次/问题数落 _meta/runs/<run-id>/
+                let dir = docs.join("_meta/runs").join(&final_run_id);
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::fs::write(
+                    dir.join("report.md"),
+                    format!(
+                        "# doc-from-zero 运行报告\n\n- run: {}\n- 单元完成: {:?}\n- 审查轮次: {}\n- 累计问题: {}\n- 终审: {:?}\n\n## 终审审计\n\n{}\n",
+                        final_run_id, report.units_done, report.review_rounds, report.issues_total, verdict.verdict, full
+                    ),
+                );
+
+                if verdict.protocol_violation {
+                    return Err(crate::error::DevforgeError::System(format!(
+                        "终审输出协议违例：{}",
+                        verdict.issues.join("；")
+                    )));
+                }
+                match verdict.verdict {
+                    crate::sop::doc_protocol::DocVerdict::Pass => Ok(report),
+                    crate::sop::doc_protocol::DocVerdict::Fail => {
+                        Err(crate::error::DevforgeError::System(format!(
+                            "终审未通过（route={}）：{}",
+                            verdict.route.as_str(),
+                            verdict.issues.join("；")
+                        )))
+                    }
+                }
             },
         );
 
