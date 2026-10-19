@@ -3,7 +3,9 @@
 //! MVP 同步实现（std::process + BufRead）；P003 服务器层经 spawn_blocking 桥接 tokio。
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 use crate::domain::now_ms;
 use crate::engine::ledger::LedgerEntry;
@@ -36,7 +38,8 @@ pub(crate) fn is_dialog_method(extra: &serde_json::Map<String, serde_json::Value
 pub struct RpcClient {
     child: Child,
     stdin: Option<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    /// 读取线程推送的行（stdout 已移交该线程）——读方带子进程存活检测，见 next_line
+    lines: Receiver<String>,
     spec: SpawnSpec,
     next_id: u64,
     started_at_ms: u64,
@@ -99,11 +102,53 @@ impl RpcClient {
         Ok(Self {
             child,
             stdin: Some(stdin),
-            stdout: BufReader::new(stdout),
+            lines: {
+                // stdout 交给专用线程逐行推送：读方就能在子进程已死但孙进程仍持有
+                // 管道（永远等不到 EOF）时靠 child 状态判死，而不是无限阻塞。
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stdout);
+                    for line in reader.lines() {
+                        match line {
+                            Ok(l) => {
+                                if tx.send(l).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+                rx
+            },
             spec,
             next_id: 0,
             started_at_ms: now_ms(),
         })
+    }
+
+    /// 读一行事件流（带存活检测）。
+    ///
+    /// 为什么不能直接阻塞读：孙进程（MCP server 等）继承了 stdout 时，主进程死掉
+    /// 也等不到 EOF——2026-10-19 实测审查官进程中途死亡后 run 挂了 50+ 分钟。
+    fn next_line(&mut self) -> Result<String> {
+        loop {
+            match self.lines.recv_timeout(Duration::from_millis(500)) {
+                Ok(l) => return Ok(l),
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(DevforgeError::RpcProtocol(
+                        "子进程 EOF：agent_settled 之前流已结束".into(),
+                    ));
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if let Ok(Some(status)) = self.child.try_wait() {
+                        return Err(DevforgeError::System(format!(
+                            "子进程已退出（{status}）但未发出 agent_settled——按基础设施故障处理，不作为审查/编码结论"
+                        )));
+                    }
+                }
+            }
+        }
     }
 
     /// 台账条目（spawn 后立即落盘）。
@@ -140,15 +185,8 @@ impl RpcClient {
     /// 等待 agent_settled（pi 不会再自动继续 = 暂停保活点）。期间收集响应/流式文本/事件。
     pub fn wait_settled(&mut self) -> Result<WaitOutcome> {
         let mut out = WaitOutcome::default();
-        let mut line = String::new();
         loop {
-            line.clear();
-            let n = self.stdout.read_line(&mut line).ctx("读取 RPC 事件流")?;
-            if n == 0 {
-                return Err(DevforgeError::RpcProtocol(
-                    "子进程 EOF：agent_settled 之前流已结束".into(),
-                ));
-            }
+            let line = self.next_line()?;
             match decode_line(line.trim_end())? {
                 crate::engine::protocol::Inbound::Response(r) => out.responses.push(r),
                 crate::engine::protocol::Inbound::Event(e) => {
@@ -176,15 +214,8 @@ impl RpcClient {
         ) -> Result<String>,
     ) -> Result<WaitOutcome> {
         let mut out = WaitOutcome::default();
-        let mut line = String::new();
         loop {
-            line.clear();
-            let n = self.stdout.read_line(&mut line).ctx("读取 RPC 事件流")?;
-            if n == 0 {
-                return Err(DevforgeError::RpcProtocol(
-                    "子进程 EOF：agent_settled 之前流已结束".into(),
-                ));
-            }
+            let line = self.next_line()?;
             match decode_line(line.trim_end())? {
                 crate::engine::protocol::Inbound::Response(r) => out.responses.push(r),
                 crate::engine::protocol::Inbound::Event(e) => {
@@ -307,6 +338,24 @@ mod tests {
         r#"{"id":"req-1","type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}"#;
     const EVT_START: &str = r#"{"type":"agent_start"}"#;
     const EVT_SETTLED: &str = r#"{"type":"agent_settled"}"#;
+
+    /// 现场（2026-10-19 e2e test_22）：审查官进程中途死亡，但孙进程仍持有 stdout——
+    /// 阻塞读永远等不到 EOF，run 挂了 50+ 分钟且日志无信号。必须靠子进程状态判死。
+    #[test]
+    fn dead_child_with_open_stdout_pipe_is_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_replay(dir.path(), &[RSP_OK], "sleep 5 &\nexit 0\n");
+        let mut client = spawn_sh(&script, dir.path());
+        let _ = client.prompt("审一下");
+        let t0 = std::time::Instant::now();
+        let err = client.wait_settled().unwrap_err();
+        assert!(
+            t0.elapsed().as_secs() < 4,
+            "判死太慢：{:?}",
+            t0.elapsed()
+        );
+        assert!(format!("{err}").contains("已退出"), "{err}");
+    }
 
     #[test]
     fn replay_settles_and_collects_response() {
