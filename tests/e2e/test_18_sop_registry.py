@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import Reporter, Server  # noqa: E402
+from common import Reporter, Server, start_tolerant  # noqa: E402
 
 
 def main() -> int:
@@ -87,16 +87,14 @@ def main() -> int:
             "未渲染 profile 下 testing run 快速 Failed（F1 门卫，槽即时释放）",
         )
 
-        status, _ = server.req(
-            "POST", "/projects/demo-app/tasks/flow/start", {"sop": "doc-fix"},
-        )
+        status, _ = start_tolerant(server, "demo-app", "flow", {"sop": "doc-fix"})
         r.check(status == 202, "start sop=doc-fix == 202（DOC_FIX_SOP 触发面）", f"status={status}")
         sop_now = wait_task_sop("doc-fix")
         r.check(sop_now == "doc-fix", "任务 sop 已切换为 doc-fix", f"sop={sop_now}")
         r.check(wait_runs_terminal() == "Failed", "doc-fix run 快速 Failed（F1 门卫）")
 
         # 4. 无 body start → 202 沿用当前 sop（doc-fix）
-        status, _ = server.req("POST", "/projects/demo-app/tasks/flow/start", None)
+        status, _ = start_tolerant(server, "demo-app", "flow", None)
         r.check(status == 202, "无 body start == 202（沿用注册 sop；Failed 可重跑）", f"status={status}")
 
     finally:

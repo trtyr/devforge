@@ -99,6 +99,7 @@ Rust 单测：**178 passed / 0 failed** + doctest 1，clippy --all-targets **0 �
 3. **OBS-C19-STALL（环境，已知家族 P8-ISSUE-06）**：单 turn 长停滞（会话冻结 + 进程高 CPU）。本轮 C19-R2 修复后，同类静默消失会以明确错误暴露，不再污染审查结论。
 4. **OBS-TEST-VENV（观察）**：test_20 中测试 Agent 为跑 pytest 在仓库内建 `.venv` 并安装依赖（网络可用时）。属 agent 自主行为，不影响黑盒纪律；下一轮可考虑在文档 Runbook 模板中约定依赖获取方式。
 5. **C21-TEST-TIMEOUT（窗口预算）**：test_21 测试段 60min 窗口用尽时仍在第 4 阶段第 6 轮（已落 4 个 commit / 20 个测试文件 / 矩阵审计打回两次），非停滀非故障；**生产口径 confirmation：测试阶段窗口应 ≥10800s**（与 D011「最慢阶段」一致，本轮 3600s 是 e2e 预算压缩所致）。
+6. **测试侧竞态清单（2026-10-19 扫查，非产品缺陷）**：「终态后重跑 start」与「cancel 受理→run 转 Failed→串行守卫可见」之间存在亚秒级窗口，早到的 start 会吃 409「已有运行中的任务」。影响面：test_07（首个踩中，已修）、test_12（F1 回归后无 body start）、test_18（testing/doc-fix 触发链两处）；其余脚本无「终态后重跑」动作（test_09/13/15/16 只收场不重跑，test_08/10/11/14/17/19/20/21 单次 start）。统一收敛为共享 helper `common.start_tolerant()`（409 重试 ≤20s，超时才把原响应交给断言）——不改产品语义（MVP 串行守卫 + 409 本就可重试）。
 
 ## 五、结论
 

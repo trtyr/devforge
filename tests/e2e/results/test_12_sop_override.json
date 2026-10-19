@@ -14,7 +14,7 @@
     {
       "name": "任务 workspace 快照项目 local_path（decisions/001）",
       "ok": true,
-      "detail": "{'id': 'flow', 'project': 'demo-app', 'sop': 'planning', 'workspace': '/tmp/devforge-e2e-z_bdtl4i/workspace/demo-app', 'status': 'Pending', 'created_at_ms': 1792342854456, 'current_run': None, 'runs': []}"
+      "detail": "{'id': 'flow', 'project': 'demo-app', 'sop': 'planning', 'workspace': '/tmp/devforge-e2e-ju44zoll/workspace/demo-app', 'status': 'Pending', 'created_at_ms': 1792378030643, 'current_run': None, 'runs': []}"
     },
     {
       "name": "未知 sop 覆盖 == 400",

@@ -390,6 +390,22 @@ def wait_run_status(server: Server, project: str, task: str, statuses: set[str],
     return None, last
 
 
+def start_tolerant(server: Server, project: str, task: str, body=None, timeout: float = 20.0):
+    """终态后重跑 start：容忍串行位释放的亚秒级窗口。
+
+    `cancel` 受理（200）与 run 状态转 Failed、串行守卫（store.has_running_run）可见之间
+    存在短暂窗口；期间 start 会得到 409「已有运行中的任务」。**这是测试侧构造问题，
+    不是产品缺陷**（v4 同代码 17P/0F，2026-10-19 重跑实测踩中）：终态后的重跑就应该
+    可重试，超过 timeout 仍 409 才把原响应返回给断言。
+    """
+    status, resp = server.req("POST", f"/projects/{project}/tasks/{task}/start", body)
+    deadline = time.time() + timeout
+    while status == 409 and time.time() < deadline:
+        time.sleep(0.5)
+        status, resp = server.req("POST", f"/projects/{project}/tasks/{task}/start", body)
+    return status, resp
+
+
 class Reporter:
     """PASS/FAIL 检查与问题记录。脚本正常跑完返回 0（功能 FAIL 由报告说话）。"""
 

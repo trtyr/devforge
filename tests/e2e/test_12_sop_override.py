@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import Reporter, Server  # noqa: E402
+from common import Reporter, Server, start_tolerant  # noqa: E402
 
 
 def main() -> int:
@@ -89,7 +89,7 @@ def main() -> int:
             f"status={tasks_body['tasks'][0]['status']}",
         )
 
-        status, _ = server.req("POST", "/projects/demo-app/tasks/flow/start", None)
+        status, _ = start_tolerant(server, "demo-app", "flow", None)
         r.check(status == 202, "无 body start == 202（沿用注册 sop；Failed 可重跑）", f"status={status}")
 
     finally:

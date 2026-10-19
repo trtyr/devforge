@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import Reporter, Server, compensate_profile, real_api_key, wait_run_status  # noqa: E402
+from common import Reporter, Server, compensate_profile, real_api_key, start_tolerant, wait_run_status  # noqa: E402
 
 CANCEL_WAIT = 60.0  # cancel 端点轮询上限（control 注册前后 404→200）
 
@@ -163,13 +163,8 @@ def main() -> int:
         run1_id = runs_body["runs"][0]["id"]
         run1_status = runs_body["runs"][0]["status"]
 
-        status, _ = server.req("POST", "/projects/p/tasks/t1/start")
-        # 串行位释放是异步的（cancel 受理后 run 记录才转 Failed）：重试等待，
-        # 避免把「刚 cancel 完的微秒级窗口」误判成产品缺陷（v4 同代码 17P/0F，本轮实测踩中）
-        t0 = time.time()
-        while status == 409 and time.time() - t0 < 20:
-            time.sleep(0.5)
-            status, _ = server.req("POST", "/projects/p/tasks/t1/start")
+        # 终态后重跑：串行位释放有亚秒窗口，统一用 start_tolerant 重试（防误判）
+        status, _ = start_tolerant(server, "p", "t1")
         r.check(status == 202, "终态后重跑 start == 202", f"status={status}")
         t0 = time.time()
         while time.time() - t0 < 60:
