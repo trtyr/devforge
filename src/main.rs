@@ -65,11 +65,21 @@ async fn main() -> anyhow::Result<()> {
         print!("{}", cov.render());
         let dups = devforge::docgen::audit::duplicate_mentions(&docs, &inv)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let dup_content = devforge::docgen::audit::duplicated_content(&docs)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         if dups.is_empty() {
-            println!("跨模块重复：无");
+            println!("同名出现（提示级）：无");
         } else {
-            println!("跨模块重复：");
+            println!("同名出现（提示级，不单独判 FAIL）：");
             for d in &dups {
+                println!("- {d}");
+            }
+        }
+        if dup_content.is_empty() {
+            println!("跨模块重复正文：无");
+        } else {
+            println!("跨模块重复正文（同一段解释被两篇以上具体描述）：");
+            for d in &dup_content {
                 println!("- {d}");
             }
         }

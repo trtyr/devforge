@@ -3,7 +3,7 @@
 //! 分工：结构/实体/置信度/Mermaid 已在 doc-lint（`docgen::lint`）；
 //! 本模块补「覆盖」——清单每一条 ↔ 文档是否有落点；并按 `doc_level` 决定要求哪些条目。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::docgen::inventory::{EntryKind, Inventory};
@@ -284,6 +284,50 @@ pub fn duplicate_mentions(docs_dir: &Path, inv: &Inventory) -> Result<Vec<String
     Ok(out)
 }
 
+/// 跨模块重复正文（终审判据）：归一化后 ≥40 字且逐字相同的行出现在 ≥2 篇非 _meta 文档。
+/// 为什么不用「名字出现几次」当判据：实体名在多篇文档里互相引用是**正常写法**，
+/// 拿它当重复会让小仓全绿文档全员背锅；重复该看「同一段解释被拄了两遍」。
+pub fn duplicated_content(docs_dir: &Path) -> Result<Vec<String>> {
+    let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for f in collect_markdown(docs_dir)? {
+        if f.components().any(|c| c.as_os_str() == "_meta") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let mut local: BTreeSet<String> = BTreeSet::new();
+        for line in text.lines() {
+            let n = normalize_line(line);
+            if n.chars().count() >= 40 {
+                local.insert(n);
+            }
+        }
+        for n in local {
+            seen.entry(n).or_default().push(f.display().to_string());
+        }
+    }
+    Ok(seen
+        .into_iter()
+        .filter(|(_, files)| files.len() >= 2)
+        .map(|(line, files)| {
+            let preview: String = line.chars().take(60).collect();
+            format!(
+                "同一段落在 {} 篇文档中重复：{}…（{}）",
+                files.len(),
+                preview,
+                files.join(", ")
+            )
+        })
+        .collect())
+}
+
+/// 行归一化：去列表符号/引用符号、合并空白（避免缩进差异掩盖重复）。
+fn normalize_line(raw: &str) -> String {
+    let t = raw.trim().trim_start_matches(['-', '*', '>']).trim();
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// 未被任何文档提及的单元（供引擎在终审前定位返工范围）。
 pub fn uncovered_units(report: &CoverageReport) -> BTreeSet<String> {
     report
@@ -421,8 +465,30 @@ mod tests {
     }
 
     #[test]
-    fn level_parse_defaults_to_complete() {
-        assert_eq!(DocLevel::parse("whatever"), DocLevel::Complete);
+    fn duplicated_content_flags_same_paragraph() {
+        let tmp = fixture();
+        let para = "这一段是跨模块重复的解释：写笔记的流程先校验标题非空，再落盘并返回生成的 id，最后把整张表回写给调用方。";
+        write_doc(tmp.path(), "a.md", &format!("# a\n\n{para}\n"));
+        write_doc(tmp.path(), "b.md", &format!("# b\n\n{para}\n"));
+        let dups = duplicated_content(&tmp.path().join("docs/contexts")).unwrap();
+        assert_eq!(dups.len(), 1, "{dups:?}");
+        assert!(dups[0].contains("2 篇文档"), "{dups:?}");
+    }
+
+    #[test]
+    fn duplicated_content_ignores_short_lines_and_meta() {
+        let tmp = fixture();
+        write_doc(tmp.path(), "a.md", "# a\n\n`create_note`\n");
+        write_doc(tmp.path(), "b.md", "# b\n\n`create_note`\n");
+        let para = "这一段是跨模块重复的解释：写笔记的流程先校验标题非空，再落盘并返回生成的 id，最后把整张表回写给调用方。";
+        write_doc(tmp.path(), "_meta/x.md", &format!("# x\n\n{para}\n"));
+        write_doc(tmp.path(), "_meta/y.md", &format!("# y\n\n{para}\n"));
+        let dups = duplicated_content(&tmp.path().join("docs/contexts")).unwrap();
+        assert!(dups.is_empty(), "元数据与短行不应计入: {dups:?}");
+    }
+
+    #[test]
+    fn level_parse_defaults_to_complete() {        assert_eq!(DocLevel::parse("whatever"), DocLevel::Complete);
         assert_eq!(DocLevel::parse("essential"), DocLevel::Essential);
         assert_eq!(DocLevel::parse("detailed"), DocLevel::Detailed);
     }

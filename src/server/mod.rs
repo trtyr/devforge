@@ -555,7 +555,19 @@ impl BuiltinRpcEngine {
                 if let Ok(dups) = crate::docgen::audit::duplicate_mentions(&docs, &final_inv)
                     && !dups.is_empty()
                 {
-                    full.push_str("\n跨模块重复名单：\n");
+                    full.push_str(
+                        "\n同名出现（提示级：实体名在多篇里互相引用是正常写法，不单独判 FAIL）：\n",
+                    );
+                    for d in dups {
+                        full.push_str(&format!("- {d}\n"));
+                    }
+                }
+                if let Ok(dups) = crate::docgen::audit::duplicated_content(&docs)
+                    && !dups.is_empty()
+                {
+                    full.push_str(
+                        "\n跨模块重复正文（判据：同一段解释被两篇以上具体描述 → FAIL）：\n",
+                    );
                     for d in dups {
                         full.push_str(&format!("- {d}\n"));
                     }
