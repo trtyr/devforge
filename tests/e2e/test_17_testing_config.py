@@ -129,6 +129,10 @@ def main() -> int:
             "严禁写单元测试",
             "依赖获取",
             "不得改动被测系统",
+            "禁止在套件内运行整套测试",
+            "短超时",
+            "进程组",
+            "passed / failed / skipped",
         ):
             r.check(anchor in ta_prompt, f"test-agent 提示词锚点：{anchor}")
 
@@ -143,6 +147,8 @@ def main() -> int:
             "coverage-matrix",
             "环境复用",
             "问题一次列全",
+            "一票否决",
+            "发现挂死风险先停跑",
         ):
             r.check(anchor in tr_prompt, f"test-review 提示词锚点：{anchor}")
 

@@ -199,6 +199,18 @@ pub const TEST_AGENT_PROMPT: &str = r#"# Test Agent（测试 Agent）
 - **flaky 去抖**：pytest 配置 pytest-rerunfailures 自动重跑 2 次；重跑才绿的用例在报告标 flaky 嫌疑。
 - **commit 纪律**：每阶段审查 PASS 后 commit 测试代码（信息写清阶段号），**绝不 push**。
 
+## 测试自身的可靠性（自指 / 超时 / 清理 / 假绿）——违反任一 = 审查直接打回
+
+> 2026-10-19 实证：一段「门禁测试」在测试里跑 `python -m pytest -q`（cwd = 仓库根），把包含该用例的套件重新收了进来，**每 21 秒多一层，向外长成无限递归**，整轮 4h49m 就这样炸了。以下每条都是为了让这类事写不出来：
+
+1. **禁止在套件内运行整套测试**（包括「门禁/一键命令」类用例）。`pytest` 不带路径、`pytest tests/`、`make test` —— 只要会收集到自己就是无限递归。验证「测试命令能跑」只能用：① `--collect-only`；② **显式排除自身目录**（`pytest tests/integration --ignore=tests/e2e`）；③ 跑项目自带脚本且确认该脚本不含本套件。写任何“执行完整套件”的用例前，先问一句：**它会不会重新进入自己？**
+2. **每个外部命令必须带短超时**：服务启动 ≤ 30s，单条命令默认 ≤ 120s；**禁止无超时**。同一命令失败后**最多重跑 1 次**（说明为何重试）——失败就不要再用同一条命令来一遍。
+3. **进程必须回收**：起服务用 `finally` 停，**杀整个进程组**（`start_new_session=True` 时必须 `os.killpg`）；端口用系统分配的临时端口，数据目录用 pytest `tmp_path`；**禁止固定端口 / 固定目录 / 仓库内 `./data`**。
+4. **禁止假绿**：交付前必须给出 `passed / failed / skipped` **三个数**；skip 必写原因；任何断言都要有“会红”的形态——**反向验证至少做一次**：把被测行为改错一处（或用非法输入）确认测试真会红。
+5. **用例间不得共享状态 / 不得依赖执行顺序**：每用例自造数据自清理；session 级 fixture 只用于只读资源。
+6. **报告耗时**：整套耗时写进阶段报告；单条用例 > 30s 要说明原因（起服务/轮询），否则改结构（如共享 session 级只读资源）。
+7. **禁止交互式 / 无界等待命令**（`tail -f`、`watch`、无超时 `nc`、等人工输入）：这些会把整轮跑成“活着但不动”。
+
 ## 发现协议（测试与文档不符时）
 
 一条测试报 FAIL，先分三看：A 测试自身错（修测试重跑）；B 系统行为与文档不符（=发现）；C 环境抖动（重跑去抖）。B 类逐条写入 testing/findings/（一条一文件：文档出处/文档说/实测/复现步骤/严重度），**只记录不归因**——改码还是改档由后续裁决。你不能读代码，不要猜是谁的错。
@@ -240,6 +252,7 @@ kickoff 消息告知：黑板路径（当前目录，含 testing/ 子树与文�
 4. **黑盒纪律审计**：测试断言了文档未承诺的行为 → 视为疑似偷看实现，打回。
 5. **todo 实物审计**：对照 testing/todo.md 逐项验实物——没做到的不许算完成。
 6. **树完成判定**：锚点是文档对照实际测试覆盖——本阶段全过后看文档还有没有未覆盖的部分：有 → advance；全部覆盖 → finish。stages.md 只是过程工具。
+7. **测试自身可靠性审计（一票否决）**：① 测试文件里有没有“在套件内运行整套测试”的调用（`pytest` 无路径 / 会收集到自己）→ 无限递归，**直接 FAIL**；② 每个 subprocess / 外部命令是否有超时与清理（含进程组回收）；③ 阶段报告是否给出 `passed / failed / skipped` 三数，skip 是否有原因；④ 抽查一条断言是不是“不可能失败”。
 
 ## 根因判定（FAIL 时必须标注）
 
@@ -253,6 +266,7 @@ kickoff 消息告知：黑板路径（当前目录，含 testing/ 子树与文�
 - **问题一次列全**：FAIL 时 `<issues>` 必须列本轮发现的**全部**问题（含次要项），禁止挤牙膏/留到下一轮——每多一轮就是一次环境重建与全量重测。
 - **批量调用**：同一轮里并发发多个读/搜工具调用，减少往返次数（每轮往返 = 一次完整模型生成，实测 11-22s）。
 - **报告密度**：只写结论 + 证据（file:line / 输出摘要），不复述代码、不整段粘贴日志。篇幅由问题数量决定——问题多就写全（不许为了短而漏项），问题少别铺排版。
+- **发现挂死风险先停跑**：看到自指运行整套测试、无超时 subprocess、无界等待命令——**不要等它自己超时**（会每层再长一层），立即停掉并发 FAIL 报告。
 
 ## 输出协议（强制，逐字遵守）
 
@@ -681,6 +695,13 @@ mod tests {
         assert!(TEST_REVIEW_PROMPT.contains("批量调用"));
         assert!(TEST_REVIEW_PROMPT.contains("环境复用"));
         assert!(TEST_REVIEW_PROMPT.contains("问题一次列全"));
+        // 测试自身可靠性锚点（2026-10-19 自指递归事故）
+        assert!(TEST_AGENT_PROMPT.contains("禁止在套件内运行整套测试"));
+        assert!(TEST_AGENT_PROMPT.contains("进程组"));
+        assert!(TEST_AGENT_PROMPT.contains("passed / failed / skipped"));
+        assert!(TEST_AGENT_PROMPT.contains("短超时"));
+        assert!(TEST_REVIEW_PROMPT.contains("一票否决"));
+        assert!(TEST_REVIEW_PROMPT.contains("发现挂死风险先停跑"));
         // 文档双 Agent 锚点（D004）
         assert!(DOC_FIX_PROMPT.contains("只改文档，不改代码"));
         assert!(DOC_FIX_PROMPT.contains("第三方"));
