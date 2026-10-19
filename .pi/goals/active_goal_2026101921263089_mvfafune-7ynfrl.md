@@ -5,17 +5,17 @@
   "status": "active",
   "autoContinue": true,
   "usage": {
-    "tokensUsed": 254868,
-    "activeSeconds": 96
+    "tokensUsed": 313509,
+    "activeSeconds": 205
   },
   "sisyphus": false,
-  "revision": 43,
+  "revision": 81,
   "createdAt": "2026-10-19T13:26:30.890Z",
-  "updatedAt": "2026-10-19T13:28:28.807Z",
+  "updatedAt": "2026-10-19T13:30:37.332Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
-    "generation": "bf72990c-2f22-46b4-9e5c-4cbf0a27a90c",
+    "generation": "a28eab4b-fdb5-44be-9e9d-2abb3b7d5253",
     "used": 1,
     "phase": "idle",
     "repairUsed": false
@@ -25,8 +25,10 @@
       {
         "id": "t1",
         "title": "文档契约落成 skill（T000a）",
-        "status": "pending",
-        "verificationContract": "契约文本与 topics/doc-contract.md 一致；六类条目模板 + 六条反模式 + 真实性规则齐全；skill 能渲染进 profile，coding/doc-fix/P008 共用同一份无副本"
+        "status": "complete",
+        "verificationContract": "契约文本与 topics/doc-contract.md 一致；六类条目模板 + 六条反模式 + 真实性规则齐全；skill 能渲染进 profile，coding/doc-fix/P008 共用同一份无副本",
+        "completedAt": "2026-10-19T13:28:37.522Z",
+        "evidence": "assets/skills/doc-contract/SKILL.md 落地 + skill_assets 注册 + 四个 profile(coding-agent/coding-review/doc-fix/doc-review) 共用；单测 188 过 0 挂 clippy 0；commit 080c1ff"
       },
       {
         "id": "t2",
@@ -110,12 +112,12 @@
 - Status: running
 - Auto-continue: on
 - Sisyphus mode: no
-- Time spent: 1m36s
-- Tokens used: 255K (254,868) tokens
+- Time spent: 3m25s
+- Tokens used: 314K (313,509) tokens
 ## Tasks
 
 <!-- blockCompletion: true -->
-- [ ] t1: 文档契约落成 skill（T000a） — contract: 契约文本与 topics/doc-contract.md 一致；六类条目模板 + 六条反模式 + 真实性规则齐全；skill 能渲染进 profile，coding/doc-fix/P008 共用同一份无副本
+- [x] t1: 文档契约落成 skill（T000a） — evidence: assets/skills/doc-contract/SKILL.md 落地 + skill_assets 注册 + 四个 profile(coding-agent/coding-review/doc-fix/doc-review) 共用；单测 188 过 0 挂 clippy 0；commit 080c1ff
 - [ ] t2: doc-lint 骨架：必填节 / 链接 / Runbook / 禁写扫描（T000b 结构部分） — contract: 对一份故意缺节、死链、Runbook 不全的文档报出具体行号与违例类型；退出码可判（0 通过/非 0 失败）；给出一正一反两份样本的运行记录
 - [ ] t3: 清单抽取器 + 三道闭包校验 + 编号预分配（T001/T002/T003/T003b/T003c/T003d） — contract: 对真实仓生成 _meta/inventory.json（条目含 id/kind/path:line/canonical_name/aliases/status）；三道闭包（入口可达/文件覆盖/符号覆盖）可运行；反向验证——从清单删掉一个模块，闭包校验必须报错；单元编号只在门0分配一次
 - [ ] t4: doc-lint 实体存在性 + 同名异写检测（接清单） — contract: 文档里写的幽灵实体 100% 被抓出并给行号；同一实体两种写法被抓出；对真实仓正确文档零误报（附样本）

@@ -6,6 +6,23 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // doc-lint：引擎侧确定性门禁（D008/D012）。退出码可判：0 = 通过。
+    // 形态：`devforge doc-lint [docs_dir]`，默认检查 `docs/contexts`。
+    if args.first().map(String::as_str) == Some("doc-lint") {
+        let dir = args
+            .get(1)
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("docs/contexts"));
+        let report = devforge::docgen::lint::lint_docs(&dir)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        for v in report.violations() {
+            println!("{}", v.render());
+        }
+        println!("{}", report.summary());
+        std::process::exit(if report.passed() { 0 } else { 1 });
+    }
+
     let home = std::env::var("HOME").context("读取 HOME 环境变量")?;
     let root = std::path::Path::new(&home).join(".devforge");
 
