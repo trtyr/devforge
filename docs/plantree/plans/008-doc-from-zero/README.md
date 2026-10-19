@@ -42,6 +42,22 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 
 **codegraph 是我们给 agent 的 MCP 配置**（`codegraph_mcp()`），不是外部工具；沿用 decisions/013：引擎侧预检 `init`，agent 不自行 init，调用显式 `projectPath=<目标项目>`。
 
+## 节奏：四道门（D010）
+
+```
+门 0  清单 + 模块树 + 档位（底座，最严）
+  ↓ PASS 才开工
+单元滚动（一批 = 审查官一轮读得完的量，一单元一提交）
+  ↓ PASS 才 commit
+汇编单元（总览/数据流/Mermaid，只合成不新增事实）
+  ↓
+终审（全局覆盖对账 + 跨模块一致性 + 全量 doc-lint）
+```
+
+三条硬约束：批大小按**审查阅读预算**定（不按模块数拍死）；检查点只认 **outcome 证据**（git diff / doc-lint 退码 / 实体回查），不认自述；**终审不可省**（跨模块问题只在最后暴露）。
+
+依据：agentpatterns.ai 增量验证、SmartBear/Cisco 2500 次审查实证、GitHub stacked PR 指南、RepoDoc（arXiv 2604.26523）。详见 `topics/design-framework.md` §三·B 与 §五·E。
+
 ## 五阶段（doc-agent 内部步骤，草案，未定稿）
 
 > 事实与推断分离，每条断言带置信度。详见 `topics/design-framework.md` §四。
@@ -52,7 +68,7 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 | 1 · 勘察 | inventory + 模块树 | 每模块事实记录（有什么，**不解释**） | **一模块一会话**；同层可并行 |
 | 2 · 解释 | 勘察结果 | 业务规则/状态机/权限矩阵（**🟢/🟡/🔴，旁挂证据表**） | 无 git 时禁止声称“已知设计意图”，一律 🟡 |
 | 3 · 生成/汇编 | 事实 + 推断 | **`<项目>/docs/contexts/`** 下的条目文档 + 总览 + **Mermaid 图源码** | 只合成不新增事实；上层可追溯叶子 |
-| 4 · 审计 | 全部产物 | 通过/打回 + `gaps.md` | **doc-review** 跑：覆盖 + 完整性 + 真实性 + 置信度诚实性 + 可跑（**工具：devforge 侧 doc-lint**） |
+| 4 · 审计 | 全部产物 | 通过/打回 + `gaps.md` | **doc-review** 在两个时机跑：单元审（这笔活写没写对写全）+ **终审**（全局覆盖 + 跨模块一致性）；工具 = devforge 侧 doc-lint |
 
 ## 研究依据（2026-10-19 检索）
 
@@ -62,6 +78,8 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 **两者定位**：**CodeWiki 管结构**（模块树/分层汇编），**DocAgent 管条目**（单点质量与反幻觉）——P008 两条都吃。
 - 补充：[从边缘进入陌生代码库](https://understandlegacycode.com/blog/dive-into-an-unfamiliar-codebase-from-its-edges/)（入口点优先）；[scope-discoverer 类 agent](https://github.com/shinpr/claude-code-workflows/blob/main/agents/scope-discoverer.md)（多来源功能范围发现）。
 - **Reversa**（[analysis pipeline](https://sandeco.github.io/reversa/pipeline/)）：遗留系统 → 可执行规格的五阶段 agent 流水（ Scout→Archaeologist→Detective/Architect→Writer→Reviewer）；**关键贡献：事实/推断分离 + 🟢🟡🔴 置信度标记 + 一模块一会话 + doc_level 三档 + 🔴缺口转问题交人**。无 git 时它靠历史回溯的那条路不成立（我们全部计 🟡）。
+- **渐进式节奏的证据链**：增量验证模式（[agentpatterns.ai](https://agentpatterns.ai/verification/incremental-verification/)，点名 write-then-review 为反模式、检查点须 outcome-based）；[SmartBear/Cisco 2500 次审查](https://mikeconley.ca/blog/2009/09/14/smart-bear-cisco-and-the-largest-study-on-code-review-ever/)（100-300 行最佳、>400 行失控、>60 分钟断崖、作者预注释则缺陷密度极低）；[GitHub stacked PR 指南](https://docs.github.com/en/copilot/tutorials/stack-ai-generated-code-in-pull-requests)（底座先审、错层不修）。
+- **RepoDoc**（[arXiv 2604.26523](https://arxiv.org/html/2604.26523v1)）：知识图谱为骨架，**4096-token 功能内聚聚类 + 图查询只取相关片段**，24 仓 8 语言实测：比 CodeWiki 快 3×、token -85%、**增量更新召回 97%（时间 -73%）**、自动出 Mermaid。
 - **特征定位学术骨架**（[Feature Location Survey](https://www.cs.toronto.edu/~chechik/pubs/locationsurvey12.pdf)）：静态（依赖/调用图）/ 动态（执行轨迹）/ IR（标识符与注释相似度）；我们用“静态优先 → 可跑补动态 → IR 当命名探针”。背景：专业开发者最多 **70% 时间花在程序理解**（Xia et al., TSE 2018）。
 
 详细精读结论（可借用/不可照搬两张表）见 `topics/design-framework.md` §五·B。
