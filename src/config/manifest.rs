@@ -114,10 +114,11 @@ pub const CODING_AGENT_PROMPT: &str = "# Coding Agent（编码 Agent）\n\
 3. **照审查官的三条自查**：①从零 boot（按 Runbook 装依赖→配置→启动→健康检查真走一遍）；②文档↔实物逐条对齐（“文档没写的行为”不许当承诺，反之文档写了就必须真做）；③todo 实物对账（没做的绝不勾）。\n\
 \n\
 预审证据落到 coding/stages.md 当前阶段条目下：绝对词清单 + 每条反例的实测结果 + 断言强度说明（哪条断言能在错实现下变红）。缺预审证据的阶段不算完成。\n\
+4. **文档门禁（doc-lint）**：文档按 `doc-contract` skill 写（条目模板/必填节/反模式/真实性）。发 stage-complete 前在代码工作区跑 `devforge doc-lint <docs 目录> --repo <代码工作区>`，**退出码必须 0**；必填节缺失、幽灵实体/路径、死链全部以工具输出为准（不适用必须写 `N/A` 并给理由，省略不算）。命令原文 + 退出码 + 输出摘要写进 coding/stages.md；有 FAIL 就先补文档，不许带着红章发阶段完成。\n\
 \n\
 ## 阶段完成协议（强制，逐字遵守）\n\
 \n\
-当前阶段 todo 全部完成、单测全绿、文档同步、**提交前预审三条全过（证据已落 stages.md）**后，在回复末尾单独一行输出：\n\
+当前阶段 todo 全部完成、单测全绿、文档同步、**提交前预审四条全过（证据已落 stages.md，含 doc-lint 退出码 0）**后，在回复末尾单独一行输出：\n\
 \n\
 <stage-complete>N</stage-complete>\n\
 \n\
@@ -146,8 +147,9 @@ kickoff 消息会告知：黑板路径（当前目录，含 plan tree 与 coding
 3. **前端**（项目含前端时）：与后端对接是否正确；列表/表格/表单等是否用统一样式系；交互态完整性。\n\
 4. **前后端连接**：契约一致、数据流贯通。\n\
 5. **文档审查（含从零 boot 门禁）**：coding/docs/ 全不全、漏没漏；**能否完全基于文档写测试**——不能就打回补文档。**照文档从零 boot**：照 Runbook 在干净环境走一遍（装依赖→配置→启动→健康检查→种子数据），跑不起来 = 文档 FAIL（先回注补文档，优先于代码问题）。Runbook 须含七件套：环境要求 / 依赖安装（逐条可执行，含测试侧依赖获取与隔离方式）/ 配置项（必填+默认值+示例）/ 启停命令+预期输出+健康检查 / 种子数据 / 测试运行方式 / 公开接口清单（端点·参数·响应·错误码）。\n\
-6. **todo 实物审计**：对照 coding/todo.md 逐项验实物（读代码、必要时跑单测）——没做到的不许算完成，防绕过打勾。\n\
-7. **树完成判定**：锚点是 plan tree 的目标**对照实际代码与文档**逐项核验——当前阶段全过后，看树还有没有未达成的目标：有 → advance；全部达成 → finish。stages.md 只是过程工具，划漏了任务照样算未完成。\n\
+6. **doc-lint 复核（确定门禁）**：在代码工作区跑 `devforge doc-lint <docs 目录> --repo <代码工作区>`，**退出码非 0 = 文档 FAIL**；另抽查两条——必填节是否真对着契约（缺节且无 `N/A` = 撒谎）、文档提到的实体是否真存在（工具报幽灵而声称写了 = 撒谎）。别只看 coder 自述的退出码，自己跑一遍。\n\
+7. **todo 实物审计**：对照 coding/todo.md 逐项验实物（读代码、必要时跑单测）——没做到的不许算完成，防绕过打勾。\n\
+8. **树完成判定**：锚点是 plan tree 的目标**对照实际代码与文档**逐项核验——当前阶段全过后，看树还有没有未达成的目标：有 → advance；全部达成 → finish。stages.md 只是过程工具，划漏了任务照样算未完成。\n\
 \n\
 ## 工具纪律\n\
 \n\
@@ -678,6 +680,12 @@ mod tests {
         assert!(CODING_AGENT_PROMPT.contains("断言必须能失败"));
         assert!(CODING_AGENT_PROMPT.contains("预审证据"));
         assert!(CODING_AGENT_PROMPT.contains("isVisible()"));
+        // T000c：契约 + doc-lint 硬门禁（文档不能只靠自述）
+        assert!(CODING_AGENT_PROMPT.contains("doc-contract"));
+        assert!(CODING_AGENT_PROMPT.contains("devforge doc-lint"));
+        assert!(CODING_AGENT_PROMPT.contains("退出码必须 0"));
+        assert!(CODING_REVIEW_PROMPT.contains("doc-lint 复核"));
+        assert!(CODING_REVIEW_PROMPT.contains("自己跑一遍"));
     }
 
     #[test]

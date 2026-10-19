@@ -5,17 +5,17 @@
   "status": "active",
   "autoContinue": true,
   "usage": {
-    "tokensUsed": 725585,
-    "activeSeconds": 526
+    "tokensUsed": 759044,
+    "activeSeconds": 574
   },
   "sisyphus": false,
-  "revision": 195,
+  "revision": 209,
   "createdAt": "2026-10-19T13:26:30.890Z",
-  "updatedAt": "2026-10-19T13:36:48.937Z",
+  "updatedAt": "2026-10-19T13:37:45.152Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
-    "generation": "21553879-fc10-4aee-87e4-859e4ae13f04",
+    "generation": "251f03b3-a71f-498a-8dfd-446f03d33e83",
     "used": 2,
     "phase": "idle",
     "repairUsed": false
@@ -49,8 +49,10 @@
       {
         "id": "t4",
         "title": "doc-lint 实体存在性 + 同名异写检测（接清单）",
-        "status": "pending",
-        "verificationContract": "文档里写的幽灵实体 100% 被抓出并给行号；同一实体两种写法被抓出；对真实仓正确文档零误报（附样本）"
+        "status": "complete",
+        "verificationContract": "文档里写的幽灵实体 100% 被抓出并给行号；同一实体两种写法被抓出；对真实仓正确文档零误报（附样本）",
+        "completedAt": "2026-10-19T13:36:58.324Z",
+        "evidence": "EntityIndex + check_entities（路径/行号/标识符），alias 只提示；作用域限 type: 条目；真实 plan 文档 85→0 失败（4 条提示为契约表内 TODO 字样）；幽灵样本 2/2 抓到带行号；6 条单测；220 过 clippy 0；commit a5f80e5"
       },
       {
         "id": "t5",
@@ -116,15 +118,15 @@
 - Status: running
 - Auto-continue: on
 - Sisyphus mode: no
-- Time spent: 8m46s
-- Tokens used: 726K (725,585) tokens
+- Time spent: 9m34s
+- Tokens used: 759K (759,044) tokens
 ## Tasks
 
 <!-- blockCompletion: true -->
 - [x] t1: 文档契约落成 skill（T000a） — evidence: assets/skills/doc-contract/SKILL.md 落地 + skill_assets 注册 + 四个 profile(coding-agent/coding-review/doc-fix/doc-review) 共用；单测 188 过 0 挂 clippy 0；commit 080c1ff
 - [x] t2: doc-lint 骨架：必填节 / 链接 / Runbook / 禁写扫描（T000b 结构部分） — evidence: src/docgen/lint.rs 四类检查 + CLI 子命令；一正一反样本实测：好样本 exit 0，坏样本 3 条违例带 文件:行号 exit 1（log /tmp/bg-run/917c35/bg_9yd24ykb.log）；单测 200 过 clippy 0；commit b6c3330
 - [x] t3: 清单抽取器 + 三道闭包校验 + 编号预分配（T001/T002/T003/T003b/T003c/T003d） — evidence: src/docgen/inventory.rs + CLI：真实仓 531 条目(module84/symbol444/entry3)，三道闭包可跑，src 不可达 0（47 项均为 vendored 模板）；反向验证由 4 条单测覆盖（删模块/删符号必须报错）；assign_units 两次调用结果一致；214 过 clippy 0；commit 51abc8d
-- [ ] t4: doc-lint 实体存在性 + 同名异写检测（接清单） — contract: 文档里写的幽灵实体 100% 被抓出并给行号；同一实体两种写法被抓出；对真实仓正确文档零误报（附样本）
+- [x] t4: doc-lint 实体存在性 + 同名异写检测（接清单） — evidence: EntityIndex + check_entities（路径/行号/标识符），alias 只提示；作用域限 type: 条目；真实 plan 文档 85→0 失败（4 条提示为契约表内 TODO 字样）；幽灵样本 2/2 抓到带行号；6 条单测；220 过 clippy 0；commit a5f80e5
 - [ ] t5: 契约接入 coding 链路（T000c） — contract: coding 提示词含契约引用一行；预审门要求 doc-lint 退出码 0 且证据落 stages.md；coding-review 有对应复核项；单测锚点断言存在
 - [ ] t6: doc-agent profile 新建 + doc-review 供给改造（T004/T005） — contract: doc-agent = deepseek-flash/high/codegraph+context7/语言 skills/coding 同款包；doc-review 增 codegraph + thinking_level=medium 且不开 context7；单元测试断言两侧供给符合 D018
 - [ ] t7: SOP 注册 + 协议块 + 检查点续跑（T006/T007/T008） — contract: start {"sop":"doc-from-zero"} 返回 202；<doc-complete>/<doc-verdict>/<route> 三块解析有单测；缺/非法 route 保守回 phase3；_meta/state.json 可断点续跑且 --only 单点重派幂等
