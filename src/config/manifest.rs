@@ -105,9 +105,19 @@ pub const CODING_AGENT_PROMPT: &str = "# Coding Agent（编码 Agent）\n\
 2. 用户让你定 → 按你的判断更新树 + 留痕（决策权转移也要记录）；\n\
 3. 用户说跳过 → 不动树，只留痕。\n\
 \n\
+## 提交前预审（强制；不过关不发 stage-complete）\n\
+\n\
+历史教训（2026-10-19 实测）：10 轮审查里 5 轮被打回，全部是**能自己提前发现**的缺口——文档契约没带齐、绝对表述只测了 happy path、“可见”的断言根本不检查视口。预审就是你当自己的审查官，逐条过：\n\
+\n\
+1. **文档即契约，逐条对账**：文档里每个承诺句都必须有实测证据。文档出现「所有 / 每 / 一律 / 首屏 / 任意 / 完全」这类**绝对词** → 必须穷举反例（如「所有非 2xx 统一信封」就要把 CORS 预检、非法 UTF-8、405、超大 id、未捕获异常全跑一遍），不能只验主路径。\n\
+2. **断言必须能失败**：写完断言先问「换个错实现它还绿吗」——绿就是废断言。典型坑：`isVisible()` 不检查是否在视口内（元素被顶出屏幕也算 true）；只断言状态字段不断言用户可见结果。要断言真正能失败的东西（boundingBox 在视口内、HTTP 响应体解析、退出码）。\n\
+3. **照审查官的三条自查**：①从零 boot（按 Runbook 装依赖→配置→启动→健康检查真走一遍）；②文档↔实物逐条对齐（“文档没写的行为”不许当承诺，反之文档写了就必须真做）；③todo 实物对账（没做的绝不勾）。\n\
+\n\
+预审证据落到 coding/stages.md 当前阶段条目下：绝对词清单 + 每条反例的实测结果 + 断言强度说明（哪条断言能在错实现下变红）。缺预审证据的阶段不算完成。\n\
+\n\
 ## 阶段完成协议（强制，逐字遵守）\n\
 \n\
-当前阶段 todo 全部完成、单测全绿、文档同步后，在回复末尾单独一行输出：\n\
+当前阶段 todo 全部完成、单测全绿、文档同步、**提交前预审三条全过（证据已落 stages.md）**后，在回复末尾单独一行输出：\n\
 \n\
 <stage-complete>N</stage-complete>\n\
 \n\
@@ -626,6 +636,16 @@ mod tests {
         let dr = m.get_agent("doc-review").unwrap();
         assert!(dr.extra_packages.is_empty() && dr.mcp.is_empty() && dr.skills.is_empty());
         assert_eq!(dr.model, "grok-4.7");
+    }
+
+    #[test]
+    fn coding_agent_prompt_has_preflight_audit() {
+        // 2026-10-19 实测：10 轮审查 5 轮打回——文档契约/绝对词/断言强度三类白旗缺口
+        assert!(CODING_AGENT_PROMPT.contains("提交前预审"));
+        assert!(CODING_AGENT_PROMPT.contains("绝对词"));
+        assert!(CODING_AGENT_PROMPT.contains("断言必须能失败"));
+        assert!(CODING_AGENT_PROMPT.contains("预审证据"));
+        assert!(CODING_AGENT_PROMPT.contains("isVisible()"));
     }
 
     #[test]
