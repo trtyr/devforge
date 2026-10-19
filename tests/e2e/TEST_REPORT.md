@@ -26,7 +26,7 @@
 | test_13_coding_preflight | 引擎预检 + 黑板骨架 | 7 PASS / 0 FAIL | |
 | test_15_coding_run_control | 编码 run 超时/取消 | 8 PASS / 0 FAIL | |
 | test_16_run_liveness | 失活收割（SIGSTOP） | 12 PASS / 0 FAIL | |
-| **test_17_testing_config** | **测试配置面（P007 新增）** | **51 PASS / 0 FAIL** | 供给即纪律/mcp 矩阵/skills 矩阵/提示词锚点 |
+| **test_17_testing_config** | **测试配置面（P007 新增）** | **55 PASS / 0 FAIL** | 供给即纪律/mcp 矩阵/skills 矩阵/提示词锚点（依赖获取 +4 锚点） |
 | **test_18_sop_registry** | **testing/doc-fix 触发链（P007 新增）** | **15 PASS / 0 FAIL** | 注册/触发/切换/四 SOP 拒绝面 |
 | test_19_testing_full_chain | 三段跨 SOP 全链（真模型） | 16 PASS / 10 FAIL | **编码段 3h 窗口未收尾，testing 段未轮到**（见 §四 C19-CODE-TIMEOUT） |
 | **test_20_testing_fixture** | **测试阶段本体（P007 新增，fixture 路线）** | **21 PASS / 0 FAIL** | **650s 三阶段全绿，见 §二** |
@@ -34,7 +34,7 @@
 | test_14_coding_full_chain | 编码全链 | 未跑（沿用 v4 结果 25P/0F） | 本轮新增改动仅协议路由，由单测 + test_12/13/15 覆盖；编码链耗时 3h+ 与 test_19 冲突 |
 | **合计（本轮 fresh）** | | **305 PASS / 11 FAIL** | 11 FAIL 全属「窗口预算」同族（test_19 编码段 10 + test_21 测试段 1） |
 
-Rust 单测：**178 passed / 0 failed** + doctest 1，clippy --all-targets **0 警告**（`7e7200a`，bg_run 原始日志验真）。
+Rust 单测：**183 passed / 0 failed** + doctest 1，clippy --all-targets **0 警告**（渲染提速/幂等落地后终态，bg_run 原始日志验真）。
 
 ## 二、测试阶段本体实证（test_20，11m17s 含渲染）
 
@@ -99,11 +99,11 @@ Rust 单测：**178 passed / 0 failed** + doctest 1，clippy --all-targets **0 �
 3. **OBS-C19-STALL（环境，已知家族 P8-ISSUE-06）**：单 turn 长停滞（会话冻结 + 进程高 CPU）。本轮 C19-R2 修复后，同类静默消失会以明确错误暴露，不再污染审查结论。
 4. **OBS-TEST-VENV（已定口，commit `b959478`）**：test_20 中测试 Agent 为跑 pytest 在仓库内建 `.venv` 并装依赖。现口径：隔离环境可行，但**不得改动被测系统实现与运行依赖**，装了什么必须进阶段报告；文档 Runbook 没写清测试依赖获取方式 → 记 doc-side 发现（不再自行拍口径）。
 5. **C21-TEST-TIMEOUT（窗口预算）**：test_21 测试段 60min 窗口用尽时仍在第 4 阶段第 6 轮（已落 4 个 commit / 20 个测试文件 / 矩阵审计打回两次），非停滀非故障；**生产口径 confirmation：测试阶段窗口应 ≥10800s**（与 D011「最慢阶段」一致，本轮 3600s 是 e2e 预算压缩所致）。
-6. **测试侧竞态清单（2026-10-19 扫查，非产品缺陷）**：「终态后重跑 start」与「cancel 受理→run 转 Failed→串行守卫可见」之间存在亚秒级窗口，早到的 start 会吃 409「已有运行中的任务」。影响面：test_07（首个踩中，已修）、test_12（F1 回归后无 body start）、test_18（testing/doc-fix 触发链两处）；其余脚本无「终态后重跑」动作（test_09/13/15/16 只收场不重跑，test_08/10/11/14/17/19/20/21 单次 start）。统一收敛为共享 helper `common.start_tolerant()`（409 重试 ≤20s，超时才把原响应交给断言）——不改产品语义（MVP 串行守卫 + 409 本就可重试）。
+6. **测试侧竞态清单（2026-10-19 扫查 22 个脚本，非产品缺陷）**：「终态后重跑 start」与「cancel 受理→run 转 Failed→串行守卫可见」之间存在亚秒级窗口，早到的 start 会吃 409「已有运行中的任务」。影响面：test_07（首个踩中，已修）、test_12（F1 回归后无 body start）、test_18（testing/doc-fix 触发链两处）；其余脚本无「终态后重跑」动作（test_09/13/15/16 只收场不重跑，test_08/10/11/14/17/19/20/21 单次 start，test_21 交接前已等编码 Settled）。统一收敛为共享 helper `common.start_tolerant()`（409 重试 ≤20s，超时才把原响应交给断言）——不改产品语义（MVP 串行守卫 + 409 本就可重试）。
 
 ## 五、结论
 
-- **测试阶段（P007）核心机制已实证**：配置面 51P、触发链 15P、本体闭环 21P——Test Agent 真的读文档写测试、自起自跑、维护追溯矩阵、产出中性发现，Test Review 按文档三判据审完并 finish。
+- **测试阶段（P007）核心机制已实证**：配置面 55P、触发链 15P、本体闭环 21P——Test Agent 真的读文档写测试、自起自跑、维护追溯矩阵、产出中性发现，Test Review 按文档三判据审完并 finish。
 - **真缺陷 0**（本轮）；C19-R1/R2 两项产品缺陷已在轮内修复并由单测 + 现场回归覆盖。
 - **遗留**：三段全链（规划→编码→testing 一次走通）未在本轮取得见证——卡在编码段耗时上；但**「编码→测试」交接已在真编码产物上拿到见证（test_21：编码 44min Settled → 交接 202 → 测试段 4 阶段/6 轮审查/4 commit/20 测试文件）**，测试阶段本体另由 fixture 路线独立取证（`test_20` 650s 全绿）。
 - **窗口口径结论**：coding ≥10800s（v4 先例）、testing ≥10800s（本轮 test_21 实证 3600s 不够）；全供给渲染预算 ≥1800s。本轮已将这些值落进脚本默认值（test_19 三段 2400/10800/10800，test_21 两段各 10800，run_all 预算同步 28800/25200）。

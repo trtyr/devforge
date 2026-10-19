@@ -9,7 +9,7 @@ test_19 的三段全链受编码段耗时拖累；本脚本把「规划」换成
 3. 测试段：Test Agent 只读文档写集成/e2e 测试 → 自起自跑 → Test Review → Settled
 
 断言：两段 run 均 Settled、任务 Completed、黑板两侧产物齐备、工作区有代码+测试+commit。
-窗口：编码 90 分钟 / 测试 60 分钟（小体量 fixture；D011 慷慨但不过度）。
+窗口：编码 180 分钟 / 测试 180 分钟（两段各 10800s；小体量 fixture，但测试窗口按 D011「最慢阶段」给足）。
 """
 
 import json
