@@ -18,12 +18,14 @@
 - [x] T005 doc-fix 子 SOP：DOC_FIX_SOP 注册（planning/coding/doc-fix）+ DocFixSopLoop（单轮工作→doc-review 内置审查→PASS 出口/FAIL 回注零上限）+ kickoff FINDINGS_DIR 常量化 —— commit `f4e32ce`
 - [x] T006 引擎接线：BuiltinRpcEngine 分发 testing/doc-fix + run_testing（doc-side 闭环编排：触发 doc-fix→过审→resume 同阶段重审，账本跨移交累计）+ run_doc_fix（独立触发）+ 监视目录（testing/testing-reviews/doc-fix/doc-reviews）+ 无 codegraph 预检（D007） —— commit `94f6a9c`
 - [x] T007 全量回归：bg_run 原始日志验真 cargo test **174 passed / 0 failed** + doctest 1 + clippy --all-targets **0 警告**（TEST_EXIT=0 / CLIPPY_EXIT=0，/tmp/p007-t007-regression.log）
-- [ ] T008 e2e 系列（test_17+：配置面/触发链/全链黑盒测试闭环）——**验证轮完成（2026-10-19 04:31，见 `tests/e2e/TEST_REPORT.md` v5）**：
+- [x] T008 e2e 系列（test_17+：配置面/触发链/全链黑盒测试闭环）——**验证线已收口（2026-10-19 21:23，见 `tests/e2e/TEST_REPORT.md` v6）**：
   - [x] 前置：`TESTING_SOP` 注册缺口修复（commit `54e734f`）
   - [x] test_17 配置面 **51P/0F**、test_18 触发链 **15P/0F**
   - [x] **test_20 测试阶段本体 fixture 路线 21P/0F**（650s 三阶段全绿：stages/矩阵/2 条 doc-side 发现/tests 分层/commit 锚/黑盒纪律）
   - [x] C19-R1/R2 审查路由与静默退出修复（commit `7e7200a`，单测 178 全绿）
-  - [ ] test_19 三段全链：编码段 3h 窗口两次用尽（环境慢），全链见证留待下一轮（建议 ≥6h 窗口或 fixture 化）
+  - [x] **test_19 全链重跑（第 2 次，2026-10-19 16:31-21:21）**：规划 4m24s ✅ / 编码 2h07m ✅（10 轮审查 5 FAIL）/ 测试 S1-S4 均 PASS / **S5 门禁测试自指递归熔断（C22，已修）**
+  - [x] **C22 修复**（commit `ba73dd2`）：测试 Agent 增「测试自身可靠性」7 条 + 测试审查一票否决；单测 **185 全绿** clippy 0
+  - [ ] ⛔ 三段全链一次性见证：**不再补跑**（用户拍板 2026-10-19 21:23）——已证/未证对照见 TEST_REPORT v6 §七
   - [x] **test_21 编码→测试交接 18P/1F**（编码 44min Settled→交接 202→测试段 4 阶段/6 轮审查/4 commit/20 测试文件；仅 3600s 窗口不够）
   - [x] 既有 18 脚本校准+重跑（250P/0F；test_14 沿用 v4 结果）
 - [x] **窗口口径结论（写进 TEST_REPORT v5）**：coding ≥10800s、testing ≥10800s、全供给渲染 ≥1800s
@@ -32,7 +34,7 @@
   - [x] OBS-TEST-VENV 依赖获取口径：TEST_AGENT 增「隔离环境装（.venv）/不得改实现与运行依赖/进报告/文档没写就记 doc-side」；DOC_FIX+DOC_REVIEW 七件套补「测试依赖获取与隔离方式」；CODING_REVIEW 补「照文档从零 boot」门禁+七件套全文（顺带补齐 P007 设计已定、提示词里却缺的尾巴）；test_17 锚点 +4 → **55P/0F**（commit `b959478`）
   - [x] 窗口预算落地：test_21 两段各 10800s、run_all 预算 25200s，TEST_REPORT 口径同步（同上 commit）
   - [x] 测试侧竞态封口：`common.start_tolerant()`（终态后重跑遇 409 重试 ≤20s），test_07/12/18 落地；**17P/11P/15P 全绿**（commit `1b596a4`）
-- [ ] 待办（下一轮）：test_19 三段全链见证（≥6h 窗口或 fixture 化）——唯一未闭合项
+- [x] 待办已收口：三段全链见证**不再补跑**（用户 2026-10-19 21:23）；C22 新约束的真实效果留给下一个真实任务自然验证
 
 ## 里程碑口径
 
