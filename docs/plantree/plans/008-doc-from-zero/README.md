@@ -1,6 +1,6 @@
 # P008 · doc-from-zero（从零写文档）
 
-> 状态：**框架草案**（2026-10-19 立项讨论，仅记录方向，未进设计定稿）
+> 状态：**框架定稿**（2026-10-19，Q001–Q013 全关、D001–D020 落定；任务清单见 `roadmap.md`，待执行）
 > 一句话：给定一个**完全陌生、零文档、无 git 历史**的代码库，产出一套「写全、可验证、不编造」的文档体系。
 
 ## 为什么需要（用户提出）
@@ -86,11 +86,11 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 
 ## 文件地图
 
-- `topics/design-framework.md` — 框架全文（双 Agent 编制、五阶段、完备性自证、路由、检查点）
+- `topics/design-framework.md` — 框架全文（双 Agent 编制、四道门节奏、五阶段、完备性自证、路由、检查点）
 - `topics/doc-contract.md` — **跨 SOP 共用的文档契约草案**（条目模板/反模式/真实性规则/doc-lint 规格）
-- `decisions/README.md` — D001（本 SOP 为唯一权威）/ D002（红线）/ D003-D008（落点、codegraph、画图、置信度、档位、doc-lint）/ D009（双 Agent 编制）
-- `open-questions.md` — 待拍问题（Q001+）
-- `roadmap.md` — 任务分解（草案，未定稿）
+- `decisions/README.md` — D001–D020（权威、红线、落点、codegraph、画图、置信度、档位、doc-lint、双 Agent、四道门、词表、审查供给、完成判据、必填节、增量、目录、串行、供给、UI、协议）
+- `open-questions.md` — **Q001–Q013 全关**
+- `roadmap.md` — **已定稿任务清单** T000a–T025 + M0–M5（待执行）
 
 ## 关键前提
 
@@ -102,7 +102,7 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 
 ## Scope
 
-**In（未来）：** 第二条 SOP 的完整设计——inventory 抽取器、并行写作编排、三查审计、Runbook 约定、产物布局。
+**In（未来）：** 第二条 SOP 的完整实现——inventory 抽取器、引擎侧 doc-lint、单元滚动编排、五项审计、Runbook 约定、产物布局、增量模式。
 
 **Out：**
 - 改写现有 `doc-init` skill——**已拍板退役（D001）**，不并行维护两套

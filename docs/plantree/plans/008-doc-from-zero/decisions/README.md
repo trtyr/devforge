@@ -123,3 +123,65 @@
 
 - **N/A 规则**：确实不适用时必须写 `N/A` 并给理由（如"无参数"）——**省略不等于不适用**，否则"懒得写"和"真没有"无法机械区分。缺节且无 N/A = 缺节。
 - **为什么分级**：一刀切"缺就 FAIL"会把内部函数逼成凑字；一刀切"分级但由 agent 判"则必然自洩。分级表进契约、进 lint 配置，才是机械可判的。
+
+## D015 · 增量模式：内置同一道 SOP，不另开链
+
+- **决策**：增量 = 本 SOP 的一个运行模式 `--update <base-commit>`（或 API 参数），**不新建第四条链**。
+- **流程**：变更检测（diff + AST 定位实体）→ 语义影响传播（codegraph 双向遍历）→ 选择性重生成（只动受影响单元）→ 一致性校验（链接/图/父文档）。
+- **为什么**：① RepoDoc 证明增量就是同一管线的缩范围运行；② 新开链 = 重写四道门、清单、契约，必然漂移；③ 状态文件与检查点天然复用。
+- **后果**：`--update` 模式下门 0 只重算受影响模块的清单条目，不冻结全量。
+
+## D016 · 产物目录与状态文件位置
+
+- **决策**（修正 D002 的 `.docgen/state.json` 路径）：状态与元数据全部进 `docs/contexts/_meta/`，**不在项目根额外建目录**——因为只读红线只给 `docs/contexts/` 开口子。
+
+```
+<项目>/
+└─ docs/contexts/
+   ├─ README.md              总览（汇编产物）
+   ├─ 01-architecture.md     架构（含 Mermaid）
+   ├─ 02-dataflow.md         数据流（含 Mermaid）
+   ├─ 10-runbook.md          运行手册（七件套）
+   ├─ <module>/             模块文档（按模块树路径，一模块一目录/文件）
+   └─ _meta/
+      ├─ inventory.json     清单（分母，条目带 canonical_name/aliases/kind/evidence）
+      ├─ glossary.md       清单导出的词表（自动生成，不手改）
+      ├─ confidence.md     置信度三色证据表（D006）
+      ├─ gaps.md           🔴 缺口与未覆盖登记（D013）
+      ├─ state.json        检查点/幂等续跑（D002，替代项目根 .docgen/）
+      └─ runs/<run-id>/    每次运行的耗时/token/模块数账单（§五·5）
+```
+
+- **为什么 `_meta/` 下划线开头**：文档阅读者一眼知道这些不是正文；lint 不对它查必填节。
+- **例外**：项目仓库本身有 `docs/` 习惯目录时不迁移旧内容，新体系只占 `docs/contexts/`。
+
+## D017 · 执行模型：串行滚动，不做并行编排
+
+- **决策**：P008 按现有**串行 guard** 跑（一次一个 run），单元严格按拓扑序推进；**不做多单元并发**。
+- **分批规则**：同层无依赖且合起来仍在审查阅读预算内的叶子可以合为一批；超预算就拆批。
+- **超大仓（>100K LOC）**：先 `doc_level=essential` 粗跑一遍（覆盖入口点 + Runbook + 顶层架构），再按需对热点模块升级到 complete（`--only <module>`）。理由：RepoDoc 实测大仓全量重生成代价最高；分档可让“能跑”先交付。
+- **为什么不做并发**：P004 并发未建；文档单元之间有强拓扑依赖，并发收益小于冲突成本。
+
+## D018 · 两个 profile 的供给定稿
+
+| profile | model | thinking | MCP | skills | 包 |
+|---|---|---|---|---|---|
+| **doc-agent**（新） | `deepseek-flash`（与 coding 同档：单元多、速度优先，质量由门禁兜） | high | codegraph + context7 | 各语言 best-practices（同 coding） | 同 coding-agent |
+| **doc-review**（改） | `grok-4.7`（不变） | **medium**（对齐其他 review） | **codegraph**（新增，查实体） | 无 | 无 |
+
+- **注**：现有 `doc-review` 无 MCP、thinking 默认 high——需改两处；`doc-fix` 不动（它属于测试链的文档修补）。
+
+## D019 · UI/可视化文档：MVP 不做截图代理
+
+- **决策**：MVP 不引入截图/浏览器代理；前端相关条目只产 **组件树 / 路由表 / 状态流 / Mermaid 组件图**（均由 codegraph + 配置文件可得）。
+- **理由**：截图需要浏览器与可控种子数据，成本高且不可机械判定；先把可确定的部分做对。
+- **后果**：UI 视觉细节写入 `gaps.md`（“未覆盖：视觉布局，需人工补充”），不假装写了。
+
+## D020 · 单元编号与协议命名
+
+- **单元 ID**：`<模块路径>` 归一化（`/`→`-`）+ 预分配序号，如 `unit-core-auth-07`；编号在门 0 一次性分配、**不随局部重跑漂移**（D002）。
+- **协议块**（与 P005/P007 同形）：
+  - 干活：`<doc-complete>unit-core-auth-07</doc-complete>`（单元完成）
+  - 审查：`<doc-verdict>PASS|FAIL</doc-verdict>` + `<route>phase0|phase1|phase2|phase3|finish</route>` + `<issues>`（FAIL 时全量列）
+  - 缺/非法 route → 保守 `phase3`；协议违例上限 `MAX_PROTOCOL_VIOLATIONS = 3`。
+- **SOP 名**：`doc-from-zero`（与 `planning`/`coding`/`testing` 同款注册，触发 `start {"sop":"doc-from-zero"}`）。
