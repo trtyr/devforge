@@ -277,3 +277,4 @@
 {"type":"goal_created","goalId":"mvfafune-7ynfrl","objective":"在 devforge 内实现第二条 SOP「doc-from-zero」到 M3：可被 API 触发、按四道门滚动产出目标项目的 docs/contexts/ 文档体系，并通过五项确定性审计（覆盖/完整性/真实性/置信度诚实性/可跑）。","sisyphus":false,"autoContinue":true,"at":"2026-10-19T13:26:30.890Z"}
 {"type":"task_list_set","goalId":"mvfafune-7ynfrl","taskCount":12,"blockCompletion":true,"at":"2026-10-19T13:26:30.890Z"}
 {"type":"task_complete","goalId":"mvfafune-7ynfrl","taskId":"t1","evidence":"assets/skills/doc-contract/SKILL.md 落地 + skill_assets 注册 + 四个 profile(coding-agent/coding-review/doc-fix/doc-review) 共用；单测 188 过 0 挂 clippy 0；commit 080c1ff","at":"2026-10-19T13:28:37.523Z"}
+{"type":"task_complete","goalId":"mvfafune-7ynfrl","taskId":"t2","evidence":"src/docgen/lint.rs 四类检查 + CLI 子命令；一正一反样本实测：好样本 exit 0，坏样本 3 条违例带 文件:行号 exit 1（log /tmp/bg-run/917c35/bg_9yd24ykb.log）；单测 200 过 clippy 0；commit b6c3330","at":"2026-10-19T13:30:44.379Z"}

@@ -23,6 +23,49 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(if report.passed() { 0 } else { 1 });
     }
 
+    if args.first().map(String::as_str) == Some("doc-inventory") {
+        // 清单（分母）机械抽取 + 三道闭包校验（D002/D013）。
+        // 形态：`devforge doc-inventory <repo> [--out <dir>]`，退出码 1 = 闭包不过。
+        let Some(repo) = args.get(1) else {
+            eprintln!("用法: devforge doc-inventory <repo> [--out <dir>]");
+            std::process::exit(2);
+        };
+        let repo = std::path::PathBuf::from(repo);
+        let out_dir = args
+            .iter()
+            .position(|a| a == "--out")
+            .and_then(|i| args.get(i + 1))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| repo.join("docs/contexts/_meta"));
+        let inv = devforge::docgen::inventory::build_inventory(&repo)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let path = out_dir.join("inventory.json");
+        inv.save(&path).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let findings = devforge::docgen::inventory::check_closures(&repo, &inv)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let modules = inv.entries.iter().filter(|e| matches!(e.kind, devforge::docgen::inventory::EntryKind::Module)).count();
+        let symbols = inv.entries.iter().filter(|e| matches!(e.kind, devforge::docgen::inventory::EntryKind::Symbol)).count();
+        let entries = inv.entries.iter().filter(|e| matches!(e.kind, devforge::docgen::inventory::EntryKind::Entry)).count();
+        println!(
+            "清单：{} 条目（module {modules} / symbol {symbols} / entry {entries}），单元水位 {}",
+            inv.entries.len(),
+            inv.meta.unit_seq
+        );
+        println!("写入：{}", path.display());
+        if !inv.meta.unsupported_languages.is_empty() {
+            println!("未支持符号抽取的语言（缺口登记）：{}", inv.meta.unsupported_languages.join(", "));
+        }
+        for f in &findings {
+            println!("{}:{} [{}] {}", f.path, f.line, f.closure.as_str(), f.message);
+        }
+        if findings.is_empty() {
+            println!("闭包校验：三道全过");
+            std::process::exit(0);
+        }
+        println!("闭包校验：{} 项不通过", findings.len());
+        std::process::exit(1);
+    }
+
     let home = std::env::var("HOME").context("读取 HOME 环境变量")?;
     let root = std::path::Path::new(&home).join(".devforge");
 

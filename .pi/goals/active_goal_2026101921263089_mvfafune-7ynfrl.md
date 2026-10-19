@@ -5,18 +5,18 @@
   "status": "active",
   "autoContinue": true,
   "usage": {
-    "tokensUsed": 313509,
-    "activeSeconds": 205
+    "tokensUsed": 690818,
+    "activeSeconds": 375
   },
   "sisyphus": false,
-  "revision": 81,
+  "revision": 149,
   "createdAt": "2026-10-19T13:26:30.890Z",
-  "updatedAt": "2026-10-19T13:30:37.332Z",
+  "updatedAt": "2026-10-19T13:33:58.038Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
-    "generation": "a28eab4b-fdb5-44be-9e9d-2abb3b7d5253",
-    "used": 1,
+    "generation": "f7b49f9b-7abc-4f2a-9682-2351cac6eaea",
+    "used": 2,
     "phase": "idle",
     "repairUsed": false
   },
@@ -33,8 +33,10 @@
       {
         "id": "t2",
         "title": "doc-lint 骨架：必填节 / 链接 / Runbook / 禁写扫描（T000b 结构部分）",
-        "status": "pending",
-        "verificationContract": "对一份故意缺节、死链、Runbook 不全的文档报出具体行号与违例类型；退出码可判（0 通过/非 0 失败）；给出一正一反两份样本的运行记录"
+        "status": "complete",
+        "verificationContract": "对一份故意缺节、死链、Runbook 不全的文档报出具体行号与违例类型；退出码可判（0 通过/非 0 失败）；给出一正一反两份样本的运行记录",
+        "completedAt": "2026-10-19T13:30:44.378Z",
+        "evidence": "src/docgen/lint.rs 四类检查 + CLI 子命令；一正一反样本实测：好样本 exit 0，坏样本 3 条违例带 文件:行号 exit 1（log /tmp/bg-run/917c35/bg_9yd24ykb.log）；单测 200 过 clippy 0；commit b6c3330"
       },
       {
         "id": "t3",
@@ -112,13 +114,13 @@
 - Status: running
 - Auto-continue: on
 - Sisyphus mode: no
-- Time spent: 3m25s
-- Tokens used: 314K (313,509) tokens
+- Time spent: 6m15s
+- Tokens used: 691K (690,818) tokens
 ## Tasks
 
 <!-- blockCompletion: true -->
 - [x] t1: 文档契约落成 skill（T000a） — evidence: assets/skills/doc-contract/SKILL.md 落地 + skill_assets 注册 + 四个 profile(coding-agent/coding-review/doc-fix/doc-review) 共用；单测 188 过 0 挂 clippy 0；commit 080c1ff
-- [ ] t2: doc-lint 骨架：必填节 / 链接 / Runbook / 禁写扫描（T000b 结构部分） — contract: 对一份故意缺节、死链、Runbook 不全的文档报出具体行号与违例类型；退出码可判（0 通过/非 0 失败）；给出一正一反两份样本的运行记录
+- [x] t2: doc-lint 骨架：必填节 / 链接 / Runbook / 禁写扫描（T000b 结构部分） — evidence: src/docgen/lint.rs 四类检查 + CLI 子命令；一正一反样本实测：好样本 exit 0，坏样本 3 条违例带 文件:行号 exit 1（log /tmp/bg-run/917c35/bg_9yd24ykb.log）；单测 200 过 clippy 0；commit b6c3330
 - [ ] t3: 清单抽取器 + 三道闭包校验 + 编号预分配（T001/T002/T003/T003b/T003c/T003d） — contract: 对真实仓生成 _meta/inventory.json（条目含 id/kind/path:line/canonical_name/aliases/status）；三道闭包（入口可达/文件覆盖/符号覆盖）可运行；反向验证——从清单删掉一个模块，闭包校验必须报错；单元编号只在门0分配一次
 - [ ] t4: doc-lint 实体存在性 + 同名异写检测（接清单） — contract: 文档里写的幽灵实体 100% 被抓出并给行号；同一实体两种写法被抓出；对真实仓正确文档零误报（附样本）
 - [ ] t5: 契约接入 coding 链路（T000c） — contract: coding 提示词含契约引用一行；预审门要求 doc-lint 退出码 0 且证据落 stages.md；coding-review 有对应复核项；单测锚点断言存在
