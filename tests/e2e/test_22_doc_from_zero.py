@@ -31,7 +31,7 @@ NINE = (
     "doc-agent",
     "doc-review",
 )
-DOC_TIMEOUT = 5400.0  # 90 分钟窗口：fixture 很小，只是模型慢
+DOC_TIMEOUT = 7200.0  # 120 分钟窗口：fixture 很小，只是模型慢
 
 ENTRY_PY = '''"""极简书目 CLI（doc-from-zero fixture：无文档、无 git）。"""
 
