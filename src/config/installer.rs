@@ -42,7 +42,9 @@ fn install_failure_error(pkg: &str, output: &std::process::Output) -> DevforgeEr
 }
 
 /// 包安装器抽象。真桥 = [`PiInstallBridge`]；测试 = fake（模拟双记录）。
-pub trait PackageInstaller {
+///
+/// `Send + Sync` 是 `render_all` 并发渲染的要求（四个 worker 共享 `&dyn PackageInstaller`）。
+pub trait PackageInstaller: Send + Sync {
     fn install(&self, profile_dir: &Path, packages: &[String]) -> Result<()>;
 }
 

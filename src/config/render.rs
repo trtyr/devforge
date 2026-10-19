@@ -2,11 +2,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use crate::config::installer::PackageInstaller;
 use crate::config::manifest::ConfigManifest;
 use crate::config::skill_assets::builtin_skill_files;
-use crate::error::{Context as _, Result};
+use crate::error::{Context as _, DevforgeError, Result};
 
 /// 运行时生存配置（P002 模板层写死；P2-ISSUE-04 修复：中转抖动的重试生存配置、
 /// 流挂死快判、reasoning 预算等此前缺失，导致同一中转上真实环境存活而 profile 一次即死）。
@@ -19,6 +21,10 @@ fn runtime_settings() -> serde_json::Value {
         "compaction": { "enabled": false, "reserveTokens": 16384, "keepRecentTokens": 20000 },
     })
 }
+
+/// 渲染并发度上限（CAL-19-RENDER：八 profile 串行装包实测 >20 分钟，
+/// 并发四路为实测保守值——再高会跟 npm 缓存/网络限流撞车）。
+const MAX_RENDER_CONCURRENCY: usize = 4;
 
 pub struct Renderer<'a> {
     pub manifest: &'a ConfigManifest,
@@ -35,6 +41,10 @@ impl<'a> Renderer<'a> {
 
         let dir = profiles_root.join(&agent.name);
         fs::create_dir_all(dir.join("skills")).ctx("创建 profile 骨架目录")?;
+
+        // 幂等跳过的前置读取（CAL-19-RENDER）：settings.json 马上会被重写，
+        // 已记录的 packages 必须先抓下来，否则无法判断「已装齐」而重复装包。
+        let previous = recorded_packages(&dir);
 
         // AGENTS.md（模板层：角色提示词）
         fs::write(dir.join("AGENTS.md"), &agent.role_prompt)
@@ -165,6 +175,28 @@ impl<'a> Renderer<'a> {
         // 包安装（必装四件套 + 差异化包）——双记录由 installer 负责
         let mut packages = self.manifest.base_packages.clone();
         packages.extend(agent.extra_packages.iter().cloned());
+        // 幂等跳过（CAL-19-RENDER）：已装齐且双记录完整则不重装，只回写 settings 记录。
+        // 判定标准刻意保守——npm/package.json 缺失、或清单新增了包，一律重装全量。
+        let installed = packages.iter().all(|p| previous.contains(p));
+        let dual_record = dir.join("npm").join("package.json").exists();
+        if installed && dual_record && !previous.is_empty() {
+            settings["packages"] = serde_json::Value::Array(
+                packages.iter().cloned().map(serde_json::Value::String).collect(),
+            );
+            fs::write(
+                dir.join("settings.json"),
+                serde_json::to_string_pretty(&settings).ctx("序列化 settings")?,
+            )
+            .ctx(format!("回写 {} 的 settings.json", agent.name))?;
+            tracing::info!(
+                component = "renderer",
+                agent = %agent.name,
+                packages = packages.len(),
+                profile = %dir.display(),
+                "profile 复用（包已装齐，跳过安装）"
+            );
+            return Ok(dir);
+        }
         self.installer.install(&dir, &packages)?;
 
         tracing::info!(
@@ -178,13 +210,64 @@ impl<'a> Renderer<'a> {
     }
 
     /// 渲染清单中全部 Agent。
+    ///
+    /// 并发执行（CAL-19-RENDER）：八 profile 串行 `pi install` 实测 >20 分钟，
+    /// 各 profile 目录相互独立（文件写入 + 装包均落在自己目录），可安全并行。
+    /// 返回值顺序与 `manifest.agents` 一致；任一路失败时按清单顺序取首个错误上抛。
     pub fn render_all(&self, profiles_root: &Path) -> Result<Vec<PathBuf>> {
-        self.manifest
-            .agents
-            .iter()
-            .map(|a| self.render_agent(profiles_root, &a.name))
-            .collect()
+        let agents = &self.manifest.agents;
+        if agents.is_empty() {
+            return Ok(Vec::new());
+        }
+        let workers = MAX_RENDER_CONCURRENCY.min(agents.len()).max(1);
+        let next = AtomicUsize::new(0);
+        let slots: Vec<Mutex<Option<Result<PathBuf>>>> =
+            (0..agents.len()).map(|_| Mutex::new(None)).collect();
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= agents.len() {
+                        break;
+                    }
+                    let res = self.render_agent(profiles_root, &agents[i].name);
+                    *slots[i].lock().expect("slot 锁") = Some(res);
+                });
+            }
+        });
+        let mut rendered = Vec::with_capacity(agents.len());
+        for slot in slots {
+            match slot.into_inner().expect("slot 锁") {
+                Some(res) => rendered.push(res?),
+                None => {
+                    return Err(DevforgeError::System(
+                        "渲染槽位未填充（并发调度异常）".to_string(),
+                    ))
+                }
+            }
+        }
+        Ok(rendered)
     }
+}
+
+/// 读取 profile 已记录的 packages（settings.json `packages`）。
+/// 任何读取/解析失败都退化为「空集」→ 走全量安装（保守）。
+fn recorded_packages(dir: &Path) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(dir.join("settings.json")) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    value
+        .get("packages")
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 递归复制目录。
@@ -277,6 +360,159 @@ mod tests {
         )
         .unwrap();
         assert_eq!(pkg_json["dependencies"].as_object().unwrap().len(), 5);
+    }
+
+    // ---------- CAL-19-RENDER：并发渲染与幂等跳过 ----------
+
+    #[derive(Default)]
+    struct CountingInstaller(AtomicUsize);
+
+    impl PackageInstaller for CountingInstaller {
+        fn install(&self, dir: &Path, packages: &[String]) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            FakeInstaller.install(dir, packages)
+        }
+    }
+
+    struct FailingInstaller;
+
+    impl PackageInstaller for FailingInstaller {
+        fn install(&self, _dir: &Path, packages: &[String]) -> Result<()> {
+            Err(DevforgeError::Config(format!(
+                "故意失败（{} 个包）",
+                packages.len()
+            )))
+        }
+    }
+
+    #[test]
+    fn render_all_parallel_preserves_manifest_order() {
+        let manifest = ConfigManifest::builtin();
+        let root = tempfile::tempdir().unwrap();
+        let counter = CountingInstaller::default();
+        let r = Renderer {
+            manifest: &manifest,
+            installer: &counter,
+            skills_source: None,
+        };
+        let rendered = r.render_all(root.path()).unwrap();
+        let expected: Vec<PathBuf> = manifest
+            .agents
+            .iter()
+            .map(|a| root.path().join(&a.name))
+            .collect();
+        assert_eq!(rendered, expected, "并发渲染返回值须与清单顺序一致");
+        assert_eq!(
+            counter.0.load(Ordering::SeqCst),
+            manifest.agents.len(),
+            "每个 Agent 恰好装一次"
+        );
+        for a in &manifest.agents {
+            assert!(
+                root.path().join(&a.name).join("AGENTS.md").exists(),
+                "{} 渲染缺失",
+                a.name
+            );
+        }
+    }
+
+    #[test]
+    fn render_all_propagates_install_failure() {
+        let manifest = ConfigManifest::builtin();
+        let root = tempfile::tempdir().unwrap();
+        let r = Renderer {
+            manifest: &manifest,
+            installer: &FailingInstaller,
+            skills_source: None,
+        };
+        let err = r.render_all(root.path()).unwrap_err();
+        assert!(
+            matches!(err, DevforgeError::Config(_)),
+            "安装失败必须上抛而非吞掉: {err}"
+        );
+    }
+
+    #[test]
+    fn second_render_skips_install_when_packages_already_present() {
+        let manifest = ConfigManifest::builtin();
+        let root = tempfile::tempdir().unwrap();
+        let counter = CountingInstaller::default();
+        let r = Renderer {
+            manifest: &manifest,
+            installer: &counter,
+            skills_source: None,
+        };
+        r.render_agent(root.path(), "plan-agent").unwrap();
+        let after_first = counter.0.load(Ordering::SeqCst);
+        r.render_agent(root.path(), "plan-agent").unwrap();
+        assert_eq!(
+            counter.0.load(Ordering::SeqCst),
+            after_first,
+            "已装齐（settings + npm 双记录）不得重装"
+        );
+        let settings: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.path().join("plan-agent/settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !settings["packages"].as_array().unwrap().is_empty(),
+            "跳过安装时 packages 记录必须回写进 settings"
+        );
+    }
+
+    #[test]
+    fn manifest_package_change_forces_reinstall() {
+        let mut manifest = ConfigManifest::builtin();
+        let root = tempfile::tempdir().unwrap();
+        let counter = CountingInstaller::default();
+        Renderer {
+            manifest: &manifest,
+            installer: &counter,
+            skills_source: None,
+        }
+        .render_agent(root.path(), "plan-agent")
+        .unwrap();
+        let before = counter.0.load(Ordering::SeqCst);
+        manifest
+            .agents
+            .iter_mut()
+            .find(|a| a.name == "plan-agent")
+            .unwrap()
+            .extra_packages
+            .push("npm:pi-newpkg".into());
+        Renderer {
+            manifest: &manifest,
+            installer: &counter,
+            skills_source: None,
+        }
+        .render_agent(root.path(), "plan-agent")
+        .unwrap();
+        assert_eq!(
+            counter.0.load(Ordering::SeqCst),
+            before + 1,
+            "清单新增包 → 已装记录不覆盖 → 必须重装"
+        );
+    }
+
+    #[test]
+    fn missing_npm_record_forces_reinstall() {
+        let manifest = ConfigManifest::builtin();
+        let root = tempfile::tempdir().unwrap();
+        let counter = CountingInstaller::default();
+        let r = Renderer {
+            manifest: &manifest,
+            installer: &counter,
+            skills_source: None,
+        };
+        r.render_agent(root.path(), "plan-agent").unwrap();
+        let before = counter.0.load(Ordering::SeqCst);
+        fs::remove_file(root.path().join("plan-agent/npm/package.json")).unwrap();
+        r.render_agent(root.path(), "plan-agent").unwrap();
+        assert_eq!(
+            counter.0.load(Ordering::SeqCst),
+            before + 1,
+            "双记录缺失（目录损坏）必须重装"
+        );
     }
 
     #[test]
