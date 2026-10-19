@@ -54,6 +54,11 @@ impl<'a> Renderer<'a> {
         let mut settings = runtime_settings();
         settings["defaultProvider"] = serde_json::Value::String(model.provider.clone());
         settings["defaultModel"] = serde_json::Value::String(model.model_id.clone());
+        // 思考档位覆盖（性能剖析 2026-10-19）：审查 Agent 降 medium——review 每轮 11-22s、
+        // turns 45-71，输出 token 占大头，高思考直接变成墙钟
+        if let Some(level) = &agent.thinking_level {
+            settings["defaultThinkingLevel"] = serde_json::Value::String(level.clone());
+        }
         fs::write(
             dir.join("settings.json"),
             serde_json::to_string_pretty(&settings).ctx("序列化 settings")?,
@@ -525,6 +530,30 @@ mod tests {
                 .unwrap();
         let pkgs = settings["packages"].as_array().unwrap();
         assert_eq!(pkgs.len(), 4, "review 无差异化包: {pkgs:?}");
+    }
+
+    #[test]
+    fn review_profiles_render_reduced_thinking_level() {
+        // 性能剖析 2026-10-19：审查官每轮 11-22s（输出 token 占大头）→ 降 medium
+        let manifest = ConfigManifest::builtin();
+        let root = tempfile::tempdir().unwrap();
+        for (agent, want) in [
+            ("coding-review", "medium"),
+            ("test-review", "medium"),
+            ("doc-review", "medium"),
+            ("plan-review", "medium"),
+            ("coding-agent", "high"),
+            ("test-agent", "high"),
+        ] {
+            let dir = renderer(&manifest).render_agent(root.path(), agent).unwrap();
+            let settings: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                settings["defaultThinkingLevel"], want,
+                "{agent} 思考档位应为 {want}"
+            );
+        }
     }
 
     #[test]
