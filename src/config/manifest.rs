@@ -308,6 +308,54 @@ pub const DOC_FIX_PROMPT: &str = r#"# Doc Fix Agent（文档修补 Agent）
 - 完成本轮全部处置后即止——审查官会核验你的产出，打回会回注问题清单。
 "#;
 
+/// Doc Agent 提示词（P008 D009/D010/D016/D020）——doc-from-zero 的干活方。
+pub const DOC_AGENT_PROMPT: &str = r#"# Doc Agent（文档 Agent）
+
+你是 devforge 系统的文档 Agent：把一个陌生代码库反向写成一套可用文档。你是**干活的一方**，审查由独立的 Doc Review Agent 做。
+
+## 开工（顺序强制）
+
+1. 读 kickoff 告知道的信息：目标仓路径、产出目录（`docs/contexts/`）、`inventory.json` 位置、本单元编号与范围。
+2. **先读清单**（`_meta/inventory.json`）：本单元包含哪些文件/符号/入口，先用 codegraph 看图确认依赖关系。
+3. 按阶段推进：勘察（只记事实）→ 解释（推断+置信度）→ 写条目/汇编 —— 发 `<doc-complete>` 交审。
+
+## 纪律（违者审查直接打回）
+
+- **只写 `docs/contexts/`**：目标仓其他任何文件只读不写（包括源码、配置、构建件）。这是硬约束。
+- **codegraph-first**：结构问题一律走 MCP（`projectPath=<目标仓>`），不 grep+read 爬取；explore 返回的源码视为已读；⚠️ 新鲜度标记的改用 Read。
+- **事实与推断分离**：勘察阶段**只记“有什么”，严禁写“为什么”**；解释阶段每条结论带置信度：🟢 CONFIRMED（能给出 `path:line` 或可重放命令）/ 🟡 INFERRED（写清依据）/ 🔴 GAP（代码里看不出来 → 写进 `_meta/gaps.md`，不编）。
+- **按 `doc-contract` skill 写条目**：必填节一个不能缺；确实不适用必须写 `N/A` 并给理由（**省略不等于不适用**）。
+- **单次上下文≈4K 代码片段**：不够就用图查询补，把整个文件灌进来是浪费（也是慢的根因）。
+- **一单元一提交**：PASS 后 commit（信息写清单元号），绝不 push。检查点写 `_meta/state.json`，断了能续。
+- **跨模块只建引用**：同一实体不重复描述；汇编层只合成、**不新增事实**。
+
+## 交审前自检（缺证据不发完成）
+
+1. 必填节：对照契约逐节检查，不适用处有 `N/A` 声明
+2. 实体：文档里提到的每个函数/类/端点/配置键/路径都能在代码里找到
+3. 链接：相对路径与锚点都能解析
+4. Runbook：七件套齐全（环境/依赖/配置/启停+健康/种子数据/测试运行/公开接口）
+5. 依据：标 🟢 的每条都真的能给得出 `path:line`
+
+**命令自检（证据落 `_meta/` 或 kickoff 指定处）**：
+`devforge doc-lint <docs 目录> --repo <目标仓>` 退出码必须 0；输出摘要与退出码写入本单元的证据块。
+
+## 阶段完成协议（强制，逐字遵守）
+
+本单元写完并自检完后，回复末尾单独一行输出：
+
+<doc-complete>unit-xxx</doc-complete>
+
+（xxx 为 kickoff 给的单元号）然后停止输出等审查。没有这个标记视为未完成。
+
+审查打回时问题清单会回注：`<issues>` 逐条修，`<route>` 告诉你要回哪一阶段（phase0 清单 / phase1 勘察 / phase2 解释 / phase3 生成汇编）——**按 route 回去修，不要就地硬编**。
+
+## 工作方式
+
+- 小步快跑：一轮只做一件小事；大文件分多次写。
+- 上下文全程保持：打回、推进在同一会话继续，不重复勘察已知事实。
+"#;
+
 /// Doc Review 提示词（P007 T001 正稿；D004/D008 一致性审查落地，勿手改——改决策先改 plan tree）。
 pub const DOC_REVIEW_PROMPT: &str = r#"# Doc Review Agent（文档审查 Agent）
 
@@ -552,12 +600,28 @@ impl ConfigManifest {
                     thinking_level: None,
                 },
                 AgentManifest {
+                    name: "doc-agent".into(),
+                    role_prompt: DOC_AGENT_PROMPT.into(),
+                    extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
+                    model: "deepseek-flash".into(),
+                    skills: vec![
+                        "doc-contract".into(),
+                        "rust-best-practices".into(),
+                        "go-best-practices".into(),
+                        "python-best-practices".into(),
+                        "ts-js-best-practices".into(),
+                    ],
+                    mcp: vec![codegraph_mcp(), context7_mcp()],
+                    thinking_level: None,
+                },
+                AgentManifest {
                     name: "doc-review".into(),
                     role_prompt: DOC_REVIEW_PROMPT.into(),
                     extra_packages: vec![],
                     model: "grok-4.7".into(),
                     skills: vec!["doc-contract".into()],
-                    mcp: vec![],
+                    // D012/D018：查实体存在性必须有图；不给 context7（不查外部库文档）
+                    mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
                 },
             ],
@@ -615,10 +679,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_has_eight_agents_and_four_base_packages() {
+    fn builtin_has_nine_agents_and_four_base_packages() {
         let m = ConfigManifest::builtin();
         assert_eq!(m.base_packages, BASE_PACKAGES.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        assert_eq!(m.agents.len(), 8, "规划双 + 编码双 + 测试双 + 文档双（P007）");
+        assert_eq!(m.agents.len(), 9, "规划双 + 编码双 + 测试双 + 文档三（P007/P008）");
         // 差异化包仅 Plan Agent
         let pa = m.get_agent("plan-agent").unwrap();
         assert_eq!(pa.extra_packages, vec![PLAN_AGENT_EXTRA.to_string()]);
@@ -654,9 +718,22 @@ mod tests {
         assert_eq!(df.model, "deepseek-flash");
         let dr = m.get_agent("doc-review").unwrap();
         // P008 T000a：doc-review 也拿 doc-contract（它是审查用规则书，不是写作技能）
-        assert!(dr.extra_packages.is_empty() && dr.mcp.is_empty());
+        assert!(dr.extra_packages.is_empty());
         assert_eq!(dr.skills, vec!["doc-contract".to_string()]);
+        // P008 D012/D018：审文档必须有图（查实体），但不给 context7
+        assert_eq!(dr.mcp.len(), 1);
+        assert_eq!(dr.mcp[0].name, "codegraph");
         assert_eq!(dr.model, "grok-4.7");
+
+        // P008 D018：doc-agent = 干活方（与 coding-agent 同档供给）
+        let da = m.get_agent("doc-agent").unwrap();
+        assert_eq!(da.model, "deepseek-flash");
+        assert_eq!(da.extra_packages, ca.extra_packages);
+        assert_eq!(da.mcp.len(), 2, "codegraph + context7");
+        assert_eq!(da.mcp[0].name, "codegraph");
+        assert_eq!(da.mcp[1].name, "context7");
+        assert!(da.skills.iter().any(|s| s == "doc-contract"));
+        assert_eq!(da.thinking_level, None, "干活方用全局 high");
     }
 
     #[test]
@@ -670,6 +747,21 @@ mod tests {
                 "{name} 缺少 doc-contract skill"
             );
         }
+    }
+
+    #[test]
+    fn doc_agent_prompt_carries_protocol_and_guards() {
+        // D009/D010/D016/D020 的硬约束锚点
+        assert!(DOC_AGENT_PROMPT.contains("只写 `docs/contexts/`"));
+        assert!(DOC_AGENT_PROMPT.contains("codegraph-first"));
+        assert!(DOC_AGENT_PROMPT.contains("事实与推断分离"));
+        assert!(DOC_AGENT_PROMPT.contains("🟢"));
+        assert!(DOC_AGENT_PROMPT.contains("path:line"));
+        assert!(DOC_AGENT_PROMPT.contains("gaps.md"));
+        assert!(DOC_AGENT_PROMPT.contains("N/A"));
+        assert!(DOC_AGENT_PROMPT.contains("<doc-complete>unit-xxx</doc-complete>"));
+        assert!(DOC_AGENT_PROMPT.contains("devforge doc-lint"));
+        assert!(DOC_AGENT_PROMPT.contains("按 route 回去修"));
     }
 
     #[test]

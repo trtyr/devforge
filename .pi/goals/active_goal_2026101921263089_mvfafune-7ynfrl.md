@@ -5,13 +5,13 @@
   "status": "active",
   "autoContinue": true,
   "usage": {
-    "tokensUsed": 759044,
-    "activeSeconds": 574
+    "tokensUsed": 775051,
+    "activeSeconds": 631
   },
   "sisyphus": false,
-  "revision": 209,
+  "revision": 220,
   "createdAt": "2026-10-19T13:26:30.890Z",
-  "updatedAt": "2026-10-19T13:37:45.152Z",
+  "updatedAt": "2026-10-19T13:38:49.267Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
@@ -57,8 +57,10 @@
       {
         "id": "t5",
         "title": "契约接入 coding 链路（T000c）",
-        "status": "pending",
-        "verificationContract": "coding 提示词含契约引用一行；预审门要求 doc-lint 退出码 0 且证据落 stages.md；coding-review 有对应复核项；单测锚点断言存在"
+        "status": "complete",
+        "verificationContract": "coding 提示词含契约引用一行；预审门要求 doc-lint 退出码 0 且证据落 stages.md；coding-review 有对应复核项；单测锚点断言存在",
+        "completedAt": "2026-10-19T13:37:52.256Z",
+        "evidence": "CODING_AGENT_PROMPT 预审新增第四条（doc-contract skill + devforge doc-lint --repo 退出码必须 0 + 证据落 stages.md），stage-complete 条件改四条；CODING_REVIEW_PROMPT 新增第 6 项 doc-lint 复核（自己跑一遍）；单测锚点 +5；220 过 clippy 0；commit f9"
       },
       {
         "id": "t6",
@@ -118,8 +120,8 @@
 - Status: running
 - Auto-continue: on
 - Sisyphus mode: no
-- Time spent: 9m34s
-- Tokens used: 759K (759,044) tokens
+- Time spent: 10m31s
+- Tokens used: 775K (775,051) tokens
 ## Tasks
 
 <!-- blockCompletion: true -->
@@ -127,7 +129,7 @@
 - [x] t2: doc-lint 骨架：必填节 / 链接 / Runbook / 禁写扫描（T000b 结构部分） — evidence: src/docgen/lint.rs 四类检查 + CLI 子命令；一正一反样本实测：好样本 exit 0，坏样本 3 条违例带 文件:行号 exit 1（log /tmp/bg-run/917c35/bg_9yd24ykb.log）；单测 200 过 clippy 0；commit b6c3330
 - [x] t3: 清单抽取器 + 三道闭包校验 + 编号预分配（T001/T002/T003/T003b/T003c/T003d） — evidence: src/docgen/inventory.rs + CLI：真实仓 531 条目(module84/symbol444/entry3)，三道闭包可跑，src 不可达 0（47 项均为 vendored 模板）；反向验证由 4 条单测覆盖（删模块/删符号必须报错）；assign_units 两次调用结果一致；214 过 clippy 0；commit 51abc8d
 - [x] t4: doc-lint 实体存在性 + 同名异写检测（接清单） — evidence: EntityIndex + check_entities（路径/行号/标识符），alias 只提示；作用域限 type: 条目；真实 plan 文档 85→0 失败（4 条提示为契约表内 TODO 字样）；幽灵样本 2/2 抓到带行号；6 条单测；220 过 clippy 0；commit a5f80e5
-- [ ] t5: 契约接入 coding 链路（T000c） — contract: coding 提示词含契约引用一行；预审门要求 doc-lint 退出码 0 且证据落 stages.md；coding-review 有对应复核项；单测锚点断言存在
+- [x] t5: 契约接入 coding 链路（T000c） — evidence: CODING_AGENT_PROMPT 预审新增第四条（doc-contract skill + devforge doc-lint --repo 退出码必须 0 + 证据落 stages.md），stage-complete 条件改四条；CODING_REVIEW_PROMPT 新增第 6 项 doc-lint 复核（自己跑一遍）；单测锚点 +5；220 过 clippy 0；commit f9
 - [ ] t6: doc-agent profile 新建 + doc-review 供给改造（T004/T005） — contract: doc-agent = deepseek-flash/high/codegraph+context7/语言 skills/coding 同款包；doc-review 增 codegraph + thinking_level=medium 且不开 context7；单元测试断言两侧供给符合 D018
 - [ ] t7: SOP 注册 + 协议块 + 检查点续跑（T006/T007/T008） — contract: start {"sop":"doc-from-zero"} 返回 202；<doc-complete>/<doc-verdict>/<route> 三块解析有单测；缺/非法 route 保守回 phase3；_meta/state.json 可断点续跑且 --only 单点重派幂等
 - [ ] t8: 勘察 / 解释 / 缺口转问题（T009/T010/T011） — contract: 勘察产出只记事实（抽查不含因果解释）；解释每条断言带置信度；标 🟢 的必须能给出 path:line 或重放命令；🔴 全部进 _meta/gaps.md
