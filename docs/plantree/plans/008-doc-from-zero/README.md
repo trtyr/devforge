@@ -33,12 +33,15 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 
 ## 四阶段框架（草案，未定稿）
 
+> 已按 Reversa 重构为**五阶段**：事实与推断分离，每条断言带置信度。详见 `topics/design-framework.md` §三。
+
 | 阶段 | 输入 | 产出 | 关键点 |
 |------|------|------|--------|
-| 0 · 清单 | 代码库 | `inventory`（功能点条目 + 证据指针） | 机械抽取，不花模型时间；**是"写全"的分母** |
-| 1 · 分层写作 | inventory + 模块树 | 每模块文档（叶子优先） | **多 agent 并行**；跨模块只建引用不重写 |
-| 2 · 汇编 | 叶子文档 | 架构总览 / 数据流 / 使用指南 / 架构图 | 自底向上合成 |
-| 3 · 审计 | 全部产物 | 通过/打回 | 覆盖 + 真实性 + 可跑，三查机械判定为主 |
+| 0 · 清单 | 代码库 | `inventory`（功能点条目 + 证据指针）+ `doc_level` 三档 | 机械抽取，不花模型时间；**是"写全"的分母** |
+| 1 · 勘察 | inventory + 模块树 | 每模块事实记录（有什么，**不解释**） | **一模块一会话**；同层可并行 |
+| 2 · 解释 | 勘察结果 | 业务规则/状态机/权限矩阵（**全部标 🟢/🟡/🔴**） | 无 git 时禁止声称“已知设计意图”，一律 🟡 |
+| 3 · 生成/汇编 | 事实 + 推断 | 条目文档 + 架构总览/数据流/架构图 | 只合成不新增事实；上层可追溯叶子 |
+| 4 · 审计 | 全部产物 | 通过/打回 + `gaps.md` | 覆盖 + 完整性 + 真实性 + **置信度诚实性** + 可跑 |
 
 ## 研究依据（2026-10-19 检索）
 
@@ -47,6 +50,8 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 
 **两者定位**：**CodeWiki 管结构**（模块树/分层汇编），**DocAgent 管条目**（单点质量与反幻觉）——P008 两条都吃。
 - 补充：[从边缘进入陌生代码库](https://understandlegacycode.com/blog/dive-into-an-unfamiliar-codebase-from-its-edges/)（入口点优先）；[scope-discoverer 类 agent](https://github.com/shinpr/claude-code-workflows/blob/main/agents/scope-discoverer.md)（多来源功能范围发现）。
+- **Reversa**（[analysis pipeline](https://sandeco.github.io/reversa/pipeline/)）：遗留系统 → 可执行规格的五阶段 agent 流水（ Scout→Archaeologist→Detective/Architect→Writer→Reviewer）；**关键贡献：事实/推断分离 + 🟢🟡🔴 置信度标记 + 一模块一会话 + doc_level 三档 + 🔴缺口转问题交人**。无 git 时它靠历史回溯的那条路不成立（我们全部计 🟡）。
+- **特征定位学术骨架**（[Feature Location Survey](https://www.cs.toronto.edu/~chechik/pubs/locationsurvey12.pdf)）：静态（依赖/调用图）/ 动态（执行轨迹）/ IR（标识符与注释相似度）；我们用“静态优先 → 可跑补动态 → IR 当命名探针”。背景：专业开发者最多 **70% 时间花在程序理解**（Xia et al., TSE 2018）。
 
 详细精读结论（可借用/不可照搬两张表）见 `topics/design-framework.md` §五·B。
 
