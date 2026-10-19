@@ -239,10 +239,15 @@ fn lint_with(docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport>
         let text = std::fs::read_to_string(file)
             .ctx(format!("读取文档 {}", file.display()))?;
         let doc = ParsedDoc::parse(&text);
+        // _meta/ 下是引擎与审查官自己的产物（缺口台账、审查意见、运行账单）：
+        // 它们天然会抄一词「待补充/TODO」，拿交付文档的禁令去卡它们只会制造噪音。
+        let in_meta = file.components().any(|c| c.as_os_str() == "_meta");
 
-        check_required_sections(&doc, file, &mut report);
-        check_links(&doc, file, &mut report);
-        check_banned(&doc, file, &mut report);
+        if !in_meta {
+            check_required_sections(&doc, file, &mut report);
+            check_links(&doc, file, &mut report);
+            check_banned(&doc, file, &mut report);
+        }
         if let Some(index) = index {
             check_entities(&doc, file, index, &mut report);
         }
