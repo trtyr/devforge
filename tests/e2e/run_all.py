@@ -38,7 +38,7 @@ SCRIPTS = [
     ("test_18_sop_registry.py", 300, "P007 触发链：testing/doc-fix 注册与触发/未知 SOP 拒绝面"),
     ("test_19_testing_full_chain.py", 28800, "P007 全链黑盒闭环（真 pi + 真模型；规划→编码→testing 三段跨 SOP；doc-fix 移交若触发则验证；最慢 6-8h 量级）"),
     ("test_20_testing_fixture.py", 7200, "P007 测试阶段本体（fixture 路线）：预置被测系统+文档，验 stages/矩阵/发现/tests 落仓/审查闭环"),
-    ("test_21_coding_to_testing.py", 14400, "P007 编码→测试交接（预置小 plan tree + 真 coding + 真 testing，验跨 SOP 交接与测试落仓）"),
+    ("test_21_coding_to_testing.py", 25200, "P007 编码→测试交接（预置小 plan tree + 真 coding + 真 testing；两段各 10800s 窗口）"),
 ]
 
 

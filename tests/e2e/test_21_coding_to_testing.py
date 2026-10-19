@@ -26,8 +26,8 @@ EIGHT = (
     "plan-agent", "plan-review", "coding-agent", "coding-review",
     "test-agent", "test-review", "doc-fix", "doc-review",
 )
-CODE_TIMEOUT = 5400.0   # 90 分钟
-TEST_TIMEOUT = 3600.0   # 60 分钟
+CODE_TIMEOUT = 10800.0  # 180 分钟（与 test_19 同口径：编码阶段生产口径 ≥10800s）
+TEST_TIMEOUT = 10800.0  # 180 分钟（D011 最慢阶段；test_21 实测 3600s 不够——真实编码产物文档量大）
 
 PLAN_README = """# wordcount-lite · 产品说明（预置 plan tree）
 

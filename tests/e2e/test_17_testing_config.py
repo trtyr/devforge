@@ -127,6 +127,8 @@ def main() -> int:
             "Runbook",
             "findings",
             "严禁写单元测试",
+            "依赖获取",
+            "不得改动被测系统",
         ):
             r.check(anchor in ta_prompt, f"test-agent 提示词锚点：{anchor}")
 
@@ -144,10 +146,10 @@ def main() -> int:
 
         # 5. 文档双 Agent 锚点（D004）
         df_prompt = (prof / "doc-fix" / "AGENTS.md").read_text()
-        for anchor in ("只改文档，不改代码", "第三方", "Runbook", "findings"):
+        for anchor in ("只改文档，不改代码", "第三方", "Runbook", "findings", "测试依赖获取"):
             r.check(anchor in df_prompt, f"doc-fix 提示词锚点：{anchor}")
         dr_prompt = (prof / "doc-review" / "AGENTS.md").read_text()
-        for anchor in ("plan tree", "Runbook", "findings", "<stage-verdict>PASS或FAIL</stage-verdict>"):
+        for anchor in ("plan tree", "Runbook", "findings", "<stage-verdict>PASS或FAIL</stage-verdict>", "测试依赖获取"):
             r.check(anchor in dr_prompt, f"doc-review 提示词锚点：{anchor}")
 
         # 6. mcp.json 有无矩阵（pi 原生 schema）
