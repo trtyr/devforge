@@ -11,6 +11,7 @@ fixture：一个**无文档、无 git 历史**的小 Python 仓（入口 + 两�
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -89,6 +90,14 @@ def main() -> int:
     server = Server()
     timeline: list[dict] = []
     try:
+        # 配置真源是宿主 ~/.devforge/manifest.json（模型选择、agent 供给都在那里，不在代码里）；
+        # 隔离 HOME 启动时会拿内置默认重新生成，所以先把宿主配置种进去，
+        # 否则测的是「内置默认」而不是「真实配置」。
+        host_manifest = Path.home() / ".devforge" / "manifest.json"
+        if host_manifest.exists():
+            dest = server.home / ".devforge" / "manifest.json"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(host_manifest, dest)
         server.start()
         # 剥包快渲染（本脚本验文档机制，不验装包）——但 **MCP 不剥**：
         # codegraph 是 doc-agent 的“代码事实层”，剥了它就等于让实习生去写档案却把档案柜锁了。
