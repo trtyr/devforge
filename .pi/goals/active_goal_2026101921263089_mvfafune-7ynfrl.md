@@ -2,32 +2,23 @@
   "version": 3,
   "id": "mvfafune-7ynfrl",
   "objective": "在 devforge 内实现第二条 SOP「doc-from-zero」到 M3：可被 API 触发、按四道门滚动产出目标项目的 docs/contexts/ 文档体系，并通过五项确定性审计（覆盖/完整性/真实性/置信度诚实性/可跑）。",
-  "status": "active",
-  "autoContinue": true,
+  "status": "paused",
+  "autoContinue": false,
   "usage": {
-    "tokensUsed": 2383242,
-    "activeSeconds": 2166
+    "tokensUsed": 2385204,
+    "activeSeconds": 2184
   },
   "sisyphus": false,
-  "revision": 643,
+  "revision": 666,
   "createdAt": "2026-10-19T13:26:30.890Z",
-  "updatedAt": "2026-10-20T02:46:40.427Z",
+  "updatedAt": "2026-10-20T03:03:20.818Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
-    "generation": "f6b9efea-cb5d-4b65-93ba-07cb37baea98",
-    "used": 2,
-    "phase": "running",
-    "repairUsed": false,
-    "decision": {
-      "kind": "ready",
-      "purpose": "ready"
-    },
-    "dispatch": {
-      "id": "ca3a8732-1b42-43bf-b739-42bcf3215be2",
-      "kind": "ready",
-      "claimedAt": 1792464370342
-    }
+    "generation": "ca348cb4-586f-476c-8006-6f6d166ecaf0",
+    "used": 5,
+    "phase": "idle",
+    "repairUsed": false
   },
   "taskList": {
     "tasks": [
@@ -129,7 +120,9 @@
     "blockCompletion": true,
     "proposedAt": "2026-10-19T13:26:06.113Z"
   },
-  "activePath": ".pi/goals/active_goal_2026101921263089_mvfafune-7ynfrl.md"
+  "activePath": ".pi/goals/active_goal_2026101921263089_mvfafune-7ynfrl.md",
+  "stopReason": "agent",
+  "pauseReason": "真实仓实证（itsdangerous，DOC_TARGET_REPO 指向 clone）正在后台跑，预计 20–40 分钟；期间 checkpoint 约每 2 秒触发一次、每次重发 ~25万 token 上下文（本 goal 已 238 万 token）。.pi/pi-goal-x-settings.json 的 maxAutonomousRuns=0 未生效，只能再次暂停止血。后台任务完成会自动唤醒本会话，我会回填真实仓证据并收口 t12；需要我继续时请 /goal-resume。"
 }
 
 # Goal Prompt
@@ -138,11 +131,11 @@
 
 ## Progress
 
-- Status: running
-- Auto-continue: on
+- Status: paused (agent)
+- Auto-continue: off
 - Sisyphus mode: no
-- Time spent: 36m06s
-- Tokens used: 2.4M (2,383,242) tokens
+- Time spent: 36m24s
+- Tokens used: 2.4M (2,385,204) tokens
 ## Tasks
 
 <!-- blockCompletion: true -->
@@ -159,3 +152,4 @@
 - [x] t11: 单元审 + 终审编排（T019/T020） — evidence: 单元审用 coverage_for_unit 只判本单元；终审同 profile 新实例查全量覆盖/lint/跨模块重复/汇编链接，FAIL→run 失败；运行账单落 _meta/runs/<run-id>/report.md；FAIL→route→修→PASS 回路由 fail_message_contains_route_and_issues 实测；257 过 clippy 0；commit 
 - [ ] t12: 端到端单仓跑通 + 报告（M3 验收） — contract: 对一个真实仓完整跑完门0→单元滚动→汇编→终审；产物树符合 D016；五项审计结果可复算；墙钟/单元数/审查轮次/token 落 _meta/runs/<run-id>/
 
+- Agent pause reason: 真实仓实证（itsdangerous，DOC_TARGET_REPO 指向 clone）正在后台跑，预计 20–40 分钟；期间 checkpoint 约每 2 秒触发一次、每次重发 ~25万 token 上下文（本 goal 已 238 万 token）。.pi/pi-goal-x-settings.json 的 maxAutonomousRuns=0 未生效，只能再次暂停止血。后台任务完成会自动唤醒本会话，我会回填真实仓证据并收口 t12；需要我继续时请 /goal-resume。
