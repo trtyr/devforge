@@ -746,7 +746,13 @@ pub fn public_symbols(lang: Lang, text: &str) -> Vec<(usize, String)> {
     out
 }
 
-/// 单元编号预分配（D020）：按顶层目录分组，编号一次分配、重复调用不漂移。
+/// 单元粒度上限：一个单元最多包含多少模块。
+///
+/// 为什么需要：单元原来按顶层目录分组，大仓的 `src/` 再大也只是一个单元——
+/// 滚动、检查点、逐单元审查全部退化成“一次大活”，跟不分单元的差别只剩文件名。
+const MAX_UNIT_MODULES: usize = 8;
+
+/// 单元编号预分配（D020）：按顶层目录分组（过大的组再按路径切片），编号一次分配、重复调用不漂移。
 pub fn assign_units(inv: &mut Inventory) {
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (idx, e) in inv.entries.iter().enumerate() {
@@ -774,20 +780,26 @@ pub fn assign_units(inv: &mut Inventory) {
         .max(used.values().copied().max().unwrap_or(0));
 
     for (group, idxs) in &groups {
-        let existing = idxs
-            .iter()
-            .map(|i| inv.entries[*i].unit_id.clone())
-            .find(|u| !u.is_empty());
-        let unit = match existing {
-            Some(u) => u,
-            None => {
-                next += 1;
-                let slug = sanitize(group);
-                format!("unit-{slug}-{next:02}")
+        // 大组切片：排序后每 MAX_UNIT_MODULES 个一组（确定性切分，同一批文件多次调用结果一致）
+        let mut members: Vec<usize> = idxs.clone();
+        members.sort_by(|a, b| inv.entries[*a].path.cmp(&inv.entries[*b].path));
+        let chunks: Vec<Vec<usize>> = members.chunks(MAX_UNIT_MODULES).map(|c| c.to_vec()).collect();
+        for chunk in chunks {
+            let existing = chunk
+                .iter()
+                .map(|i| inv.entries[*i].unit_id.clone())
+                .find(|u| !u.is_empty());
+            let unit = match existing {
+                Some(u) => u,
+                None => {
+                    next += 1;
+                    let slug = sanitize(group);
+                    format!("unit-{slug}-{next:02}")
+                }
+            };
+            for i in chunk {
+                inv.entries[i].unit_id = unit.clone();
             }
-        };
-        for i in idxs {
-            inv.entries[*i].unit_id = unit.clone();
         }
     }
     // symbol/entry 条目挂到所属文件单元
@@ -1529,5 +1541,46 @@ mod tests {
         assert!(is_test_file("pkg/server_test.go"));
         assert!(!is_test_file("src/core.py"));
         assert!(!is_test_file("src/testing_utils.py"));
+    }
+
+    #[test]
+    fn oversized_group_is_split_into_multiple_units() {
+        // 大仓的 src/ 不能只当一个单元：否则滚动/检查点/逐单元审查全部退化
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..12 {
+            touch(
+                tmp.path(),
+                &format!("src/mod_{i:02}.py"),
+                "def run():\n    pass\n",
+            );
+        }
+        let inv = build_inventory(tmp.path()).unwrap();
+        let units: std::collections::BTreeSet<_> = inv
+            .entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Module)
+            .map(|e| e.unit_id.clone())
+            .collect();
+        assert_eq!(units.len(), 2, "12 个模块应按 8 个上限切成 2 个单元: {units:?}");
+
+        // 重复调用不漂移
+        let mut again = inv.clone();
+        assign_units(&mut again);
+        let units2: std::collections::BTreeSet<_> = again
+            .entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Module)
+            .map(|e| e.unit_id.clone())
+            .collect();
+        assert_eq!(units, units2);
+        // 同单元内模块仍在同一组，且每单元不超过上限
+        for u in units {
+            let n = inv
+                .entries
+                .iter()
+                .filter(|e| e.kind == EntryKind::Module && e.unit_id == u)
+                .count();
+            assert!(n <= MAX_UNIT_MODULES, "{u} 有 {n} 个模块");
+        }
     }
 }
