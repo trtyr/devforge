@@ -13,6 +13,8 @@ pub mod coding_gate;
 pub mod docs;
 pub mod gate0;
 pub mod plan_audit;
+pub mod report;
+pub mod state;
 pub mod testing_gate;
 
 pub use boundary::{
@@ -24,6 +26,10 @@ pub use coding_gate::{check_baseline_log, check_step_commits, read_steps};
 pub use docs::{DocAction, apply as apply_doc_level, essential_ready};
 pub use gate0::{Baseline, DocLevel, ensure_baseline};
 pub use plan_audit::{PlanAudit, audit as audit_plan, review_instruction};
+pub use report::{
+    AcceptanceSummary, ChangeReport, DiffStats, diff_stats, summarize_acceptance, write_report,
+};
+pub use state::{CHANGE_SOP, ChangePhase, ChangeState};
 pub use testing_gate::{
     AcceptanceMatch, check_regression_claim, check_regression_log, reconcile_acceptance,
     route_back_message,
