@@ -1132,6 +1132,48 @@ mod tests {
         }
     }
 
+    /// 代码生成器：把 6 个 change agents 导出成 e2e 夹具（漂移时重跑刷新）。
+    /// `cargo test --lib dump_change_agents_fixture -- --ignored`
+    #[test]
+    #[ignore = "代码生成器：重建 tests/e2e/fixtures/change_agents.json"]
+    fn dump_change_agents_fixture() {
+        let m = ConfigManifest::builtin();
+        let agents: Vec<&AgentManifest> = m
+            .agents
+            .iter()
+            .filter(|a| a.name.starts_with("change-"))
+            .collect();
+        assert_eq!(agents.len(), 6, "change agents 应有 6 个");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/e2e/fixtures");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("change_agents.json"),
+            serde_json::to_string_pretty(&agents).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn change_agents_fixture_matches_builtin() {
+        // e2e 用这份夹具把 change 六件套装进 manifest；漂移 = e2e 测的不是内置提示词
+        let m = ConfigManifest::builtin();
+        let expected: Vec<&AgentManifest> = m
+            .agents
+            .iter()
+            .filter(|a| a.name.starts_with("change-"))
+            .collect();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/e2e/fixtures/change_agents.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("夹具缺失，重跑 dump_change_agents_fixture：{}", path.display()));
+        let actual: Vec<AgentManifest> = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            serde_json::to_string(&actual).unwrap(),
+            serde_json::to_string(&expected).unwrap(),
+            "change agents 夹具与 builtin 漂移——重跑 dump_change_agents_fixture"
+        );
+    }
+
     #[test]
     fn doc_agent_prompt_carries_protocol_and_guards() {
         // D009/D010/D016/D020 的硬约束锚点
