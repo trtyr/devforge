@@ -99,7 +99,7 @@ def main() -> int:
             status, resp = server.req("PUT", "/config/manifest", stripped, timeout=120.0)
             r.check(status == 202, "PUT 剥包 manifest == 202", f"status={status}")
             ev = sse.wait_for(
-                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 13,
+                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 15,
                 timeout=120.0,
             )
             elapsed = time.time() - t0

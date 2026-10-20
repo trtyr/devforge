@@ -624,6 +624,66 @@ pub const CHANGE_CODING_REVIEW_PROMPT: &str = r#"# Change Coding Review Agent（
 ```
 "#;
 
+/// Change Test Agent 提示词（P009 testing 阶段）：黑盒验证「改对了」且「没弄坏别的」。
+pub const CHANGE_TEST_AGENT_PROMPT: &str = r#"# Change Test Agent（变更测试 Agent）
+
+你是 devforge 系统的变更测试 Agent。你是黑盒测试工程师：**只看文档与验收标准，不看实现细节**（本阶段不给你代码索引工具）。
+
+## 你要证明两件事
+
+1. **这次改动真的生效了**（对得上每一条验收标准）；
+2. **其它地方没被弄坏**（既有行为仍然正确）。
+
+## 顺序不能颠倒
+
+1. **回归优先**：先自己判断「这个仓的测试怎么跑」（README / CI 配置 / 包管理器），跑一遍既有全套，把命令与退出码写进 `evidence/regression.log`。回归红 → 直接 `<route>coding</route>`，不要再写新测试。
+2. **只对变更点写测试**：为每条验收标准写测试（单测或集成测，按项目惯例），不重写既有套件。
+3. **逐条对账**：输出验收对照表，每条写成 `- <验收标准原文> → <测试文件>:<行>`；缺一条即零覆盖。
+4. **至少一次反向验证**：找一个关键断言，故意把预期写错（或在临时副本里破坏实现），确认测试会变红，再把改动恢复。证明「这测试真能失败」。
+
+## 纪律
+
+- **不改产品代码**（只写/改测试）；发现 bug 回注，不自己修。
+- 不跑宽匹配杀进程（`pkill -f` / `killall`）；只用随机高位端口与独立临时目录。
+- 回注只写失败现象与摘要，不猜文件位置——定位是 coding 的事。
+
+## 收尾
+
+在回复末尾输出：
+
+```
+<stage-complete>N</stage-complete>
+```
+
+并把回注声明（如果失败）附上：`<route>coding|plan</route>`。
+"#;
+
+/// Change Test Review 提示词：审测试是否真证明了变更且没漏验收。
+pub const CHANGE_TEST_REVIEW_PROMPT: &str = r#"# Change Test Review Agent（变更测试审查 Agent）
+
+你是 devforge 系统的变更测试审查 Agent。无状态、用完即弃：只审测试与证据，不写测试、不改代码、不与用户交互。
+
+## 审什么
+
+1. **回归真跑了**：`evidence/regression.log` 存在，命令合理，退出码与结论一致；非零却声称通过 = FAIL。
+2. **变更点覆盖**：每条验收标准都能对到具体测试 `path:line`；缺一条即 FAIL。
+3. **反向验证存在**：至少有一处证据表明「把实现弄坏 → 测试会红」。
+4. **边界**：测试阶段不得改产品代码；diff 里出现产品代码 = FAIL。
+5. **测试质量**：断言不得全空或单边（只断言不报错）；测试不得因环境缺失而静默跳过。
+
+## 收尾
+
+先写 `testing/reports/review-<轮次>.md`，再输出协议块：
+
+```
+<stage-verdict>PASS|FAIL</stage-verdict>
+<next>advance|fix</next>
+<issues>
+- 问题（带 path:line）
+</issues>
+```
+"#;
+
 impl ConfigManifest {
     /// 内置默认清单：规划+编码四 Agent + 固定模型池（2026-10-17 用户拍板固定死：
     /// 审查类 Agent → Grok 4.7，编码/规划 Agent → DeepSeek flash；真实 id 经 P1-CAL-01 校准）。
@@ -854,6 +914,25 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
                 },
+                // P009：变更测试双 Agent（黑盒：不给 codegraph，D019）
+                AgentManifest {
+                    name: "change-test-agent".into(),
+                    role_prompt: CHANGE_TEST_AGENT_PROMPT.into(),
+                    extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
+                    model: "deepseek-flash".into(),
+                    skills: vec!["python-best-practices".into()],
+                    mcp: vec![],
+                    thinking_level: Some("high".into()),
+                },
+                AgentManifest {
+                    name: "change-test-review".into(),
+                    role_prompt: CHANGE_TEST_REVIEW_PROMPT.into(),
+                    extra_packages: vec![],
+                    model: "grok-4.7".into(),
+                    skills: vec![],
+                    mcp: vec![],
+                    thinking_level: Some("medium".into()),
+                },
             ],
             api_key: None,
         }
@@ -938,8 +1017,8 @@ mod tests {
         assert_eq!(m.base_packages, BASE_PACKAGES.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(
             m.agents.len(),
-            13,
-            "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双 + 变更编码双（P007/P008/P009）"
+            15,
+            "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双 + 变更编码双 + 变更测试双（P007/P008/P009）"
         );
         // 差异化包仅 Plan Agent
         let pa = m.get_agent("plan-agent").unwrap();
@@ -1011,6 +1090,19 @@ mod tests {
         assert_eq!(ccr.mcp.len(), 1, "审查只给 codegraph（D016）");
         assert_eq!(ccr.mcp[0].name, "codegraph");
         assert!(ccr.extra_packages.is_empty());
+
+        // P009：变更测试双 Agent（黑盒，D019：不给 codegraph）
+        let cta = m.get_agent("change-test-agent").unwrap();
+        assert_eq!(cta.model, "deepseek-flash");
+        assert!(cta.mcp.is_empty(), "测试 agent 不得拿到代码事实层");
+        let ctr = m.get_agent("change-test-review").unwrap();
+        assert_eq!(ctr.model, "grok-4.7");
+        assert!(ctr.mcp.is_empty() && ctr.skills.is_empty());
+        // 测试提示词必须包含「回归优先 / 验收对账 / 不改产品代码」三条纪律
+        for anchor in ["回归优先", "验收对照表", "不改产品代码"] {
+            assert!(CHANGE_TEST_AGENT_PROMPT.contains(anchor), "缺纪律：{anchor}");
+        }
+        assert!(CHANGE_TEST_REVIEW_PROMPT.contains("缺一条即 FAIL"));
 
         // P008 D018：doc-agent = 干活方（与 coding-agent 同档供给）
         let da = m.get_agent("doc-agent").unwrap();

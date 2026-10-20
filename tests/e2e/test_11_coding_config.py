@@ -38,7 +38,7 @@ def main() -> int:
             # 2. 完成信号 = config.rendered SSE（render_all 串行装完八角色才发；
             #    AGENTS.md 在装包前落盘，不能当就绪信号——v4 实测竞态教训）
             ev = sse.wait_for(
-                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 13,
+                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 15,
                 timeout=900.0,
             )
             elapsed = time.time() - t0

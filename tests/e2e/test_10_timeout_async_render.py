@@ -45,7 +45,7 @@ def main() -> int:
             r.check(ev is not None, "收到 config.rendered SSE 通知", f"{ev}")
             if ev is not None:
                 r.check(
-                    ev.get("rendered") == 13,
+                    ev.get("rendered") == 15,
                     "通知含渲染 profile 数（P008 后九 Agent）", f"{ev}",
                 )
 
