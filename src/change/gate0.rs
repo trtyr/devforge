@@ -60,12 +60,25 @@ impl DocLevel {
 ///
 /// - 已有 `.git`：取 `HEAD`；HEAD 不可解析（空仓）时按「新建基线」处理。
 /// - 无 `.git`：`git init` → `add -A` → 提交 `devforge: baseline`。
+/// - **`baseline.txt` 已存在且非空 → 直接复用记录的 sha（基线 = 变更起点的不可变锚点）**：
+///   同一 change 续跑时 HEAD 已前进（按步提交），重记会把基线顶成当前 HEAD，
+///   导致按步提交的门禁看不到已提交的步（t26 崩溃恢复实测的自锁路径）。
 pub fn ensure_baseline(repo: &Path, out_dir: &Path) -> Result<Baseline> {
     if !repo.is_dir() {
         return Err(DevforgeError::Config(format!(
             "目标仓不存在：{}",
             repo.display()
         )));
+    }
+    let record = out_dir.join(BASELINE_FILE);
+    if let Ok(text) = std::fs::read_to_string(&record) {
+        let sha = text.trim().to_string();
+        if !sha.is_empty() {
+            return Ok(Baseline {
+                sha,
+                created_repo: false,
+            });
+        }
     }
     let git_dir = repo.join(".git");
     if git_dir.exists() {
@@ -154,11 +167,14 @@ fn run_git(repo: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// 基线锚点文件名（相对计划目录）。
+const BASELINE_FILE: &str = "baseline.txt";
+
 fn write_baseline(out_dir: &Path, sha: &str) -> Result<()> {
     std::fs::create_dir_all(out_dir).map_err(|e| {
         DevforgeError::System(format!("建目录 {} 失败：{e}", out_dir.display()))
     })?;
-    let path = out_dir.join("baseline.txt");
+    let path = out_dir.join(BASELINE_FILE);
     std::fs::write(&path, format!("{sha}\n"))
         .map_err(|e| DevforgeError::System(format!("写 {} 失败：{e}", path.display())))?;
     Ok(())
@@ -200,6 +216,37 @@ mod tests {
             .output()
             .unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn existing_baseline_record_is_reused_even_after_head_advances() {
+        // t26 崩溃恢复实测：coding 中途带提交续跑，HEAD 已前进；
+        // 基线 = 变更起点的不可变锚点，重记会把已提交的步从门禁视野里抹掉（自锁）
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let out = tmp.path().join("changes/c1");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+
+        let first = ensure_baseline(&repo, &out).unwrap();
+        assert_eq!(first.sha, git(&repo, &["rev-parse", "HEAD"]));
+
+        // 模拟 coding agent 的按步提交：HEAD 前进
+        std::fs::write(repo.join("src/a.rs"), "a\nb\n").unwrap();
+        commit_all(&repo, "change: c step 1");
+        assert_ne!(first.sha, git(&repo, &["rev-parse", "HEAD"]));
+
+        let second = ensure_baseline(&repo, &out).unwrap();
+        assert_eq!(
+            second.sha, first.sha,
+            "续跑必须复用已记录的基线，不得重记当前 HEAD"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("baseline.txt"))
+                .unwrap()
+                .trim(),
+            first.sha
+        );
     }
 
     #[test]
