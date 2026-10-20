@@ -38,13 +38,13 @@ def main() -> int:
             # 2. 完成信号 = config.rendered SSE（render_all 串行装完八角色才发；
             #    AGENTS.md 在装包前落盘，不能当就绪信号——v4 实测竞态教训）
             ev = sse.wait_for(
-                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 9,
+                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 11,
                 timeout=900.0,
             )
             elapsed = time.time() - t0
             r.check(
                 ev is not None,
-                "config.rendered == 9（九角色渲染+安装全完成）",
+                "config.rendered == 11（全角色渲染+安装全完成）",
                 f"elapsed={elapsed:.0f}s, ev={ev}",
             )
 

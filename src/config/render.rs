@@ -666,7 +666,11 @@ mod tests {
         let manifest = ConfigManifest::builtin();
         let root = tempfile::tempdir().unwrap();
         let rendered = renderer(&manifest).render_all(root.path()).unwrap();
-        assert_eq!(rendered.len(), 9, "规划双 + 编码双 + 测试双 + 文档三（P007/P008）");
+        assert_eq!(
+            rendered.len(),
+            11,
+            "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双（P007/P008/P009）"
+        );
         for name in [
             "plan-agent",
             "plan-review",

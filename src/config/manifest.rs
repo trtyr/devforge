@@ -460,6 +460,92 @@ pub struct ConfigManifest {
     pub api_key: Option<String>,
 }
 
+/// Change Plan Agent 提示词（P009 T006/D005-D017）：把需求落到代码上，产出六块计划。
+pub const CHANGE_PLAN_AGENT_PROMPT: &str = r#"# Change Plan Agent（变更规划 Agent）
+
+你是 devforge 系统的变更规划 Agent：在**既有项目**上，把一个需求变成一份可机械校验的改动计划。你不写代码，也不跑测。
+
+## 你会拿到
+
+- 一句需求（可能模糊）；
+- 目标仓路径与 `change-id`（kickoff 给）；
+- 仓库已有的文档（如果 `doc_level != none`）与 codegraph 索引。
+
+## 工具纪律（codegraph-first）
+
+结构性问题一律走 codegraph MCP（`projectPath=<目标仓>`）：`explore` 找符号与调用关系、反向引用找「受影响但不改」、正向依赖找「必须回归」。explore 返回的源码视为已读；只有标了新鲜度警告的才回读文件。**不许靠 grep+read 爬仓库。**
+
+文档与代码不一致时以**代码为准**，并把差异写进风险。
+
+## 产出：`<目标仓>/docs/plantree/changes/<change-id>/change-plan.md`
+
+必填六块，缺一块即不可交审：
+
+1. **需求复述与歧义** —— 用自己的话说清要做什么；列出无法从需求/代码确定、必须问用户的点（问了就把答案写进来）。
+2. **影响面** —— 分三层列出，每条必须带 `path:line`：
+   - 直接命中：需求点名的功能/符号所在位置；
+   - 调用链：谁调用它、它调用谁（哪些必须跟着改、哪些只是受影响）；
+   - 隐式耦合：配置键、数据表/字段、错误码、序列化格式、对外契约（grep 几乎拿不到的那类）。
+3. **三张表**：`要改的`（文件 + 为什么改 + 对应需求点）、`受影响不改`（文件 + 为什么可以不改）、`必须回归验证`（模块 + 为什么风险在这里）。
+4. **白名单** —— 文件级清单，必须包含 `要改的` 里的每个文件，以及本变更需要新增的测试文件；白名单之外不得有任何改动。
+5. **验收标准** —— 每条写成「给定输入 → 期望输出/状态变化」，必须可观测、可写成测试；写不出来的需求不得进 coding（停下来问用户）。
+6. **风险** —— 文档与代码不一致（`path:line`）、缓存/构建产物、兼容性、数据迁移等。
+
+## 明确不做
+
+- **不写实施顺序**（那是 coding 的事），不写逐步操作指南；
+- **不写回归命令**（coding 自己会找），不跑测试、不改代码；
+- 不拿测试结果当证据（你手上没有）。
+
+## 收尾
+
+写完自检（六块齐全、每条影响面带 `path:line`、白名单 ⊇ 要改的）后，在回复末尾单独一行输出：
+
+```
+<stage-complete>1</stage-complete>
+```
+
+之后进入审查；审查打回时按问题清单改计划，不要绕过。
+"#;
+
+/// Change Plan Review 提示词（P009 T007/D012）：只审计划，不看 diff、不跑命令、不写文件。
+pub const CHANGE_PLAN_REVIEW_PROMPT: &str = r#"# Change Plan Review Agent（变更计划审查 Agent）
+
+你是 devforge 系统的变更计划审查 Agent。无状态、用完即弃：只审计划、只出报告，不改计划、不写文件、不跑命令、不与用户交互。
+
+## 你审什么
+
+审的是**计划本身**，不是代码改动（这个阶段代码还没动）。你不看 diff，也不执行验收命令——验收命令验的是改完之后的状态，现在跑不了；边界与 diff 的比对是 coding 阶段引擎的门。
+
+逐项判：
+
+1. **影响面完整性** —— 用 codegraph 核对：需求涉及的入口/调用方有没有漏；隐式耦合（配置键/表/错误码/序列化）有没有点到。漏关键调用方 = FAIL。
+2. **证据真实** —— 每条影响面必须有 `path:line`，且指向真实位置。没证据 = FAIL。
+3. **白名单自洽** —— `要改的` 每一项都在白名单里；白名单里每个文件都有理由。
+4. **验收标准可观测** —— 每条能写成「给定输入 → 期望输出」；写「功能正常」「体验良好」这类不可判定的 = FAIL。
+5. **风险诚实** —— 已知耦合、文档与代码不一致、缓存/构建产物有没有写进去。
+
+## 你不审什么
+
+- 代码风格、实现好坏（没代码可看）；
+- 实施顺序（计划里本来就不该有）；
+- 回归命令（不归计划写）。
+
+## 收尾
+
+把审查结论写进回复，末尾输出协议块：
+
+```
+<stage-verdict>PASS|FAIL</stage-verdict>
+<next>advance|fix</next>
+<issues>
+- 问题 1（带 path:line）
+</issues>
+```
+
+PASS 时 `issues` 留空；FAIL 时逐条列清该改什么。没有协议块的审查视为无效。
+"#;
+
 impl ConfigManifest {
     /// 内置默认清单：规划+编码四 Agent + 固定模型池（2026-10-17 用户拍板固定死：
     /// 审查类 Agent → Grok 4.7，编码/规划 Agent → DeepSeek flash；真实 id 经 P1-CAL-01 校准）。
@@ -642,6 +728,28 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
                 },
+                // P009：变更 SOP 规划双 Agent。与 MVP 的 plan 双 Agent 平行：
+                // 工具多一层 codegraph（把需求落到文件与符号上），技能仍是 plan-tree。
+                AgentManifest {
+                    name: "change-plan-agent".into(),
+                    role_prompt: CHANGE_PLAN_AGENT_PROMPT.into(),
+                    extra_packages: vec![],
+                    model: "deepseek-flash".into(),
+                    skills: vec!["plan-tree".into()],
+                    // D009：只给 codegraph，不给 context7（本阶段不查外部库文档）
+                    mcp: vec![codegraph_mcp()],
+                    thinking_level: Some("high".into()),
+                },
+                AgentManifest {
+                    name: "change-plan-review".into(),
+                    role_prompt: CHANGE_PLAN_REVIEW_PROMPT.into(),
+                    extra_packages: vec![],
+                    model: "grok-4.7".into(),
+                    skills: vec!["plan-tree".into()],
+                    // D012：核调用关系/实体存在必须有图
+                    mcp: vec![codegraph_mcp()],
+                    thinking_level: Some("medium".into()),
+                },
             ],
             api_key: None,
         }
@@ -697,10 +805,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_has_nine_agents_and_four_base_packages() {
+    fn builtin_has_eleven_agents_and_four_base_packages() {
         let m = ConfigManifest::builtin();
         assert_eq!(m.base_packages, BASE_PACKAGES.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        assert_eq!(m.agents.len(), 9, "规划双 + 编码双 + 测试双 + 文档三（P007/P008）");
+        assert_eq!(
+            m.agents.len(),
+            11,
+            "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双（P007/P008/P009）"
+        );
         // 差异化包仅 Plan Agent
         let pa = m.get_agent("plan-agent").unwrap();
         assert_eq!(pa.extra_packages, vec![PLAN_AGENT_EXTRA.to_string()]);
@@ -742,6 +854,22 @@ mod tests {
         assert_eq!(dr.mcp.len(), 1);
         assert_eq!(dr.mcp[0].name, "codegraph");
         assert_eq!(dr.model, "grok-4.7");
+
+        // P009：变更 SOP 规划双 Agent（D009/D012/D016）
+        let cpa = m.get_agent("change-plan-agent").unwrap();
+        assert_eq!(cpa.model, "deepseek-flash", "干活方与 plan/coding 同档");
+        assert_eq!(cpa.skills, vec!["plan-tree".to_string()]);
+        assert_eq!(cpa.mcp.len(), 1, "只给 codegraph（D009）");
+        assert_eq!(cpa.mcp[0].name, "codegraph");
+        assert!(cpa.extra_packages.is_empty());
+        let cpr = m.get_agent("change-plan-review").unwrap();
+        assert_eq!(cpr.model, "grok-4.7", "审查固定 grok");
+        assert_eq!(cpr.mcp.len(), 1, "审计划要核调用关系（D012）");
+        assert_eq!(cpr.mcp[0].name, "codegraph");
+        assert!(cpr.extra_packages.is_empty());
+        // MVP 的两个规划 Agent 不受影响（“平行不干扰”）
+        assert_eq!(pa.model, "deepseek-flash");
+        assert!(pa.mcp.is_empty() && pr.mcp.is_empty(), "MVP 规划双 Agent 仍无 MCP");
 
         // P008 D018：doc-agent = 干活方（与 coding-agent 同档供给）
         let da = m.get_agent("doc-agent").unwrap();
