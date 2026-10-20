@@ -15,7 +15,7 @@
 ## Phase C · 测试与验收
 
 - [x] (T007) 全量回归：cargo test **120 passed / 0 failed**（+1 doctest）+ clippy --all-targets **0 警告**（bg_run 原始日志验真，2026-10-18 晨）；执行期发现回写 open-questions（Q001/Q003/Q005 冒烟态 + planning review cwd 观察项）；commit 见 git log
-- [ ] (T008) e2e 全链：demo-app plan tree 输入 → coding agent 分阶段开发 → review 循环（观察到真实打回则验证修复循环；直 PASS 亦有效）→ 树完成 → run Settled + 任务 Completed；观察 codegraph 多实例 FileLock 表现 + Q001/Q003/Q005 的 RPC 工具级可见性。注：coding 链时长预期显著高于 planning 链（真写代码+跑单测），中转长 turn 风险敞口更大，超时/取消面沿用 P001 机制。**留待用户醒来拍板执行（本 goal 明令不做 e2e）**
+- [x] (T008) e2e 全链：demo-app plan tree 输入 → coding agent 分阶段开发 → review 循环（观察到真实打回则验证修复循环；直 PASS 亦有效）→ 树完成 → run Settled + 任务 Completed；观察 codegraph 多实例 FileLock 表现 + Q001/Q003/Q005 的 RPC 工具级可见性。（**证据**：`evidence/t008-coding-full-chain.md`——2026-10-18 全供给真跑 25 PASS/0 FAIL，七轮 review 真实打回循环，四阶段 commit，Q001/Q003/Q005 工具调用实证；Q002 FileLock 零冲突事件与局限已诚实登记）
 
 ## Deferred
 
