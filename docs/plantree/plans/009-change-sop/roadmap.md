@@ -73,6 +73,25 @@
   - 验收：故意漏一条验收标准 → 报告里能看出来（对账未过）。
   - **证据**：commit `8a2c222`（`change::report`，未对账项逐条列出）。
 
+## Phase E · 接线到 server（2026-10-20）
+
+> 本阶段只做装配与可测性：真实 pi 会话已接上，但**验证仍是单测**（mock session / mock client），
+> 真实端到端归验收阶段（T008/M3）。
+
+- [x] **(T014) 注册 SOP + 引擎分发**——`SopRegistry` 新增 `change`，`BuiltinRpcEngine::execute` 分发到 `run_change`。
+  - 验收：单测证明 change 不再落「未接线」分支（卡在 profile 门卫即证明已路由）；ghost 仍拒。
+  - **证据**：commit `aaf7029`（`dispatch_routes_change_to_its_engine` / `dispatch_rejects_unwired_sop`）。
+- [x] **(T015) 门 0 预检**——`change::prepare`：change-id/黑板目录 → doc_level（none/essential 落地，complete 拒跑并指向 doc-from-zero）→ 基线（无 `.git` 则 init+全量提交）→ baseline.txt 与黑板骨架。
+  - 验收：裸仓跑完门 0 后有且仅有一条 baseline 提交且 baseline.txt==sha；重复启动复用 change-id 且不重建仓库。
+  - **证据**：commit `aaf7029`（`src/change/prepare.rs`，7 单测）。
+- [x] **(T016) 真实 ChangeSession + 收尾**——六 profile 装配（三个长驻干活 + 三个每轮新审查）；plan 审查注入机械审计；coding 先验基线绿/步骤对账/取 diff；testing 先看 route 再验回归与对账表；`finalize` 从会话账汇总量、写 `report.md`。
+  - 验收：session 层八条假会话单测；进程内全链（plan→coding→testing→report）产出 phase=done 与报告；`start` 对 change 续跑/fresh 与 010 同语义。
+  - **证据**：commit `454a3e4`（session）+ `d0f0984`（finalize/全链）+ `0763201`（start 续跑）。
+- **运行契约（新增，调用方须知）**：
+  - 开跑前把需求写进黑板 `plans/<project>/<task>/requirement.md`（没有就拒跑，Quality）；
+  - 文档档位用环境变量 `DEVFORGE_DOC_LEVEL=none|essential|complete`（默认 `none`）；
+  - 日期可用 `DEVFORGE_TODAY=YYYY-MM-DD` 钉住（CI / 复现用）。
+
 ## 里程碑
 
 - **M0**：门 0 可用（基线 + doc_level + change-id）— ✅ 单测级（T001–T003）

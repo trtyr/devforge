@@ -74,9 +74,20 @@ SOP 内部一律 `change-<阶段>-<角色>`：`change-plan-agent` / `change-plan
 
 ## 落盘
 
-- 计划/影响面/边界 → 目标仓 `docs/plantree/<change-id>/`（D003，可随基线提交、可审查）
+- 计划/影响面/边界 → 目标仓 `docs/plantree/changes/<change-id>/`（D003，可随基线提交、可审查）
 - 运行证据（diff 统计、回归输出、审查结论）→ 黑板 `plans/<project>/<task>/change/`
-- 基线 commit → `docs/plantree/<change-id>/baseline.txt`
+- 断点（引擎写）→ 黑板 `plans/<project>/<task>/change/state.json`（D022a，与 010 D001 一致）
+- 基线 commit → `docs/plantree/changes/<change-id>/baseline.txt`
+
+## 运行契约（接线后，调用方须知）
+
+| 项 | 约定 |
+| --- | --- |
+| 需求 | 开跑前写 `plans/<project>/<task>/requirement.md`；缺了直接拒跑（Quality，不猜需求） |
+| 文档档位 | 环境变量 `DEVFORGE_DOC_LEVEL=none\|essential\|complete`（默认 `none`）；`complete` 不代跑，需先跑 doc-from-zero |
+| 日期 | `DEVFORGE_TODAY=YYYY-MM-DD` 可钉住 change-id 日期（CI/复现） |
+| 续跑 | `start` 默认续（有断点即续）；`{"fresh": true}` 清该 SOP 断点重来 |
+| 阶段目录 | 计划 `change-plan.md` / 往返 `history.md` / 报告 `report.md` 在目标仓；黑板上放 `impl-steps.md` 与 `evidence/` |
 
 ## 相关
 
