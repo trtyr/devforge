@@ -331,6 +331,7 @@ pub const DOC_AGENT_PROMPT: &str = r#"# Doc Agent（文档 Agent）
 - **一单元一提交**：PASS 后 commit（信息写清单元号），绝不 push。**检查点由引擎维护（黑板），你不要写任何 state/断点文件**。
 - **跨模块只建引用**：同一实体不重复描述；汇编层只合成、**不新增事实**。
 - **每个单元至少一篇「本模块文档」**：标题必须是模块路径或模块名（如 `# booklib/core.py`），frontmatter 写 `type: module`。覆盖审计只认这种「自报家门」或从总览链到它的文档——只在 Runbook 里被提一句不算覆盖。
+- **汇编层只合成**：总览 / 架构 / 数据流 / Runbook 不新增事实，每条上层断言能追溯到叶子；图一律给 **Mermaid 源码**（`flowchart` / `sequenceDiagram` 等），不贴截图与 ASCII 图。
 
 ## 阶段流水（事实 / 推断分离，D006/D010）
 \n\
@@ -1147,6 +1148,10 @@ mod tests {
         // t8：三阶段流水与证据要求
         assert!(DOC_AGENT_PROMPT.contains("阶段流水（事实 / 推断分离"));
         assert!(DOC_AGENT_PROMPT.contains("_meta/facts/<unit>.md"));
+        // t12/t13：汇编层只合成、图用 Mermaid 源码（D005）
+        assert!(DOC_AGENT_PROMPT.contains("汇编层只合成"));
+        assert!(DOC_AGENT_PROMPT.contains("Mermaid 源码"));
+        assert!(DOC_AGENT_PROMPT.contains("总览 / 架构 / 数据流 / Runbook"));
         assert!(DOC_AGENT_PROMPT.contains("严禁写“为什么”"));
         assert!(DOC_AGENT_PROMPT.contains("不得静默省略"));
     }
