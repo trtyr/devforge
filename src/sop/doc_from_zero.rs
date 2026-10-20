@@ -23,10 +23,9 @@ use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
 
 /// 产出目录（D016）：目标项目内。
 pub const DOCS_DIR: &str = "docs/contexts";
-/// 元数据目录（清单/词表/置信度/缺口/检查点）。
+/// 元数据目录（清单/词表/置信度/缺口）。
 pub const META_DIR: &str = "docs/contexts/_meta";
-/// 检查点（D016：不占项目根）。
-pub const STATE_FILE: &str = "docs/contexts/_meta/state.json";
+// 检查点常量已删除：运行状态住黑板（plan 010 D001），产物目录不再持有 state.json。
 
 /// 无有效完成标记时的重推话术。
 pub const DOC_CONTINUE_NUDGE: &str = "\
