@@ -42,6 +42,26 @@ SOP-2  doc-from-zero      陌生库 → 文档体系         （本 plan）
 
 **codegraph 是我们给 agent 的 MCP 配置**（`codegraph_mcp()`），不是外部工具；沿用 decisions/013：引擎侧预检 `init`，agent 不自行 init，调用显式 `projectPath=<目标项目>`。
 
+## 怎么调起来（2026-10-19 实测口径）
+
+```bash
+# 1) 登记目标仓（无文档、无 git 也行）
+curl -sX POST localhost:7888/projects \
+  -H 'content-type: application/json' \
+  -d '{"name":"book-app","local_path":"/abs/path/book-app"}'
+
+# 2) 建任务并触发（复用串行 guard / 看门狗 / 黑板 / 事件流）
+curl -sX POST localhost:7888/projects/book-app/tasks \
+  -H 'content-type: application/json' -d '{"id":"d1","sop":"doc-from-zero"}'
+curl -sX POST localhost:7888/projects/book-app/tasks/d1/start   # → 202
+
+# 3) 事后可复算（不信 run 的自述）
+devforge doc-audit <repo>/docs/contexts --repo <repo>
+```
+
+产物树（D016）：`docs/contexts/` 正文 + `_meta/{inventory.json,glossary.md,gate0-closures.md,state.json,gaps.md,facts/,interpretation/,reviews/,runs/<run-id>/report.md}`。
+`report.md` 带墙钟 / 模块数 / 单元数 / 审查轮次 / **token 用量（从 pi 会话账汇总，非 Agent 自述）**。
+
 ## 节奏：四道门（D010）
 
 ```
