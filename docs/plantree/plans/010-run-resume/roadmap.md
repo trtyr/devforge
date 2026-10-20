@@ -18,7 +18,9 @@
   - **证据**：commit `f0dcef2`（`start_gate` + 接口级单测 `start_reports_resumed_and_fresh_clears_only_that_sop`）。
 - [x] **(T004) 续跑前复核 done** — 引擎调 `verify_done`，不合格单元从 `done` 摘掉、并入本次重做集合，写进 kickoff 之前的恢复语。
   - 验收：反向验证——手工删一篇已 done 单元的正文，续跑必须重做该单元（断言其 kickoff 出现）；证据齐备时跳过。
-  - **证据**：commit `45be31c`（`DocResume` + `broken_evidence_unit_is_reincluded_and_rewritten` / `intact_evidence_is_not_redispatched`）。
+  - **证据**：commit `45be31c`（`DocResume` + `broken_evidence_unit_is_reincluded_and_rewritten` / `intact_evidence_is_not_redispatched`）；
+    **审计后修正** `a394900`：loop 不再用 `is_done` 二次过滤（证据失效单元虽在 to_run 仍会被旧 done 跳过），重做前先摘除旧 done；测试改成断言**真实 kickoff 回路**（不再只看 plan 与收尾名单）；
+    `ed02e32`：产出证据按「新增或改写」判定（指纹 = 长度 + mtime），避免重写被当成无产出、下次又踢回重做。
 
 ## Phase 2 · 韧性
 
