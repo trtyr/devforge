@@ -5,6 +5,7 @@
 //!
 //! 五能力域：编排控制 · 产物管理 · 交互中继 · 可观测 · 配置管理。
 
+pub mod change_engine;
 pub mod handlers;
 
 #[cfg(test)]
@@ -236,6 +237,7 @@ impl RunEngine for BuiltinRpcEngine {
             "testing" => self.run_testing(task, run, control),
             "doc-fix" => self.run_doc_fix(task, run, control),
             "doc-from-zero" => self.run_doc_from_zero(task, run, control),
+        "change" => self.run_change(task, run, control),
             other => Err(crate::error::DevforgeError::System(format!(
                 "SOP `{other}` 未接线编排器（注册表与引擎必须同步）"
             ))),
@@ -1477,6 +1479,60 @@ mod coding_engine_tests {
         std::fs::create_dir_all(ws.join(".codegraph")).unwrap();
         preflight_codegraph(&ws, Path::new("/nonexistent/codegraph"));
         assert!(ws.join(".codegraph").exists());
+    }
+
+    #[test]
+    fn dispatch_routes_change_to_its_engine() {
+        // 注册表与引擎同步：change 已接线，不应再落到「未接线」分支
+        let mut engine = BuiltinRpcEngine {
+            profile_root: PathBuf::from("/tmp/devforge-nonexistent-profiles"),
+            session_root: PathBuf::from("/tmp"),
+            plans_root: PathBuf::from("/tmp"),
+            ui: Arc::new(UiRelay::new(Arc::new(EventBus::new()))),
+            codegraph_bin: PathBuf::from("codegraph"),
+            idle_ms: None,
+        };
+        let mut task = Task::new("t", "p", "change", 1);
+        task.workspace = PathBuf::from("/tmp");
+        let run = Run::new("p", "t");
+        let control = RunControl::new();
+        let err = engine.execute(&task, &run, &control).unwrap_err();
+        let msg = err.to_string();
+        assert!(!msg.contains("未接线"), "change 必须已接线：{msg}");
+        assert!(
+            msg.contains("change-plan-agent"),
+            "应卡在 profile 门卫（说明真的进了 run_change）：{msg}"
+        );
+    }
+
+    #[test]
+    fn change_without_requirement_file_is_quality_failure() {
+        // 门 0 前先要需求：黑板里没 requirement.md 不得开跑
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = dir.path().join("profiles");
+        for p in crate::server::change_engine::CHANGE_PROFILES {
+            let d = profiles.join(p);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("settings.json"), "{}").unwrap();
+        }
+        let plans = dir.path().join("plans");
+        let mut engine = BuiltinRpcEngine {
+            profile_root: profiles,
+            session_root: dir.path().join("sessions"),
+            plans_root: plans,
+            ui: Arc::new(UiRelay::new(Arc::new(EventBus::new()))),
+            codegraph_bin: PathBuf::from("codegraph"),
+            idle_ms: None,
+        };
+        let ws = dir.path().join("repo");
+        std::fs::create_dir_all(&ws).unwrap();
+        let mut task = Task::new("t", "p", "change", 1);
+        task.workspace = ws;
+        let run = Run::new("p", "t");
+        let control = RunControl::new();
+        let err = engine.execute(&task, &run, &control).unwrap_err();
+        assert!(err.to_string().contains("requirement.md"), "{err}");
+        assert!(err.is_quality_failure());
     }
 
     #[test]

@@ -64,6 +64,11 @@ pub trait ChangeSession {
     fn run_coding(&mut self, ui: &mut dyn UserLink, roundtrip: usize) -> Result<CodingTurn>;
     /// 跑 testing（回归优先 + 验收对账）。
     fn run_testing(&mut self, ui: &mut dyn UserLink) -> Result<TestingTurn>;
+
+    /// 计划过审后回读计划事实（验收标准 / 白名单）——编排层据此进 coding/testing。
+    fn plan_facts(&mut self) -> Result<(Vec<String>, Vec<String>)> {
+        Ok((Vec::new(), Vec::new()))
+    }
 }
 
 /// 编排输入。
@@ -102,11 +107,19 @@ pub fn run<S: ChangeSession>(
         state.baseline_sha = run.baseline_sha.to_string();
     }
     let mut whitelist = run.whitelist.clone();
+    let mut criteria = run.criteria.clone();
 
     // ---- plan ----
     if matches!(state.phase, ChangePhase::Plan) {
         match session.run_plan(ui, state.roundtrips)? {
             PlanTurn::Pass => {
+                let (c, w) = session.plan_facts()?;
+                if !c.is_empty() {
+                    criteria = c;
+                }
+                if !w.is_empty() {
+                    whitelist = w;
+                }
                 state.phase = ChangePhase::Coding;
                 save(run.store, &state)?;
             }
@@ -149,6 +162,13 @@ pub fn run<S: ChangeSession>(
                     boundary::merge_gaps_into_whitelist(&mut whitelist, &gaps);
                     match session.amend_plan(ui, &gaps, state.roundtrips)? {
                         PlanTurn::Pass => {
+                            let (c, w) = session.plan_facts()?;
+                            if !c.is_empty() {
+                                criteria = c;
+                            }
+                            if !w.is_empty() {
+                                whitelist = w;
+                            }
                             save(run.store, &state)?;
                             continue;
                         }
@@ -177,7 +197,7 @@ pub fn run<S: ChangeSession>(
                     state.mark_acceptance_done(&c);
                 }
                 acceptance_done = state.acceptance_done.clone();
-                let summary = summarize_acceptance(&run.criteria, &acceptance_done);
+                let summary = summarize_acceptance(&criteria, &acceptance_done);
                 if !summary.passed() {
                     return Err(DevforgeError::Quality(format!(
                         "验收对账缺 {} 条：{}",
@@ -220,7 +240,7 @@ pub fn run<S: ChangeSession>(
 
     // ---- 报告（引擎写）----
     let diff = report::diff_stats(run.repo, run.baseline_sha).unwrap_or_default();
-    let acceptance: AcceptanceSummary = summarize_acceptance(&run.criteria, &acceptance_done);
+    let acceptance: AcceptanceSummary = summarize_acceptance(&criteria, &acceptance_done);
     let timeline = ChangeReport {
         change_id: run.change_id.to_string(),
         run_id: run.run_id.clone(),
@@ -272,6 +292,7 @@ mod tests {
         amends: VecDeque<PlanTurn>,
         codings: VecDeque<CodingTurn>,
         testings: VecDeque<TestingTurn>,
+        coding_error: Option<String>,
         pub log: Vec<String>,
     }
 
@@ -282,6 +303,7 @@ mod tests {
                 amends: VecDeque::new(),
                 codings: VecDeque::new(),
                 testings: VecDeque::new(),
+                coding_error: None,
                 log: Vec::new(),
             }
         }
@@ -307,6 +329,9 @@ mod tests {
             rt: usize,
         ) -> Result<CodingTurn> {
             self.log.push(format!("coding(rt={rt})"));
+            if let Some(msg) = &self.coding_error {
+                return Err(DevforgeError::Quality(msg.clone()));
+            }
             Ok(self.codings.pop_front().expect("coding 脚本耗尽"))
         }
         fn run_testing(&mut self, _ui: &mut dyn crate::sop::planning::UserLink) -> Result<TestingTurn> {
@@ -560,6 +585,43 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("缺 1 条"), "{err}");
         assert!(err.to_string().contains("空输入报错"), "{err}");
+    }
+
+    #[test]
+    fn red_baseline_stops_before_coding_agent_work() {
+        // 会话层在发 kickoff 前就拦（基线红），编排层直接失败、不回 plan、不重试
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        let mut session = Scripted::new();
+        session.plans.push_back(PlanTurn::Pass);
+        session.coding_error = Some("基线不是绿的（exit_code=1，命令：cargo test）——不许在红基线上动代码".into());
+
+        let mut ui = NoUser;
+        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap_err();
+        assert!(err.to_string().contains("基线不是绿的"), "{err}");
+        assert_eq!(session.log, vec!["plan(rt=0)", "coding(rt=0)"], "不得回 plan、不得重试");
+        let saved = load(&st, "change-20261020-x", "base123");
+        assert_eq!(saved.phase, ChangePhase::Coding, "停在 coding 入口，等人处理");
+    }
+
+    #[test]
+    fn checkpoint_path_is_change_state_on_blackboard() {
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        let mut session = Scripted::new();
+        session.plans.push_back(PlanTurn::Pass);
+        session.codings.push_back(in_boundary());
+        session.testings.push_back(pass_testing());
+        let mut ui = NoUser;
+        run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui).unwrap();
+        let path = st.path();
+        assert!(
+            path.ends_with("proj/task/change/state.json"),
+            "change 断点必须按 SOP 隔离落在黑板：{}",
+            path.display()
+        );
+        assert!(path.is_file());
     }
 
     #[test]

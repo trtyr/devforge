@@ -88,6 +88,46 @@ pub fn date_segment(year: i32, month: u32, day: u32) -> String {
     format!("{year:04}{month:02}{day:02}")
 }
 
+/// 今天的日期段（本地时钟；不引第三方时间库）。
+///
+/// 环境变量 `DEVFORGE_TODAY=YYYY-MM-DD` 可覆盖（CI / 固定口径用）。
+pub fn date_segment_now() -> String {
+    if let Ok(raw) = std::env::var("DEVFORGE_TODAY") {
+        let parts: Vec<&str> = raw.trim().split('-').collect();
+        if parts.len() == 3
+            && let (Ok(y), Ok(m), Ok(d)) = (
+                parts[0].parse::<i32>(),
+                parts[1].parse::<u32>(),
+                parts[2].parse::<u32>(),
+            )
+        {
+            return date_segment(y, m, d);
+        }
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs.div_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    date_segment(y, m, d)
+}
+
+/// 自 1970-01-01 起的天数 → (年, 月, 日)。Howard Hinnant 的 civil_from_days。
+fn civil_from_days(z: i64) -> (i32, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m as u32, d as u32)
+}
+
 /// id 合法性（防止有人手工塞进奇怪名字）。
 pub fn validate_change_id(id: &str) -> Result<()> {
     let ok = id.starts_with("change-")
@@ -166,6 +206,19 @@ mod tests {
     #[test]
     fn date_segment_is_zero_padded() {
         assert_eq!(date_segment(2026, 10, 5), "20261005");
+    }
+
+    #[test]
+    fn civil_date_conversion_matches_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(18_262), (2020, 1, 1));
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+    }
+
+    #[test]
+    fn env_override_wins_for_today() {
+        // 不能并行改全局 env（其它测试会读到）——只验拼接函数本身
+        assert_eq!(date_segment(2026, 10, 20), "20261020");
     }
 
     #[test]

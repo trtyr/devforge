@@ -179,6 +179,21 @@ fn looks_like_file(tok: &str) -> bool {
         && !tok.chars().any(|c| c.is_whitespace())
 }
 
+/// 从计划文本抽「验收标准」与「白名单」（编排层进入 coding/testing 前要用）。
+///
+/// - 验收标准：`验收标准` 块里的列表项（去掉行首 `-`），非空才算；
+/// - 白名单：`白名单` 块里的文件路径（去重）。
+pub fn plan_facts(plan: &str) -> (Vec<String>, Vec<String>) {
+    let criteria = section_lines(plan, "验收标准")
+        .into_iter()
+        .map(|l| l.trim().trim_start_matches(['-', '*']).trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect();
+    let whitelist = section_paths(plan, "白名单");
+    (criteria, whitelist)
+}
+
 /// 审查指令：语义判据 + 注入引擎审计（审查官不得重算）。
 pub fn review_instruction(change_id: &str, audit: &PlanAudit) -> String {
     format!(

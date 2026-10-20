@@ -42,6 +42,13 @@ pub const DOC_FROM_ZERO_SOP: Sop = Sop {
     description: "对陌生代码库：引擎侧建清单与单元（门0）→ doc-agent 逐单元写 docs/contexts，doc-review 逐单元审（覆盖/完整性/真实性/置信度/可跑）→ 终审",
 };
 
+/// 内置 SOP：变更流水线（P009 · 既有项目加功能/修 bug：基线 + 白名单 + 越界二分 + 回归优先）。
+pub const CHANGE_SOP: Sop = Sop {
+    id: "change",
+    name: "变更流水线",
+    description: "既有仓 + 一句需求：门0（基线/doc_level/change-id）→ change-plan（codegraph 影响面 + 白名单 + 验收标准）→ 按步提交的 coding（越界必需申报）→ 回归优先的 testing（验收逐条对账）→ 引擎写报告",
+};
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sop {
     /// 内置标识（任务绑定用，如 `"planning"`）。
@@ -60,7 +67,14 @@ impl SopRegistry {
     /// 系统出厂内置的全部 SOP。
     pub fn builtin() -> Self {
         Self {
-            sops: vec![PLANNING_SOP, CODING_SOP, TESTING_SOP, DOC_FIX_SOP, DOC_FROM_ZERO_SOP],
+            sops: vec![
+                PLANNING_SOP,
+                CODING_SOP,
+                TESTING_SOP,
+                DOC_FIX_SOP,
+                DOC_FROM_ZERO_SOP,
+                CHANGE_SOP,
+            ],
         }
     }
 
@@ -93,7 +107,10 @@ mod tests {
     #[test]
     fn builtin_sops_cover_pipeline_stages() {
         let reg = SopRegistry::builtin();
-        assert_eq!(reg.ids(), vec!["planning", "coding", "testing", "doc-fix", "doc-from-zero"]);
+        assert_eq!(
+            reg.ids(),
+            vec!["planning", "coding", "testing", "doc-fix", "doc-from-zero", "change"]
+        );
         for id in reg.ids() {
             assert!(reg.validate(id).is_ok());
         }

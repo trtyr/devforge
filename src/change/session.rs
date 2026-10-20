@@ -217,8 +217,7 @@ impl ChangeSession for ProdChangeSession {
         Ok(CodingTurn { reply, changed })
     }
 
-    fn run_testing(&mut self, ui: &mut dyn UserLink) -> Result<TestingTurn> {
-        let reply = self.test_agent.converse(&testing_kickoff(&self.ctx), ui)?;
+    fn run_testing(&mut self, ui: &mut dyn UserLink) -> Result<TestingTurn> {        let reply = self.test_agent.converse(&testing_kickoff(&self.ctx), ui)?;
         let route = parse_route(&reply);
         match route.as_deref() {
             Some("coding") => {
@@ -265,6 +264,14 @@ impl ChangeSession for ProdChangeSession {
         Ok(TestingTurn::Pass {
             acceptance_done: done,
         })
+    }
+
+    fn plan_facts(&mut self) -> Result<(Vec<String>, Vec<String>)> {
+        let text = std::fs::read_to_string(self.ctx.plan_path()).ctx(format!(
+            "读计划 {} 失败",
+            self.ctx.plan_path().display()
+        ))?;
+        Ok(crate::change::plan_audit::plan_facts(&text))
     }
 }
 
@@ -428,6 +435,23 @@ mod tests {
             "git {args:?}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    #[test]
+    fn plan_facts_are_read_back_from_plan_file() {
+        let f = fixture(false);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&[])),
+            plan_review: Box::new(ReviewFactory::new(&[])),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let (criteria, whitelist) = session.plan_facts().unwrap();
+        assert_eq!(criteria, vec!["给定 x=1 → 返回 2".to_string()]);
+        assert_eq!(whitelist, vec!["src/a.rs".to_string()]);
     }
 
     #[test]

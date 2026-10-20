@@ -359,6 +359,25 @@ async fn start_doc_from_zero_sop_returns_202() {
 }
 
 #[tokio::test]
+async fn start_change_sop_returns_202() {
+    // P009 接线：change 已注册，start 应受理（引擎是 mock，不等真 pi）
+    let f = fixture();
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "c", "sop": "change"})),
+    )
+    .await;
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/c/start", None).await;
+    assert_eq!(resp.status(), 202);
+    let body = body_json(resp).await;
+    assert_eq!(body["sop"], "change");
+    wait_settled(&f, "p", "c").await;
+}
+
+#[tokio::test]
 async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
     // plan 010 T003：start 默认续跑、fresh 只清该 SOP 的断点
     let f = fixture();

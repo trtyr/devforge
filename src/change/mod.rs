@@ -15,6 +15,7 @@ pub mod gate0;
 pub mod history;
 pub mod orchestrator;
 pub mod plan_audit;
+pub mod prepare;
 pub mod report;
 pub mod session;
 pub mod state;
@@ -33,6 +34,7 @@ pub use orchestrator::{
     ChangeOutcome, ChangeRun, ChangeSession, CodingTurn, PlanTurn, TestingTurn, run as run_change,
 };
 pub use plan_audit::{PlanAudit, audit as audit_plan, review_instruction};
+pub use prepare::{ChangePrep, prepare as prepare_change};
 pub use report::{
     AcceptanceSummary, ChangeReport, DiffStats, diff_stats, summarize_acceptance, write_report,
 };
