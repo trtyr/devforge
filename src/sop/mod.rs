@@ -14,6 +14,7 @@ pub mod coding;
 pub mod coding_protocol;
 pub mod doc_fix;
 pub mod doc_from_zero;
+pub mod doc_incremental;
 pub mod doc_protocol;
 pub mod doc_resume;
 pub mod output;

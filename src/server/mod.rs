@@ -491,7 +491,24 @@ impl BuiltinRpcEngine {
             self.plans_root.clone(),
             crate::runstate::StateKey::new(&task.project, &task.id, crate::sop::doc_resume::DOC_SOP),
         );
-        let plan = crate::runstate::resume::plan(
+        let loaded = store.load();
+        // 供闭包之后推进基线用（store 会被 DocSopLoop 吃掉）
+        let store_final = crate::runstate::StateStore::new(
+            self.plans_root.clone(),
+            crate::runstate::StateKey::new(&task.project, &task.id, crate::sop::doc_resume::DOC_SOP),
+        );
+        let head_now = crate::sop::doc_incremental::head_sha(&workspace);
+        let (inc_on, req_base) = crate::sop::doc_incremental::enabled_from_env();
+        let mode = crate::sop::doc_incremental::decide_mode(
+            loaded.state(),
+            head_now.as_deref(),
+            req_base.as_deref(),
+            inc_on,
+        );
+        if inc_on && let crate::sop::doc_incremental::Mode::Full { reason } = &mode {
+            tracing::warn!(component = "doc-engine", %reason, "增量不可用，本轮按全量跑");
+        }
+        let mut plan = crate::runstate::resume::plan(
             &self.plans_root,
             &task.project,
             &task.id,
@@ -510,13 +527,69 @@ impl BuiltinRpcEngine {
         if let Some(note) = &plan.note {
             tracing::warn!(component = "doc-engine", %note, "断点不可用，按冷启动");
         }
-        let resume_note = match store.load() {
-            crate::runstate::Loaded::Found(st) => {
-                crate::runstate::resume::Resumable::resume_brief(&resume, &st, &plan.redo)
-            }
-            _ => String::new(),
+        let mut resume_note = match loaded.state() {
+            Some(st) => crate::runstate::resume::Resumable::resume_brief(&resume, st, &plan.redo),
+            None => String::new(),
         };
-        let run_units = plan.to_run;
+
+        // 增量（D021）：显式开关 + 状态里的 base_sha；失败一律降级全量并记日志。
+        let mut run_units = plan.to_run.clone();
+        if let crate::sop::doc_incremental::Mode::Incremental { base } = &mode {
+            match crate::docgen::impact::changed_since(&workspace, base) {
+                Ok(changes) if changes.is_empty() => {
+                    run_units = Vec::new();
+                    resume_note.push_str("\n增量：自基线以来无代码变更，本轮不派发单元。");
+                    tracing::info!(component = "doc-engine", %base, "增量：无变更");
+                }
+                Ok(changes) => {
+                    match crate::docgen::impact::plan_impact(
+                        &workspace,
+                        &workspace.join(DOCS_DIR),
+                        &changes,
+                    ) {
+                        Ok(impact) => {
+                            if let Some(mut st) = loaded.state().cloned() {
+                                run_units = crate::sop::doc_incremental::merge_plan(
+                                    &mut plan, &mut st, &impact, &units,
+                                );
+                                if let Err(e) = store.save(&mut st) {
+                                    tracing::warn!(component = "doc-engine", error = %e, "增量状态落盘失败");
+                                }
+                            }
+                            resume_note.push_str(&format!(
+                                "\n增量：基线 {base}，变更 {} 个文件，受影响单元 {} 个（{}），汇编复核：{}。",
+                                changes.len(),
+                                impact.units.len(),
+                                impact.units.join("、"),
+                                if impact.assembly_review.is_empty() {
+                                    "无".to_string()
+                                } else {
+                                    impact.assembly_review.join("、")
+                                }
+                            ));
+                            for n in &impact.notes {
+                                resume_note.push_str(&format!("\n- {n}"));
+                            }
+                            tracing::info!(
+                                component = "doc-engine",
+                                base = %base,
+                                changes = changes.len(),
+                                units = impact.units.len(),
+                                "增量：只重算受影响单元"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(component = "doc-engine", error = %e, "增量影响面不可算，降级全量");
+                            resume_note.push_str(&format!("\n增量降级全量：{e}"));
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(component = "doc-engine", error = %e, "增量 diff 失败，降级全量");
+                    resume_note.push_str(&format!("\n增量降级全量：{e}"));
+                }
+            }
+        }
 
         let final_index = audit_index.clone();
         let audit: Box<dyn Fn(&str) -> String + Send> = Box::new(move |unit: &str| {
@@ -617,6 +690,16 @@ impl BuiltinRpcEngine {
                     }
                 }
 
+                // 一致性校验（增量 T024）：汇编页引用是否还解析得动、词表/清单还在不在。
+                let consistency =
+                    crate::sop::doc_incremental::consistency_notes(&docs, &final_ws);
+                if !consistency.is_empty() {
+                    full.push_str("\n一致性校验（引擎机械检查，陈旧引用要问审查官是否 FAIL）：\n");
+                    for c in &consistency {
+                        full.push_str(&format!("- {c}\n"));
+                    }
+                }
+
                 let mut final_factory =
                     RpcReviewFactory::per_round_in(final_review_root, "doc-review", final_session_root, final_blackboard);
                 let mut session = final_factory.open()?;
@@ -675,6 +758,17 @@ impl BuiltinRpcEngine {
 
         match sop_result {
             Ok(report) => {
+                // 基线只在成功后推进（D021）：失败保留旧值，下次仍按同一批变更重算
+                let head = crate::sop::doc_incremental::head_sha(&workspace);
+                if let crate::runstate::Loaded::Found(mut st) = store_final.load()
+                    && crate::sop::doc_incremental::advance_base(&mut st, head.as_deref(), true)
+                {
+                    if let Err(e) = store_final.save(&mut st) {
+                        tracing::warn!(component = "doc-engine", error = %e, "基线推进落盘失败");
+                    } else {
+                        tracing::info!(component = "doc-engine", base = ?head, "基线已推进");
+                    }
+                }
                 tracing::info!(
                     component = "doc-engine",
                     units = ?report.units_done,
