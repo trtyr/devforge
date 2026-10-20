@@ -86,7 +86,11 @@
   - **证据**：commit `aaf7029`（`src/change/prepare.rs`，7 单测）。
 - [x] **(T016) 真实 ChangeSession + 收尾**——六 profile 装配（三个长驻干活 + 三个每轮新审查）；plan 审查注入机械审计；coding 先验基线绿/步骤对账/取 diff；testing 先看 route 再验回归与对账表；`finalize` 从会话账汇总量、写 `report.md`。
   - 验收：session 层八条假会话单测；进程内全链（plan→coding→testing→report）产出 phase=done 与报告；`start` 对 change 续跑/fresh 与 010 同语义。
-  - **证据**：commit `454a3e4`（session）+ `d0f0984`（finalize/全链）+ `0763201`（start 续跑）。
+  - **证据**：commit `454a3e4`（session）+ `d0f0984`（finalize/全链）+ `0763201`（start 续跑）；**审计后修正** `65db146`：
+    - coding 拆两轮：**基线取证轮**（只跑既有测试写 `evidence/baseline-test.log`，此时不改码）→ 引擎验红→绿了才发**改码轮**指令（修“门在生产者之前”的自锁）；
+    - coding review / test review 两个实例真正 `open()/review()`（之前只装配未调用）；FAIL → Quality；
+    - 越界申报 `<route>plan</route>` 在 `require_marker` **之前**判定（合规申报不打标记，旧顺序会误判）；
+    - `review_rounds` 由会话上报经编排器写入 state 与报告（不再恒为 0）。
 - **运行契约（新增，调用方须知）**：
   - 开跑前把需求写进黑板 `plans/<project>/<task>/requirement.md`（没有就拒跑，Quality）；
   - 文档档位用环境变量 `DEVFORGE_DOC_LEVEL=none|essential|complete`（默认 `none`）；
