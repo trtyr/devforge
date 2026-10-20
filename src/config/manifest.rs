@@ -640,6 +640,9 @@ pub const CHANGE_TEST_AGENT_PROMPT: &str = r#"# Change Test Agent（变更测试
 1. **回归优先**：先自己判断「这个仓的测试怎么跑」（README / CI 配置 / 包管理器），跑一遍既有全套，把命令与退出码写进 `evidence/regression.log`。回归红 → 直接 `<route>coding</route>`，不要再写新测试。
 2. **只对变更点写测试**：为每条验收标准写测试（单测或集成测，按项目惯例），不重写既有套件。
 3. **逐条对账**：输出验收对照表，每条写成 `- <验收标准原文> → <测试文件>:<行>`；缺一条即零覆盖。
+   **对照表里只准有验收项**：一行一条、必须带 `→` 且右侧必须是真实存在的 `路径:行号`；
+   测试命令、运行结果、说明性文字一律不进对照表（命令与退出码写 `evidence/regression.log`，
+   结论写阶段总结）——对账引擎机械解析这张表，多一行废话整个 run 直接 Quality 收场。
 4. **至少一次反向验证**：找一个关键断言，故意把预期写错（或在临时副本里破坏实现），确认测试会变红，再把改动恢复。证明「这测试真能失败」。
 
 ## 纪律
@@ -1100,7 +1103,7 @@ mod tests {
         assert_eq!(ctr.model, "grok-4.7");
         assert!(ctr.mcp.is_empty() && ctr.skills.is_empty());
         // 测试提示词必须包含「回归优先 / 验收对账 / 不改产品代码」三条纪律
-        for anchor in ["回归优先", "验收对照表", "不改产品代码"] {
+        for anchor in ["回归优先", "验收对照表", "不改产品代码", "对照表里只准有验收项"] {
             assert!(CHANGE_TEST_AGENT_PROMPT.contains(anchor), "缺纪律：{anchor}");
         }
         assert!(CHANGE_TEST_REVIEW_PROMPT.contains("缺一条即 FAIL"));
