@@ -9,6 +9,7 @@
 
 use std::path::Path;
 
+use crate::error::Result;
 use crate::runstate::{Loaded, RunState, StateKey, load};
 
 /// 一个可断点续跑的 SOP。
@@ -100,6 +101,49 @@ pub fn plan<S: Resumable + ?Sized>(
             skip: Vec::new(),
             note: Some(reason),
         },
+    }
+}
+
+/// `start` 的续跑判定结果（plan 010 · T003）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartDecision {
+    /// 是否从断点继续（false = 冷启动）。
+    pub resumed: bool,
+    /// 冷启动原因（fresh / 断点不可用），供日志与响应回显。
+    pub note: Option<String>,
+}
+
+/// `start` 入口的续跑门：`fresh = true` 时清空该 SOP 的断点并回冷启动。
+///
+/// **只动该 SOP 自己那份**——同一 task 下其他 SOP 的状态文件不受影响（D001）。
+pub fn start_gate(
+    plans_root: &Path,
+    project: &str,
+    task: &str,
+    sop_name: &str,
+    fresh: bool,
+) -> Result<StartDecision> {
+    let key = StateKey::new(project, task, sop_name);
+    if fresh {
+        crate::runstate::clear(plans_root, &key)?;
+        return Ok(StartDecision {
+            resumed: false,
+            note: Some("fresh: true —— 已清空该 SOP 的断点，全量重跑".into()),
+        });
+    }
+    match load(plans_root, &key) {
+        Loaded::Found(_) => Ok(StartDecision {
+            resumed: true,
+            note: None,
+        }),
+        Loaded::Missing => Ok(StartDecision {
+            resumed: false,
+            note: None,
+        }),
+        Loaded::Unusable(reason) => Ok(StartDecision {
+            resumed: false,
+            note: Some(reason),
+        }),
     }
 }
 
@@ -265,6 +309,55 @@ mod tests {
         assert_eq!(p.to_run, vec!["u2".to_string(), "u3".to_string()]);
         // 断点里存在但清单里没有的单元不得凭空复活
         assert!(!p.to_run.contains(&"ghost-unit".to_string()));
+    }
+
+    #[test]
+    fn start_gate_cold_start_when_no_checkpoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = start_gate(tmp.path(), "p", "t", "fake", false).unwrap();
+        assert!(!d.resumed);
+        assert!(d.note.is_none());
+    }
+
+    #[test]
+    fn start_gate_resumes_when_checkpoint_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), "fake", &["u1"]);
+        let d = start_gate(tmp.path(), "p", "t", "fake", false).unwrap();
+        assert!(d.resumed);
+        assert!(d.note.is_none());
+    }
+
+    #[test]
+    fn start_gate_fresh_clears_only_that_sop() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), "fake", &["u1"]);
+        seed(tmp.path(), "other-sop", &["x"]);
+        let d = start_gate(tmp.path(), "p", "t", "fake", true).unwrap();
+        assert!(!d.resumed);
+        assert!(d.note.as_deref().unwrap_or("").contains("fresh"));
+        // 该 SOP 的 done 已清空
+        assert!(!matches!(
+            crate::runstate::load(tmp.path(), &StateKey::new("p", "t", "fake")),
+            crate::runstate::Loaded::Found(_)
+        ));
+        // 其他 SOP 的断点不受影响
+        assert!(matches!(
+            crate::runstate::load(tmp.path(), &StateKey::new("p", "t", "other-sop")),
+            crate::runstate::Loaded::Found(_)
+        ));
+    }
+
+    #[test]
+    fn start_gate_reports_unusable_checkpoint_as_cold_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = StateKey::new("p", "t", "fake");
+        let path = key.path(tmp.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "not json").unwrap();
+        let d = start_gate(tmp.path(), "p", "t", "fake", false).unwrap();
+        assert!(!d.resumed);
+        assert!(d.note.is_some(), "损坏的断点必须在响应里回显原因");
     }
 
     #[test]

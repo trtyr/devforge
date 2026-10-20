@@ -105,6 +105,25 @@ fn fixture_with_engine(hang_ms: u64, timeout_ms: Option<u64>, token: Option<&str
     }
 }
 
+async fn wait_settled(f: &Fixture, project: &str, task: &str) {
+    for _ in 0..200 {
+        let resp = send(
+            &f.router,
+            "GET",
+            &format!("/api/v1/projects/{project}/tasks/{task}/runs"),
+            None,
+        )
+        .await;
+        let body = body_json(resp).await;
+        let st = body["runs"][0]["status"].as_str().unwrap_or("");
+        if st == "Settled" || st == "Failed" {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("run 未在上限内进入终态：{project}/{task}");
+}
+
 async fn send(
     router: &axum::Router,
     method: &str,
@@ -293,6 +312,72 @@ async fn start_doc_from_zero_sop_returns_202() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(settled, "run 应在超时前 Settled");
+}
+
+#[tokio::test]
+async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
+    // plan 010 T003：start 默认续跑、fresh 只清该 SOP 的断点
+    let f = fixture();
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "d", "sop": "doc-from-zero"})),
+    )
+    .await;
+
+    // 1) 无断点 → 冷启动
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/d/start", None).await;
+    assert_eq!(resp.status(), 202);
+    let body = body_json(resp).await;
+    assert_eq!(body["resumed"], false, "无断点必须冷启动：{body}");
+    wait_settled(&f, "p", "d").await;
+
+    // 2) 种断点（doc-from-zero + 另一个 SOP）→ 默认续跑，且只认自己那份
+    let key = crate::runstate::StateKey::new("p", "d", "doc-from-zero");
+    let mut st = crate::runstate::RunState::new(&key, json!({"done": ["unit-a"]}));
+    crate::runstate::save(&f.state.plans_root, &key, &mut st).unwrap();
+    let other = crate::runstate::StateKey::new("p", "d", "planning");
+    let mut st2 = crate::runstate::RunState::new(&other, json!({"done": ["x"]}));
+    crate::runstate::save(&f.state.plans_root, &other, &mut st2).unwrap();
+
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/d/start", None).await;
+    assert_eq!(resp.status(), 202);
+    let body = body_json(resp).await;
+    assert_eq!(body["resumed"], true, "有断点默认续跑：{body}");
+    assert_eq!(body["sop"], "doc-from-zero");
+    wait_settled(&f, "p", "d").await;
+
+    // 3) fresh → 回冷启动且断点被清；另一个 SOP 的断点不受影响
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks/d/start",
+        Some(json!({"fresh": true})),
+    )
+    .await;
+    assert_eq!(resp.status(), 202);
+    let body = body_json(resp).await;
+    assert_eq!(body["resumed"], false, "fresh 必须冷启动：{body}");
+    assert!(
+        body["note"].as_str().unwrap_or("").contains("fresh"),
+        "fresh 原因要回显：{body}"
+    );
+    assert!(
+        !matches!(
+            crate::runstate::load(&f.state.plans_root, &key),
+            crate::runstate::Loaded::Found(_)
+        ),
+        "fresh 后该 SOP 的 done 必须为空"
+    );
+    assert!(
+        matches!(
+            crate::runstate::load(&f.state.plans_root, &other),
+            crate::runstate::Loaded::Found(_)
+        ),
+        "不得动其他 SOP 的断点"
+    );
 }
 
 #[tokio::test]

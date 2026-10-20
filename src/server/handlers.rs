@@ -194,26 +194,31 @@ pub async fn list_tasks(
 pub struct StartReq {
     /// 可选 SOP 覆盖（P005 跨 SOP 触发：同任务先规划后编码）。
     pub sop: Option<String>,
+    /// 可选：忽略断点、清空该 SOP 的检查点全量重跑（plan 010 D002）。
+    #[serde(default)]
+    pub fresh: Option<bool>,
 }
 
 pub async fn start_task(
     State(st): State<SharedState>,
     Path((project, task)): Path<(String, String)>,
     body: Option<Json<StartReq>>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     // 可选 sop 覆盖（无 body / 无字段 = 沿用任务注册的 sop）
-    if let Some(Json(req)) = body
-        && let Some(sop) = req.sop
-    {
-        let mut store = st.store.lock().expect("store 锁");
-        store
-            .set_task_sop(&st.registry, &project, &task, sop)
-            .map_err(ApiError::from)?;
+    let mut fresh = false;
+    if let Some(Json(req)) = body {
+        fresh = req.fresh.unwrap_or(false);
+        if let Some(sop) = req.sop {
+            let mut store = st.store.lock().expect("store 锁");
+            store
+                .set_task_sop(&st.registry, &project, &task, sop)
+                .map_err(ApiError::from)?;
+        }
     }
     // 前置快速校验（真正的守卫在 begin_run，双保险）
-    {
+    let sop_name = {
         let store = st.store.lock().expect("store 锁");
-        store
+        let t = store
             .get_task(&project, &task)
             .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
         if store.has_running_run() {
@@ -221,10 +226,23 @@ pub async fn start_task(
                 "已有运行中的任务（MVP 串行执行，一次一个）",
             ));
         }
-    }
+        t.sop.clone()
+    };
+    // 续跑门（plan 010 T003）：fresh 清空该 SOP 的断点；否则按断点存在与否回显 resumed；
+    // 只动该 SOP 自己那份状态，同 task 其他 SOP 不受影响。
+    let decision =
+        crate::runstate::resume::start_gate(&st.plans_root, &project, &task, &sop_name, fresh)
+            .map_err(ApiError::from)?;
     let engine = (st.engine_factory)();
     std::thread::spawn(move || run_in_background(st, project, task, engine));
-    Ok(StatusCode::ACCEPTED)
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "sop": sop_name,
+            "resumed": decision.resumed,
+            "note": decision.note,
+        })),
+    ))
 }
 
 // ---------- 产物管理 + 可观测 ----------
