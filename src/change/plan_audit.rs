@@ -181,14 +181,23 @@ fn looks_like_file(tok: &str) -> bool {
 
 /// 从计划文本抽「验收标准」与「白名单」（编排层进入 coding/testing 前要用）。
 ///
-/// - 验收标准：`验收标准` 块里的列表项（去掉行首 `-`），非空才算；
+/// - 验收标准：`验收标准` 块里的**列表项**（行首 `-`/`*` 才算——表格行、普通段落、
+///   小标题一律不收：对账表是一对一机械匹配，多抽一条 = test agent 永远对不齐）；
 /// - 白名单：`白名单` 块里的文件路径（去重）。
 pub fn plan_facts(plan: &str) -> (Vec<String>, Vec<String>) {
     let criteria = section_lines(plan, "验收标准")
         .into_iter()
-        .map(|l| l.trim().trim_start_matches(['-', '*']).trim())
+        .filter(|l| {
+            let t = l.trim();
+            t.starts_with('-') || t.starts_with('*')
+        })
+        .map(|l| {
+            l.trim()
+                .trim_start_matches(['-', '*'])
+                .trim()
+                .to_string()
+        })
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(str::to_string)
         .collect();
     let whitelist = section_paths(plan, "白名单");
     (criteria, whitelist)
@@ -252,6 +261,27 @@ mod tests {
 ## 5 验收标准\n- 给定 x=1 → 返回 2\n\n\
 ## 6 风险\n- 无\n"
             .to_string()
+    }
+
+    #[test]
+    fn plan_facts_ignores_table_rows_and_keeps_bullets() {
+        // t26 v3 实证：plan 把验收标准写成 markdown 表格，旧行为连表头都抽成条款（23 条鬼条款）
+        let plan = "## 5 验收标准\n\
+            | # | 给定 | 期望 |\n\
+            |---|---|---|\n\
+            | AC1 | count_words(a b) | == 2 |\n\
+            普通段落不算条款。\n\
+            - 给定 x=1 → 返回 2\n\
+            * 给定空串 → 返回 0\n";
+        let (criteria, _) = plan_facts(plan);
+        assert_eq!(
+            criteria,
+            vec![
+                "给定 x=1 → 返回 2".to_string(),
+                "给定空串 → 返回 0".to_string()
+            ],
+            "只有列表行算条款：{criteria:?}"
+        );
     }
 
     #[test]
