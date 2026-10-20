@@ -76,6 +76,55 @@ pub fn plan_kickoff(ctx: &ChangeCtx) -> String {
     )
 }
 
+/// 基线轮：只跑既有测试、不写代码（先把“绿不绿”变成事实，再允许动代码）。
+pub fn baseline_kickoff(_ctx: &ChangeCtx) -> String {
+    format!(
+        "你是 change-coding-agent，现在只做基线取证：**不要改任何代码，不要写测试**。\n\
+自己判断这个仓的测试怎么跑（README / CI 配置 / 包管理器），跑一遍既有全套，\n\
+把结果写进 `{}`：第一行 `command: <你跑的命令>`，并且写一行 `exit_code: N`（N 为真实退出码）。\n\
+然后输出 `<stage-complete>1</stage-complete>`。\n\
+基线红就如实写红——引擎会拦住，不许硬着头皮改代码。",
+        crate::change::coding_gate::BASELINE_LOG
+    )
+}
+
+/// coding 审查指令：diff ↔ 计划对账（越界、依据、测试类型、依赖、文档）。
+pub fn coding_review_instruction(ctx: &ChangeCtx, changed: &[String]) -> String {
+    format!(
+        "你是 change-coding-review（change-id `{}`）。对账三份东西：计划 `{}`、黑板 `{}` 的 `impl-steps.md`、相对基线 `{}` 的 diff。\n\
+本次改动文件（git diff --name-only）：{}\n\n\
+逐项判：\n\
+1. 每块 diff 是否能在计划里找到依据；无依据改动 = FAIL（**不得以 diff 大小作判据**）。\n\
+2. 改动是否全在白名单内；越界是否有 `<route>plan</route>` + `<impact-gap>` 申报（有申报就不该进到你这一步）。\n\
+3. 测试是否为单测（不是 e2e），断言不得全空或单边。\n\
+4. 是否引入计划外依赖。\n\
+5. 行为变了而 `docs/contexts/` 没跟、或 `devforge doc-lint` 不绿 = FAIL。\n\n\
+先写 `coding/reports/review.md`，末尾输出：<stage-verdict>PASS|FAIL</stage-verdict> + <next>advance|fix</next> + <issues>（FAIL 时带 path:line）。",
+        ctx.change_id,
+        ctx.plan_path().display(),
+        ctx.blackboard.display(),
+        ctx.baseline,
+        changed.join("、")
+    )
+}
+
+/// 测试审查指令：验回归证据与验收对账（不重跑测试套件，只验证据与覆盖）。
+pub fn testing_review_instruction(ctx: &ChangeCtx) -> String {
+    format!(
+        "你是 change-test-review（change-id `{}`）。黑板：{}；回归日志：{}；对账表：{}。\n\n\
+逐项判：\n\
+1. 回归真跑了：日志命令合理、退出码与结论一致（非零却称通过 = FAIL）。\n\
+2. 验收对账表每条都指到具体测试 `path:line`，且不撒谎。\n\
+3. 反向验证至少一处（破坏实现后测试会红）。\n\
+4. 测试阶段不得改产品代码。\n\n\
+先写 `testing/reports/review.md`，末尾输出：<stage-verdict>PASS|FAIL</stage-verdict> + <next>advance|fix</next> + <issues>。",
+        ctx.change_id,
+        ctx.blackboard.display(),
+        REGRESSION_LOG,
+        ctx.acceptance_path().display()
+    )
+}
+
 pub fn coding_kickoff(ctx: &ChangeCtx) -> String {
     format!(
         "你是 change-coding-agent。change-id：`{}`，基线 `{}`。\n\
@@ -206,15 +255,50 @@ impl ChangeSession for ProdChangeSession {
     }
 
     fn run_coding(&mut self, ui: &mut dyn UserLink, _roundtrip: usize) -> Result<CodingTurn> {
-        // 回归前置：红基线不许动代码（引擎只验证据，不自己跑）
+        // ① 基线轮：先让 agent 只跑既有测试写证据（此时还没允许改代码）
+        let baseline_reply = self.coding_agent.converse(&baseline_kickoff(&self.ctx), ui)?;
+        require_marker("change-coding-agent（基线轮）", &baseline_reply)?;
+        // 引擎不自己跑测试，只验证据：红/缺失就在这里拦住（coding 子进程不会再被叫去改代码）
         check_baseline_log(&self.ctx.blackboard)?;
+
+        // ② coding 轮：真实改代码；越界申报按 D008 只发 <route>plan</route> + <impact-gap>，不打标记
         let reply = self.coding_agent.converse(&coding_kickoff(&self.ctx), ui)?;
+        if parse_route(&reply).as_deref() == Some("plan") {
+            let changed = changed_files(&self.ctx.repo, &self.ctx.baseline).unwrap_or_default();
+            return Ok(CodingTurn {
+                reply,
+                changed,
+                reviews: 0,
+            });
+        }
         require_marker("change-coding-agent", &reply)?;
         // 实施步骤与按步提交必须对得上
         let steps = read_steps(&self.ctx.blackboard)?;
         check_step_commits(&self.ctx.repo, &self.ctx.baseline, &self.ctx.change_id, &steps)?;
         let changed = changed_files(&self.ctx.repo, &self.ctx.baseline)?;
-        Ok(CodingTurn { reply, changed })
+
+        // ③ coding review：diff ↔ 计划对账（越界已由引擎先算，这里管语义）
+        let report = review_once(
+            &mut *self.coding_review,
+            &coding_review_instruction(&self.ctx, &changed),
+        )?;
+        if report.protocol_violation {
+            return Err(DevforgeError::Quality(format!(
+                "变更编码审查协议违例：{}",
+                report.issues.join("；")
+            )));
+        }
+        match report.verdict {
+            StageVerdict::Pass => Ok(CodingTurn {
+                reply,
+                changed,
+                reviews: 1,
+            }),
+            StageVerdict::Fail => Err(DevforgeError::Quality(format!(
+                "变更编码审查未通过：{}",
+                report.issues.join("；")
+            ))),
+        }
     }
 
     fn run_testing(&mut self, ui: &mut dyn UserLink) -> Result<TestingTurn> {        let reply = self.test_agent.converse(&testing_kickoff(&self.ctx), ui)?;
@@ -261,9 +345,27 @@ impl ChangeSession for ProdChangeSession {
                 )));
             }
         }
-        Ok(TestingTurn::Pass {
-            acceptance_done: done,
-        })
+        // test review：验回归证据与对账（只验证据，不重跑套件）
+        let report = review_once(
+            &mut *self.test_review,
+            &testing_review_instruction(&self.ctx),
+        )?;
+        if report.protocol_violation {
+            return Err(DevforgeError::Quality(format!(
+                "变更测试审查协议违例：{}",
+                report.issues.join("；")
+            )));
+        }
+        match report.verdict {
+            StageVerdict::Pass => Ok(TestingTurn::Pass {
+                acceptance_done: done,
+                reviews: 1,
+            }),
+            StageVerdict::Fail => Err(DevforgeError::Quality(format!(
+                "变更测试审查未通过：{}",
+                report.issues.join("；")
+            ))),
+        }
     }
 
     fn plan_facts(&mut self) -> Result<(Vec<String>, Vec<String>)> {
@@ -551,24 +653,35 @@ mod tests {
     fn coding_runs_gates_and_returns_changed_files() {
         let f = fixture(true);
         coding_ready(&f);
-        let agent = Agent::new(&["改完了\n<stage-complete>1</stage-complete>"]);
+        let agent = Agent::new(&[
+            "基线绿了\n<stage-complete>1</stage-complete>",
+            "改完了\n<stage-complete>1</stage-complete>",
+        ]);
         let seen = agent.seen.clone();
         let mut session = ProdChangeSession {
             plan_agent: Box::new(Agent::new(&[])),
             plan_review: Box::new(ReviewFactory::new(&[])),
             coding_agent: Box::new(agent),
-            coding_review: Box::new(ReviewFactory::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[PLAN_PASS])),
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
         };
         let turn = session.run_coding(&mut NoUser, 0).unwrap();
         assert!(turn.changed.contains(&"src/a.rs".to_string()), "{:?}", turn.changed);
-        assert!(seen.borrow()[0].contains("baseline-test.log"), "kickoff 要提基线证据");
+        assert_eq!(turn.reviews, 1, "coding review 必须真跑一次");
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "两轮：基线取证 → 改代码");
+        assert!(
+            seen[0].contains("不要改任何代码") && seen[0].contains("baseline-test.log"),
+            "第一轮必须先要基线证据：{}",
+            seen[0]
+        );
+        assert!(seen[1].contains("impl-steps"), "第二轮才是真实 coding：{}", seen[1]);
     }
 
     #[test]
-    fn coding_blocks_on_red_baseline_before_agent_runs() {
+    fn red_baseline_blocks_before_coding_turn() {
         let f = fixture(true);
         std::fs::create_dir_all(f.ctx.blackboard.join("evidence")).unwrap();
         std::fs::write(
@@ -576,7 +689,8 @@ mod tests {
             "command: cargo test\nexit_code: 1\n",
         )
         .unwrap();
-        let agent = Agent::new(&[]);
+        // 只给一轮回复：基线轮；若引擎错序，第二轮会被调用则脚本耗尽直接暴露
+        let agent = Agent::new(&["跑了，红了\n<stage-complete>1</stage-complete>"]);
         let seen = agent.seen.clone();
         let mut session = ProdChangeSession {
             plan_agent: Box::new(Agent::new(&[])),
@@ -589,7 +703,82 @@ mod tests {
         };
         let err = session.run_coding(&mut NoUser, 0).unwrap_err();
         assert!(err.to_string().contains("基线不是绿的"), "{err}");
-        assert!(seen.borrow().is_empty(), "红基线不得先跑 agent");
+        assert_eq!(seen.borrow().len(), 1, "红基线后不得再叫 agent 去改代码");
+    }
+
+    #[test]
+    fn route_plan_without_marker_is_accepted() {
+        // D008：越界申报只发 <route>plan</route> + <impact-gap>，不打 stage-complete；
+        // 引擎必须先看 route，不能先要求标记
+        let f = fixture(true);
+        coding_ready(&f);
+        let agent = Agent::new(&[
+            "基线绿了\n<stage-complete>1</stage-complete>",
+            "计划漏了\n<route>plan</route>\n<impact-gap>\n- 文件：src/extra.rs\n- 为什么必须改：接口在这\n- 证据：src/extra.rs:9\n</impact-gap>",
+        ]);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&[])),
+            plan_review: Box::new(ReviewFactory::new(&[])),
+            coding_agent: Box::new(agent),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let turn = session.run_coding(&mut NoUser, 0).unwrap();
+        assert!(turn.reply.contains("<route>plan</route>"), "{}", turn.reply);
+        assert_eq!(turn.reviews, 0, "申报轮不过 coding review");
+    }
+
+    #[test]
+    fn coding_review_failure_fails_the_stage() {
+        let f = fixture(true);
+        coding_ready(&f);
+        let fail = "<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>\n<issues>\n- 无法从计划找到依据：src/a.rs\n</issues>";
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&[])),
+            plan_review: Box::new(ReviewFactory::new(&[])),
+            coding_agent: Box::new(Agent::new(&[
+                "<stage-complete>1</stage-complete>",
+                "<stage-complete>1</stage-complete>",
+            ])),
+            coding_review: Box::new(ReviewFactory::new(&[fail])),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let err = session.run_coding(&mut NoUser, 0).unwrap_err();
+        assert!(err.to_string().contains("变更编码审查未通过"), "{err}");
+        assert!(err.to_string().contains("src/a.rs"), "{err}");
+    }
+
+    #[test]
+    fn testing_review_is_invoked_and_can_fail() {
+        let f = fixture(true);
+        std::fs::create_dir_all(f.ctx.blackboard.join("testing")).unwrap();
+        std::fs::create_dir_all(f.ctx.blackboard.join("evidence")).unwrap();
+        std::fs::write(
+            f.ctx.blackboard.join("evidence/regression.log"),
+            "command: cargo test\nexit_code: 0\n",
+        )
+        .unwrap();
+        std::fs::write(
+            f.ctx.blackboard.join("testing/acceptance.md"),
+            "- 给定 x=1 → 返回 2 → tests/a_test.rs:10\n",
+        )
+        .unwrap();
+        let fail = "<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>\n<issues>\n- 没有反向验证\n</issues>";
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&[])),
+            plan_review: Box::new(ReviewFactory::new(&[])),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&["<stage-complete>1</stage-complete>"])),
+            test_review: Box::new(ReviewFactory::new(&[fail])),
+            ctx: f.ctx.clone(),
+        };
+        let err = session.run_testing(&mut NoUser).unwrap_err();
+        assert!(err.to_string().contains("变更测试审查未通过"), "{err}");
     }
 
     #[test]
@@ -613,11 +802,11 @@ mod tests {
             coding_agent: Box::new(Agent::new(&[])),
             coding_review: Box::new(ReviewFactory::new(&[])),
             test_agent: Box::new(Agent::new(&["通过了\n<stage-complete>1</stage-complete>"])),
-            test_review: Box::new(ReviewFactory::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[PLAN_PASS])),
             ctx: f.ctx.clone(),
         };
         match session.run_testing(&mut NoUser).unwrap() {
-            TestingTurn::Pass { acceptance_done } => {
+            TestingTurn::Pass { acceptance_done, .. } => {
                 assert_eq!(acceptance_done, vec!["给定 x=1 → 返回 2".to_string()])
             }
             other => panic!("应为 Pass，实际 {other:?}"),

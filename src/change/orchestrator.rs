@@ -34,6 +34,8 @@ pub struct CodingTurn {
     pub reply: String,
     /// 相对基线的改动文件（`git diff --name-only <baseline>`）。
     pub changed: Vec<String>,
+    /// 本阶段消耗的审查轮次（coding review）。
+    pub reviews: usize,
 }
 
 /// 测试阶段结果。
@@ -42,6 +44,8 @@ pub enum TestingTurn {
     Pass {
         /// 已对账通过的验收项。
         acceptance_done: Vec<String>,
+        /// 本阶段消耗的审查轮次（test review）。
+        reviews: usize,
     },
     /// 回归/测试失败 → 回注 coding（不给定位）。
     RouteCoding { failures: Vec<String> },
@@ -136,6 +140,7 @@ pub fn run<S: ChangeSession>(
     if matches!(state.phase, ChangePhase::Coding) {
         loop {
             let turn = session.run_coding(ui, state.roundtrips)?;
+            state.review_rounds += turn.reviews;
             match boundary::classify(&turn.changed, &whitelist, &turn.reply) {
                 BoundaryVerdict::InBoundary => {
                     state.phase = ChangePhase::Testing;
@@ -192,7 +197,9 @@ pub fn run<S: ChangeSession>(
         match session.run_testing(ui)? {
             TestingTurn::Pass {
                 acceptance_done: done,
+                reviews,
             } => {
+                state.review_rounds += reviews;
                 for c in done {
                     state.mark_acceptance_done(&c);
                 }
@@ -344,6 +351,7 @@ mod tests {
         CodingTurn {
             reply: "干完了\n<stage-complete>1</stage-complete>".into(),
             changed: s(&["src/a.rs"]),
+            reviews: 1,
         }
     }
 
@@ -357,12 +365,14 @@ mod tests {
                 "计划漏了\n<route>plan</route>\n<impact-gap>\n- 文件：{file}\n- 为什么必须改：接口在这\n- 证据：{file}:9\n</impact-gap>"
             ),
             changed: s(&["src/a.rs", file]),
+            reviews: 0,
         }
     }
 
     fn pass_testing() -> TestingTurn {
         TestingTurn::Pass {
             acceptance_done: s(&["x=1 → 2"]),
+            reviews: 1,
         }
     }
 
@@ -394,6 +404,7 @@ mod tests {
             .unwrap();
         assert_eq!(out.state.phase, ChangePhase::Done);
         assert_eq!(out.report.roundtrips, 0);
+        assert_eq!(out.report.review_rounds, 2, "coding 与 testing 各一轮审查要计入报告");
         assert_eq!(
             session.log,
             vec!["plan(rt=0)", "coding(rt=0)", "testing"],
@@ -415,6 +426,7 @@ mod tests {
         session.codings.push_back(CodingTurn {
             reply: "补完了".into(),
             changed: s(&["src/a.rs", "src/extra.rs"]),
+            reviews: 0,
         });
         session.testings.push_back(pass_testing());
 
@@ -455,6 +467,7 @@ mod tests {
         session.codings.push_back(CodingTurn {
             reply: "顺手改的".into(),
             changed: s(&["src/a.rs", "src/rogue.rs"]),
+            reviews: 0,
         });
 
         let mut ui = NoUser;
@@ -604,6 +617,7 @@ mod tests {
         session.codings.push_back(in_boundary());
         session.testings.push_back(TestingTurn::Pass {
             acceptance_done: s(&["x=1 → 2"]),
+            reviews: 0,
         });
 
         let mut ui = NoUser;
