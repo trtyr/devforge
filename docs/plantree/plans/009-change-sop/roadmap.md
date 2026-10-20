@@ -5,9 +5,8 @@
 
 ## Phase 0 · 门 0 与基线
 
-- [ ] **(T001) 基线建立**——无 `.git` → `git init` + 全量提交（提交信息固定前缀便于识别）；有 `.git` → 记录 HEAD。
+- [ ] **(T001) 基线建立**——无 `.git` → `git init` + **全量提交**（提交信息固定前缀）；有 `.git` → 记录 HEAD。
   - 验收：一个新 clone 的裸目录跑完门 0 后 `git log --oneline` 有且仅有一条 `devforge: baseline`；基线 sha 落 `baseline.txt`。
-  - 风险：大仓/含大文件时 `git add -A` 慢且吃盘——加体积守卫（单文件 >50MB 跳过并登记）。
 - [ ] **(T002) `doc_level` 开关**——`none`（默认）/ `essential` / `complete`；`essential` 时先跑 doc-from-zero 轻量档。
   - 验收：`doc_level=none` 时零文档动作、直接进 plan；`essential` 时产出 `_meta/inventory.json` 后进 plan。
 - [ ] **(T003) 黑板与 change-id**——生成 `change-<date>-<slug>`，建 `docs/plantree/<change-id>/`。
@@ -25,8 +24,10 @@
 
 ## Phase B · coding 门
 
-- [ ] **(T009) 白名单机械校验**——coding 完成后引擎跑 `git -C <ws> diff --name-only <baseline>`，任何文件不在白名单 → FAIL 回注。
-  - 验收：故意改一个边界外文件，run 必须 FAIL 且指出该文件。
+- [ ] **(T009) 越界二分与往返**——coding 完成后引擎算 diff 对白名单：全内 → testing；越界且 agent 已 `<route>plan</route>` + `<impact-gap>`（文件/理由/证据）→ 打回 plan 补边界（增量过审后重进 coding）；越界无申报 → FAIL（范围膨胀）。
+  - 验收：两个反向用例各一条单测——故意改白名单外且不申报 → FAIL；故意改白名单外但带 impact-gap → 回 plan 且白名单被追加。
+- [ ] **(T013) change 状态机编排器**——不照搬 MVP 单向流水：plan ⇄ coding ⇄ testing 带路由，往返计数上限 3，每次往返写 `docs/plantree/changes/<change-id>/history.md`。
+  - 验收：单测能重现「coding → route plan → 改边界 → 重进 coding」全回路；第 4 次往返必须停下并报错。
 - [ ] **(T010) 回归前置**——coding 动手前先跑既有测试（命令来自计划），不绿不许改；证据落黑板。
   - 验收：既有测试红 → coding 阶段直接失败，且错误信息含测试命令与失败摘要。
 

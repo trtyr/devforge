@@ -26,9 +26,20 @@
 | --- | --- | --- |
 | plan | 功能设计 + 任务拆分 | **影响面 + 改动边界 + 验收命令**（六块，见下） |
 | plan 审查 | 需求覆盖 / 计划可执行 | 追加：影响面必须有 codegraph 证据、边界外零改动、验收命令审查官亲自跑 |
-| coding | 从零实现 | 同一 SOP + **引擎侧白名单校验**（`git diff --name-only` ⊆ 白名单）+ 先跑既有测试 |
+| coding | 从零实现 | 同一阶段提示词 + **越界二分**（范围膨胀 FAIL / 计划缺口打回 plan）+ 先跑既有测试 |
 | testing | 给新系统写测试 | **先回归后新增**，回归失败直接阻塞 |
 | 收尾 | 无 | 文档同步（`docs-update` / `docs-sync`）+ `doc-lint` 0 违规 + 变更报告 |
+
+## 编排：带回路的状态机（与 MVP 最大差别）
+
+MVP 是单向流水（plan→coding→testing）；change 是 **plan ⇄ coding ⇄ testing**：
+
+- coding 发现计划漏了必需文件 → 输出 `<route>plan</route>` + `<impact-gap>`（文件/理由/证据）→ 打回 plan 补边界
+- 边界增量过 change-review（只审增量，防边界蠕变）→ 带新边界重进 coding
+- 越界但**没申报** → FAIL（范围膨胀），一票否决
+- 往返上限 3 次，每次写 `changes/<change-id>/history.md`；第 4 次停下问人
+
+细节见 `topics/boundary-protocol.md`。这也是本 SOP 不能照搬 `run_coding` 的原因。
 
 ## plan 阶段六块（`change-plan.md`）
 
