@@ -91,6 +91,11 @@
     - coding review / test review 两个实例真正 `open()/review()`（之前只装配未调用）；FAIL → Quality；
     - 越界申报 `<route>plan</route>` 在 `require_marker` **之前**判定（合规申报不打标记，旧顺序会误判）；
     - `review_rounds` 由会话上报经编排器写入 state 与报告（不再恒为 0）。
+  - **审计第二轮修正** `b79e785`：
+    - `change_dir` 改回**目标仓** `docs/plantree/changes/<id>`（与提示词/D003 一致，`baseline.txt` 与 `change-plan.md` 同处）；
+    - 黑板骨架与 session 读写统一到 `plans/<p>/<t>/change/`（补 `testing/reports`），agent cwd 也设在这里；`requirement.md` 留在任务根；
+    - 抽 `build_ctx` 并新增单测断言「计划路径在目标仓 / 证据根在 SOP 级黑板 / 骨架目录存在」；
+    - plan 审查轮次经 `plan_reviews` 计入报告（plan+coding+testing 三轮合计有单测）。
 - **运行契约（新增，调用方须知）**：
   - 开跑前把需求写进黑板 `plans/<project>/<task>/requirement.md`（没有就拒跑，Quality）；
   - 文档档位用环境变量 `DEVFORGE_DOC_LEVEL=none|essential|complete`（默认 `none`）；
