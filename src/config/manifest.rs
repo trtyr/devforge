@@ -805,6 +805,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn change_plan_prompts_carry_six_blocks_and_forbidden_items() {
+        // P009 T006：六块与「不写实施顺序 / 不写回归命令 / codegraph-first」必须在提示词里
+        for block in crate::change::plan_audit::PLAN_BLOCKS {
+            assert!(
+                CHANGE_PLAN_AGENT_PROMPT.contains(block),
+                "change-plan 提示词缺块：{block}"
+            );
+        }
+        for anchor in ["codegraph-first", "不写实施顺序", "不写回归命令", "path:line"] {
+            assert!(
+                CHANGE_PLAN_AGENT_PROMPT.contains(anchor),
+                "change-plan 提示词缺纪律：{anchor}"
+            );
+        }
+        // 审查侧：只审计划、不看 diff、不跑命令、不写文件
+        for anchor in ["不看 diff", "不跑命令", "不写文件", "<stage-verdict>"] {
+            assert!(
+                CHANGE_PLAN_REVIEW_PROMPT.contains(anchor),
+                "change-plan-review 提示词缺纪律：{anchor}"
+            );
+        }
+    }
+
+    #[test]
     fn builtin_has_eleven_agents_and_four_base_packages() {
         let m = ConfigManifest::builtin();
         assert_eq!(m.base_packages, BASE_PACKAGES.iter().map(|s| s.to_string()).collect::<Vec<_>>());

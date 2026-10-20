@@ -10,7 +10,9 @@
 pub mod change_id;
 pub mod docs;
 pub mod gate0;
+pub mod plan_audit;
 
 pub use change_id::{assign_change_id, change_root, make_change_id, slugify, validate_change_id};
 pub use docs::{DocAction, apply as apply_doc_level, essential_ready};
 pub use gate0::{Baseline, DocLevel, ensure_baseline};
+pub use plan_audit::{PlanAudit, audit as audit_plan, review_instruction};
