@@ -96,6 +96,10 @@
     - 黑板骨架与 session 读写统一到 `plans/<p>/<t>/change/`（补 `testing/reports`），agent cwd 也设在这里；`requirement.md` 留在任务根；
     - 抽 `build_ctx` 并新增单测断言「计划路径在目标仓 / 证据根在 SOP 级黑板 / 骨架目录存在」；
     - plan 审查轮次经 `plan_reviews` 计入报告（plan+coding+testing 三轮合计有单测）。
+  - **审计第三轮修正** `d52331f`：
+    - plan 审查指令带**计划路径 + 计划全文**（审查子进程 cwd 在黑板，不附全文就根本读不到目标仓计划）；
+    - 基线轮提示词带**目标仓路径**（否则可能在黑板目录跑测试得出假绿）；
+    - `run_change` 补 **codegraph 预检**（change-plan-agent 只给图工具，不建索引等于把档案柜锁了）。
 - **运行契约（新增，调用方须知）**：
   - 开跑前把需求写进黑板 `plans/<project>/<task>/requirement.md`（没有就拒跑，Quality）；
   - 文档档位用环境变量 `DEVFORGE_DOC_LEVEL=none|essential|complete`（默认 `none`）；
