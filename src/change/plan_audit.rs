@@ -159,7 +159,7 @@ fn section_lines<'a>(plan: &'a str, title: &str) -> Vec<&'a str> {
 fn section_paths(plan: &str, title: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in section_lines(plan, title) {
-        for raw in line.split(|c: char| c.is_whitespace() || matches!(c, '`' | '|' | '，' | '、' | '）' | '）')) {
+        for raw in line.split(|c: char| c.is_whitespace() || matches!(c, '`' | '|' | '，' | '、' | '）')) {
             let tok = raw.trim_matches(|c: char| matches!(c, ',' | ';' | '：' | '。' | '(' | ')'));
             if looks_like_file(tok) && !out.iter().any(|p| p == tok) {
                 out.push(tok.to_string());
