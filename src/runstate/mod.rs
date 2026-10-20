@@ -14,6 +14,8 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+pub mod resume;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Context as _, DevforgeError, Result};
