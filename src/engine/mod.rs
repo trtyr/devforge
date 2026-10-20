@@ -9,6 +9,7 @@ pub mod client;
 pub mod ledger;
 pub mod process;
 pub mod protocol;
+pub mod retry;
 
 pub use client::{RpcClient, WaitOutcome};
 pub use ledger::{Reconciliation, SpawnLedger, LedgerEntry};

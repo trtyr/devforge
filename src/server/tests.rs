@@ -18,10 +18,12 @@ use tokio_stream::StreamExt as _;
 
 use std::sync::{Arc, Mutex};
 
-/// 测试引擎：立刻完成并记录调用；hang_ms>0 时模拟长 run（响应取消/超时干预）。
+/// 测试引擎：立刻完成并记录调用；hang_ms>0 时模拟长 run（响应取消/超时干预）；
+/// fail_system_times>0 时先抛 N 次基础设施故障（验证自动重启）。
 struct MockEngine {
     calls: Arc<Mutex<Vec<String>>>,
     hang_ms: u64,
+    fail_system_times: Arc<Mutex<u32>>,
 }
 impl RunEngine for MockEngine {
     fn execute(&mut self, task: &Task, _run: &Run, control: &RunControl) -> Result<RunOutcome> {
@@ -29,6 +31,15 @@ impl RunEngine for MockEngine {
             .lock()
             .unwrap()
             .push(format!("{}/{}", task.project, task.id));
+        {
+            let mut left = self.fail_system_times.lock().unwrap();
+            if *left > 0 {
+                *left -= 1;
+                return Err(crate::error::DevforgeError::System(
+                    "模拟上游 500（测试注入）".into(),
+                ));
+            }
+        }
         if self.hang_ms > 0 {
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(self.hang_ms);
             while std::time::Instant::now() < deadline {
@@ -67,13 +78,29 @@ fn fixture_with_token(token: Option<&str>) -> Fixture {
 
 /// 可注入长 run / 超时的夹具变体（取消与超时单测用）。
 fn fixture_with_engine(hang_ms: u64, timeout_ms: Option<u64>, token: Option<&str>) -> Fixture {
+    fixture_full(hang_ms, timeout_ms, token, 0)
+}
+
+/// 可注入基础设施故障次数的夹具变体（续跑/自动重启单测用）。
+fn fixture_with_failures(fail_system_times: u32) -> Fixture {
+    fixture_full(0, None, None, fail_system_times)
+}
+
+fn fixture_full(
+    hang_ms: u64,
+    timeout_ms: Option<u64>,
+    token: Option<&str>,
+    fail_system_times: u32,
+) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let calls2 = calls.clone();
+    let failures = Arc::new(Mutex::new(fail_system_times));
     let engine_factory = Box::new(move || -> Box<dyn RunEngine + Send> {
         Box::new(MockEngine {
             calls: calls2.clone(),
             hang_ms,
+            fail_system_times: failures.clone(),
         })
     });
     let bus = std::sync::Arc::new(crate::server::EventBus::new());
@@ -90,6 +117,10 @@ fn fixture_with_engine(hang_ms: u64, timeout_ms: Option<u64>, token: Option<&str
         dir.path().join("plans"),
         dir.path().join("sessions"),
     );
+    // 单测不真睡：重试退避归零
+    Arc::get_mut(&mut state)
+        .expect("路由未构建前应独占")
+        .retry_policy = crate::engine::retry::RetryPolicy::fast();
     // token 在路由构建前注入（Arc 共享后不可再改）
     if let Some(t) = token {
         Arc::get_mut(&mut state).expect("路由未构建前应独占").token = Some(t.into());
@@ -378,6 +409,59 @@ async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
         ),
         "不得动其他 SOP 的断点"
     );
+}
+
+#[tokio::test]
+async fn infra_failures_are_retried_up_to_three_times() {
+    // plan 010 T005：前两次 System → 第三次成功，run 终态 Settled，attempt 落盘为 3
+    let f = fixture_with_failures(2);
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t", "sop": "planning"})),
+    )
+    .await;
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    assert_eq!(resp.status(), 202);
+    wait_settled(&f, "p", "t").await;
+
+    assert_eq!(f.calls.lock().unwrap().len(), 3, "两次故障 + 一次成功");
+    let key = crate::runstate::StateKey::new("p", "t", "planning");
+    let st = crate::runstate::load(&f.state.plans_root, &key);
+    assert_eq!(
+        st.state().map(|s| s.attempt),
+        Some(3),
+        "attempt 必须落盘（续跑审计）"
+    );
+}
+
+#[tokio::test]
+async fn persistent_infra_failures_fail_after_four_attempts() {
+    // 不无限：连续故障只试 4 次（首次 + 3 重试），终态 Failed
+    let f = fixture_with_failures(10);
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t", "sop": "planning"})),
+    )
+    .await;
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    assert_eq!(resp.status(), 202);
+    wait_settled(&f, "p", "t").await;
+
+    assert_eq!(f.calls.lock().unwrap().len(), 4, "首次 + 3 次重试，不得无限重跑");
+    let body = body_json(
+        send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await,
+    )
+    .await;
+    assert_eq!(body["runs"][0]["status"], "Failed");
+    let key = crate::runstate::StateKey::new("p", "t", "planning");
+    let st = crate::runstate::load(&f.state.plans_root, &key);
+    assert_eq!(st.state().map(|s| s.attempt), Some(4));
 }
 
 #[tokio::test]

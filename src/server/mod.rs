@@ -937,6 +937,8 @@ pub struct ServerState {
     pub profiles_root: PathBuf,
     pub plans_root: PathBuf,
     pub sessions_root: PathBuf,
+    /// 运行级重试策略（plan 010 T005）：生产默认 10/30/90s；测试注入 fast。
+    pub retry_policy: crate::engine::retry::RetryPolicy,
 }
 
 impl ServerState {
@@ -968,6 +970,7 @@ impl ServerState {
             profiles_root,
             plans_root,
             sessions_root,
+            retry_policy: crate::engine::retry::RetryPolicy::default(),
         })
     }
 
@@ -1134,7 +1137,44 @@ pub fn run_in_background(
         .expect("runs_control 锁")
         .insert(format!("{project}/{task_id}"), control.clone());
 
-    let outcome = engine.execute(&task_snapshot, &run, &control);
+    // 基础设施故障自动重启（plan 010 T005/D004）：只重 System 类，质量失败不重试
+    let policy = state.retry_policy.clone();
+    let sop_for_state = task_snapshot.sop.clone();
+    let state_for_retry = state.clone();
+    let (project_for_retry, task_for_retry, run_id_for_retry) =
+        (project.clone(), task_id.clone(), run.id.0.clone());
+    let (outcome, attempts) = crate::engine::retry::run_with_retry(&policy, &control, |attempt| {
+        if attempt > 1 {
+            // attempt 递增落盘（审计用；断点本体由各 SOP 自己维护）
+            let store = crate::runstate::StateStore::new(
+                state_for_retry.plans_root.clone(),
+                crate::runstate::StateKey::new(&project_for_retry, &task_for_retry, &sop_for_state),
+            );
+            let mut rs = match store.load() {
+                crate::runstate::Loaded::Found(s) => s,
+                _ => store.fresh_state(),
+            };
+            rs.attempt = attempt;
+            if let Err(e) = store.save(&mut rs) {
+                tracing::warn!(component = "run", error = %e, "attempt 落盘失败");
+            }
+            tracing::warn!(
+                component = "run",
+                attempt,
+                project = %project_for_retry,
+                task = %task_for_retry,
+                "基础设施故障，自动重启 run（从断点继续）"
+            );
+            state_for_retry.emit(json!({
+                "type": "run.retry",
+                "project": project_for_retry,
+                "task": task_for_retry,
+                "run_id": run_id_for_retry,
+                "attempt": attempt,
+            }));
+        }
+        engine.execute(&task_snapshot, &run, &control)
+    });
 
     state
         .runs_control
@@ -1160,6 +1200,7 @@ pub fn run_in_background(
         "project": project,
         "task": task_id,
         "run_id": run.id.0,
+        "attempts": attempts,
         "ok": ok && matches!(outcome, Ok(RunOutcome::Completed)),
     }));
 }
