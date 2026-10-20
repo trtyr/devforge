@@ -1536,6 +1536,51 @@ mod coding_engine_tests {
     }
 
     #[test]
+    fn change_run_preflights_codegraph_before_plan() {
+        // change-plan-agent 被要求 codegraph-first：run_change 必须先建索引（与其他代码类 SOP 同口径）
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = dir.path().join("profiles");
+        for p in crate::server::change_engine::CHANGE_PROFILES {
+            let d = profiles.join(p);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("settings.json"), "{}").unwrap();
+        }
+        let ws = dir.path().join("repo");
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::write(ws.join("src/a.rs"), "// a\n").unwrap();
+        // 假 codegraph：init 时在当前工作区建 .codegraph 标记
+        let bin = dir.path().join("fake-codegraph");
+        std::fs::write(&bin, "#!/bin/sh\nmkdir -p \"$2/.codegraph\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let plans = dir.path().join("plans");
+        let mut engine = BuiltinRpcEngine {
+            profile_root: profiles,
+            session_root: dir.path().join("sessions"),
+            plans_root: plans.clone(),
+            ui: Arc::new(UiRelay::new(Arc::new(EventBus::new()))),
+            codegraph_bin: bin,
+            idle_ms: None,
+        };
+        // 需求故意缺失：preflight 先于需求门，能验到预检且不会 spawn 真 pi
+        let task_root = plans.join("p").join("t");
+        std::fs::create_dir_all(&task_root).unwrap();
+        let mut task = Task::new("t", "p", "change", 1);
+        task.workspace = ws.clone();
+        let run = Run::new("p", "t");
+        let control = RunControl::new();
+        let err = engine.execute(&task, &run, &control).unwrap_err();
+        assert!(err.to_string().contains("requirement.md"), "{err}");
+        assert!(
+            ws.join(".codegraph").exists(),
+            "run_change 必须先做 codegraph 预检（plan agent 依赖图）"
+        );
+    }
+
+    #[test]
     fn dispatch_rejects_unwired_sop() {
         // 注册表与引擎同步性：未知/未接线 SOP 在 execute 入口即拒，不 spawn 任何进程
         let mut engine = BuiltinRpcEngine {

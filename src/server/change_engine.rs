@@ -78,6 +78,8 @@ impl BuiltinRpcEngine {
         for p in CHANGE_PROFILES {
             self.require_profile(p)?;
         }
+        // change-plan-agent 被要求 codegraph-first：索引必须先建（与其他代码类 SOP 同口径）
+        super::preflight_codegraph(&task.workspace, &self.codegraph_bin);
 
         let task_root = self.plans_root.join(&task.project).join(&task.id);
         std::fs::create_dir_all(&task_root).ctx("建任务黑板目录")?;

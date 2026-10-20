@@ -194,11 +194,19 @@ pub fn plan_facts(plan: &str) -> (Vec<String>, Vec<String>) {
     (criteria, whitelist)
 }
 
-/// 审查指令：语义判据 + 注入引擎审计（审查官不得重算）。
-pub fn review_instruction(change_id: &str, audit: &PlanAudit) -> String {
+/// 审查指令：语义判据 + **计划路径与全文** + 注入式引擎审计（审查官不得重算）。
+///
+/// 计划文件在目标仓，而审查子进程的 cwd 是黑板——不给路径和全文，审查官根本读不到计划。
+pub fn review_instruction(
+    change_id: &str,
+    plan_path: &Path,
+    plan_text: &str,
+    audit: &PlanAudit,
+) -> String {
     format!(
         "你是 change-plan-review。审的是**计划**（change-id `{change_id}`），不是代码：\
 不看 diff、不跑验收命令、不写任何文件。\n\n\
+计划文件：`{}`（全文附在下面；你也可用该路径为主张取证）\n\n\
 判据（逐条给结论）：\n\
 1. 影响面完整性：用 codegraph 核对需求涉及的入口/调用方有没有漏；隐式耦合（配置键/表/错误码/序列化）有没有点到。漏关键调用方 = FAIL。\n\
 2. 证据真实：每条影响面带 path:line 且指向真实位置。\n\
@@ -206,8 +214,12 @@ pub fn review_instruction(change_id: &str, audit: &PlanAudit) -> String {
 4. 验收标准可观测：每条能写成「给定输入 → 期望输出」；写「功能正常」这类不可判定的 = FAIL。\n\
 5. 风险诚实：已知耦合、文档与代码不一致、缓存/构建产物有没有写进去。\n\n\
 ## 引擎审计（确定性，勿质疑、勿重算）\n\n{}\n\n\
+## 计划全文（`{}`）\n\n```markdown\n{}\n```\n\n\
 末尾输出协议块：<stage-verdict>PASS|FAIL</stage-verdict> + <next>advance|fix</next> + <issues>（FAIL 时逐条，带 path:line）。",
-        audit.render()
+        plan_path.display(),
+        audit.render(),
+        plan_path.display(),
+        plan_text
     )
 }
 
@@ -311,10 +323,12 @@ mod tests {
     }
 
     #[test]
-    fn review_instruction_carries_audit_and_forbids_rerun() {
+    fn review_instruction_carries_audit_plan_text_and_forbids_rerun() {
         let r = repo();
-        let a = audit(&good_plan(), r.path());
-        let text = review_instruction("change-20261020-x", &a);
+        let plan = good_plan();
+        let a = audit(&plan, r.path());
+        let plan_path = r.path().join("docs/changes/x/change-plan.md");
+        let text = review_instruction("change-20261020-x", &plan_path, &plan, &a);
         for anchor in [
             "不看 diff",
             "不跑验收命令",
@@ -325,5 +339,15 @@ mod tests {
         ] {
             assert!(text.contains(anchor), "审查指令缺锚点：{anchor}");
         }
+        // 审查子进程 cwd 是黑板：不给路径与全文，审查官读不到计划
+        assert!(
+            text.contains(&plan_path.display().to_string()),
+            "审查指令必须给计划路径：{text}"
+        );
+        assert!(text.contains("## 计划全文"), "{text}");
+        assert!(
+            text.contains("给定 x=1 → 返回 2"),
+            "审查指令必须附计划全文：{text}"
+        );
     }
 }

@@ -12,7 +12,7 @@ use crate::change::boundary::{parse_route, replan_instruction, ImpactGap};
 use crate::change::coding_gate::{changed_files, check_baseline_log, check_step_commits, read_steps};
 use crate::change::gate0::DocLevel;
 use crate::change::orchestrator::{ChangeSession, CodingTurn, PlanTurn, TestingTurn};
-use crate::change::plan_audit::{audit_plan_file, review_instruction};
+use crate::change::plan_audit::review_instruction;
 use crate::change::testing_gate::{
     check_regression_log, parse_acceptance_table, REGRESSION_LOG,
 };
@@ -77,13 +77,15 @@ pub fn plan_kickoff(ctx: &ChangeCtx) -> String {
 }
 
 /// 基线轮：只跑既有测试、不写代码（先把“绿不绿”变成事实，再允许动代码）。
-pub fn baseline_kickoff(_ctx: &ChangeCtx) -> String {
+pub fn baseline_kickoff(ctx: &ChangeCtx) -> String {
     format!(
         "你是 change-coding-agent，现在只做基线取证：**不要改任何代码，不要写测试**。\n\
+目标仓：{}（cd 到那里跑测试，不是在黑板目录里跑）\n\
 自己判断这个仓的测试怎么跑（README / CI 配置 / 包管理器），跑一遍既有全套，\n\
-把结果写进 `{}`：第一行 `command: <你跑的命令>`，并且写一行 `exit_code: N`（N 为真实退出码）。\n\
+把结果写进 `{}`（相对黑板）：第一行 `command: <你跑的命令>`，并写一行 `exit_code: N`（真实退出码）。\n\
 然后输出 `<stage-complete>1</stage-complete>`。\n\
 基线红就如实写红——引擎会拦住，不许硬着头皮改代码。",
+        ctx.repo.display(),
         crate::change::coding_gate::BASELINE_LOG
     )
 }
@@ -208,15 +210,19 @@ impl ProdChangeSession {
     fn run_plan_with(&mut self, ui: &mut dyn UserLink, message: &str) -> Result<PlanTurn> {
         let reply = self.plan_agent.converse(message, ui)?;
         require_marker("change-plan-agent", &reply)?;
-        let audit = audit_plan_file(&self.ctx.plan_path(), &self.ctx.repo).map_err(|e| {
-            DevforgeError::Quality(format!(
-                "计划文件不可读（{}）：{e}",
-                self.ctx.plan_path().display()
-            ))
+        // 计划文在目标仓，审查子进程 cwd 是黑板：必须把路径与全文一起给审查官
+        let plan_path = self.ctx.plan_path();
+        let plan_text = std::fs::read_to_string(&plan_path).map_err(|e| {
+            DevforgeError::Quality(format!("计划文件不可读（{}）：{e}", plan_path.display()))
         })?;
+        let audit = crate::change::plan_audit::audit_plan_file(&plan_path, &self.ctx.repo).map_err(
+            |e| {
+                DevforgeError::Quality(format!("计划文件不可读（{}）：{e}", plan_path.display()))
+            },
+        )?;
         let report = review_once(
             &mut *self.plan_review,
-            &review_instruction(&self.ctx.change_id, &audit),
+            &review_instruction(&self.ctx.change_id, &plan_path, &plan_text, &audit),
         )?;
         if report.protocol_violation {
             return Err(DevforgeError::Quality(format!(
@@ -679,6 +685,11 @@ mod tests {
         assert!(
             seen[0].contains("不要改任何代码") && seen[0].contains("baseline-test.log"),
             "第一轮必须先要基线证据：{}",
+            seen[0]
+        );
+        assert!(
+            seen[0].contains(&f.ctx.repo.display().to_string()),
+            "基线轮必须把目标仓告诉 agent（else 会在黑板目录里跑测试）：{}",
             seen[0]
         );
         assert!(seen[1].contains("impl-steps"), "第二轮才是真实 coding：{}", seen[1]);
