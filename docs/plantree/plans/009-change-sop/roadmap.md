@@ -14,17 +14,19 @@
 
 ## Phase A · plan（本次的重点）
 
-- [ ] **(T004) `change-plan` profile**——deepseek-flash + codegraph MCP + plan 系列技能；与 `plan-agent` 平行不干扰。
-- [ ] **(T005) `change-review` profile**——plan-review 基础上加 codegraph（用来核对影响面证据是否真实存在）。
-- [ ] **(T006) 提示词：六块产出**——需求复述/影响面/三张表/边界/验收命令/风险；影响面每条必须 `path:line`。
-  - 验收：提示词锚点单测（六块标题 + codegraph-first + 白名单 + 验收命令）。
-- [ ] **(T007) 审查判据**——影响面无 codegraph 证据 = FAIL；边界与影响面不自洽 = FAIL；验收命令审查官必须亲自跑一遍。
-  - 验收：三条反向用例各有一条单测（故意缺证据 / 边界漏文件 / 命令跑不过 → 必须 FAIL）。
+- [ ] **(T004) `change-plan-agent` profile**——deepseek-flash + codegraph MCP + `plan-tree` 技能；与 `plan-agent` 平行不干扰。
+- [ ] **(T005) `change-plan-review` profile**——grok-4.7 + codegraph（核调用关系）+ `plan-tree`；与 `plan-review` 平行。
+- [ ] **(T006) 提示词：六块产出**——需求复述/影响面/三张表/边界/验收命令/风险；影响面每条必须 `path:line`；允许跑只读命令并落 `evidence/baseline-test.log`。
+  - 验收：提示词锚点单测（六块标题 + codegraph-first + 白名单 + 验收命令 + 基线证据）。
+- [ ] **(T007) 审查判据（只审计划）**——影响面无证据 = FAIL；影响面漏掉需求涉及的入口/调用方 = FAIL；验收条目不可观测 = FAIL；验收命令**只读不跑**，判「写得够不够具体」。
+  - 验收：三条反向用例各一条单测（缺证据 / 漏调用方 / 验收条目写“功能正常”）。
+- [ ] **(T007b) 引擎侧计划审计**——`path:line` 存在性、白名单路径存在性、「要改的」⊆ 白名单，机械输出注入审查（审查官不重算）。
+  - 验收：故意写一个不存在的路径 → 审计里必须逐条列出。
 - [ ] **(T008) plan 阶段端到端**——真实小需求跑通 plan，产出六块齐全、审查 PASS。
 
 ## Phase B · coding 门
 
-- [ ] **(T009) 越界二分与往返**——coding 完成后引擎算 diff 对白名单：全内 → testing；越界且 agent 已 `<route>plan</route>` + `<impact-gap>`（文件/理由/证据）→ 打回 plan 补边界（增量过审后重进 coding）；越界无申报 → FAIL（范围膨胀）。
+- [ ] **(T009) 越界二分与往返**——coding 完成后引擎算 diff 对白名单：全内 → testing；越界且 agent 已 `<route>plan</route>` + `<impact-gap>`（文件/理由/证据）→ 打回 plan 补边界（`change-plan-review` 只审增量，仍不看代码）→ 重进 coding；越界无申报 → FAIL（范围膨胀）。
   - 验收：两个反向用例各一条单测——故意改白名单外且不申报 → FAIL；故意改白名单外但带 impact-gap → 回 plan 且白名单被追加。
 - [ ] **(T013) change 编排器**——不要照搬 `run_coding`：它有基线、有 plan 产出、允许 coding → plan 的**反向回退**；往返计数上限 3，每次写 `docs/plantree/changes/<change-id>/history.md`。
   - 验收：单测能重现「coding → route plan → 改边界 → 重进 coding」全回路；第 4 次往返必须停下并报错。
