@@ -6,6 +6,7 @@
 //! - [`domain`]：三层对象模型与串行执行循环（P004）
 
 pub mod config;
+pub mod change;
 pub mod docgen;
 pub mod domain;
 pub mod engine;
