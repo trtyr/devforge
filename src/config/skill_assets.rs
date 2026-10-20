@@ -9,12 +9,17 @@ pub const PLAN_TREE_SKILL_MD: &str = include_str!("../../assets/skills/plan-tree
 /// 内置 doc-contract skill 正文（P008 T000a：跨 SOP 共用的文档契约）。
 pub const DOC_CONTRACT_SKILL_MD: &str = include_str!("../../assets/skills/doc-contract/SKILL.md");
 
+/// 内置 coding-discipline skill 正文（工程纪律唯一事实源：pstack 24 条蒸馏成 12 条）。
+pub const CODING_DISCIPLINE_SKILL_MD: &str =
+    include_str!("../../assets/skills/coding-discipline/SKILL.md");
+
 /// 返回内置 skill 的文件清单（相对 skill 目录的路径 → 文件内容）。
 /// 未收录的 skill 返回 None（调用方回落占位行为）。
 pub fn builtin_skill_files(skill: &str) -> Option<Vec<(&'static str, &'static str)>> {
     match skill {
         "plan-tree" => Some(vec![("SKILL.md", PLAN_TREE_SKILL_MD)]),
         "doc-contract" => Some(vec![("SKILL.md", DOC_CONTRACT_SKILL_MD)]),
+        "coding-discipline" => Some(vec![("SKILL.md", CODING_DISCIPLINE_SKILL_MD)]),
         other => builtin_language_files(other),
     }
 }
@@ -143,6 +148,65 @@ mod tests {
     #[test]
     fn unknown_skill_returns_none() {
         assert!(builtin_skill_files("ghost").is_none());
+    }
+
+    #[test]
+    fn coding_discipline_skill_is_registered_with_pi_loadable_frontmatter() {
+        // 供给纪律：内置资产必须真落内容（无 skills_source 时 profile 也要拿到真东西）
+        let files = builtin_skill_files("coding-discipline").expect("coding-discipline 应有内置资产");
+        assert!(files.iter().any(|(name, _)| *name == "SKILL.md"));
+        let (_, body) = files.iter().find(|(name, _)| *name == "SKILL.md").unwrap();
+        // pi skill 加载契约：frontmatter 缺 description → skill 根本不加载（等于没装）
+        assert!(body.starts_with("---"), "需带 frontmatter 供 skill 加载器识别");
+        assert!(body.contains("name: coding-discipline"));
+        let desc = body
+            .lines()
+            .find(|l| l.trim_start().starts_with("description:"))
+            .expect("frontmatter 需有 description");
+        let desc_value = desc.trim().trim_start_matches("description:").trim();
+        assert!(!desc_value.is_empty(), "description 不得为空（空则 pi 不加载该 skill）");
+        // disable-model-invocation 为真 → 该 skill 被排除出系统提示的技能清单（agent 看不见）
+        assert!(
+            !body.contains("disable-model-invocation: true"),
+            "不得设 disable-model-invocation: true——coding agent 没有按名路由的层"
+        );
+    }
+
+    #[test]
+    fn coding_discipline_skill_carries_twelve_entries_with_counterexamples_and_evidence() {
+        let files = builtin_skill_files("coding-discipline").unwrap();
+        let (_, body) = files.iter().find(|(name, _)| *name == "SKILL.md").unwrap();
+        // 12 条纪律条目，每条都要有「反例」与「证据形态」两节
+        for anchor in [
+            "行为断言",
+            "先证后报",
+            "减法优先",
+            "最小 diff",
+            "根因",
+            "边界收口",
+            "类型纪律",
+            "读者负担",
+            "上下文守护",
+            "不阻塞人类",
+            "可验证单元",
+            "幂等",
+        ] {
+            assert!(body.contains(anchor), "纪律正文缺条目：{anchor}");
+        }
+        assert!(
+            body.matches("- **反例**：").count() >= 12,
+            "每条纪律都要有反例节，实得 {}",
+            body.matches("- **反例**：").count()
+        );
+        assert!(
+            body.matches("- **证据形态**：").count() >= 12,
+            "每条纪律都要有证据形态节，实得 {}",
+            body.matches("- **证据形态**：").count()
+        );
+        // 来源与许可登记（蒸馏改写，保留 MIT 归属）
+        for s in ["cursor/plugins/pstack", "MIT", "Lauren Tan"] {
+            assert!(body.contains(s), "缺来源/许可登记：{s}");
+        }
     }
 
     #[test]
