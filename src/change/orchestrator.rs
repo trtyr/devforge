@@ -129,6 +129,13 @@ pub fn run<S: ChangeSession>(run: ChangeRun<'_>, session: &mut S) -> Result<Chan
                     let next = state.roundtrips + 1;
                     boundary::check_roundtrip(next)?;
                     state.bump_roundtrip();
+                    // 每次回退都落历史（T013：事后能看出边界是怎么被撑大的）
+                    crate::change::history::append_roundtrip(
+                        run.repo,
+                        run.change_id,
+                        state.roundtrips,
+                        &gaps,
+                    )?;
                     boundary::merge_gaps_into_whitelist(&mut whitelist, &gaps);
                     match session.amend_plan(&gaps, state.roundtrips)? {
                         PlanTurn::Pass => {
@@ -375,6 +382,13 @@ mod tests {
         // 断点里往返计数已落盘
         let saved = load(&st, "change-20261020-x", "base123");
         assert_eq!(saved.roundtrips, 1);
+        // 往返历史已写进目标仓（T013）
+        let hist = std::fs::read_to_string(crate::change::history::history_path(
+            tmp.path(),
+            "change-20261020-x",
+        ))
+        .unwrap();
+        assert!(hist.contains("src/extra.rs"), "history 应记下越界文件：{hist}");
     }
 
     #[test]

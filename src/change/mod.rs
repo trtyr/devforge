@@ -12,6 +12,7 @@ pub mod change_id;
 pub mod coding_gate;
 pub mod docs;
 pub mod gate0;
+pub mod history;
 pub mod orchestrator;
 pub mod plan_audit;
 pub mod report;
@@ -26,6 +27,7 @@ pub use change_id::{assign_change_id, change_root, make_change_id, slugify, vali
 pub use coding_gate::{check_baseline_log, check_step_commits, read_steps};
 pub use docs::{DocAction, apply as apply_doc_level, essential_ready};
 pub use gate0::{Baseline, DocLevel, ensure_baseline};
+pub use history::{append_roundtrip, history_path};
 pub use orchestrator::{
     ChangeOutcome, ChangeRun, ChangeSession, CodingTurn, PlanTurn, TestingTurn, run as run_change,
 };
