@@ -471,6 +471,20 @@ mod tests {
     }
 
     #[test]
+    fn decision_ledger_registers_d023() {
+        // 决策台账同步（D023）：纪律供给口径 + change 路径的先证后报机械门 + 门只落 change 路径。
+        // 放在本文件：白名单内不得新增测试文件，而本变更的门与该决策同源。
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/plantree/plans/009-change-sop/decisions/README.md");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("决策台账不可读：{}", path.display()));
+        assert!(text.contains("D023"), "台账未登记 D023");
+        for anchor in ["coding-discipline", "evidence/self-check.log", "只落 change 路径"] {
+            assert!(text.contains(anchor), "D023 缺登记点：{anchor}");
+        }
+    }
+
+    #[test]
     fn self_check_and_baseline_logs_are_independent_files() {
         // 两道门各读各的文件：基线绿不代表自证绿，自证绿也不代表基线绿
         let tmp = tempfile::tempdir().unwrap();

@@ -155,3 +155,10 @@
 **为什么**：checkpoint 是**运行进度**，不是交付物；跟着目标仓走会让“同一 change 换会话接着做”失真，也会被清理产物的操作连带删掉（文档 SOP 已实测踩过一次）。
 **影响**：P009 T011b（checkpoint + resume）的落点改为黑板；续跑语义、证据复核、故障重启统一按 plan 010 执行，本 SOP 只声明自己的状态扩展段与 done 证据。
 **拍板**：用户 2026-10-20。
+
+## D023 · 工程纪律 skill 的供给口径 + change 路径的「先证后报」机械门
+
+**决定**：①pstack 的 24 条 principle **蒸馏成一份**工程纪律 skill（`assets/skills/coding-discipline/SKILL.md`，采纳 12 条，每条含触发时机 / 规则 / 反例 / 证据形态），随 profile 分发给**四个** coding/review Agent（`coding-agent` / `coding-review` / `change-coding-agent` / `change-coding-review`），其余十一个 Agent 不给；②change 路径新增一道「先证后报」机械门（黑板 `evidence/self-check.log` 存在 + 退出码为 0，形状与既有 baseline 门一致，失败即 Quality、不自动重问 Agent）；③机械门**只落 change 路径**，MVP 黑板路径不接门。
+**为什么**：①纪律只有一份才不漂移——原样 vendor 24 份会让 profile 膨胀，且 pstack 的 principle skill 靠 `poteto-mode` 按名路由，本仓 coding agent 没有这层路由（skill 必须留在系统提示的技能清单里才能被按需加载：frontmatter 要有非空 `description`，且**不设** `disable-model-invocation: true`）；②纪律光写没人查等于白写——「先证后报」里能机械判的那部分（证据存在 + 退出码为 0）下沉成门，与仓内「厚 Agent、薄编排」一致；③MVP 的 `CodingSopLoop::run` 未进黑板路径（`src/sop/coding.rs:113`），加门要动编排 API，本次只治理 live 的 change 路径。
+**影响**：四份 coding/review 提示词按各自现状分别改（只引用 skill，不复述既有条款，避免口径冲突）；change coding 轮多一道机械门（kickoff 与审查指令写清证据路径与写法，审查侧核对证据与本轮 diff）；新文件 `assets/skills/coding-discipline/SKILL.md` 是 `src/config/skill_assets.rs` 的编译期依赖，必须与注册改动同一次提交落地。
+**拍板**：计划 `change-20261020-backnotprop-pstack-github-ai-skills-home`（2026-10-20）。
