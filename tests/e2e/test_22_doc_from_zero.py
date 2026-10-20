@@ -207,6 +207,8 @@ def main() -> int:
                 text = report.read_text(encoding="utf-8")
                 r.check("审查轮次" in text, "账单含审查轮次")
                 r.check("单元完成" in text, "账单含完成单元")
+                r.check("墙钟" in text, "账单含墙钟（t12 契约）")
+                r.check("用量" in text and "tokens" in text, "账单含 token 用量（会话账，非 Agent 自述）")
 
         # 会话取证：干活方与审查方都真跑过
         r.check(newest_session_bytes(server, "doc") > 0, "doc-agent 会话有内容")

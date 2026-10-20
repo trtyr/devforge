@@ -394,6 +394,7 @@ impl BuiltinRpcEngine {
 
     /// doc-from-zero SOP（P008）：门 0（清单 + 闭包 + 单元）→ DocSopLoop 逐单元滚动。
     fn run_doc_from_zero(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
+        let started = std::time::Instant::now();
         self.require_profile("doc-agent")?;
         self.require_profile("doc-review")?;
         if task.workspace.as_os_str().is_empty() {
@@ -580,14 +581,33 @@ impl BuiltinRpcEngine {
                 drop(session);
                 let verdict = crate::sop::doc_protocol::parse_doc_review(&final_text)?;
 
-                // 运行账单（t12）：墙钟/单元/轮次/问题数落 _meta/runs/<run-id>/
+                // 运行账单（T021 验收）：墙钟 / 单元数 / 模块数 / 审查轮次 / token 与花费
+                // token 不从 Agent 自述拿，而是扫写方与审方会话（pi 自己写的原始账）。
+                let usage = crate::docgen::usage::from_session_dirs(&[
+                    self.session_root.join("doc"),
+                    self.session_root.join("doc-reviews"),
+                ]);
+                let module_count = final_inv
+                    .entries
+                    .iter()
+                    .filter(|e| e.kind == crate::docgen::inventory::EntryKind::Module)
+                    .count();
                 let dir = docs.join("_meta/runs").join(&final_run_id);
                 let _ = std::fs::create_dir_all(&dir);
                 let _ = std::fs::write(
                     dir.join("report.md"),
                     format!(
-                        "# doc-from-zero 运行报告\n\n- run: {}\n- 单元完成: {:?}\n- 审查轮次: {}\n- 累计问题: {}\n- 终审: {:?}\n\n## 终审审计\n\n{}\n",
-                        final_run_id, report.units_done, report.review_rounds, report.issues_total, verdict.verdict, full
+                        "# doc-from-zero 运行报告\n\n- run: {}\n- 墙钟: {}s\n- 模块数: {} / 单元数: {}\n- 单元完成: {:?}\n- 审查轮次: {}\n- 累计问题: {}\n- 用量: {}\n- 终审: {:?}\n\n## 终审审计\n\n{}\n",
+                        final_run_id,
+                        started.elapsed().as_secs(),
+                        module_count,
+                        report.units_done.len(),
+                        report.units_done,
+                        report.review_rounds,
+                        report.issues_total,
+                        usage.render(),
+                        verdict.verdict,
+                        full
                     ),
                 );
 

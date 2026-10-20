@@ -6,3 +6,4 @@
 pub mod audit;
 pub mod inventory;
 pub mod lint;
+pub mod usage;
