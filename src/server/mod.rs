@@ -534,6 +534,8 @@ impl BuiltinRpcEngine {
 
         // 增量（D021）：显式开关 + 状态里的 base_sha；失败一律降级全量并记日志。
         let mut run_units = plan.to_run.clone();
+        // T009：报告要记录尝试次数（run_with_retry 在重启前把 rs.attempt 落盘；首次为 1）
+        let attempt_now = loaded.state().map(|s| s.attempt).unwrap_or(0).max(1);
         if let crate::sop::doc_incremental::Mode::Incremental { base } = &mode {
             match crate::docgen::impact::changed_since(&workspace, base) {
                 Ok(changes) if changes.is_empty() => {
@@ -723,9 +725,10 @@ impl BuiltinRpcEngine {
                 let _ = std::fs::write(
                     dir.join("report.md"),
                     format!(
-                        "# doc-from-zero 运行报告\n\n- run: {}\n- 墙钟: {}s\n- 模块数: {} / 单元数: {}\n- 单元完成: {:?}\n- 审查轮次: {}\n- 累计问题: {}\n- 用量: {}\n- 终审: {:?}\n\n## 终审审计\n\n{}\n",
+                        "# doc-from-zero 运行报告\n\n- run: {}\n- 墙钟: {}s\n- 尝试: {}（1 = 首次；>1 含自动重启）\n- 模块数: {} / 单元数: {}\n- 单元完成: {:?}\n- 审查轮次: {}\n- 累计问题: {}\n- 用量: {}\n- 终审: {:?}\n\n## 终审审计\n\n{}\n",
                         final_run_id,
                         started.elapsed().as_secs(),
+                        attempt_now,
                         module_count,
                         report.units_done.len(),
                         report.units_done,
