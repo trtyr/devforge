@@ -10,6 +10,7 @@ fixture：一个**无文档、无 git 历史**的小 Python 仓（入口 + 两�
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
