@@ -20,6 +20,9 @@ use crate::sop::planning::UserLink;
 /// 测试阶段失败后回注 coding 的防御性上限（决策只给了 plan↔coding 的 3 次；这里防止死循环）。
 pub const MAX_TEST_REROUTES: usize = 3;
 
+/// plan 阶段审查打回后的修复上限（对齐 MVP 规划的重审节奏；超限 = 计划质量问题，不自动重启）。
+pub const MAX_PLAN_FIXES: usize = 3;
+
 /// 计划阶段结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanTurn {
@@ -63,6 +66,13 @@ pub trait ChangeSession {
         ui: &mut dyn UserLink,
         gaps: &[ImpactGap],
         roundtrip: usize,
+    ) -> Result<PlanTurn>;
+    /// 审查打回 plan：把问题清单回注，plan agent 重写计划后重审。
+    fn fix_plan(
+        &mut self,
+        ui: &mut dyn UserLink,
+        issues: &[String],
+        round: usize,
     ) -> Result<PlanTurn>;
     /// 跑 coding（含按步提交）。
     fn run_coding(&mut self, ui: &mut dyn UserLink, roundtrip: usize) -> Result<CodingTurn>;
@@ -119,25 +129,40 @@ pub fn run<S: ChangeSession>(
     let mut criteria = run.criteria.clone();
 
     // ---- plan ----
+    // 打回-修复循环（对齐 MVP 规划）：审查 FAIL 回注重写重审，有界；超限才 Quality
     if matches!(state.phase, ChangePhase::Plan) {
-        match session.run_plan(ui, state.roundtrips)? {
-            PlanTurn::Pass => {
-                state.review_rounds += session.plan_reviews();
-                let (c, w) = session.plan_facts()?;
-                if !c.is_empty() {
-                    criteria = c;
+        let mut issues: Vec<String> = Vec::new();
+        let mut fix_round = 0usize;
+        loop {
+            let turn = if fix_round == 0 {
+                session.run_plan(ui, state.roundtrips)?
+            } else {
+                session.fix_plan(ui, &issues, fix_round)?
+            };
+            state.review_rounds += session.plan_reviews();
+            match turn {
+                PlanTurn::Pass => {
+                    let (c, w) = session.plan_facts()?;
+                    if !c.is_empty() {
+                        criteria = c;
+                    }
+                    if !w.is_empty() {
+                        whitelist = w;
+                    }
+                    state.phase = ChangePhase::Coding;
+                    save(run.store, &state)?;
+                    break;
                 }
-                if !w.is_empty() {
-                    whitelist = w;
+                PlanTurn::Fail { issues: next } => {
+                    fix_round += 1;
+                    if fix_round > MAX_PLAN_FIXES {
+                        return Err(DevforgeError::Quality(format!(
+                            "计划审查连续 {fix_round} 轮未通过（上限 {MAX_PLAN_FIXES} 轮修复）：{}",
+                            next.join("；")
+                        )));
+                    }
+                    issues = next;
                 }
-                state.phase = ChangePhase::Coding;
-                save(run.store, &state)?;
-            }
-            PlanTurn::Fail { issues } => {
-                return Err(DevforgeError::Quality(format!(
-                    "计划审查未通过：{}",
-                    issues.join("；")
-                )));
             }
         }
     }
@@ -303,6 +328,7 @@ mod tests {
     /// 脚本化 session：按队列吐出各阶段结果，并记录调用序列。
     struct Scripted {
         plans: VecDeque<PlanTurn>,
+        fix_plans: VecDeque<PlanTurn>,
         amends: VecDeque<PlanTurn>,
         codings: VecDeque<CodingTurn>,
         testings: VecDeque<TestingTurn>,
@@ -315,6 +341,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 plans: VecDeque::new(),
+                fix_plans: VecDeque::new(),
                 amends: VecDeque::new(),
                 codings: VecDeque::new(),
                 testings: VecDeque::new(),
@@ -338,6 +365,16 @@ mod tests {
         ) -> Result<PlanTurn> {
             self.log.push(format!("amend(rt={rt},gaps={})", gaps.len()));
             Ok(self.amends.pop_front().expect("amend 脚本耗尽"))
+        }
+        fn fix_plan(
+            &mut self,
+            _ui: &mut dyn crate::sop::planning::UserLink,
+            issues: &[String],
+            round: usize,
+        ) -> Result<PlanTurn> {
+            self.log
+                .push(format!("fix(rt={round},issues={})", issues.len()));
+            Ok(self.fix_plans.pop_front().expect("fix_plan 脚本耗尽"))
         }
         fn plan_reviews(&self) -> usize {
             self.plan_review_count
@@ -707,10 +744,57 @@ mod tests {
         session.plans.push_back(PlanTurn::Fail {
             issues: vec!["影响面缺调用方".into()],
         });
+        // 修复上限 3 轮：连续 4 次 FAIL 才 Quality
+        for _ in 0..MAX_PLAN_FIXES {
+            session.fix_plans.push_back(PlanTurn::Fail {
+                issues: vec!["仍缺".into()],
+            });
+        }
         let mut ui = NoUser;
         let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x"]), &mut session, &mut ui)
             .unwrap_err();
-        assert!(err.to_string().contains("计划审查未通过"), "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains("连续 4 轮未通过"), "{msg}");
         assert!(err.is_quality_failure());
+        assert_eq!(
+            session
+                .log
+                .iter()
+                .filter(|l| l.starts_with("fix("))
+                .count(),
+            MAX_PLAN_FIXES,
+            "修复循环恰好 3 轮：{:?}",
+            session.log
+        );
+    }
+
+    #[test]
+    fn plan_fix_loop_recovers_after_one_rejection() {
+        // 打回一次 → 回注重写重审 → PASS → 正常进 coding（对齐 MVP 规划循环）
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        let mut session = Scripted::new();
+        session.plan_review_count = 1;
+        session.plans.push_back(PlanTurn::Fail {
+            issues: vec!["path:line 要全路径".into()],
+        });
+        session.fix_plans.push_back(PlanTurn::Pass);
+        session.codings.push_back(in_boundary());
+        session.testings.push_back(pass_testing());
+        let mut ui = NoUser;
+        let out = run(
+            cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]),
+            &mut session,
+            &mut ui,
+        )
+        .unwrap();
+        assert_eq!(
+            session.log[0],
+            "plan(rt=0)",
+            "首跑是 plan，第二跳才是 fix：{:?}",
+            session.log
+        );
+        assert!(session.log[1].starts_with("fix(rt=1"), "{log:?}", log = session.log);
+        assert_eq!(out.report.review_rounds, 4, "plan 段两轮 + coding + testing");
     }
 }

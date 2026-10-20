@@ -260,6 +260,27 @@ impl ChangeSession for ProdChangeSession {
         self.run_plan_with(ui, &message)
     }
 
+    fn fix_plan(
+        &mut self,
+        ui: &mut dyn UserLink,
+        issues: &[String],
+        round: usize,
+    ) -> Result<PlanTurn> {
+        let message = format!(
+            "计划审查第 {round} 轮打回，逐条修复计划文件 `{}` 后重交：\n{}\n\n\
+             只改计划文件本身（补全 path:line 全路径、补缺失块、修验收标准）；\
+             改完输出 <stage-complete>1</stage-complete> 等重审。",
+            self.ctx.plan_path().display(),
+            issues
+                .iter()
+                .enumerate()
+                .map(|(i, s)| format!("{}. {}", i + 1, s))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        self.run_plan_with(ui, &message)
+    }
+
     fn run_coding(&mut self, ui: &mut dyn UserLink, _roundtrip: usize) -> Result<CodingTurn> {
         // ① 基线轮：先让 agent 只跑既有测试写证据（此时还没允许改代码）
         let baseline_reply = self.coding_agent.converse(&baseline_kickoff(&self.ctx), ui)?;
