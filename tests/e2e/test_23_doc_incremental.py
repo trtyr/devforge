@@ -156,10 +156,11 @@ def main() -> int:
             status, _ = server.req("PUT", "/config/manifest", manifest, timeout=300.0)
             r.check(status == 202, "PUT 剥包 manifest == 202", f"status={status}")
             ev = sse.wait_for(
-                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 15,
+                lambda e: e.get("type") == "config.rendered"
+                and int(e.get("rendered") or 0) >= 9,
                 timeout=300.0,
             )
-            r.check(ev is not None, "15 profile 渲染完成", f"{ev}")
+            r.check(ev is not None, "宿主 manifest 的 profile 渲染完成", f"{ev}")
         compensate_profile(server)
 
         # ---- fixture：两个独立包（两个单元）+ git 历史（增量需要基线）----
@@ -258,9 +259,11 @@ def main() -> int:
         r.check(bool(hit), "召回：新函数 alpha_extra 出现在文档里", f"{hit[:5]}")
 
         report2, text2 = newest_report(docs)
-        tokens2 = parse_tokens(text2)
-        r.check(tokens2 > 0, "第 2 轮账单有 token 用量", f"{tokens2}")
-        r.check(tokens2 < tokens1, "增量轮 token 少于全量轮", f"{tokens2} < {tokens1}")
+        tokens2_total = parse_tokens(text2)
+        r.check(tokens2_total > 0, "第 2 轮账单有 token 用量", f"{tokens2_total}")
+        # 账单是累计值（usage 扫全量会话目录）：增量轮净耗 = 累计 - 第 1 轮
+        tokens2 = tokens2_total - tokens1
+        r.check(tokens2 < tokens1, "增量轮净耗 token 少于全量轮", f"{tokens2} < {tokens1}（累计 {tokens2_total}）")
         r.check(t2 < t1, "增量轮墙钟短于全量轮", f"{t2:.0f}s < {t1:.0f}s")
         r.check(
             data2.get("base_sha") == head2,

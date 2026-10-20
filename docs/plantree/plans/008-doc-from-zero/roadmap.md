@@ -62,7 +62,7 @@
   - 落地：`src/docgen/impact.rs`（commit `e866cbc`）；实现改为 **git diff + 清单实体差集 + 全仓词边界引用传播**（D021 拍板），不依赖 codegraph 索引；6 条单测覆盖「只命中自身/引用方必进/无关不进/汇编标记」。
 - [x] **(T024) 选择性重生成 + 一致性校验** — 只重写受影响单元；链接/图/父文档复核。
   - 落地：`src/sop/doc_incremental.rs` + `run_doc_from_zero` 接线（commit `f20cbda`）；开工前摘 done、只派受影响单元，汇编页引用/词表/清单做机械一致性校验，`base_sha` 仅在终审 PASS 后推进；10 条单测。
-- [ ] **(T025) 增量实证** — 同一仓两次提交，报告时间/token 节省与更新召回。
+- [x] **(T025) 增量实证** — 同一仓两次提交，报告时间/token 节省与更新召回。（证据：`evidence/t025-incremental.md`：增量轮墙钟 500s vs 全量 1010s，净耗 token ≈481 万 vs 968 万，受影响集合与人工判断一致，beta 产物字节不动，`alpha_extra` 召回 5 篇）
 
 ## Milestones
 
