@@ -112,22 +112,33 @@ def main() -> int:
             f"{compensated}",
         )
 
-        # ---- fixture：无文档、无 git 的仓 ----
-        repo = server.home / "workspace" / "book-app"
-        (repo / "booklib").mkdir(parents=True, exist_ok=True)
-        (repo / "main.py").write_text(ENTRY_PY, encoding="utf-8")
-        (repo / "booklib" / "__init__.py").write_text("", encoding="utf-8")
-        (repo / "booklib" / "core.py").write_text(CORE_PY, encoding="utf-8")
-        r.check(not (repo / "docs").exists(), "fixture 初始无文档")
-        r.check(not (repo / ".git").exists(), "fixture 初始无 git 历史")
+        # ---- 目标仓：默认用受控 fixture；DOC_TARGET_REPO 指向真实仓时直接跑真仓 ----
+        external = os.environ.get("DOC_TARGET_REPO")
+        if external:
+            repo = Path(external).resolve()
+            r.check(repo.is_dir(), f"目标仓存在（{repo}）")
+            r.check(
+                not (repo / "docs" / "contexts").exists(),
+                "目标仓初始无 docs/contexts（不覆盖旧文档）",
+            )
+            project_name = repo.name
+        else:
+            repo = server.home / "workspace" / "book-app"
+            (repo / "booklib").mkdir(parents=True, exist_ok=True)
+            (repo / "main.py").write_text(ENTRY_PY, encoding="utf-8")
+            (repo / "booklib" / "__init__.py").write_text("", encoding="utf-8")
+            (repo / "booklib" / "core.py").write_text(CORE_PY, encoding="utf-8")
+            r.check(not (repo / "docs").exists(), "fixture 初始无文档")
+            r.check(not (repo / ".git").exists(), "fixture 初始无 git 历史")
+            project_name = "book-app"
 
         status, _ = server.req(
-            "POST", "/projects", {"name": "book-app", "local_path": str(repo)}
+            "POST", "/projects", {"name": project_name, "local_path": str(repo)}
         )
-        r.check(status == 201, "项目 book-app 创建", f"status={status}")
+        r.check(status == 201, f"项目 {project_name} 创建", f"status={status}")
         status, body = server.req(
             "POST",
-            "/projects/book-app/tasks",
+            "/projects/{}/tasks".format(project_name),
             {"id": "d1", "sop": "doc-from-zero"},
         )
         r.check(status == 201, "任务 d1（sop=doc-from-zero）创建", f"status={status}, body={body}")
@@ -136,14 +147,18 @@ def main() -> int:
         with SseStream(server) as sse:
             autopilot = UiAutoPilot(server, sse, default_answer="继续")
             autopilot.start()
-            status, _ = server.req("POST", "/projects/book-app/tasks/d1/start", None)
+            status, _ = server.req(
+                "POST", f"/projects/{project_name}/tasks/d1/start", None
+            )
             r.check(status == 202, "start doc-from-zero == 202", f"status={status}")
 
             t0 = time.time()
             growth: list[tuple[int, int]] = []
             final = None
             while time.time() - t0 < DOC_TIMEOUT:
-                _, runs_body = server.req("GET", "/projects/book-app/tasks/d1/runs")
+                _, runs_body = server.req(
+                    "GET", f"/projects/{project_name}/tasks/d1/runs"
+                )
                 runs = runs_body.get("runs", [])
                 if runs and runs[-1]["status"] in ("Settled", "Failed"):
                     final = runs[-1]["status"]
@@ -176,7 +191,7 @@ def main() -> int:
         inv = json.loads(inv_path.read_text(encoding="utf-8")) if inv_path.exists() else {}
         entries = inv.get("entries", [])
         modules = [e for e in entries if e.get("kind") == "module"]
-        r.check(len(modules) >= 3, f"清单含 fixture 的模块条目（{len(modules)}）")
+        r.check(len(modules) >= 3, f"清单含目标仓的模块条目（{len(modules)}）")
         r.check(
             all(e.get("unit_id") for e in modules),
             "清单：每个 module 都有单元编号（D020）",
