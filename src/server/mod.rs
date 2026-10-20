@@ -653,7 +653,7 @@ impl BuiltinRpcEngine {
                 );
 
                 if verdict.protocol_violation {
-                    return Err(crate::error::DevforgeError::System(format!(
+                    return Err(crate::error::DevforgeError::Quality(format!(
                         "终审输出协议违例：{}",
                         verdict.issues.join("；")
                     )));
@@ -661,7 +661,7 @@ impl BuiltinRpcEngine {
                 match verdict.verdict {
                     crate::sop::doc_protocol::DocVerdict::Pass => Ok(report),
                     crate::sop::doc_protocol::DocVerdict::Fail => {
-                        Err(crate::error::DevforgeError::System(format!(
+                        Err(crate::error::DevforgeError::Quality(format!(
                             "终审未通过（route={}）：{}",
                             verdict.route.as_str(),
                             verdict.issues.join("；")

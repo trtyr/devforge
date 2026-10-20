@@ -19,11 +19,12 @@ use tokio_stream::StreamExt as _;
 use std::sync::{Arc, Mutex};
 
 /// 测试引擎：立刻完成并记录调用；hang_ms>0 时模拟长 run（响应取消/超时干预）；
-/// fail_system_times>0 时先抛 N 次基础设施故障（验证自动重启）。
+/// fail_system_times>0 时先抛 N 次基础设施故障（验证自动重启）；quality_fail 时直接抛质量失败。
 struct MockEngine {
     calls: Arc<Mutex<Vec<String>>>,
     hang_ms: u64,
     fail_system_times: Arc<Mutex<u32>>,
+    quality_fail: bool,
 }
 impl RunEngine for MockEngine {
     fn execute(&mut self, task: &Task, _run: &Run, control: &RunControl) -> Result<RunOutcome> {
@@ -31,6 +32,11 @@ impl RunEngine for MockEngine {
             .lock()
             .unwrap()
             .push(format!("{}/{}", task.project, task.id));
+        if self.quality_fail {
+            return Err(crate::error::DevforgeError::Quality(
+                "终审未通过（route=finish）：文档与代码不一致".into(),
+            ));
+        }
         {
             let mut left = self.fail_system_times.lock().unwrap();
             if *left > 0 {
@@ -78,12 +84,17 @@ fn fixture_with_token(token: Option<&str>) -> Fixture {
 
 /// 可注入长 run / 超时的夹具变体（取消与超时单测用）。
 fn fixture_with_engine(hang_ms: u64, timeout_ms: Option<u64>, token: Option<&str>) -> Fixture {
-    fixture_full(hang_ms, timeout_ms, token, 0)
+    fixture_full(hang_ms, timeout_ms, token, 0, false)
 }
 
 /// 可注入基础设施故障次数的夹具变体（续跑/自动重启单测用）。
 fn fixture_with_failures(fail_system_times: u32) -> Fixture {
-    fixture_full(0, None, None, fail_system_times)
+    fixture_full(0, None, None, fail_system_times, false)
+}
+
+/// 质量失败（审查打回/终审不通过）的夹具：不得被自动重启。
+fn fixture_with_quality_failure() -> Fixture {
+    fixture_full(0, None, None, 0, true)
 }
 
 fn fixture_full(
@@ -91,6 +102,7 @@ fn fixture_full(
     timeout_ms: Option<u64>,
     token: Option<&str>,
     fail_system_times: u32,
+    quality_fail: bool,
 ) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -101,6 +113,7 @@ fn fixture_full(
             calls: calls2.clone(),
             hang_ms,
             fail_system_times: failures.clone(),
+            quality_fail,
         })
     });
     let bus = std::sync::Arc::new(crate::server::EventBus::new());
@@ -409,6 +422,72 @@ async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
         ),
         "不得动其他 SOP 的断点"
     );
+}
+
+#[tokio::test]
+async fn quality_failure_path_is_not_retried_end_to_end() {
+    // 走真实 run 路径（不是直接喂给 map_intervention）：引擎报 Quality → 一次就 Failed，attempt 恒为 1
+    let f = fixture_with_quality_failure();
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t", "sop": "doc-from-zero"})),
+    )
+    .await;
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    assert_eq!(resp.status(), 202);
+    wait_settled(&f, "p", "t").await;
+
+    assert_eq!(f.calls.lock().unwrap().len(), 1, "质量失败不得自动重启");
+    let body = body_json(
+        send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await,
+    )
+    .await;
+    assert_eq!(body["runs"][0]["status"], "Failed");
+    let key = crate::runstate::StateKey::new("p", "t", "doc-from-zero");
+    let attempt = crate::runstate::load(&f.state.plans_root, &key)
+        .state()
+        .map(|s| s.attempt)
+        .unwrap_or(0);
+    assert_eq!(attempt, 0, "没有重启就不会写 attempt>0");
+}
+
+/// 源码守卫：协议违例上限 / 终审不通过不得再被当成基础设施故障。
+#[test]
+fn quality_failure_sites_do_not_use_system_error() {
+    // 逐条比对旧文本片段，而不是泛搜「基础设施故障」——审查空回复属于真基础设施故障，保留 System 是对的
+    let stale = [
+        ("coding", include_str!("../sop/coding.rs"), "stage-verdict/next 块），判定为基础设施故障"),
+        ("testing", include_str!("../sop/testing.rs"), "stage-verdict/next），判定为基础设施故障"),
+        (
+            "doc_from_zero",
+            include_str!("../sop/doc_from_zero.rs"),
+            "doc-verdict/route 块），判定为基础设施故障",
+        ),
+    ];
+    for (name, src, needle) in stale {
+        assert!(
+            !src.contains(needle),
+            "{name} 的协议违例上限仍走 System，会被自动重启"
+        );
+    }
+    let doc_fix = include_str!("../sop/doc_fix.rs");
+    let at = doc_fix
+        .find("缺 stage-verdict），判定为")
+        .expect("doc_fix 协议违例消息应存在");
+    let near = &doc_fix[at..(at + 120).min(doc_fix.len())];
+    assert!(near.contains("质量失败"), "doc_fix 应判质量失败：{near}");
+    let server = include_str!("mod.rs");
+    for anchor in ["终审未通过", "终审输出协议违例"] {
+        let at = server.find(anchor).unwrap_or_else(|| panic!("找不到 {anchor}"));
+        let near = &server[at.saturating_sub(200)..(at + 200).min(server.len())];
+        assert!(
+            near.contains("DevforgeError::Quality"),
+            "{anchor} 必须返回 Quality（不被重试），附近：{near}"
+        );
+    }
 }
 
 #[test]

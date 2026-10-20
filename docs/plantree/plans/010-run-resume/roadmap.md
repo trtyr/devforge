@@ -7,7 +7,7 @@
 - [x] **(T001) 公共状态壳 + 黑板落点（按 SOP 隔离）** — 定义 `RunState`（公共壳：`schema_version` / `sop` / `project` / `task` / `updated_at` / `attempt` / SOP 扩展段 `data`），落点 `plans/<project>/<task>/<sop>/state.json`；原子写（临时文件 + rename）、损坏容错（解析失败按空状态 + 记 WARN，不炸 run）；加载时校验四元身份，不一致拒绝续跑、按冷启动处理。
   - 验收：单测覆盖「不存在 / 合法 JSON / 半截 JSON / 只读目录 / 身份不符」五种输入；反向——同一 task 下两份不同 SOP 的 state 互不覆盖；写一半中断后重启不得读到半个 JSON。
   - **证据**：commit `8ccc246`（`src/runstate/mod.rs`，9 单测）。
-- [x] **(T002) SOP 接入 trait** — `Resumable`：`state_path` / `verify_done(&state) -> Vec<RedoUnit>` / `resume_brief(&state, redo)`；引擎在 start 与重启路径统一调用。
+- [x] **(T002) SOP 接入 trait** — `Resumable`：`name` / `verify_done(&state) -> Vec<RedoUnit>` / `resume_brief(&state, redo)`；状态路径由 `StateKey`（project/task/sop）推导，不交给 SOP 自己拼。引擎在 start 与重启路径统一调用。
   - 验收：用一个假 SOP 证明引擎不关心单元语义（trait 里不出现任何 doc/coding 字样）。
   - **证据**：commit `272dfe9`（`src/runstate/resume.rs`，含 `trait_surface_stays_agnostic` 抽象守卫）。
 
@@ -26,10 +26,10 @@
 
 - [x] **(T005) 基础设施故障自动重启** — `DevforgeError::System` → 同 run 重启，最多 3 次，退避 10s/30s/90s，`attempt` 递增，从断点继续；3 次仍败 → `Failed`（错误串带每次尝试的末段）。
   - 验收：mock 引擎「前两次抛 System，第三次成功」→ run 终态 Settled 且 attempt=3；「连续四次 System」→ Failed 且 attempt=4（不无限）。
-  - **证据**：commit `ea02a57`（`src/engine/retry.rs` + 接口级单测 `infra_failures_are_retried_up_to_three_times` / `persistent_infra_failures_fail_after_four_attempts`）。
-- [x] **(T006) 质量失败不重启** — 明确代码路径：`Verdict::Fail` / 协议违例上限 / 越界申报 → 直接 Failed，不进重启分支。
+  - **证据**：commit `ea02a57`（`src/engine/retry.rs` + 接口级单测 `infra_failures_are_retried_up_to_three_times` / `persistent_infra_failures_fail_after_four_attempts`）；审计后补：错误串聚合每次尝试记录（`共尝试 N 次；尝试记录：第1次…/第N次…`）并有单测断言四段都出现。
+- [x] **(T006) 质量失败不重启** — 明确代码路径：`Verdict::Fail` / 协议违例上限 / 无标记卡死 → 直接 Failed，不进重启分支。（「越界申报」属 change SOP，尚未实现，接入时沿用同一 `Quality` 口径。）
   - 验收：反向验证——审查连续 FAIL 的 run，attempt 恒为 1。
-  - **证据**：commit `814b308`（新增 `DevforgeError::Quality`，coding/testing/doc 三处协议违例上限与无标记卡死改判质量失败；单测 `quality_error_becomes_failed_and_is_not_retried`）。
+  - **证据**：commit `814b308`（新增 `DevforgeError::Quality`，coding/testing/doc 三处协议违例上限与无标记卡死改判质量失败；单测 `quality_error_becomes_failed_and_is_not_retried`）；**审计后补**：终审 FAIL/终审协议违例（`server/mod.rs`）与 doc-fix 协议违例上限也改 `Quality`；新增走真实 run 路径的 `quality_failure_path_is_not_retried_end_to_end`（attempt 恒为 0/1、calls==1）与源码守卫 `quality_failure_sites_do_not_use_system_error`。
 
 ## Phase 3 · 接入与实证
 

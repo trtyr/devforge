@@ -74,10 +74,25 @@ where
     F: FnMut(u32) -> crate::error::Result<RunOutcome>,
 {
     let mut attempt = 1u32;
+    let mut log: Vec<String> = Vec::new();
     loop {
         let result = execute(attempt);
+        if let Err(e) = &result {
+            log.push(format!("第{attempt}次: {e}"));
+        }
         let retryable = is_infra_failure(&result) && !control.is_cancelled();
         if !retryable || attempt >= policy.max_attempts {
+            // 多次尝试后仍失败：错误串必须带每次尝试的末段，否则事后无法定位是哪一次怎么挂的
+            if attempt > 1 && log.len() > 1 && result.is_err() {
+                return (
+                    Err(DevforgeError::System(format!(
+                        "{}（共尝试 {attempt} 次；尝试记录：{}）",
+                        log.last().cloned().unwrap_or_default(),
+                        log.join(" / ")
+                    ))),
+                    attempt,
+                );
+            }
             return (result, attempt);
         }
         if policy.sleep {
@@ -117,13 +132,19 @@ mod tests {
     fn persistent_infra_failure_stops_at_four_attempts() {
         let calls = Rc::new(Cell::new(0));
         let c = calls.clone();
-        let (result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), move |_| {
+        let (result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), move |n| {
             c.set(c.get() + 1);
-            infra()
+            Err(DevforgeError::System(format!("第 {n} 次挂了")))
         });
         assert!(result.is_err(), "连续故障必须判死，不能无限重试");
         assert_eq!(attempts, 4, "首次 + 3 次重试");
         assert_eq!(calls.get(), 4, "不得多跑第 5 次");
+        // 错误串必须带每次尝试的末段（评估定位需要）
+        let msg = result.unwrap_err().to_string();
+        for n in 1..=4 {
+            assert!(msg.contains(&format!("第 {n} 次挂了")), "缺第 {n} 次记录：{msg}");
+        }
+        assert!(msg.contains("共尝试 4 次"), "{msg}");
     }
 
     #[test]
