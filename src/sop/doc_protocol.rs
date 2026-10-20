@@ -12,6 +12,13 @@ use crate::error::Result;
 /// 连续协议违例上限（复用 P007 口径 C19-R1）。
 pub const MAX_DOC_PROTOCOL_VIOLATIONS: usize = 3;
 
+/// 无完成标记时的重推上限（2026-10-20）：标记由模型生成，连续不发就是卡死，
+/// 不能像旧口径那样零上限空转。
+pub const MAX_DOC_CONTINUE_NUDGES: usize = 3;
+
+/// 审查空回复 / 进程异常的重试上限（2026-10-20 实测：doc-review 静默死亡）。
+pub const MAX_DOC_REVIEW_RETRIES: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocVerdict {
     Pass,

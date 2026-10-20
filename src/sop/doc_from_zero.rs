@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Context as _, DevforgeError, Result};
 use crate::sop::doc_protocol::{
-    MAX_DOC_PROTOCOL_VIOLATIONS, DocVerdict, parse_doc_complete, parse_doc_review,
+    MAX_DOC_CONTINUE_NUDGES, MAX_DOC_PROTOCOL_VIOLATIONS, MAX_DOC_REVIEW_RETRIES, DocVerdict,
+    parse_doc_complete, parse_doc_review,
 };
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
 
@@ -171,12 +172,20 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
             }
 
             let mut message = doc_kickoff(repo, unit, doc_level);
+            let mut nudges = 0usize;
             loop {
                 let text = self.agent.converse(&message, ui)?;
                 let Some(done_unit) = parse_doc_complete(&text) else {
+                    nudges += 1;
+                    if nudges > MAX_DOC_CONTINUE_NUDGES {
+                        return Err(DevforgeError::System(format!(
+                            "单元 `{unit}` 连续 {nudges} 次未输出 <doc-complete>，判定为基础设施故障（不无限重推）"
+                        )));
+                    }
                     message = DOC_CONTINUE_NUDGE.to_string();
                     continue;
                 };
+                nudges = 0;
                 if done_unit != *unit {
                     // 单元号不匹配：可能是预分配漂移，按错报处理（D020 编号必须稳定）
                     message = format!(
@@ -186,6 +195,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                 }
 
                 // 本轮审查：全新实例，用完即弃；协议违例重跑审查（C19-R1 口径）
+                let mut review_retries = 0usize;
                 let report = loop {
                     state.review_rounds += 1;
                     let mut session = self.review_factory.open()?;
@@ -194,7 +204,41 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                         instruction.push_str("\n\n## 引擎审计（确定性，勿质疑）\n\n");
                         instruction.push_str(&audit(unit));
                     }
-                    let review_text = session.review(&instruction)?;
+                    // 空回复 / 进程异常：换新实例重试，而不是把整个 run 判死（2026-10-20 实测）
+                    let review_text = match session.review(&instruction) {
+                        Ok(t) if !t.trim().is_empty() => t,
+                        Ok(_) => {
+                            drop(session);
+                            review_retries += 1;
+                            if review_retries > MAX_DOC_REVIEW_RETRIES {
+                                return Err(DevforgeError::System(format!(
+                                    "单元 `{unit}` 审查会话连续 {review_retries} 次返回空回复，判定为基础设施故障"
+                                )));
+                            }
+                            tracing::warn!(
+                                component = "doc-sop",
+                                round = state.review_rounds,
+                                "审查空回复，换新实例重试"
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            drop(session);
+                            review_retries += 1;
+                            if review_retries > MAX_DOC_REVIEW_RETRIES {
+                                return Err(DevforgeError::System(format!(
+                                    "单元 `{unit}` 审查会话连续 {review_retries} 次失败（最后一次：{e}）"
+                                )));
+                            }
+                            tracing::warn!(
+                                component = "doc-sop",
+                                round = state.review_rounds,
+                                error = %e,
+                                "审查会话异常，换新实例重试"
+                            );
+                            continue;
+                        }
+                    };
                     drop(session);
 
                     let report = parse_doc_review(&review_text)?;
@@ -351,6 +395,44 @@ mod tests {
         assert_eq!(rep.review_rounds, 2);
         let saved = DocState::load(&state_path(&tmp));
         assert_eq!(saved.done, units);
+    }
+
+    #[test]
+    fn empty_review_reply_is_retried_with_fresh_instance() {
+        // 2026-10-20 实测：doc-review 返回空回复（模型一字未出），旧行为把整个 run 判死
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = MockAgent::new(&["写完了\n<doc-complete>unit-a-01</doc-complete>"]);
+        let (f, instructions) = factory(&["", "<doc-verdict>PASS</doc-verdict>"]);
+        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
+        let rep = lp
+            .run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
+            .unwrap();
+        assert_eq!(rep.units_done, vec!["unit-a-01"]);
+        assert_eq!(instructions.borrow().len(), 2, "空回复应换实例重试一次");
+    }
+
+    #[test]
+    fn repeated_empty_reviews_fail_fast() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = MockAgent::new(&["写完了\n<doc-complete>unit-a-01</doc-complete>"]);
+        let (f, _) = factory(&["", "", "", ""]);
+        let err = DocSopLoop::new(agent, f, state_path(&tmp))
+            .run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("空回复"), "{msg}");
+    }
+
+    #[test]
+    fn missing_marker_is_bounded_not_infinite() {
+        // 零上限的旧口径在这里就是无限空转：连续不发标记必须报错
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = MockAgent::new(&["想想", "再想想", "还在想", "就是不写"]);
+        let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>"]);
+        let err = DocSopLoop::new(agent, f, state_path(&tmp))
+            .run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
+            .unwrap_err();
+        assert!(format!("{err}").contains("doc-complete"), "{err}");
     }
 
     #[test]
