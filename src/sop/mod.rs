@@ -15,6 +15,7 @@ pub mod coding_protocol;
 pub mod doc_fix;
 pub mod doc_from_zero;
 pub mod doc_protocol;
+pub mod doc_resume;
 pub mod output;
 pub mod planning;
 pub mod rpc_bridge;
@@ -39,7 +40,6 @@ pub use planning::{
 pub use rpc_bridge::{RpcPlanSession, RpcReviewFactory, RpcReviewSession};
 
 pub use doc_from_zero::{
-    DocReport, DocSopLoop, DocState, DOCS_DIR as DOCGEN_DOCS_DIR, DOC_CONTINUE_NUDGE,
-    DOC_REMEDIATION_PREFIX, STATE_FILE as DOCGEN_STATE_FILE,
+    DocReport, DocSopLoop, DOCS_DIR as DOCGEN_DOCS_DIR, DOC_CONTINUE_NUDGE, DOC_REMEDIATION_PREFIX,
 };
 pub use doc_protocol::{parse_doc_complete, parse_doc_review, DocRoute, DocVerdict, DocReviewReport};

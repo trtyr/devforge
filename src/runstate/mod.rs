@@ -170,6 +170,52 @@ pub fn clear(plans_root: &Path, key: &StateKey) -> Result<()> {
     }
 }
 
+/// 一个 SOP 的状态存取句柄：绑定 `<plans_root>/<project>/<task>/<sop>/state.json`。
+///
+/// 引擎与 SOP 都只通过它读写断点，不自己拼路径。
+#[derive(Debug, Clone)]
+pub struct StateStore {
+    root: PathBuf,
+    key: StateKey,
+}
+
+impl StateStore {
+    pub fn new(plans_root: impl Into<PathBuf>, key: StateKey) -> Self {
+        Self {
+            root: plans_root.into(),
+            key,
+        }
+    }
+
+    pub fn key(&self) -> &StateKey {
+        &self.key
+    }
+
+    pub fn path(&self) -> PathBuf {
+        self.key.path(&self.root)
+    }
+
+    /// 读断点（异常不报错，由调用方按 `Loaded` 决定冷暖启动）。
+    pub fn load(&self) -> Loaded {
+        load(&self.root, &self.key)
+    }
+
+    /// 原子写入断点。
+    pub fn save(&self, state: &mut RunState) -> Result<PathBuf> {
+        save(&self.root, &self.key, state)
+    }
+
+    /// 删除断点（fresh / 终态清理）。
+    pub fn clear(&self) -> Result<()> {
+        clear(&self.root, &self.key)
+    }
+
+    /// 空状态（冷启动用；`data` 为对象，便于 SOP 直接写扩展段）。
+    pub fn fresh_state(&self) -> RunState {
+        RunState::new(&self.key, serde_json::json!({}))
+    }
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

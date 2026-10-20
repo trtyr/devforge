@@ -11,11 +11,10 @@
 //!
 //! 零硬限制：单元数、打回轮次、重推次数均无上限；审查协议违例按 C19-R1 口径重跑审查（上限 3）。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use serde::{Deserialize, Serialize};
-
-use crate::error::{Context as _, DevforgeError, Result};
+use crate::error::{DevforgeError, Result};
+use crate::runstate::{RunState, StateStore};
 use crate::sop::doc_protocol::{
     MAX_DOC_CONTINUE_NUDGES, MAX_DOC_PROTOCOL_VIOLATIONS, MAX_DOC_REVIEW_RETRIES, DocVerdict,
     parse_doc_complete, parse_doc_review,
@@ -37,38 +36,104 @@ pub const DOC_CONTINUE_NUDGE: &str = "\
 /// 打回回注前缀：必须带回 route，让 agent 回对那一层。
 pub const DOC_REMEDIATION_PREFIX: &str = "审查未通过，以下是必须修复的问题（请按 route 回到对应阶段修）：";
 
-/// 单元完成状态（断点续跑，D002/T008）。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DocState {
-    /// 已通过审查并落盘的单元号（预分配编号，重跑不漂移——D020）。
-    #[serde(default)]
-    pub done: Vec<String>,
-    #[serde(default)]
-    pub review_rounds: usize,
-    #[serde(default)]
-    pub issues_total: usize,
+/// 进度字段（存在 `RunState.data` 里，引擎不解释；plan 010 D005）。
+///
+/// - `done`：已通过审查并落盘的单元号（预分配编号，重跑不漂移——P008 D020）
+/// - `files`：每个单元当初产出的文件（相对产出根），续跑复核证据用（010 D003）
+/// - `review_rounds` / `issues_total`：审查轮次与累计问题（账单用）
+fn data_obj(state: &mut RunState) -> &mut serde_json::Map<String, serde_json::Value> {
+    if !state.data.is_object() {
+        state.data = serde_json::json!({});
+    }
+    state.data.as_object_mut().expect("data 已确保为对象")
 }
 
-impl DocState {
-    pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
-    }
+/// 已完成的单元列表。
+pub fn done_units(state: &RunState) -> Vec<String> {
+    crate::runstate::resume::done_units(state)
+}
 
-    pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ctx(format!("建目录 {}", parent.display()))?;
+/// 是否已完成。
+pub fn is_done(state: &RunState, unit: &str) -> bool {
+    done_units(state).iter().any(|u| u == unit)
+}
+
+/// 标记单元完成，并登记它产出的文件（相对产出根）。
+pub fn mark_done(state: &mut RunState, unit: &str, files: &[String]) {
+    let mut done = done_units(state);
+    if !done.iter().any(|u| u == unit) {
+        done.push(unit.to_string());
+    }
+    let obj = data_obj(state);
+    obj.insert("done".into(), serde_json::json!(done));
+    let files_map = obj
+        .entry("files")
+        .or_insert_with(|| serde_json::json!({}));
+    if !files_map.is_object() {
+        *files_map = serde_json::json!({});
+    }
+    files_map
+        .as_object_mut()
+        .expect("files 已确保为对象")
+        .insert(unit.to_string(), serde_json::json!(files));
+}
+
+/// 审查轮次 +1（包括重试与打回）。
+pub fn bump_review(state: &mut RunState) -> usize {
+    let round = review_rounds(state) + 1;
+    data_obj(state).insert("review_rounds".into(), serde_json::json!(round));
+    round
+}
+
+pub fn review_rounds(state: &RunState) -> usize {
+    state
+        .data
+        .get("review_rounds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize
+}
+
+/// 累计问题数。
+pub fn add_issues(state: &mut RunState, n: usize) {
+    let total = issues_total(state) + n;
+    data_obj(state).insert("issues_total".into(), serde_json::json!(total));
+}
+
+pub fn issues_total(state: &RunState) -> usize {
+    state
+        .data
+        .get("issues_total")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize
+}
+
+/// 产出根下所有文件的相对路径（续跑证据的基线快照）。
+pub fn snapshot_files(root: &Path) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    fn walk(base: &Path, dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else if let Ok(rel) = p.strip_prefix(base) {
+                out.insert(rel.to_string_lossy().to_string());
+            }
         }
-        let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json).ctx(format!("写检查点 {}", path.display()))?;
-        Ok(())
     }
+    walk(root, root, &mut out);
+    out
+}
 
-    pub fn is_done(&self, unit: &str) -> bool {
-        self.done.iter().any(|u| u == unit)
-    }
+/// 单元跑完之后新增/改写的文件（相对产出根，排除 `_meta/` 下的元数据）。
+pub fn produced_files(root: &Path, before: &std::collections::BTreeSet<String>) -> Vec<String> {
+    snapshot_files(root)
+        .into_iter()
+        .filter(|p| !p.starts_with("_meta/"))
+        .filter(|p| !before.contains(p))
+        .collect()
 }
 
 /// doc-agent 开场指令：告知仓库、产出目录、本单元、文档档位。
@@ -120,23 +185,32 @@ pub type AuditProvider = Box<dyn Fn(&str) -> String + Send>;
 pub struct DocSopLoop<P: PlanAgentSession, F: ReviewSessionFactory> {
     pub agent: P,
     pub review_factory: F,
-    /// 检查点文件（`_meta/state.json`）。
-    pub state_path: PathBuf,
+    /// 断点存取（黑板 `<plans>/<project>/<task>/doc-from-zero/state.json`，plan 010 D001）。
+    pub store: StateStore,
     /// 只跑这一个单元（`--only`，幂等重派）。
     pub only: Option<String>,
     /// 引擎侧确定性审计（每轮审查前算好，作为审查输入注入——D012：不靠 agent 自述）。
     pub audit: Option<AuditProvider>,
+    /// 续跑恢复语（只拼进本次第一个单元的 kickoff，plan 010 D005）。
+    pub resume_note: String,
 }
 
 impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
-    pub fn new(agent: P, review_factory: F, state_path: PathBuf) -> Self {
+    pub fn new(agent: P, review_factory: F, store: StateStore) -> Self {
         Self {
             agent,
             review_factory,
-            state_path,
+            store,
             only: None,
             audit: None,
+            resume_note: String::new(),
         }
+    }
+
+    /// 注入续跑恢复语（重做了哪些单元、为什么）。
+    pub fn with_resume_note(mut self, note: impl Into<String>) -> Self {
+        self.resume_note = note.into();
+        self
     }
 
     pub fn with_only(mut self, unit: impl Into<String>) -> Self {
@@ -158,7 +232,15 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
         units: &[String],
         doc_level: &str,
     ) -> Result<DocReport> {
-        let mut state = DocState::load(&self.state_path);
+        let mut state = match self.store.load() {
+            crate::runstate::Loaded::Found(s) => s,
+            crate::runstate::Loaded::Missing => self.store.fresh_state(),
+            crate::runstate::Loaded::Unusable(reason) => {
+                tracing::warn!(component = "doc-sop", %reason, "断点不可用，按冷启动");
+                self.store.fresh_state()
+            }
+        };
+        let docs_root = repo.join(DOCS_DIR);
         let mut protocol_violations = 0usize;
 
         for unit in units {
@@ -167,11 +249,17 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
             {
                 continue;
             }
-            if state.is_done(unit) {
+            if is_done(&state, unit) {
                 continue;
             }
+            let before = snapshot_files(&docs_root);
 
             let mut message = doc_kickoff(repo, unit, doc_level);
+            if !self.resume_note.is_empty() {
+                message.push_str("\n\n");
+                message.push_str(&self.resume_note);
+                self.resume_note.clear(); // 只对本单元生效
+            }
             let mut nudges = 0usize;
             loop {
                 let text = self.agent.converse(&message, ui)?;
@@ -197,9 +285,9 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                 // 本轮审查：全新实例，用完即弃；协议违例重跑审查（C19-R1 口径）
                 let mut review_retries = 0usize;
                 let report = loop {
-                    state.review_rounds += 1;
+                    let round = bump_review(&mut state);
                     let mut session = self.review_factory.open()?;
-                    let mut instruction = doc_review_instruction(unit, state.review_rounds);
+                    let mut instruction = doc_review_instruction(unit, round);
                     if let Some(audit) = &self.audit {
                         instruction.push_str("\n\n## 引擎审计（确定性，勿质疑）\n\n");
                         instruction.push_str(&audit(unit));
@@ -217,7 +305,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                             }
                             tracing::warn!(
                                 component = "doc-sop",
-                                round = state.review_rounds,
+                                round,
                                 "审查空回复，换新实例重试"
                             );
                             continue;
@@ -232,7 +320,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                             }
                             tracing::warn!(
                                 component = "doc-sop",
-                                round = state.review_rounds,
+                                round,
                                 error = %e,
                                 "审查会话异常，换新实例重试"
                             );
@@ -254,7 +342,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                     }
                     tracing::warn!(
                         component = "doc-sop",
-                        round = state.review_rounds,
+                        round,
                         violations = protocol_violations,
                         "文档审查协议违例，重跑本轮审查（不回注被审 Agent）"
                     );
@@ -262,12 +350,15 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
 
                 match report.verdict {
                     DocVerdict::Pass => {
-                        state.done.push(unit.clone());
-                        state.save(&self.state_path)?;
+                        // 登记本单元产出的文件（相对产出根）——续跑复核靠它（010 D003）
+                        let files = produced_files(&docs_root, &before);
+                        mark_done(&mut state, unit, &files);
+                        self.store.save(&mut state)?;
                         tracing::info!(
                             component = "doc-sop",
                             unit,
-                            round = state.review_rounds,
+                            files = files.len(),
+                            round = review_rounds(&state),
                             "单元通过并落盘"
                         );
                         // PASS + route=finish 只意味着「这个单元收口了」，**不是整个 run 结束**。
@@ -276,7 +367,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                         break;
                     }
                     DocVerdict::Fail => {
-                        state.issues_total += report.issues.len();
+                        add_issues(&mut state, report.issues.len());
                         let mut msg = format!(
                             "{DOC_REMEDIATION_PREFIX}\n<route>{}</route>\n",
                             report.route.as_str()
@@ -291,9 +382,9 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
         }
 
         Ok(DocReport {
-            units_done: state.done,
-            review_rounds: state.review_rounds,
-            issues_total: state.issues_total,
+            units_done: done_units(&state),
+            review_rounds: review_rounds(&state),
+            issues_total: issues_total(&state),
         })
     }
 }
@@ -373,8 +464,23 @@ mod tests {
         )
     }
 
-    fn state_path(tmp: &tempfile::TempDir) -> PathBuf {
-        tmp.path().join("docs/contexts/_meta/state.json")
+    fn state_path(tmp: &tempfile::TempDir) -> StateStore {
+        StateStore::new(
+            tmp.path().join("plans"),
+            crate::runstate::StateKey::new("p", "t", crate::sop::doc_resume::DOC_SOP),
+        )
+    }
+
+    /// 种一个「已有 done」的断点（续跑类用例公用）。
+    fn seed_done(store: &StateStore, done: &[&str]) {
+        let mut state = store.fresh_state();
+        for u in done {
+            mark_done(&mut state, u, &[]);
+        }
+        if !done.is_empty() {
+            bump_review(&mut state); // 与旧 fixture 一致：已完成单元落过一次审查轮次
+        }
+        store.save(&mut state).unwrap();
     }
 
     #[test]
@@ -393,8 +499,8 @@ mod tests {
         let rep = lp.run(&mut NoUser, tmp.path(), &units, "complete").unwrap();
         assert_eq!(rep.units_done, units);
         assert_eq!(rep.review_rounds, 2);
-        let saved = DocState::load(&state_path(&tmp));
-        assert_eq!(saved.done, units);
+        let saved = state_path(&tmp).load();
+        assert_eq!(done_units(saved.state().expect("断点应已落盘")), units);
     }
 
     #[test]
@@ -524,12 +630,8 @@ mod tests {
     #[test]
     fn done_units_are_skipped_on_resume() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = DocState {
-            done: vec!["unit-a-01".to_string()],
-            review_rounds: 1,
-            issues_total: 0,
-        };
-        state.save(&state_path(&tmp)).unwrap();
+        let state = state_path(&tmp);
+        seed_done(&state, &["unit-a-01"]);
 
         let agent = MockAgent::new(&["B\n<doc-complete>unit-b-02</doc-complete>"]);
         let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>\n<route>finish</route>"]);
@@ -547,14 +649,77 @@ mod tests {
     }
 
     #[test]
+    fn broken_evidence_unit_is_reincluded_and_rewritten() {
+        // plan 010 T004：断点说 done，但证据不成立 → 必须重新进 kickoff 集合
+        let tmp = tempfile::tempdir().unwrap();
+        let store = state_path(&tmp);
+        seed_done(&store, &["unit-a-01"]); // 未登记任何产出文件
+
+        let resume = crate::sop::doc_resume::DocResume::new(tmp.path().join(DOCS_DIR));
+        let units = vec!["unit-a-01".to_string(), "unit-b-02".to_string()];
+        let plan = crate::runstate::resume::plan(
+            &tmp.path().join("plans"),
+            "p",
+            "t",
+            &resume,
+            &units,
+            false,
+        );
+        assert!(plan.resumed);
+        assert_eq!(plan.redo, vec!["unit-a-01".to_string()]);
+        assert!(
+            plan.to_run.contains(&"unit-a-01".to_string()),
+            "证据失效的单元必须重跑：{:?}",
+            plan.to_run
+        );
+
+        // 引擎按 to_run 派发：agent 再次收到 unit-a-01 的 kickoff 并重写
+        let agent = MockAgent::new(&[
+            "重写 A\n<doc-complete>unit-a-01</doc-complete>",
+            "写 B\n<doc-complete>unit-b-02</doc-complete>",
+        ]);
+        let (f, _) = factory(&[
+            "<doc-verdict>PASS</doc-verdict>",
+            "<doc-verdict>PASS</doc-verdict>",
+        ]);
+        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
+        let rep = lp
+            .run(&mut NoUser, tmp.path(), &plan.to_run, "complete")
+            .unwrap();
+        assert_eq!(rep.units_done, units);
+    }
+
+    #[test]
+    fn intact_evidence_is_not_redispatched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = state_path(&tmp);
+        // 登记 done + 真实存在的产物文件
+        let docs = tmp.path().join(DOCS_DIR);
+        std::fs::create_dir_all(docs.join("a")).unwrap();
+        std::fs::write(docs.join("a/x.md"), b"x").unwrap();
+        let mut state = store.fresh_state();
+        mark_done(&mut state, "unit-a-01", &["a/x.md".to_string()]);
+        store.save(&mut state).unwrap();
+
+        let resume = crate::sop::doc_resume::DocResume::new(&docs);
+        let units = vec!["unit-a-01".to_string(), "unit-b-02".to_string()];
+        let plan = crate::runstate::resume::plan(
+            &tmp.path().join("plans"),
+            "p",
+            "t",
+            &resume,
+            &units,
+            false,
+        );
+        assert_eq!(plan.skip, vec!["unit-a-01".to_string()]);
+        assert_eq!(plan.to_run, vec!["unit-b-02".to_string()]);
+    }
+
+    #[test]
     fn only_limits_to_single_unit_idempotently() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = DocState {
-            done: vec!["unit-a-01".to_string()],
-            review_rounds: 1,
-            issues_total: 0,
-        };
-        state.save(&state_path(&tmp)).unwrap();
+        let state = state_path(&tmp);
+        seed_done(&state, &["unit-a-01"]);
 
         let agent = MockAgent::new(&["B\n<doc-complete>unit-b-02</doc-complete>"]);
         let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>\n<route>finish</route>"]);

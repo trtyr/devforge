@@ -32,7 +32,7 @@ use crate::engine::process::SpawnSpec;
 use crate::error::{Context as _, Result};
 use crate::sop::coding::CodingSopLoop;
 use crate::sop::doc_fix::DocFixSopLoop;
-use crate::sop::doc_from_zero::{DOCS_DIR, META_DIR, DocSopLoop, STATE_FILE};
+use crate::sop::doc_from_zero::{DOCS_DIR, META_DIR, DocSopLoop};
 use crate::sop::planning::{PlanningLoop, ReviewSessionFactory, UserLink};
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
 use crate::sop::testing::{TestingOutcome, TestingSopLoop};
@@ -472,11 +472,50 @@ impl BuiltinRpcEngine {
         let mut user = RelayUserLink {
             relay: self.ui.clone(),
         };
-        let state_path = workspace.join(STATE_FILE);
         // 审查输入注入（D012）：每轮把覆盖 + lint 的确定性结果算好给审查官
         let audit_inv = inv.clone();
         let audit_ws = workspace.clone();
         let audit_index = crate::docgen::lint::EntityIndex::build(&workspace, Some(&inv))?;
+
+        // 断点与续跑（plan 010）：状态住黑板（不进产物目录）；done 证据 = 产出文件在 + lint 绿。
+        let resume_index = audit_index.clone();
+        let resume = crate::sop::doc_resume::DocResume::new(workspace.join(DOCS_DIR)).with_lint(
+            move |docs| match crate::docgen::lint::lint_docs_with_entities(docs, &resume_index) {
+                Ok(r) => r.violations().is_empty(),
+                Err(_) => false,
+            },
+        );
+        let store = crate::runstate::StateStore::new(
+            self.plans_root.clone(),
+            crate::runstate::StateKey::new(&task.project, &task.id, crate::sop::doc_resume::DOC_SOP),
+        );
+        let plan = crate::runstate::resume::plan(
+            &self.plans_root,
+            &task.project,
+            &task.id,
+            &resume,
+            &units,
+            false,
+        );
+        if plan.resumed {
+            tracing::info!(
+                component = "doc-engine",
+                skip = plan.skip.len(),
+                redo = plan.redo.len(),
+                "从断点续跑（已完成单元不重写）"
+            );
+        }
+        if let Some(note) = &plan.note {
+            tracing::warn!(component = "doc-engine", %note, "断点不可用，按冷启动");
+        }
+        let resume_note = match store.load() {
+            crate::runstate::Loaded::Found(st) => {
+                crate::runstate::resume::Resumable::resume_brief(&resume, &st, &plan.redo)
+            }
+            _ => String::new(),
+        };
+        let run_units = plan.to_run;
+
         let final_index = audit_index.clone();
         let audit: Box<dyn Fn(&str) -> String + Send> = Box::new(move |unit: &str| {
             let mut out = String::new();
@@ -526,11 +565,13 @@ impl BuiltinRpcEngine {
             self.idle_ms,
             vec![self.session_root.join("doc"), self.session_root.join("doc-reviews")],
             || {
-                let mut sop_loop = DocSopLoop::new(agent, factory, state_path).with_audit(audit);
+                let mut sop_loop = DocSopLoop::new(agent, factory, store)
+                    .with_audit(audit)
+                    .with_resume_note(resume_note);
                 if let Some(unit) = only {
                     sop_loop = sop_loop.with_only(unit);
                 }
-                let report = sop_loop.run(&mut user, &workspace, &units, "complete")?;
+                let report = sop_loop.run(&mut user, &workspace, &run_units, "complete")?;
 
                 // ---- 终审（跨模块 / 汇编引用 / 全量 lint 与覆盖）----
                 let docs = final_ws.join(DOCS_DIR);
