@@ -62,7 +62,7 @@
 
 - [x] **(T011) 回归 + 变更 e2e（testing）**——test agent 先跑全套回归（`evidence/regression.log`），红则直接 `<route>coding</route>`；再为变更点写 e2e，输出验收对照表（每条验收标准 → 测试 `path:line`）。
   - 验收：既有套件人为打断后 run 必须 FAIL 并回注 coding；验收标准漏一条 → FAIL。
-  - **证据**：commit `c862b5f`（`change::testing_gate`：退出码矛盾即 FAIL、缺一条即零覆盖、回注不带定位）。
+  - **证据**：commit `c862b5f`（`change::testing_gate`：退出码矛盾即 FAIL、缺一条即零覆盖、回注不带定位）；双 profile 见 `fdfe365`（`change-test-agent` / `change-test-review`，黑盒不给 codegraph）。
 - [x] **(T011b) 续跑检查点**——checkpoint 住黑板 `plans/<p>/<t>/change/state.json`（引擎写，010 D022a/D001），存阶段/基线/往返/已完成步骤与验收项/审查轮次；断了能从断点续。
   - 验收：在 testing 中途模拟进程退出，重跑能从 testing 继续，往返计数不丢。
   - **证据**：commit `8a2c222`（`change::state` + `resume_keeps_roundtrips_across_sessions`）。
