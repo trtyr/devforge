@@ -41,8 +41,7 @@
 > 本轮（代码阶段）只写单测，不跑端到端（用户 2026-10-20 口径）。以下两项待验收时再做，**不算本轮任务**。
 
 - [x] **(T008) 续跑实证（e2e）** — `test_24` ：第一个单元完成后 cancel，第二次 start 不得重写第一单元、只推后续。（**证据**：`evidence-t008-resume.md`——2026-10-20 真跑 34m47s / 15 PASS / 0 FAIL：resumed=true、第一单元产物 mtime+size 逐字节不变、第二轮会话无该单元 kickoff、1025s 后 Settled）
-- [ ] **(T009) 真实故障实证** — 用可控方式制造一次上游故障（指向坏 baseUrl 的 profile），确认自动重启真实发生并最终 Settled。
-  - 验收：日志里出现两次重启 WARN 与一次成功；`_meta/runs/<id>/report.md` 记录尝试次数。
+- [x] **(T009) 真实故障实证** — 用可控方式制造一次上游故障（指向坏 baseUrl 的 profile），确认自动重启真实发生并最终 Settled。（**证据**：`evidence-t009-fault.md`——故障代理注入 16 次 500，SSE `run.retry` attempt=2，黑板 attempt==2，report.md「尝试: 2」（commit `1ec8433`），2860s 后 Settled，17 PASS/0 FAIL）
 
 ## Milestones
 
