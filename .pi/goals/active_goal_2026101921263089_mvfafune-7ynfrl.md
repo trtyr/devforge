@@ -2,32 +2,23 @@
   "version": 3,
   "id": "mvfafune-7ynfrl",
   "objective": "在 devforge 内实现第二条 SOP「doc-from-zero」到 M3：可被 API 触发、按四道门滚动产出目标项目的 docs/contexts/ 文档体系，并通过五项确定性审计（覆盖/完整性/真实性/置信度诚实性/可跑）。",
-  "status": "active",
-  "autoContinue": true,
+  "status": "paused",
+  "autoContinue": false,
   "usage": {
-    "tokensUsed": 2340369,
-    "activeSeconds": 2050
+    "tokensUsed": 2358440,
+    "activeSeconds": 2069
   },
   "sisyphus": false,
-  "revision": 589,
+  "revision": 607,
   "createdAt": "2026-10-19T13:26:30.890Z",
-  "updatedAt": "2026-10-20T01:59:50.718Z",
+  "updatedAt": "2026-10-20T02:21:47.375Z",
   "scheduler": {
     "version": 1,
     "owner": "01a1450b-6d3e-77bc-a7c1-bbb88d566132",
-    "generation": "f4c56c06-4571-48a9-9bfe-a70d4dce08cf",
-    "used": 5,
-    "phase": "running",
-    "repairUsed": false,
-    "decision": {
-      "kind": "ready",
-      "purpose": "ready"
-    },
-    "dispatch": {
-      "id": "fff919e8-42d2-4dba-a067-76be961b72eb",
-      "kind": "ready",
-      "claimedAt": 1792461518350
-    }
+    "generation": "7fec65e2-d9f6-49a3-b8c7-3fe692e42884",
+    "used": 7,
+    "phase": "idle",
+    "repairUsed": false
   },
   "taskList": {
     "tasks": [
@@ -129,7 +120,9 @@
     "blockCompletion": true,
     "proposedAt": "2026-10-19T13:26:06.113Z"
   },
-  "activePath": ".pi/goals/active_goal_2026101921263089_mvfafune-7ynfrl.md"
+  "activePath": ".pi/goals/active_goal_2026101921263089_mvfafune-7ynfrl.md",
+  "stopReason": "agent",
+  "pauseReason": "checkpoint 每 2 秒触发一次、每次重发约 23 万 token 上下文（实测 34m13s→34m26s 间连发 6 次），而第 4 轮 e2e（只为让运行账单带上墙钟与 token 字段）仍在后台跑，等待期无事可做。已按文档尝试用 .pi/pi-goal-x-settings.json 的 maxAutonomousRuns=0 关掉自动续跑，未生效，故改暂停止血。后台任务完成会唤醒本会话，届时我会回填 t12 证据；需要收口时请 /goal-resume。"
 }
 
 # Goal Prompt
@@ -138,11 +131,11 @@
 
 ## Progress
 
-- Status: running
-- Auto-continue: on
+- Status: paused (agent)
+- Auto-continue: off
 - Sisyphus mode: no
-- Time spent: 34m10s
-- Tokens used: 2.3M (2,340,369) tokens
+- Time spent: 34m29s
+- Tokens used: 2.4M (2,358,440) tokens
 ## Tasks
 
 <!-- blockCompletion: true -->
@@ -159,3 +152,4 @@
 - [x] t11: 单元审 + 终审编排（T019/T020） — evidence: 单元审用 coverage_for_unit 只判本单元；终审同 profile 新实例查全量覆盖/lint/跨模块重复/汇编链接，FAIL→run 失败；运行账单落 _meta/runs/<run-id>/report.md；FAIL→route→修→PASS 回路由 fail_message_contains_route_and_issues 实测；257 过 clippy 0；commit 
 - [ ] t12: 端到端单仓跑通 + 报告（M3 验收） — contract: 对一个真实仓完整跑完门0→单元滚动→汇编→终审；产物树符合 D016；五项审计结果可复算；墙钟/单元数/审查轮次/token 落 _meta/runs/<run-id>/
 
+- Agent pause reason: checkpoint 每 2 秒触发一次、每次重发约 23 万 token 上下文（实测 34m13s→34m26s 间连发 6 次），而第 4 轮 e2e（只为让运行账单带上墙钟与 token 字段）仍在后台跑，等待期无事可做。已按文档尝试用 .pi/pi-goal-x-settings.json 的 maxAutonomousRuns=0 关掉自动续跑，未生效，故改暂停止血。后台任务完成会唤醒本会话，届时我会回填 t12 证据；需要收口时请 /goal-resume。
