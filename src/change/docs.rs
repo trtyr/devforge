@@ -1,0 +1,133 @@
+//! `doc_level` 档位在引擎侧的落点（P009 D002）。
+//!
+//! 口径：文档完整度是**调用方的决定**，引擎不自动探测「仓里有没有 docs/」。
+//! - `none`（默认）：零文档动作，直接进 plan；
+//! - `essential`：只产轻量事实层（清单 + 词表）后进 plan；
+//! - `complete`：完整文档链（由 doc-from-zero SOP 执行，本模块只声明该动作）。
+//!
+//! 这里只做确定性部分——真跑文档链需要 agent，不在这层。
+
+use std::path::{Path, PathBuf};
+
+use crate::change::gate0::DocLevel;
+use crate::error::{Context as _, Result};
+
+/// 引擎该做的文档动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocAction {
+    /// `none`：什么都不做。
+    Skipped,
+    /// `essential`：已产出轻量事实层（`_meta/inventory.json` + `glossary.md`）。
+    EssentialDone,
+    /// `complete`：需要调用方/编排层去跑 doc-from-zero（本层不跑）。
+    FullChainRequired,
+}
+
+/// 按档位执行文档动作。
+///
+/// - `essential` 会真的写 `docs/contexts/_meta/inventory.json` 与 `glossary.md`；
+/// - `complete` 不写任何东西，返回 [`DocAction::FullChainRequired`]——文档由 agent 写，
+///   引擎不能假装自己写完了。
+pub fn apply(repo: &Path, level: DocLevel) -> Result<DocAction> {
+    match level {
+        DocLevel::None => Ok(DocAction::Skipped),
+        DocLevel::Complete => Ok(DocAction::FullChainRequired),
+        DocLevel::Essential => {
+            let inv = crate::docgen::inventory::build_inventory(repo)?;
+            let meta = repo.join("docs/contexts/_meta");
+            std::fs::create_dir_all(&meta)
+                .ctx(format!("建元数据目录 {}", meta.display()))?;
+            inv.save(&meta.join("inventory.json"))?;
+            std::fs::write(
+                meta.join("glossary.md"),
+                crate::docgen::inventory::export_glossary(&inv),
+            )
+            .ctx("写词表")?;
+            Ok(DocAction::EssentialDone)
+        }
+    }
+}
+
+/// 轻量事实层是否已经存在（`essential` 幂等判断用）。
+pub fn essential_ready(repo: &Path) -> bool {
+    inventory_path(repo).is_file()
+}
+
+pub fn inventory_path(repo: &Path) -> PathBuf {
+    repo.join("docs/contexts/_meta/inventory.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo_with_code() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("mod")).unwrap();
+        std::fs::write(tmp.path().join("mod").join("core.py"), "def f():\n    return 1\n").unwrap();
+        tmp
+    }
+
+    #[test]
+    fn none_level_touches_no_docs() {
+        let tmp = repo_with_code();
+        let action = apply(tmp.path(), DocLevel::None).unwrap();
+        assert_eq!(action, DocAction::Skipped);
+        assert!(
+            !tmp.path().join("docs").exists(),
+            "doc_level=none 时不得建 docs 目录"
+        );
+    }
+
+    #[test]
+    fn essential_level_emits_inventory_then_lets_plan_proceed() {
+        let tmp = repo_with_code();
+        let action = apply(tmp.path(), DocLevel::Essential).unwrap();
+        assert_eq!(action, DocAction::EssentialDone);
+        let path = inventory_path(tmp.path());
+        assert!(path.is_file(), "essential 必须产出 inventory.json");
+        let inv: crate::docgen::inventory::Inventory =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            inv.entries
+                .iter()
+                .any(|e| e.kind == crate::docgen::inventory::EntryKind::Module),
+            "清单应至少含一个模块条目"
+        );
+        assert!(essential_ready(tmp.path()));
+        // 轻量档不写正文文档（正文归 doc-from-zero）
+        let bodies: Vec<_> = walk(tmp.path().join("docs/contexts"))
+            .into_iter()
+            .filter(|p| p.ends_with(".md") && !p.to_string_lossy().contains("_meta"))
+            .collect();
+        assert!(bodies.is_empty(), "essential 不产正文：{bodies:?}");
+    }
+
+    #[test]
+    fn complete_level_defers_to_doc_sop_and_writes_nothing() {
+        let tmp = repo_with_code();
+        let action = apply(tmp.path(), DocLevel::Complete).unwrap();
+        assert_eq!(
+            action,
+            DocAction::FullChainRequired,
+            "完整文档链必须交给 doc-from-zero，不得由引擎假装完成"
+        );
+        assert!(!tmp.path().join("docs").exists());
+    }
+
+    fn walk(root: PathBuf) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return out;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(walk(p));
+            } else {
+                out.push(p);
+            }
+        }
+        out
+    }
+}

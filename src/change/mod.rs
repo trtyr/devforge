@@ -7,6 +7,8 @@
 //!
 //! 本模块只放引擎侧（确定性）逻辑；agent 的产出与判断由 profile 提示词约束。
 
+pub mod docs;
 pub mod gate0;
 
+pub use docs::{DocAction, apply as apply_doc_level, essential_ready};
 pub use gate0::{Baseline, DocLevel, ensure_baseline};
