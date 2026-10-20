@@ -375,6 +375,54 @@ async fn start_change_sop_returns_202() {
     let body = body_json(resp).await;
     assert_eq!(body["sop"], "change");
     wait_settled(&f, "p", "c").await;
+    let runs = body_json(
+        send(&f.router, "GET", "/api/v1/projects/p/tasks/c/runs", None).await,
+    )
+    .await;
+    assert_eq!(runs["runs"][0]["status"], "Settled");
+}
+
+#[tokio::test]
+async fn start_change_resumes_from_blackboard_and_fresh_clears_it() {
+    // task-6：change 的 start 续跑/fresh 与 010 同一套语义（按 SOP 分文件）
+    let f = fixture();
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "c", "sop": "change"})),
+    )
+    .await;
+
+    let key = crate::runstate::StateKey::new("p", "c", "change");
+    let mut st = crate::runstate::RunState::new(
+        &key,
+        json!({"change": {"phase": "coding", "baseline_sha": "abc", "roundtrips": 1}}),
+    );
+    crate::runstate::save(&f.state.plans_root, &key, &mut st).unwrap();
+
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/c/start", None).await;
+    let body = body_json(resp).await;
+    assert_eq!(body["resumed"], true, "有断点必须续跑：{body}");
+    wait_settled(&f, "p", "c").await;
+
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks/c/start",
+        Some(json!({"fresh": true})),
+    )
+    .await;
+    let body = body_json(resp).await;
+    assert_eq!(body["resumed"], false, "fresh 必须冷启动：{body}");
+    assert!(
+        !matches!(
+            crate::runstate::load(&f.state.plans_root, &key),
+            crate::runstate::Loaded::Found(_)
+        ),
+        "fresh 后 change 断点必须清空"
+    );
 }
 
 #[tokio::test]
