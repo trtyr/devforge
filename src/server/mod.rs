@@ -904,6 +904,10 @@ impl BuiltinRpcEngine {
             Ok(RunOutcome::Failed {
                 reason: "已超时（run 超时，被 watchdog 终止）".into(),
             })
+        } else if let crate::error::DevforgeError::Quality(msg) = e {
+            // 质量失败（审查打回/协议违例达上限/越界申报）：明确的 Failed，**不进自动重启**（010 D004）
+            tracing::warn!(component, reason = %msg, "SOP 质量失败（不重试）");
+            Ok(RunOutcome::Failed { reason: msg })
         } else {
             tracing::warn!(component, error = %e, "SOP 非干预性失败");
             Err(e)

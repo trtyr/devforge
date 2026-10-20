@@ -266,8 +266,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                 let Some(done_unit) = parse_doc_complete(&text) else {
                     nudges += 1;
                     if nudges > MAX_DOC_CONTINUE_NUDGES {
-                        return Err(DevforgeError::System(format!(
-                            "单元 `{unit}` 连续 {nudges} 次未输出 <doc-complete>，判定为基础设施故障（不无限重推）"
+                        return Err(DevforgeError::Quality(format!(
+                            "单元 `{unit}` 连续 {nudges} 次未输出 <doc-complete>，判定为质量失败（agent 不配合，重启也无意义）"
                         )));
                     }
                     message = DOC_CONTINUE_NUDGE.to_string();
@@ -335,8 +335,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                     }
                     protocol_violations += 1;
                     if protocol_violations > MAX_DOC_PROTOCOL_VIOLATIONS {
-                        return Err(DevforgeError::System(format!(
-                            "审查连续 {protocol_violations} 轮输出协议违例（缺 doc-verdict/route 块），判定为基础设施故障：{}",
+                        return Err(DevforgeError::Quality(format!(
+                            "审查连续 {protocol_violations} 轮输出协议违例（缺 doc-verdict/route 块），判定为质量失败（不自动重启）：{}",
                             report.issues.join("；")
                         )));
                     }

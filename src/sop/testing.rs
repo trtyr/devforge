@@ -183,8 +183,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                         }
                         violations += 1;
                         if violations > MAX_TEST_PROTOCOL_VIOLATIONS {
-                            return Err(crate::error::DevforgeError::System(format!(
-                                "测试审查连续 {} 轮输出协议违例（缺 stage-verdict/next），判定为基础设施故障，停止 run：{}",
+                            return Err(crate::error::DevforgeError::Quality(format!(
+                                "测试审查连续 {} 轮输出协议违例（缺 stage-verdict/next），判定为质量失败（不自动重启），停止 run：{}",
                                 violations,
                                 parsed.issues.join("；")
                             )));

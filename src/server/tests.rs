@@ -411,6 +411,42 @@ async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
     );
 }
 
+#[test]
+fn quality_error_becomes_failed_and_is_not_retried() {
+    // plan 010 T006/D004：质量失败→明确的 Failed（不进重启分支）；System 仍向上抛（可重启）
+    let engine = super::BuiltinRpcEngine {
+        profile_root: std::path::PathBuf::from("/tmp"),
+        session_root: std::path::PathBuf::from("/tmp"),
+        plans_root: std::path::PathBuf::from("/tmp"),
+        ui: std::sync::Arc::new(UiRelay::new(std::sync::Arc::new(crate::server::EventBus::new()))),
+        codegraph_bin: std::path::PathBuf::from("codegraph"),
+        idle_ms: None,
+    };
+    let control = RunControl::new();
+    let outcome = engine
+        .map_intervention(
+            &control,
+            "doc-engine",
+            crate::error::DevforgeError::Quality("审查连续 4 轮输出协议违例".into()),
+        )
+        .expect("质量失败不得作为错误上抛");
+    match outcome {
+        RunOutcome::Failed { reason } => assert!(reason.contains("违例"), "{reason}"),
+        other => panic!("应为 Failed，实际 {other:?}"),
+    }
+
+    let infra = engine.map_intervention(
+        &control,
+        "doc-engine",
+        crate::error::DevforgeError::System("上游 500".into()),
+    );
+    assert!(infra.is_err(), "系统错误必须上抛给重试层");
+    assert!(
+        crate::engine::retry::is_infra_failure(&infra),
+        "System 才是可重启故障"
+    );
+}
+
 #[tokio::test]
 async fn infra_failures_are_retried_up_to_three_times() {
     // plan 010 T005：前两次 System → 第三次成功，run 终态 Settled，attempt 落盘为 3

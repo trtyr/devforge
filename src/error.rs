@@ -22,6 +22,13 @@ pub enum DevforgeError {
     #[error("系统错误: {0}")]
     System(String),
 
+    /// 质量判定失败（审查打回、协议违例达上限、越界申报、验收不通过）。
+    ///
+    /// 与 [`DevforgeError::System`] 的区别只在恢复策略上（plan 010 D004）：
+    /// 系统错误是外部故障，可以自动重启；质量失败重启只会得到同一个结论，必须停下来给人看。
+    #[error("质量失败: {0}")]
+    Quality(String),
+
     /// 配置/清单错误。
     #[error("配置错误: {0}")]
     Config(String),
@@ -61,6 +68,11 @@ impl DevforgeError {
     /// 是否为子 Agent 失败（可恢复类，编排器可决策）。
     pub fn is_agent_failure(&self) -> bool {
         matches!(self, Self::Agent { .. })
+    }
+
+    /// 是否为质量失败（不自动重启，plan 010 D004）。
+    pub fn is_quality_failure(&self) -> bool {
+        matches!(self, Self::Quality(_))
     }
 }
 
@@ -121,5 +133,10 @@ mod tests {
 
         let sys = DevforgeError::System("台账损坏".into());
         assert!(!sys.is_agent_failure());
+        assert!(!sys.is_quality_failure());
+
+        let q = DevforgeError::Quality("审查连续违例".into());
+        assert!(q.is_quality_failure());
+        assert!(!q.is_agent_failure());
     }
 }
