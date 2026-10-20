@@ -649,6 +649,62 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_lives_on_blackboard_not_in_output_dir() {
+        // plan 010 T007：状态住黑板 `plans/<p>/<t>/<sop>/state.json`，不得再写进产物目录
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = MockAgent::new(&["A\n<doc-complete>unit-a-01</doc-complete>"]);
+        let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>"]);
+        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
+        lp.run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
+            .unwrap();
+
+        let store = state_path(&tmp);
+        assert!(store.path().exists(), "断点应落在黑板：{}", store.path().display());
+        assert!(
+            store.path().starts_with(tmp.path().join("plans")),
+            "断点不得住在产物目录：{}",
+            store.path().display()
+        );
+        assert!(
+            !tmp.path().join(DOCS_DIR).join("_meta/state.json").exists(),
+            "旧位置（产物目录）不得再出现 state.json"
+        );
+    }
+
+    #[test]
+    fn legacy_output_dir_state_does_not_participate_in_resume() {
+        // 旧路径的断点作废：不得因此跳过任何单元
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy = tmp.path().join(DOCS_DIR).join("_meta");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(
+            legacy.join("state.json"),
+            serde_json::json!({"done": ["unit-a-01"], "review_rounds": 9}).to_string(),
+        )
+        .unwrap();
+
+        let agent = MockAgent::new(&[
+            "A\n<doc-complete>unit-a-01</doc-complete>",
+            "B\n<doc-complete>unit-b-02</doc-complete>",
+        ]);
+        let (f, _) = factory(&[
+            "<doc-verdict>PASS</doc-verdict>",
+            "<doc-verdict>PASS</doc-verdict>",
+        ]);
+        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
+        let rep = lp
+            .run(
+                &mut NoUser,
+                tmp.path(),
+                &["unit-a-01".to_string(), "unit-b-02".to_string()],
+                "complete",
+            )
+            .unwrap();
+        assert_eq!(rep.units_done, vec!["unit-a-01", "unit-b-02"], "旧断点不得生效");
+        assert_eq!(rep.review_rounds, 2, "旧轮次计数不得被采用");
+    }
+
+    #[test]
     fn broken_evidence_unit_is_reincluded_and_rewritten() {
         // plan 010 T004：断点说 done，但证据不成立 → 必须重新进 kickoff 集合
         let tmp = tempfile::tempdir().unwrap();
