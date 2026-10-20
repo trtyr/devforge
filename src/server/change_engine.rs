@@ -33,6 +33,34 @@ pub const CHANGE_PROFILES: [&str; 6] = [
 /// 需求文件（调用方在 start 前写进黑板）。
 pub const REQUIREMENT_FILE: &str = "requirement.md";
 
+/// 收尾结果（报告落盘 + 用量/墙钟）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finalized {
+    pub report_path: PathBuf,
+    pub usage: String,
+    pub wall_secs: u64,
+}
+
+/// 收尾：用量从会话账汇总（不是 agent 自述）+ 写 `report.md`。
+///
+/// 抽出来单独测：真 run 要 pi 子进程，但「报告写没写对」不该只能靠端到端验证。
+pub fn finalize(
+    outcome: &mut crate::change::orchestrator::ChangeOutcome,
+    session_root: &std::path::Path,
+    workspace: &std::path::Path,
+    started: std::time::Instant,
+) -> Result<Finalized> {
+    let usage = crate::docgen::usage::from_session_dirs(&session_dirs(session_root));
+    outcome.report.usage = usage.render();
+    outcome.report.wall_secs = started.elapsed().as_secs();
+    let report_path = write_report(workspace, &outcome.report.change_id, &outcome.report)?;
+    Ok(Finalized {
+        report_path,
+        usage: outcome.report.usage.clone(),
+        wall_secs: outcome.report.wall_secs,
+    })
+}
+
 impl BuiltinRpcEngine {
     /// 跑一次 change run（门 0 → plan/coding/testing → 报告）。
     pub fn run_change(
@@ -192,19 +220,11 @@ impl BuiltinRpcEngine {
 
         match result {
             Ok(mut outcome) => {
-                // 用量从会话账汇总（不是 agent 自述）
-                let usage = crate::docgen::usage::from_session_dirs(&[
-                    session_root.join("change-plan"),
-                    session_root.join("change-coding"),
-                    session_root.join("change-testing"),
-                ]);
-                outcome.report.usage = usage.render();
-                outcome.report.wall_secs = started.elapsed().as_secs();
-                let report_path = write_report(&workspace, &change_id, &outcome.report)?;
+                let finalized = finalize(&mut outcome, &session_root, &workspace, started)?;
                 tracing::info!(
                     component = "change-engine",
                     change_id = %change_id,
-                    report = %report_path.display(),
+                    report = %finalized.report_path.display(),
                     rounds = outcome.report.review_rounds,
                     roundtrips = outcome.report.roundtrips,
                     "change SOP 通过"
@@ -236,4 +256,72 @@ pub fn session_dirs(session_root: &std::path::Path) -> [PathBuf; 6] {
         session_root.join("change-testing"),
         session_root.join("change-test-reviews"),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::change::report::{AcceptanceSummary, ChangeReport, DiffStats};
+    use crate::change::state::{ChangePhase, ChangeState};
+    use crate::change::orchestrator::ChangeOutcome;
+
+    fn outcome() -> ChangeOutcome {
+        ChangeOutcome {
+            state: ChangeState::new("change-1", "base"),
+            report: ChangeReport {
+                change_id: "change-1".into(),
+                run_id: "run-1".into(),
+                baseline_sha: "base".into(),
+                wall_secs: 0,
+                diff: DiffStats {
+                    files: 1,
+                    insertions: 2,
+                    deletions: 0,
+                },
+                review_rounds: 2,
+                roundtrips: 1,
+                usage: String::new(),
+                acceptance: AcceptanceSummary {
+                    total: 1,
+                    done: 1,
+                    missing: vec![],
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn finalize_writes_report_with_usage_and_wall_clock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut out = outcome();
+        let f = finalize(&mut out, &tmp.path().join("sessions"), tmp.path(), std::time::Instant::now())
+            .unwrap();
+        assert!(f.report_path.is_file());
+        let text = std::fs::read_to_string(&f.report_path).unwrap();
+        assert!(text.contains("用量:"), "{text}");
+        assert!(text.contains("验收对账: 通过"), "{text}");
+        assert!(text.contains("审查轮次: 2"), "{text}");
+        assert!(text.contains("往返: 1"), "{text}");
+        assert_eq!(out.state.phase, ChangePhase::Plan, "收尾不得改阶段");
+    }
+
+    #[test]
+    fn session_dirs_cover_all_six_profiles() {
+        let dirs = session_dirs(std::path::Path::new("/s"));
+        let names: Vec<String> = dirs
+            .iter()
+            .map(|d| d.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names.len(), CHANGE_PROFILES.len());
+        for n in [
+            "change-plan",
+            "change-plan-reviews",
+            "change-coding",
+            "change-coding-reviews",
+            "change-testing",
+            "change-test-reviews",
+        ] {
+            assert!(names.contains(&n.to_string()), "缺会话目录 {n}");
+        }
+    }
 }

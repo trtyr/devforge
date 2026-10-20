@@ -542,6 +542,36 @@ mod tests {
     }
 
     #[test]
+    fn mock_chain_produces_report_and_done_state() {
+        // 接口级（进程内）全链：plan→coding→testing→report，不碰真 pi
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        let mut session = Scripted::new();
+        session.plans.push_back(PlanTurn::Pass);
+        session.codings.push_back(in_boundary());
+        session.testings.push_back(pass_testing());
+
+        let mut ui = NoUser;
+        let mut out = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap();
+        assert_eq!(out.state.phase, ChangePhase::Done);
+
+        let finalized = crate::server::change_engine::finalize(
+            &mut out,
+            &tmp.path().join("sessions"),
+            tmp.path(),
+            std::time::Instant::now(),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&finalized.report_path).unwrap();
+        assert!(text.contains("验收对账: 通过"), "{text}");
+        assert!(text.contains("用量:"), "{text}");
+        // 断点也落盘：重新读取仍是 done
+        let saved = load(&st, "change-20261020-x", "base123");
+        assert_eq!(saved.phase, ChangePhase::Done);
+    }
+
+    #[test]
     fn test_reroutes_are_bounded_across_sessions() {
         // 回注次数记在断点里：跳会话累计，不会被重启清零
         let tmp = tempfile::tempdir().unwrap();
