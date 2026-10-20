@@ -26,7 +26,7 @@ pub use boundary::{
     merge_gaps_into_whitelist, replan_instruction,
 };
 pub use change_id::{assign_change_id, change_root, make_change_id, slugify, validate_change_id};
-pub use coding_gate::{check_baseline_log, check_step_commits, read_steps};
+pub use coding_gate::{SELF_CHECK_LOG, check_baseline_log, check_self_check, check_step_commits, read_steps};
 pub use docs::{DocAction, apply as apply_doc_level, essential_ready};
 pub use gate0::{Baseline, DocLevel, ensure_baseline};
 pub use history::{append_roundtrip, history_path};

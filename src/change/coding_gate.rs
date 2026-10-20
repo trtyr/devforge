@@ -14,6 +14,8 @@ use crate::error::{DevforgeError, Result};
 
 /// 证据文件（相对黑板）。
 pub const BASELINE_LOG: &str = "evidence/baseline-test.log";
+/// 自证证据文件（相对黑板）：「先证后报」的机械门（形状与基线门一致）。
+pub const SELF_CHECK_LOG: &str = "evidence/self-check.log";
 /// 实施步骤文件（相对黑板）。
 pub const IMPL_STEPS: &str = "impl-steps.md";
 /// 提交信息里要求出现的 change-id 标记（便于机械归属）。
@@ -26,10 +28,13 @@ pub struct BaselineEvidence {
     pub command: String,
 }
 
-/// 解析 `evidence/baseline-test.log`：期望里面有命令行与退出码。
+/// 解析证据日志：期望里面有命令行与退出码。
 ///
 /// 允许的写法（任一）：`exit_code: 0` / `exit: 0` / `退出码: 0` / `退出码：0`。
-pub fn parse_baseline_log(text: &str) -> Result<BaselineEvidence> {
+///
+/// `file` 与 `label` 是参数：同一套形状服务两道门（基线门 / 自证门），
+/// 错误文案必须指向**各自**的证据文件——指向错文件 = 排查时找错地方。
+fn parse_evidence_log(text: &str, file: &str, label: &str) -> Result<BaselineEvidence> {
     let mut exit_code = None;
     let mut command = String::new();
     for line in text.lines() {
@@ -65,10 +70,17 @@ pub fn parse_baseline_log(text: &str) -> Result<BaselineEvidence> {
     }
     let exit_code = exit_code.ok_or_else(|| {
         DevforgeError::Quality(format!(
-            "基线证据缺退出码（{BASELINE_LOG} 里要写 `exit_code: N`），无法判定基线是否绿"
+            "{label}证据缺退出码（{file} 里要写 `exit_code: N`），无法判定{label}是否绿"
         ))
     })?;
     Ok(BaselineEvidence { exit_code, command })
+}
+
+/// 解析 `evidence/baseline-test.log`：期望里面有命令行与退出码。
+///
+/// 允许的写法（任一）：`exit_code: 0` / `exit: 0` / `退出码: 0` / `退出码：0`。
+pub fn parse_baseline_log(text: &str) -> Result<BaselineEvidence> {
+    parse_evidence_log(text, BASELINE_LOG, "基线")
 }
 
 /// 读证据文件并判定基线是否绿。
@@ -84,6 +96,32 @@ pub fn check_baseline_log(blackboard: &Path) -> Result<BaselineEvidence> {
     if ev.exit_code != 0 {
         return Err(DevforgeError::Quality(format!(
             "基线不是绿的（exit_code={}，命令：{}）——不许在红基线上动代码",
+            ev.exit_code,
+            if ev.command.is_empty() {
+                "未记录".to_string()
+            } else {
+                ev.command
+            }
+        )));
+    }
+    Ok(ev)
+}
+
+/// 读自证证据文件并判定「先证后报」是否兑现（证据存在 + 退出码为 0）。
+///
+/// 与基线门同策略：失败即 Quality，不自动重问 Agent（证据红着 = 没证明）。
+pub fn check_self_check(blackboard: &Path) -> Result<BaselineEvidence> {
+    let path = blackboard.join(SELF_CHECK_LOG);
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        DevforgeError::Quality(format!(
+            "缺少自证证据 {}（提交前必须留下命令原文 + 退出码 + 摘要）：{e}",
+            path.display()
+        ))
+    })?;
+    let ev = parse_evidence_log(&text, SELF_CHECK_LOG, "自证")?;
+    if ev.exit_code != 0 {
+        return Err(DevforgeError::Quality(format!(
+            "自证不是绿的（exit_code={}，命令：{}）——先证后报：证据红着不许提交",
             ev.exit_code,
             if ev.command.is_empty() {
                 "未记录".to_string()
@@ -355,6 +393,100 @@ mod tests {
         std::fs::write(tmp.path().join(BASELINE_LOG), "跑了一遍，看起来还行\n").unwrap();
         let err = check_baseline_log(tmp.path()).unwrap_err();
         assert!(err.to_string().contains("缺退出码"), "{err}");
+    }
+
+    #[test]
+    fn baseline_log_error_text_still_points_at_the_baseline_file() {
+        // 回归路径的第二个调用方（testing_gate）依赖这套文案，本门不得改它
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("evidence")).unwrap();
+        std::fs::write(tmp.path().join(BASELINE_LOG), "command: cargo test\n").unwrap();
+        let err = check_baseline_log(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("基线证据缺退出码"), "{msg}");
+        assert!(msg.contains(BASELINE_LOG), "{msg}");
+    }
+
+    #[test]
+    fn missing_self_check_log_is_quality_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = check_self_check(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(SELF_CHECK_LOG), "错误要指向自证证据文件：{msg}");
+        assert!(
+            !msg.contains(BASELINE_LOG),
+            "自证门的错误不得指向基线文件：{msg}"
+        );
+    }
+
+    #[test]
+    fn self_check_without_exit_code_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("evidence")).unwrap();
+        std::fs::write(
+            tmp.path().join(SELF_CHECK_LOG),
+            "command: cargo test\n跑完了，看着没问题\n",
+        )
+        .unwrap();
+        let err = check_self_check(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("退出码"), "{msg}");
+        assert!(msg.contains(SELF_CHECK_LOG), "{msg}");
+        assert!(
+            !msg.contains(BASELINE_LOG),
+            "自证门的错误不得指向基线文件：{msg}"
+        );
+    }
+
+    #[test]
+    fn red_self_check_is_rejected_with_exit_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("evidence")).unwrap();
+        std::fs::write(
+            tmp.path().join(SELF_CHECK_LOG),
+            "command: cargo test\nexit_code: 1\n",
+        )
+        .unwrap();
+        let err = check_self_check(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("exit_code=1"), "{msg}");
+        assert!(
+            !msg.contains(BASELINE_LOG),
+            "自证门的错误不得指向基线文件：{msg}"
+        );
+    }
+
+    #[test]
+    fn green_self_check_passes() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("evidence")).unwrap();
+        std::fs::write(
+            tmp.path().join(SELF_CHECK_LOG),
+            "command: cargo test\nexit_code: 0\n455 passed\n",
+        )
+        .unwrap();
+        let ev = check_self_check(tmp.path()).unwrap();
+        assert_eq!(ev.exit_code, 0);
+        assert_eq!(ev.command, "cargo test");
+    }
+
+    #[test]
+    fn self_check_and_baseline_logs_are_independent_files() {
+        // 两道门各读各的文件：基线绿不代表自证绿，自证绿也不代表基线绿
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("evidence")).unwrap();
+        std::fs::write(
+            tmp.path().join(BASELINE_LOG),
+            "command: cargo test\nexit_code: 0\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join(SELF_CHECK_LOG),
+            "command: cargo test\nexit_code: 1\n",
+        )
+        .unwrap();
+        assert!(check_baseline_log(tmp.path()).is_ok());
+        assert!(check_self_check(tmp.path()).is_err());
     }
 
     #[test]
