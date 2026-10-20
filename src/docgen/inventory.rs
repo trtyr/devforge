@@ -350,6 +350,77 @@ pub fn scan_support_files(root: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// 测试文件判定：_test 后缀 / tests 目录 / .test./.spec. 中缀。
+pub fn is_test_file(rel: &str) -> bool {
+    let p = Path::new(rel);
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let stem = p
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    rel.split('/').any(|c| c == "tests" || c == "test" || c == "__tests__")
+        || stem.ends_with("_test")
+        || stem.starts_with("test_")
+        || stem.ends_with(".test")
+        || stem.ends_with(".spec")
+        || name.ends_with("_test.go")
+}
+
+/// 测试即可执行规格（T003）：从测试反抽「行为条目」——只取名字与位置，不照拄断言。
+///
+/// 为什么只取名字：断言是实现细节的镜像，文档要的是「这条行为存在且可验证」，
+/// 而它可验证这件事由 `path:line` 自己担保。
+pub fn test_specs(lang: Lang, text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut prev_was_rust_attr = false;
+    for (idx, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        match lang {
+            Lang::Python => {
+                if let Some(rest) = line.strip_prefix("async def ").or_else(|| line.strip_prefix("def "))
+                    && let Some(name) = rest.split('(').next()
+                    && name.starts_with("test")
+                {
+                    out.push((idx + 1, name.to_string()));
+                }
+            }
+            Lang::TsJs => {
+                for kw in ["it(", "test("] {
+                    if let Some(rest) = line.strip_prefix(kw)
+                        && let Some(q) = rest.trim_start().strip_prefix(['"', '\'', '`'])
+                        && let Some(name) = q.split(['"', '\'', '`']).next()
+                        && !name.is_empty()
+                    {
+                        out.push((idx + 1, name.to_string()));
+                    }
+                }
+            }
+            Lang::Go => {
+                if let Some(rest) = line.strip_prefix("func Test")
+                    && let Some(name) = rest.split('(').next()
+                {
+                    out.push((idx + 1, format!("Test{name}")));
+                }
+            }
+            Lang::Rust => {
+                if line == "#[test]" || line.starts_with("#[test ") {
+                    prev_was_rust_attr = true;
+                    continue;
+                }
+                if prev_was_rust_attr
+                    && let Some(rest) = line.strip_prefix("fn ")
+                    && let Some(name) = rest.split('(').next()
+                {
+                    out.push((idx + 1, name.to_string()));
+                }
+                prev_was_rust_attr = false;
+            }
+            Lang::Other => {}
+        }
+    }
+    out
+}
+
 /// 从磁盘机械构建清单（启发式 v1）。
 pub fn build_inventory(root: &Path) -> Result<Inventory> {    let root = root
         .canonicalize()
@@ -408,6 +479,24 @@ pub fn build_inventory(root: &Path) -> Result<Inventory> {    let root = root
                         status: Coverage::Uncovered,
                         unit_id: String::new(),
                     });
+                }
+                // T003：测试即可执行规格（只抽测试名与位置）。
+                // Rust 的测试通常写在源文件内的 `#[test]` 块里，所以不按文件名卡。
+                if (is_test_file(rel) || *lang == Lang::Rust)
+                    && let Some(lang) = Lang::from_path(Path::new(rel))
+                {
+                    for (line, name) in test_specs(lang, &text) {
+                        entries.push(InventoryEntry {
+                            id: format!("spec:{rel}:{name}"),
+                            kind: EntryKind::Behavior,
+                            path: rel.clone(),
+                            line,
+                            canonical_name: name,
+                            aliases: Vec::new(),
+                            status: Coverage::Uncovered,
+                            unit_id: String::new(),
+                        });
+                    }
                 }
             }
         }
@@ -1375,5 +1464,70 @@ mod tests {
             .iter()
             .filter(|e| e.kind == EntryKind::Config && e.path == "src/app.py")
             .all(|e| e.unit_id == app_unit));
+    }
+
+    // ---- T003 测试即可执行规格 ----
+
+    #[test]
+    fn test_specs_extracted_per_language() {
+        let py = test_specs(
+            Lang::Python,
+            "def test_add() -> None:\n    assert 1\n\nasync def test_async():\n    pass\n\ndef helper():\n    pass\n",
+        );
+        let names: Vec<&str> = py.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, vec!["test_add", "test_async"]);
+
+        let ts = test_specs(
+            Lang::TsJs,
+            "it('adds', () => {});\ntest(\"lists\", () => {});\n",
+        );
+        let tn: Vec<&str> = ts.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(tn, vec!["adds", "lists"]);
+
+        let go_src = "func TestAdd(t *testing.T) {}\nfunc helper() {}\n";
+        let g = test_specs(Lang::Go, go_src);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].1, "TestAdd");
+
+        let rs = "#[test]\nfn adds() {}\n\nfn helper() {}\n";
+        let r = test_specs(Lang::Rust, rs);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].1, "adds");
+    }
+
+    #[test]
+    fn test_files_get_behavior_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(
+            tmp.path(),
+            "tests/test_core.py",
+            "def test_add():\n    assert True\n",
+        );
+        touch(tmp.path(), "src/app.py", "def run():\n    pass\n");
+        let inv = build_inventory(tmp.path()).unwrap();
+        let specs: Vec<&str> = inv
+            .entries
+            .iter()
+            .filter(|e| e.id.starts_with("spec:"))
+            .map(|e| e.canonical_name.as_str())
+            .collect();
+        assert_eq!(specs, vec!["test_add"]);
+        assert!(
+            inv.entries
+                .iter()
+                .filter(|e| e.id.starts_with("spec:"))
+                .all(|e| !e.unit_id.is_empty()),
+            "规格条目也要挂单元"
+        );
+    }
+
+    #[test]
+    fn test_file_detection_covers_common_layouts() {
+        assert!(is_test_file("tests/test_20_x.py"));
+        assert!(is_test_file("src/core_test.py"));
+        assert!(is_test_file("web/app.test.tsx"));
+        assert!(is_test_file("pkg/server_test.go"));
+        assert!(!is_test_file("src/core.py"));
+        assert!(!is_test_file("src/testing_utils.py"));
     }
 }

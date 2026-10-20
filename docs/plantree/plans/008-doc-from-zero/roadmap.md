@@ -15,7 +15,7 @@
 - [x] **(T001) inventory 抽取器（引擎侧）** — `src/docgen/inventory.rs` + CLI `devforge doc-inventory`；真实仓实测 531 条目（commit `51abc8d`）。
   - **v1 限制（诚实登记）**：靠行首启发式抽公开符号，无 tree-sitter；codegraph 只记 `meta.codegraph_indexed`，本版未消费其图。
 - [x] **(T002) 约定面抽取** — 配置键（源码 env 读取 + `.env.example`）、Data（SQL `CREATE TABLE/VIEW`）、构建启动命令（Makefile 目标 + `package.json` scripts）。v1 不解析 pyproject/TOML 与 migration 目录，已在证据文件登记。
-- [ ] **(T003) 测试即可执行规格** — 从测试反抽行为条目——**未实现**，下一轮补。
+- [x] **(T003) 测试即可执行规格** — 从测试反抽行为条目（`spec:` 前缀的 Behavior）：Python `def test_*` / TS `it()|test()` / Go `func Test*` / Rust `#[test] fn`（含源文件内联测试）；每条带 path:line。v1 只取名字与位置，不读断言、不识别 skip/xfail。
 - [x] **(T003b) `doc_level` 三档生效** — `audit::DocLevel`（essential 仅 entry / complete 含 module+symbol）。
 - [x] **(T003c) 三道闭包校验** — 入口可达 / 文件覆盖 / 符号覆盖，反向验证有单测（删模块/删符号必报错）。
 - [x] **(T003d) 编号预分配** — `assign_units` 幂等，单测断言两次调用结果一致。
