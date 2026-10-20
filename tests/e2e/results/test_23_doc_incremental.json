@@ -1,0 +1,123 @@
+{
+  "script": "test_23_doc_incremental",
+  "checks": [
+    {
+      "name": "PUT 剥包 manifest == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "宿主 manifest 的 profile 渲染完成",
+      "ok": true,
+      "detail": "{'rendered': 9, 'type': 'config.rendered'}"
+    },
+    {
+      "name": "fixture 有 git 基线",
+      "ok": true,
+      "detail": "fa727add041d"
+    },
+    {
+      "name": "项目创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "任务创建",
+      "ok": true,
+      "detail": "status=201, body={'id': 'd1', 'project': 'incr-app', 'sop': 'doc-from-zero', 'workspace': '/var/tmp/devforge-e2e-dj6bhdkf/workspace/incr-app', 'status': 'Pending', 'created_at_ms': 1792481247884, 'current_run': None, 'runs': []}"
+    },
+    {
+      "name": "第 1 轮 Settled（1010s）",
+      "ok": true,
+      "detail": "final=Settled"
+    },
+    {
+      "name": "第 1 轮两个单元都完成（['unit-alpha-01', 'unit-beta-02']）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "成功后基线推进到 HEAD（D021）",
+      "ok": true,
+      "detail": "fa727add041dde5e1950473335c5a884305d3267 vs fa727add041dde5e1950473335c5a884305d3267"
+    },
+    {
+      "name": "第 1 轮账单有 token 用量",
+      "ok": true,
+      "detail": "9677201"
+    },
+    {
+      "name": "第 1 轮登记了各单元产物（10 个文件）",
+      "ok": true,
+      "detail": "['unit-alpha-01:alpha/__init__.py.md', 'unit-alpha-01:alpha/a.py.md', 'unit-alpha-01:alpha/alpha_sum.md', 'unit-alpha-01:alpha/index.md', 'unit-alpha-01:runbook-alpha.md', 'unit-beta-02:beta/__init__.py.md']"
+    },
+    {
+      "name": "第二次提交产生新 HEAD",
+      "ok": true,
+      "detail": "adb05196ec44"
+    },
+    {
+      "name": "第 2 轮 Settled（500s）",
+      "ok": true,
+      "detail": "final=Settled"
+    },
+    {
+      "name": "状态记录了本轮增量受影响集合",
+      "ok": true,
+      "detail": "['unit-alpha-01']"
+    },
+    {
+      "name": "单元按包划分",
+      "ok": true,
+      "detail": "['unit-alpha-01', 'unit-beta-02']"
+    },
+    {
+      "name": "受影响单元含 alpha",
+      "ok": true,
+      "detail": "['unit-alpha-01']"
+    },
+    {
+      "name": "未受影响的 beta 不重派",
+      "ok": true,
+      "detail": "['unit-alpha-01']"
+    },
+    {
+      "name": "beta 单元产物未被重写（mtime+size 不变）",
+      "ok": true,
+      "detail": "before={'unit-beta-02:beta/__init__.py.md': (1792482000814561699, 2372), 'unit-beta-02:beta/b.py.md': (1792482003413355276, 3718), 'unit-beta-02:beta/beta_count.md': (1792481950290253226, 4372), 'unit-beta-02:beta/index.md': (1792482060490224917, 1685), 'unit-beta-02:runbook-beta.md': (1792482006666238727, 6631)} after={'unit-beta-02:beta/__init__.py.md': (1792482000814561699, 2372), 'unit-beta-02:beta/b.py.md': (1792482003413355276, 3718), 'unit-beta-02:beta/beta_count.md': (1792481950290253226, 4372), 'unit-beta-02:beta/index.md': (1792482060490224917, 1685), 'unit-beta-02:runbook-beta.md': (1792482006666238727, 6631)}"
+    },
+    {
+      "name": "alpha 单元产物被重写",
+      "ok": true,
+      "detail": "before={'unit-alpha-01:alpha/__init__.py.md': (1792481699510316056, 2323), 'unit-alpha-01:alpha/a.py.md': (1792481696098754973, 3344), 'unit-alpha-01:alpha/alpha_sum.md': (1792481570508727190, 3825), 'unit-alpha-01:alpha/index.md': (1792481595482342444, 1704), 'unit-alpha-01:runbook-alpha.md': (1792481722350310218, 6418)} after={'unit-alpha-01:alpha/__init__.py.md': (1792482425374132054, 2498), 'unit-alpha-01:alpha/a.py.md': (1792482568758095701, 4773), 'unit-alpha-01:alpha/alpha_extra.md': (1792482505158111960, 5188), 'unit-alpha-01:alpha/alpha_sum.md': (1792482548190100938, 3973), 'unit-alpha-01:alpha/index.md': (1792482432438130271, 2335), 'unit-alpha-01:runbook-alpha.md': (1792482446298126789, 7852)}"
+    },
+    {
+      "name": "召回：新函数 alpha_extra 出现在文档里",
+      "ok": true,
+      "detail": "['runbook-alpha.md', 'alpha/alpha_sum.md', 'alpha/a.py.md', 'alpha/alpha_extra.md', 'alpha/index.md']"
+    },
+    {
+      "name": "第 2 轮账单有 token 用量",
+      "ok": true,
+      "detail": "14491837"
+    },
+    {
+      "name": "增量轮 token 少于全量轮",
+      "ok": false,
+      "detail": "14491837 < 9677201"
+    },
+    {
+      "name": "增量轮墙钟短于全量轮",
+      "ok": true,
+      "detail": "500s < 1010s"
+    },
+    {
+      "name": "增量成功后基线推进到新 HEAD",
+      "ok": true,
+      "detail": "adb05196ec44861d7fefa897f32a768a019c6976 vs adb05196ec44861d7fefa897f32a768a019c6976"
+    }
+  ],
+  "issues": [],
+  "passed": 22,
+  "failed": 1
+}

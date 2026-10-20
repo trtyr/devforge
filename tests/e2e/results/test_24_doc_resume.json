@@ -1,0 +1,38 @@
+{
+  "script": "test_24_doc_resume",
+  "checks": [
+    {
+      "name": "PUT 剥包 manifest == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "profile 渲染完成",
+      "ok": true,
+      "detail": "{'rendered': 9, 'type': 'config.rendered'}"
+    },
+    {
+      "name": "项目创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "任务创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "第 1 轮 start == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "第一个单元 done（None）",
+      "ok": false,
+      "detail": ""
+    }
+  ],
+  "issues": [],
+  "passed": 5,
+  "failed": 1
+}
