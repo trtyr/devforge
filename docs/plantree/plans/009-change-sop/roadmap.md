@@ -47,7 +47,7 @@
   - **证据**：commit `583a725`（`change::boundary`） + `57a56aa`（编排层全回路）。
 - [x] **(T013) change 编排器**——不要照搬 `run_coding`：它有基线、有 plan 产出、允许 coding → plan 的**反向回退**；往返计数上限 3。
   - 验收：单测能重现「coding → route plan → 改边界 → 重进 coding」全回路；第 4 次往返必须停下并报错。
-  - **证据**：commit `57a56aa`（`change::orchestrator`，ChangeSession 注入；全回路与第四次拒绝均有单测）；`history.md` 逐次落盘由 `change::history` 实现（commit 待记）。
+  - **证据**：commit `57a56aa`（`change::orchestrator`，ChangeSession 注入；全回路与第四次拒绝均有单测）；`history.md` 逐次落盘由 `change::history` 实现（commit `726f650`）。
 - [x] **(T010) 回归前置（coding）**——coding 动手前自己判断怎么跑测试（README/CI/包管理器），跑一遍并落 `evidence/baseline-test.log`；红就不许动。
   - 验收：既有测试红 → coding 阶段直接失败，错误信息含自己跑的命令与失败摘要。
   - **证据**：commit `7739a61`（`change::coding_gate::check_baseline_log`）。
