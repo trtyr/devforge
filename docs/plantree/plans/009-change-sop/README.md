@@ -30,16 +30,17 @@
 | testing | 给新系统写测试 | **先回归后新增**，回归失败直接阻塞 |
 | 收尾 | 无 | 文档同步（`docs-update` / `docs-sync`）+ `doc-lint` 0 违规 + 变更报告 |
 
-## 编排：带回路的状态机（与 MVP 最大差别）
+## 编排：跨阶段回退与交接
 
-MVP 是单向流水（plan→coding→testing）；change 是 **plan ⇄ coding ⇄ testing**：
+先说清一个容易被说错的事：**MVP 三个阶段内部同样是 agent ⇄ review 循环**（plan 反复打回、coding 多轮 review、testing 审查闭环）。
+所以 change 与 MVP 的差别不是“单向 vs 带回路”。
 
-- coding 发现计划漏了必需文件 → 输出 `<route>plan</route>` + `<impact-gap>`（文件/理由/证据）→ 打回 plan 补边界
-- 边界增量过 change-review（只审增量，防边界蠕变）→ 带新边界重进 coding
-- 越界但**没申报** → FAIL（范围膨胀），一票否决
-- 往返上限 3 次，每次写 `changes/<change-id>/history.md`；第 4 次停下问人
+change 真正的编排差异是两件具体的事：
 
-细节见 `topics/boundary-protocol.md`。这也是本 SOP 不能照搬 `run_coding` 的原因。
+1. **允许 coding 反向打回 plan**：coding 发现计划漏了必需文件 → `<route>plan</route>` + `<impact-gap>`（文件/理由/证据）→ 补边界、过增量审、重进 coding。MVP 的交接是 plan→coding→testing 正向的，没有反向回退。
+2. **每个阶段都多锚一个基线**：diff、白名单、回归退出码——这些证据在 MVP 里根本不存在（新仓没有“之前”）。
+
+越界不申报 = 范围膨胀 = FAIL；往返上限 3 次，每次写 `changes/<change-id>/history.md`。细节见 `topics/boundary-protocol.md`。
 
 ## plan 阶段六块（`change-plan.md`）
 

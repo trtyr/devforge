@@ -38,7 +38,7 @@
 **为什么**：两种越界在 diff 上无法区分，硬 FAIL 会把“计划漏了必需文件”逼成欺骗或偷改；
 判据选「有没有先回 plan」—— 边界是计划的一部分，扩边界必须回计划留痕并过审。
 **拍板**：用户 2026-10-20（提出二分），机制由本 plan 定。
-**影响**：change 的编排器必须是状态机（plan⇄coding），不能照搬 MVP 的单向流水；详见 `topics/boundary-protocol.md`。
+**影响**：change 的编排器不能直接照搬 `run_coding`：多了基线 diff、plan 产物与**coding→plan 反向回退**（MVP 只走正向交接）；详见 `topics/boundary-protocol.md`。
 
 ## D006 · 回归优先
 

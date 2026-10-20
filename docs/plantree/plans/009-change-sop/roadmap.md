@@ -26,7 +26,7 @@
 
 - [ ] **(T009) 越界二分与往返**——coding 完成后引擎算 diff 对白名单：全内 → testing；越界且 agent 已 `<route>plan</route>` + `<impact-gap>`（文件/理由/证据）→ 打回 plan 补边界（增量过审后重进 coding）；越界无申报 → FAIL（范围膨胀）。
   - 验收：两个反向用例各一条单测——故意改白名单外且不申报 → FAIL；故意改白名单外但带 impact-gap → 回 plan 且白名单被追加。
-- [ ] **(T013) change 状态机编排器**——不照搬 MVP 单向流水：plan ⇄ coding ⇄ testing 带路由，往返计数上限 3，每次往返写 `docs/plantree/changes/<change-id>/history.md`。
+- [ ] **(T013) change 编排器**——不要照搬 `run_coding`：它有基线、有 plan 产出、允许 coding → plan 的**反向回退**；往返计数上限 3，每次写 `docs/plantree/changes/<change-id>/history.md`。
   - 验收：单测能重现「coding → route plan → 改边界 → 重进 coding」全回路；第 4 次往返必须停下并报错。
 - [ ] **(T010) 回归前置**——coding 动手前先跑既有测试（命令来自计划），不绿不许改；证据落黑板。
   - 验收：既有测试红 → coding 阶段直接失败，且错误信息含测试命令与失败摘要。
