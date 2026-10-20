@@ -53,6 +53,9 @@ pub struct ChangeState {
     /// 累计审查轮次。
     #[serde(default)]
     pub review_rounds: usize,
+    /// 测试→coding 回注次数（跳会话累计，防止无休止互推）。
+    #[serde(default)]
+    pub test_reroutes: usize,
     /// change-id（跨会话核对同一件事）。
     #[serde(default)]
     pub change_id: String,
@@ -67,6 +70,7 @@ impl ChangeState {
             impl_steps_done: Vec::new(),
             acceptance_done: Vec::new(),
             review_rounds: 0,
+            test_reroutes: 0,
             change_id: change_id.into(),
         }
     }
@@ -112,6 +116,10 @@ impl ChangeState {
 
     pub fn bump_roundtrip(&mut self) {
         self.roundtrips += 1;
+    }
+
+    pub fn bump_test_reroute(&mut self) {
+        self.test_reroutes += 1;
     }
 }
 
