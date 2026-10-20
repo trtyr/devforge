@@ -16,8 +16,8 @@
 
 - [ ] **(T004) `change-plan-agent` profile**——deepseek-flash + codegraph MCP + `plan-tree` 技能；与 `plan-agent` 平行不干扰。
 - [ ] **(T005) `change-plan-review` profile**——grok-4.7 + codegraph（核调用关系）+ `plan-tree`；与 `plan-review` 平行。
-- [ ] **(T006) 提示词：六块产出**——需求复述/影响面/三张表/边界/**验收标准 + 回归命令**/风险；影响面每条必须 `path:line`；允许跑只读命令并落 `evidence/baseline-test.log`；**不写新功能的测试命令**（归 testing）、**不写实施顺序**（归 coding）。
-  - 验收：提示词锚点单测（六块标题 + codegraph-first + 白名单 + 验收标准 + 基线证据 + 不排实施顺序）。
+- [ ] **(T006) 提示词：六块产出**——需求复述/影响面/三张表/边界/**验收标准**/风险；影响面每条必须 `path:line`；**不写实施顺序**（归 coding）、**不写回归命令**（归 coding/testing）、不拿测试结果当证据。
+  - 验收：提示词锚点单测（六块标题 + codegraph-first + 白名单 + 验收标准 + 不排顺序/不写命令）。
 - [ ] **(T007) 审查判据（只审计划）**——影响面无证据 = FAIL；影响面漏掉需求涉及的入口/调用方 = FAIL；验收条目不可观测 = FAIL；回归命令**只读不跑**，判「写得够不够具体」。
   - 验收：三条反向用例各一条单测（缺证据 / 漏调用方 / 验收条目写“功能正常”）。
 - [ ] **(T007b) 引擎侧计划审计**——`path:line` 存在性、白名单路径存在性、「要改的」⊆ 白名单，机械输出注入审查（审查官不重算）。
@@ -33,8 +33,8 @@
   - 验收：两个反向用例各一条单测——故意改白名单外且不申报 → FAIL；故意改白名单外但带 impact-gap → 回 plan 且白名单被追加。
 - [ ] **(T013) change 编排器**——不要照搬 `run_coding`：它有基线、有 plan 产出、允许 coding → plan 的**反向回退**；往返计数上限 3，每次写 `docs/plantree/changes/<change-id>/history.md`。
   - 验收：单测能重现「coding → route plan → 改边界 → 重进 coding」全回路；第 4 次往返必须停下并报错。
-- [ ] **(T010) 回归前置**——coding 动手前先跑既有测试（命令来自计划），不绿不许改；证据落黑板。
-  - 验收：既有测试红 → coding 阶段直接失败，且错误信息含测试命令与失败摘要。
+- [ ] **(T010) 回归前置（coding）**——coding 动手前自己判断怎么跑测试（README/CI/包管理器），跑一遍并落 `evidence/baseline-test.log`；红就不许动。
+  - 验收：既有测试红 → coding 阶段直接失败，错误信息含自己跑的命令与失败摘要。
 - [ ] **(T010b) 实施步骤与按步提交**——coding 先产 `impl-steps.md`（每步：文件/验收标准/怎么验）再执行，每步一提交。
   - 验收：一个至少三步的变更，提交数与 impl-steps 步骤数一致，且每条提交信息含步骤号。
 - [ ] **(T010c) 越界二分实现**——引擎比对 diff 与白名单，无申报 → FAIL；带 `<impact-gap>` → 回 plan 补边界。
@@ -42,8 +42,8 @@
 
 ## Phase C · testing 门
 
-- [ ] **(T011) 回归 + 新增**——测试阶段先复跑既有套件，再补变更测试；回归失败 = 阻塞。
-  - 验收：既有套件人为打断后 run 必须 FAIL。
+- [ ] **(T011) 回归 + 变更 e2e（testing）**——test agent 先跑全套回归（`evidence/regression.log`），红则直接 `<route>coding</route>`；再为变更点写 e2e，输出验收对照表（每条验收标准 → 测试 `path:line`）。
+  - 验收：既有套件人为打断后 run 必须 FAIL 并回注 coding；验收标准漏一条 → FAIL。
 
 ## Phase D · 收尾
 
