@@ -7,7 +7,7 @@
 //!   引擎不自动探测目录里有没有文档。
 //! - **change-id（D008）**：`change-<date>-<slug>`，同一任务重复触发必须幂等。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use crate::error::{DevforgeError, Result};
