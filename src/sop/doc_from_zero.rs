@@ -57,6 +57,12 @@ pub fn is_done(state: &RunState, unit: &str) -> bool {
     done_units(state).iter().any(|u| u == unit)
 }
 
+/// 把单元从 done 里摘除（重做前用：旧记录已不可信）。
+pub fn unmark_done(state: &mut RunState, unit: &str) {
+    let kept: Vec<String> = done_units(state).into_iter().filter(|u| u != unit).collect();
+    data_obj(state).insert("done".into(), serde_json::json!(kept));
+}
+
 /// 标记单元完成，并登记它产出的文件（相对产出根）。
 pub fn mark_done(state: &mut RunState, unit: &str, files: &[String]) {
     let mut done = done_units(state);
@@ -248,8 +254,13 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
             {
                 continue;
             }
+            // 传入的 units 就是「本次要跑的集合」（引擎已按续跑计划算好）——
+            // **不得用 is_done 再过滤一遍**：证据失效的单元会被引擎放回 to_run，
+            // 旧断点里那个 done 标记说的是「上次做过」，不是「这次跳过」。
             if is_done(&state, unit) {
-                continue;
+                // 重做：旧完成记录作废，避免中途崩溃后留下假绿
+                unmark_done(&mut state, unit);
+                self.store.save(&mut state)?;
             }
             let before = snapshot_files(&docs_root);
 
@@ -628,23 +639,40 @@ mod tests {
 
     #[test]
     fn done_units_are_skipped_on_resume() {
+        // 引擎侧（plan）剔除证据成立的 done 单元；loop 只跑 to_run
         let tmp = tempfile::tempdir().unwrap();
-        let state = state_path(&tmp);
-        seed_done(&state, &["unit-a-01"]);
+        let store = state_path(&tmp);
+        let docs = tmp.path().join(DOCS_DIR);
+        std::fs::create_dir_all(docs.join("a")).unwrap();
+        std::fs::write(docs.join("a/x.md"), b"x").unwrap();
+        let mut state = store.fresh_state();
+        mark_done(&mut state, "unit-a-01", &["a/x.md".to_string()]);
+        bump_review(&mut state);
+        store.save(&mut state).unwrap();
+
+        let all = vec!["unit-a-01".to_string(), "unit-b-02".to_string()];
+        let resume = crate::sop::doc_resume::DocResume::new(&docs);
+        let plan = crate::runstate::resume::plan(
+            &tmp.path().join("plans"),
+            "p",
+            "t",
+            &resume,
+            &all,
+            false,
+        );
+        assert_eq!(plan.to_run, vec!["unit-b-02".to_string()]);
 
         let agent = MockAgent::new(&["B\n<doc-complete>unit-b-02</doc-complete>"]);
+        let seen = agent.received.clone();
         let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>\n<route>finish</route>"]);
         let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
         let rep = lp
-            .run(
-                &mut NoUser,
-                tmp.path(),
-                &["unit-a-01".to_string(), "unit-b-02".to_string()],
-                "complete",
-            )
+            .run(&mut NoUser, tmp.path(), &plan.to_run, "complete")
             .unwrap();
-        assert_eq!(rep.units_done, vec!["unit-a-01", "unit-b-02"]);
+        assert_eq!(rep.units_done, all);
         assert_eq!(rep.review_rounds, 2, "已完成的单元不再审");
+        assert_eq!(seen.borrow().len(), 1, "只应跑 to_run 里的那个单元");
+        assert!(seen.borrow()[0].contains("unit-b-02"));
     }
 
     #[test]
@@ -728,19 +756,35 @@ mod tests {
             plan.to_run
         );
 
-        // 引擎按 to_run 派发：agent 再次收到 unit-a-01 的 kickoff 并重写
+        // 引擎按 to_run 派发：agent 必须真的收到 unit-a-01 的 kickoff 并重写
         let agent = MockAgent::new(&[
             "重写 A\n<doc-complete>unit-a-01</doc-complete>",
             "写 B\n<doc-complete>unit-b-02</doc-complete>",
         ]);
+        let seen = agent.received.clone();
         let (f, _) = factory(&[
             "<doc-verdict>PASS</doc-verdict>",
             "<doc-verdict>PASS</doc-verdict>",
         ]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
+        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp)).with_resume_note(
+            crate::runstate::resume::Resumable::resume_brief(
+                &resume,
+                store.load().state().expect("断点应在"),
+                &plan.redo,
+            ),
+        );
         let rep = lp
             .run(&mut NoUser, tmp.path(), &plan.to_run, "complete")
             .unwrap();
+        // 硬断言：kickoff 回路真的发生，而不是只信 plan 与收尾名单（审计指出的假阳性）
+        let kicks = seen.borrow();
+        assert_eq!(kicks.len(), 2, "两个单元都应收到 kickoff：{kicks:?}");
+        assert!(
+            kicks[0].contains("unit-a-01"),
+            "第一个 kickoff 必须是被重做的单元：{}",
+            kicks[0]
+        );
+        assert!(kicks[0].contains("必须整单元重写") || kicks[0].contains("断点复核"));
         assert_eq!(rep.units_done, units);
     }
 
