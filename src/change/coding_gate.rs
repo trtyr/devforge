@@ -471,6 +471,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_baseline_log_keeps_its_single_argument_signature() {
+        // 第二调用方（testing_gate）按这个签名调：签名一变就得连带改它（不在白名单内）
+        let _f: fn(&str) -> Result<BaselineEvidence> = parse_baseline_log;
+    }
+
+    #[test]
+    fn regression_claim_text_is_unchanged() {
+        // 回归路径的文案不得被本次改造带偏（质量失败载荷仍以「回归日志不可解析」开头）
+        let err = crate::change::testing_gate::check_regression_claim("command: cargo test\n", true)
+            .unwrap_err();
+        let crate::error::DevforgeError::Quality(msg) = &err else {
+            panic!("应是质量失败：{err}");
+        };
+        assert!(msg.starts_with("回归日志不可解析"), "{msg}");
+    }
+
+    #[test]
     fn decision_ledger_registers_d023() {
         // 决策台账同步（D023）：纪律供给口径 + change 路径的先证后报机械门 + 门只落 change 路径。
         // 放在本文件：白名单内不得新增测试文件，而本变更的门与该决策同源。
