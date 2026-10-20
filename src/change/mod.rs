@@ -13,6 +13,7 @@ pub mod coding_gate;
 pub mod docs;
 pub mod gate0;
 pub mod plan_audit;
+pub mod testing_gate;
 
 pub use boundary::{
     BoundaryVerdict, ImpactGap, MAX_ROUNDTRIPS, check_roundtrip, classify as classify_boundary,
@@ -23,3 +24,7 @@ pub use coding_gate::{check_baseline_log, check_step_commits, read_steps};
 pub use docs::{DocAction, apply as apply_doc_level, essential_ready};
 pub use gate0::{Baseline, DocLevel, ensure_baseline};
 pub use plan_audit::{PlanAudit, audit as audit_plan, review_instruction};
+pub use testing_gate::{
+    AcceptanceMatch, check_regression_claim, check_regression_log, reconcile_acceptance,
+    route_back_message,
+};
