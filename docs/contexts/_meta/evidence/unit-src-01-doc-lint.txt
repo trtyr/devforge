@@ -1,0 +1,29 @@
+# unit-src-01 · doc-lint 门禁证据
+
+命令：`./target/debug/devforge doc-lint docs/contexts --repo .`
+时间：2026-10-20T05:09:25Z
+工具：仓库自带二进制 `target/debug/devforge`（本机无 Rust 工具链，无法 `cargo build` 重编，见 `_meta/gaps.md` #1）
+
+--- 原始输出 ---
+doc-lint: 通过（0 违规）
+退出码：0
+
+--- 覆盖审计（只截 unit-src-01 相关行）---
+命令：`./target/debug/devforge doc-audit docs/contexts --repo . --level complete`
+覆盖审计（引擎）：要求 548 条 / 已覆盖 481 条 / 缺失 67 条
+跨模块重复正文：无
+doc-lint: 通过（0 违规）
+退出码：1（全局覆盖未满：67 条缺失全部属于其它单元——unit-src-06 / unit-src-08 / unit-src-11 / unit-src-14 起及 tests/e2e 各单元，不在本单元范围）
+
+--- 本单元覆盖核对（清单 44 条逐条点名）---
+`grep -c "unit-src-01" doc-audit 输出` = 0 → 本单元 44 条清单条目在 doc-audit 的缺失清单里零出现
+（module 2 / symbol 29 / behavior 13 全部有文档落点；两个 module 均为 frontmatter `type: module` 且正文点名 `src/config/installer.rs` / `src/config/manifest.rs`）
+
+--- 未执行的验证（诚实登记）---
+- `cargo test config::`：本机 `rustup toolchain list` = `no installed toolchains`，无法编译运行 → `_meta/gaps.md` #1
+- 真桥 `pi install` 端到端：会联网取包并改 pi 配置目录，本轮未执行 → `_meta/gaps.md` #2
+- pi 侧契约（`PI_CODING_AGENT_DIR` 覆盖配置目录、`pi install <source>` 命令形态、settings.json 的 `packages` 数组）：引自本机 pi 副本官方文档，可重放核对：
+  - `/home/trtyr/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/environment-variables.md:81`
+  - `/home/trtyr/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/cli.md:9`
+  - `/home/trtyr/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/packages.md:19`
+  - `/home/trtyr/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/packages.md:100`
