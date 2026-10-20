@@ -59,7 +59,8 @@ curl -sX POST localhost:7888/projects/book-app/tasks/d1/start   # → 202
 devforge doc-audit <repo>/docs/contexts --repo <repo>
 ```
 
-产物树（D016）：`docs/contexts/` 正文 + `_meta/{inventory.json,glossary.md,gate0-closures.md,state.json,gaps.md,facts/,interpretation/,reviews/,runs/<run-id>/report.md}`。
+产物树（D016）：`docs/contexts/` 正文 + `_meta/{inventory.json,glossary.md,gate0-closures.md,gaps.md,facts/,interpretation/,reviews/,runs/<run-id>/report.md}`。
+**检查点不在产物树里**（2026-10-20 起，plan 010 D001）：`state.json` 已搬到黑板 `plans/<project>/<task>/doc-from-zero/state.json`——运行状态与产物职责分开，清产物不丢断点。
 `report.md` 带墙钟 / 模块数 / 单元数 / 审查轮次 / **token 用量（从 pi 会话账汇总，非 Agent 自述）**。
 
 ## 节奏：四道门（D010）

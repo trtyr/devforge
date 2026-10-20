@@ -26,7 +26,7 @@
 - [x] **(T005) 改 `doc-review` 供给** — 加 codegraph，thinking=medium，不给 context7（同上 commit）。
 - [x] **(T006) 注册 SOP `doc-from-zero`** — SopRegistry 5 个；`start` 返回 202 有单测（commit `04af7f4`）。
 - [x] **(T007) 协议与路由** — `<doc-complete>` / `<doc-verdict>` / `<route>`；缺/非法 route 保守 phase3；违例上限 3（同上）。
-- [x] **(T008) 检查点与幂等续跑** — `_meta/state.json`；`DEVFORGE_DOC_ONLY` 单点重派（同上）。
+- [x] **(T008) 检查点与幂等续跑** — 落点已于 2026-10-20 改为黑板 `plans/<project>/<task>/doc-from-zero/state.json`（plan 010 D001）；`DEVFORGE_DOC_ONLY` 单点重派保留。
 
 ## Phase C · 勘察与解释（事实 / 推断分离）
 

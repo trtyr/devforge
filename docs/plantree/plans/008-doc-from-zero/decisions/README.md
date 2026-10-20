@@ -134,6 +134,7 @@
 ## D016 · 产物目录与状态文件位置
 
 - **决策**（修正 D002 的 `.docgen/state.json` 路径）：状态与元数据全部进 `docs/contexts/_meta/`，**不在项目根额外建目录**——因为只读红线只给 `docs/contexts/` 开口子。
+- **2026-10-20 修正（plan 010 D001）**：**检查点不属于产物**——`state.json` 搬到黑板 `plans/<project>/<task>/doc-from-zero/state.json`（按 project/task/SOP 三级分文件）；`_meta/` 只留清单/词表/词库/审查记录/账单。理由：清产物（重生成、手滑、换档位）不该等于丢断点，且运行状态寄居产物目录会被误认为交付物。
 
 ```
 <项目>/
@@ -148,7 +149,7 @@
       ├─ glossary.md       清单导出的词表（自动生成，不手改）
       ├─ confidence.md     置信度三色证据表（D006）
       ├─ gaps.md           🔴 缺口与未覆盖登记（D013）
-      ├─ state.json        检查点/幂等续跑（D002，替代项目根 .docgen/）
+      ├─ state.json        检查点/幂等续跑（D002，替代项目根 .docgen/）——**已迁出**，见 D016 的 2026-10-20 修正
       └─ runs/<run-id>/    每次运行的耗时/token/模块数账单（§五·5）
 ```
 
