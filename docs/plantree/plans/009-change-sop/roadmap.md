@@ -44,18 +44,20 @@
 
 - [ ] **(T011) 回归 + 变更 e2e（testing）**——test agent 先跑全套回归（`evidence/regression.log`），红则直接 `<route>coding</route>`；再为变更点写 e2e，输出验收对照表（每条验收标准 → 测试 `path:line`）。
   - 验收：既有套件人为打断后 run 必须 FAIL 并回注 coding；验收标准漏一条 → FAIL。
+- [ ] **(T011b) 续跑检查点**——`changes/<id>/state.json` 由引擎写（阶段/基线/往返/已完成步骤与验收项/审查轮次），断了能从断点续。
+  - 验收：在 testing 中途模拟进程退出，重跑能从 testing 继续，往返计数不丢。
 
 ## Phase D · 收尾
 
-- [ ] **(T012) 文档同步 + 变更报告**——`docs-update` 或 `docs-sync` 对齐文档，`doc-lint` 必须 0 违规；报告含 diff 统计、回归结果、影响面 vs 实际改动对照。
-  - 验收：故意让文档与改动不一致，收尾门必须报出来。
+- [ ] **(T012) 变更报告（无 Agent）**——引擎写 `changes/<id>/report.md`：墙钟、diff 统计、审查轮次、往返次数、用量（会话账汇总）、验收对账结果。
+  - 验收：故意漏一条验收标准 → 报告里能看出来（对账未过）。
 
 ## 里程碑
 
 - **M0**：门 0 可用（基线 + doc_level + change-id）
 - **M1**：plan 阶段端到端跑通，六块齐全且审查可判
 - **M2**：白名单机械校验 + 回归前置生效（边界外改动被真拦住）
-- **M3**：一次真实变更端到端（plan→coding→testing→收尾），证据齐全
+- **M3**：一次真实变更端到端（plan→coding→testing→报告），证据齐全
 
 ## Deferred
 

@@ -28,7 +28,7 @@
 | plan 审查 | 需求覆盖 / 计划可执行 | 追加：证据真实、影响面完整、边界自洽、验收标准可观测（**只看计划，不看 diff**） |
 | coding | 从零实现 | 同一阶段提示词 + **越界二分**（范围膨胀 FAIL / 计划缺口打回 plan）+ 先跑既有测试 |
 | testing | 给新系统写测试 | **先回归后新增**，回归失败直接阻塞 |
-| 收尾 | 无 | 文档同步（`docs-update` / `docs-sync`）+ `doc-lint` 0 违规 + 变更报告 |
+| 收尾 | 无 | 无独立文档阶段：**文档由 coding agent 在改动时同步写**（doc-contract + doc-lint 门）；引擎只生成 `changes/<id>/report.md` |
 
 ## 编排：跨阶段回退与交接
 
@@ -59,6 +59,13 @@ change 真正的编排差异是两件具体的事：
 
 SOP 内部一律 `change-<阶段>-<角色>`：`change-plan-agent` / `change-plan-review` / `change-coding-agent` / `change-coding-review` / `change-test-agent` / `change-test-review`。
 看到名字就知道**这一段在干什么、审的是什么**，不会把「计划审查」误读成「代码审查」。
+
+## 协议与标记（沿用 MVP，不另造）
+
+- Agent 完成一段 → `<stage-complete>N</stage-complete>`；段内多步 N 递增
+- 审查回 `<stage-verdict>PASS|FAIL</stage-verdict>` + `<next>` + `<issues>`
+- change 只多两块：coding 越界申报 `<route>plan</route>` + `<impact-gap>`；testing 回退 `<reroute>coding|plan</reroute>`
+- **无标记重推上限 3 次**（MVP 是零上限）；第 4 次判基础设施故障
 
 ## 为什么“白名单”要引擎侧机械校验
 

@@ -15,6 +15,10 @@
 
 ## 阶段 1 · plan
 
+### 1.0 需求澄清
+
+用 `ask-user-question` 问人（与 MVP 同一条 UI 链路）；问到的答案写进「需求复述」，**不猜**。
+
 ### 1.1 这一段的产出是什么
 
 **不是设计，是定位**：把一句需求落到「改哪几个文件的哪几行、为什么、改完怎么验」。
@@ -115,6 +119,13 @@
 1. `构建 / 类型检查 / 单测` 全绿（退出码为凭，证据落黑板）
 2. `git diff --name-only <baseline>` ⊆ 白名单，或已走越界申报流程
 3. 每步有提交，提交信息含 `change-id` 与步骤号
+4. **文档同步**：项目有 `docs/contexts/` 时，改动涉及时必须同步更新，且 `devforge doc-lint` 退出码为 0（与 MVP coding 同款门）
+
+### 2.4b 标记与重推（有界）
+
+- 每步完成 → `<stage-complete>N</stage-complete>`（N = 步骤号）
+- 无标记 → 重推上限 **3 次**；第 4 次判基础设施故障（MVP 零上限，change 不照抄）
+- 想越界 → `<route>plan</route>` + `<impact-gap>`，不打标记
 
 ### 2.5 `change-coding-review` 审什么
 
@@ -155,7 +166,6 @@ MVP 只证第一件；change 必须两件都证，而且顺序是先证第二件
 | 4 | 回归失败直接丢回 coding | 测试 Agent 不看代码、不做定位；它只负责证伪，定位是实现方的事 |
 
 ### 3.3 流程（五步）
-
 1. **回归**：agent 自己判断怎么跑（README / CI / 包管理器），跑全套既有测试，输出落 `evidence/regression.log`（命令 + 退出码 + 尾巴）。**红 → 直接 `<route>coding</route>`**。
 2. **补变更 e2e**：只针对变更点，从用户可见入口走（有 Runbook 就照它起系统；库形态则调公开 API）。
 3. **验收对账**：输出 `验收对照表`（每条验收标准 → 测试 `path:line`）；引擎核 `path:line` 存在性，缺一条 = FAIL。
@@ -187,3 +197,32 @@ MVP 只证第一件；change 必须两件都证，而且顺序是先证第二件
 ### 3.7 供给
 
 - `change-test-agent` / `change-test-review`：与 MVP `test-agent` / `test-review` 同款（**不给 codegraph**），提示词换成 change 纪律。
+
+### 3.8 标记与回退
+
+- 每阶段完成 → `<stage-complete>N</stage-complete>`；无标记重推上限 3 次
+- 测试 review FAIL → `<route>coding</route>`（默认）或 `<route>plan</route>`（需求理解错）
+- 回归红 → `<route>coding</route>`，不定位、不分析原因
+
+### 3.9 检查点
+
+`docs/plantree/changes/<id>/state.json`，**引擎写、agent 不碰**：
+
+```json
+{
+  "phase": "coding|testing|done",
+  "baseline_sha": "…",
+  "roundtrips": 1,
+  "impl_steps_done": [1, 2],
+  "acceptance_done": ["#1", "#3"],
+  "review_rounds": 4,
+  "updated_at": "…"
+}
+```
+
+续跑从断点继续；`roundtrips` 跨会话保留（上限 3）。
+
+## 阶段 4 · 收尾（无 Agent）
+
+不跑任何 agent。引擎写 `docs/plantree/changes/<id>/report.md`：墙钟、diff 统计（文件数/增删行）、审查轮次、往返次数、用量（从会话账汇总）、验收对账结果。
+文档本身已由 coding agent 在改动时写好（`doc-contract` + `doc-lint` 门），不再单独一趟。
