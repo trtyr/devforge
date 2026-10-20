@@ -1,0 +1,39 @@
+{
+  "unit_id": "unit-src-01",
+  "level": "complete",
+  "status": "done",
+  "repo": "/home/trtyr/code-work/devforge",
+  "updated_at": "2026-10-20T04:20:23Z",
+  "scope": {
+    "files": [
+      "src/config/installer.rs",
+      "src/config/manifest.rs"
+    ],
+    "inventory_entries": 44,
+    "covered_entries": 44
+  },
+  "artifacts": {
+    "facts": "_meta/facts/unit-src-01.md",
+    "confidence": "_meta/confidence.md",
+    "gaps": "_meta/gaps.md",
+    "evidence": "_meta/evidence/unit-src-01-doc-lint.txt"
+  },
+  "docs": [
+    "docs/contexts/src/config/installer.md",
+    "docs/contexts/src/config/manifest.md"
+  ],
+  "gates": {
+    "doc_lint": {
+      "command": "./target/debug/devforge doc-lint docs/contexts --repo .",
+      "exit_code": 0,
+      "summary": "doc-lint: 通过（0 违规）"
+    },
+    "coverage": {
+      "command": "./target/debug/devforge doc-audit docs/contexts --repo . --level complete",
+      "unit_missing": 0,
+      "duplicated_content": "无"
+    }
+  },
+  "open_gaps": 4,
+  "notes": "本机无 Rust 工具链（rustup toolchain list 为空），本单元单测未执行；已登记到 _meta/gaps.md。"
+}
