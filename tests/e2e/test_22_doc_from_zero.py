@@ -90,14 +90,15 @@ def main() -> int:
     timeline: list[dict] = []
     try:
         server.start()
-        # 剥包快渲染（本脚本验文档机制，不验装包）
+        # 剥包快渲染（本脚本验文档机制，不验装包）——但 **MCP 不剥**：
+        # codegraph 是 doc-agent 的“代码事实层”，剥了它就等于让实习生去写档案却把档案柜锁了。
+        # mcp.json 只是配置（command+args），不产生安装成本。
         key = real_api_key("newapi")
         _, manifest = server.req("GET", "/config/manifest")
         manifest["api_key"] = key
         manifest["base_packages"] = []
         for a in manifest["agents"]:
             a["extra_packages"] = []
-            a["mcp"] = []
         with SseStream(server) as sse:
             status, _ = server.req("PUT", "/config/manifest", manifest, timeout=300.0)
             r.check(status == 202, "PUT 剥包 manifest == 202", f"status={status}")
@@ -112,6 +113,17 @@ def main() -> int:
             "测试侧补偿（配置全量复刻）",
             f"{compensated}",
         )
+        # MCP 不得被剥：doc-agent 必须有 codegraph，否则 codegraph-first 纪律形同虚设
+        mcp_json = server.home / ".devforge" / "profiles" / "doc-agent" / "mcp.json"
+        r.check(mcp_json.exists(), "doc-agent 渲染出 mcp.json")
+        if mcp_json.exists():
+            mcp = json.loads(mcp_json.read_text(encoding="utf-8"))
+            names = [s.get("name") for s in mcp.get("mcpServers", mcp).values()] if isinstance(mcp, dict) else []
+            r.check(
+                "codegraph" in json.dumps(mcp),
+                "doc-agent 带 codegraph MCP（真实供给）",
+                f"{str(mcp)[:300]}",
+            )
 
         # ---- 目标仓：默认用受控 fixture；DOC_TARGET_REPO 指向真实仓时直接跑真仓 ----
         external = os.environ.get("DOC_TARGET_REPO")
