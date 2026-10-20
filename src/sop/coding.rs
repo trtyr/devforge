@@ -19,6 +19,13 @@ use crate::error::Result;
 use crate::sop::coding_protocol::{parse_review_report, parse_stage_complete, NextAction};
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
 
+/// 回复尾巴（错误里带证据，供事后定位；按字符边界截取）。
+pub fn tail(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let start = chars.len().saturating_sub(200);
+    chars[start..].iter().collect()
+}
+
 /// Coding Agent 开场指令：黑板（cwd）与代码工作区双路径告知（decisions/001），
 /// 项目/任务名供 stages.md 与文档归位。
 pub fn coding_kickoff(workspace: &Path, project: &str, task: &str) -> String {
@@ -42,10 +49,13 @@ pub fn coding_review_instruction(workspace: &Path, round: usize) -> String {
     )
 }
 
-/// 无有效标记时的重推话术（零上限，decisions/003）。
+/// 无有效标记时的重推话术（有界，005 decisions/015：连续 3 次不发标记 → 第 4 次判质量失败）。
 pub const CONTINUE_NUDGE: &str = "\
 继续当前阶段。阶段 todo 全部完成、单测全绿、文档同步后，\
 在回复末尾单独一行输出 <stage-complete>N</stage-complete>（N 为阶段号）。";
+
+/// 无标记重推上限：超过即质量失败（不自动重启，plan 010 D004）。
+pub const MAX_CONTINUE_NUDGES: usize = 3;
 
 /// 打回回注前缀（FAIL+fix）。
 pub const CODING_REMEDIATION_PREFIX: &str = "审查未通过，以下是必须修复的问题：";
@@ -112,14 +122,23 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> CodingSopLoop<P, F> {
         let mut review_rounds = 0usize;
         let mut issues_total = 0usize;
         let mut protocol_violations = 0usize;
+        let mut nudges = 0usize;
 
         loop {
             let text = self.agent.converse(&message, ui)?;
             let Some(stage) = parse_stage_complete(&text) else {
-                // 无有效标记 → 重推（零上限；模型自然收敛）
+                // 无有效标记 → 有界重推（005/015）：标记由模型生成，卡住时不能无限打转
+                nudges += 1;
+                if nudges > MAX_CONTINUE_NUDGES {
+                    return Err(crate::error::DevforgeError::Quality(format!(
+                        "连续 {nudges} 次未输出 <stage-complete>，判定为质量失败（不自动重启）；最近一次回复尾巴：{}",
+                        tail(&text)
+                    )));
+                }
                 message = CONTINUE_NUDGE.to_string();
                 continue;
             };
+            nudges = 0;
 
             // 本轮审查：全新实例，用完即弃。
             // C19-R1：协议违例（审查输出本身不合规）→ 重跑本轮审查（新 fresh 实例），
@@ -368,6 +387,25 @@ mod tests {
         assert_eq!(report.stages_completed, vec![1]);
         // 收到的第二条消息就是重推话术
         assert_eq!(rx.borrow()[1], CONTINUE_NUDGE);
+    }
+
+    #[test]
+    fn repeated_missing_marker_fails_fast() {
+        // 005/015：连续 4 次不发标记 → 质量失败（不无限空转）
+        let agent = MockAgent::new(&[
+            Turn::Say("还在写"),
+            Turn::Say("还在写"),
+            Turn::Say("还在写"),
+            Turn::Say("就是不发标记"),
+        ]);
+        let mut factory = MockReviewFactory::new(&[]);
+        let mut user = NoUser;
+        let err = CodingSopLoop::new(agent, &mut factory)
+            .run(&mut user, Path::new("/w"), "p", "t")
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("stage-complete"), "{msg}");
+        assert!(msg.contains("质量失败"), "{msg}");
     }
 
     #[test]

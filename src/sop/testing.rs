@@ -45,10 +45,13 @@ pub fn testing_review_instruction(workspace: &Path, round: usize) -> String {
     )
 }
 
-/// 无有效标记时的重推话术（零上限）。
+/// 无有效标记时的重推话术（有界，007 D013：连续 3 次不发标记 → 第 4 次判质量失败）。
 pub const TESTING_CONTINUE_NUDGE: &str = "\
 继续当前阶段。阶段 todo 全部完成、测试全绿（或发现全部已记录）、追溯矩阵同步后，\
 在回复末尾单独一行输出 <stage-complete>N</stage-complete>（N 为阶段号）。";
+
+/// 无标记重推上限：超过即质量失败（不自动重启，plan 010 D004）。
+pub const MAX_TEST_CONTINUE_NUDGES: usize = 3;
 
 /// 打回回注前缀（FAIL + reroute=test-side）。
 pub const TESTING_REMEDIATION_PREFIX: &str = "审查未通过（test-side），以下是必须修复的问题：";
@@ -157,15 +160,24 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
         mut report: TestingReport,
     ) -> Result<TestingOutcome> {
         let mut violations = 0usize;
+        let mut nudges = 0usize;
         loop {
             match step {
                 Step::Agent(message) => {
                     let text = self.agent.converse(&message, ui)?;
                     let Some(stage) = parse_stage_complete(&text) else {
-                        // 无有效标记 → 重推（零上限）
+                        // 无有效标记 → 有界重推（007 D013）
+                        nudges += 1;
+                        if nudges > MAX_TEST_CONTINUE_NUDGES {
+                            return Err(crate::error::DevforgeError::Quality(format!(
+                                "测试 Agent 连续 {nudges} 次未输出 <stage-complete>，判定为质量失败（不自动重启）；最近一次回复尾巴：{}",
+                                crate::sop::coding::tail(&text)
+                            )));
+                        }
                         step = Step::Agent(TESTING_CONTINUE_NUDGE.to_string());
                         continue;
                     };
+                    nudges = 0;
                     step = Step::Review(stage);
                 }
                 Step::Review(stage) => {
@@ -503,7 +515,27 @@ mod tests {
         let err = TestingSopLoop::new(agent, &mut factory)
             .run(&mut user, Path::new("/w"), "p", "t")
             .unwrap_err();
-        assert!(err.to_string().contains("协议违例"), "应报基础设施故障: {err}");
+        assert!(err.to_string().contains("协议违例"), "应报质量失败: {err}");
+        assert!(err.to_string().contains("质量失败"), "协议违例上限归质量失败: {err}");
+    }
+
+    #[test]
+    fn repeated_missing_marker_fails_fast() {
+        // 007 D013：连续 4 次不发标记 → 质量失败（不无限空转）
+        let agent = MockAgent::new(&[
+            Turn::Say("还在跑"),
+            Turn::Say("还在跑"),
+            Turn::Say("还在跑"),
+            Turn::Say("就是不发标记"),
+        ]);
+        let mut factory = MockReviewFactory::new(&[]);
+        let mut user = NoUser;
+        let err = TestingSopLoop::new(agent, &mut factory)
+            .run(&mut user, Path::new("/w"), "p", "t")
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("stage-complete"), "{msg}");
+        assert!(msg.contains("质量失败"), "{msg}");
     }
 
     #[test]
