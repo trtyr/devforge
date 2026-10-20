@@ -16,6 +16,7 @@ pub mod history;
 pub mod orchestrator;
 pub mod plan_audit;
 pub mod report;
+pub mod session;
 pub mod state;
 pub mod testing_gate;
 
@@ -35,6 +36,7 @@ pub use plan_audit::{PlanAudit, audit as audit_plan, review_instruction};
 pub use report::{
     AcceptanceSummary, ChangeReport, DiffStats, diff_stats, summarize_acceptance, write_report,
 };
+pub use session::{ChangeCtx, ProdChangeSession};
 pub use state::{CHANGE_SOP, ChangePhase, ChangeState};
 pub use testing_gate::{
     AcceptanceMatch, check_regression_claim, check_regression_log, reconcile_acceptance,

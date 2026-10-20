@@ -51,12 +51,12 @@ pub fn check_regression_log(blackboard: &Path, claims_green: bool) -> Result<i32
     check_regression_claim(&text, claims_green)
 }
 
-/// 解析验收对账表：`- <验收标准> → <测试引用 path:line>`。
+/// 解析验收对账表：`- <验收标准> → <测试引用 path:line>`（按**最后一个** `→` 切，标准本身可能含箭头）。
 pub fn parse_acceptance_table(text: &str) -> Vec<AcceptanceMatch> {
     let mut out = Vec::new();
     for line in text.lines() {
         let t = line.trim().trim_start_matches(['-', '*']).trim();
-        let Some((left, right)) = t.split_once('→') else {
+        let Some((left, right)) = t.rsplit_once('→') else {
             continue;
         };
         let criterion = left.trim().to_string();

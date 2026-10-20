@@ -146,6 +146,27 @@ pub fn read_steps(blackboard: &Path) -> Result<Vec<Step>> {
     Ok(steps)
 }
 
+/// 相对基线的改动文件（`git diff --name-only <baseline>`，含已提交与未提交、不含未跟踪）。
+pub fn changed_files(repo: &Path, baseline: &str) -> Result<Vec<String>> {
+    let out = Command::new("git")
+        .args(["diff", "--name-only", baseline])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| DevforgeError::System(format!("执行 git diff 失败：{e}")))?;
+    if !out.status.success() {
+        return Err(DevforgeError::System(format!(
+            "git diff --name-only {baseline} 失败：{}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 /// 基线之后的提交（`git log --format=%s`）。
 pub fn commits_since(repo: &Path, baseline: &str) -> Result<Vec<String>> {
     let out = Command::new("git")

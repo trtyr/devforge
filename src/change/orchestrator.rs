@@ -15,6 +15,7 @@ use crate::change::report::{self, AcceptanceSummary, ChangeReport, summarize_acc
 use crate::change::state::{ChangePhase, ChangeState, load, save};
 use crate::error::{DevforgeError, Result};
 use crate::runstate::StateStore;
+use crate::sop::planning::UserLink;
 
 /// 测试阶段失败后回注 coding 的防御性上限（决策只给了 plan↔coding 的 3 次；这里防止死循环）。
 pub const MAX_TEST_REROUTES: usize = 3;
@@ -51,13 +52,18 @@ pub enum TestingTurn {
 /// 各阶段的执行器（生产= pi 子进程；单测=脚本化假实现）。
 pub trait ChangeSession {
     /// 跑一次 plan（含审查）；`roundtrip` 用于让实现知道这是第几次往返。
-    fn run_plan(&mut self, roundtrip: usize) -> Result<PlanTurn>;
+    fn run_plan(&mut self, ui: &mut dyn UserLink, roundtrip: usize) -> Result<PlanTurn>;
     /// 带缺口打回 plan：只补边界并重审。
-    fn amend_plan(&mut self, gaps: &[ImpactGap], roundtrip: usize) -> Result<PlanTurn>;
+    fn amend_plan(
+        &mut self,
+        ui: &mut dyn UserLink,
+        gaps: &[ImpactGap],
+        roundtrip: usize,
+    ) -> Result<PlanTurn>;
     /// 跑 coding（含按步提交）。
-    fn run_coding(&mut self, roundtrip: usize) -> Result<CodingTurn>;
+    fn run_coding(&mut self, ui: &mut dyn UserLink, roundtrip: usize) -> Result<CodingTurn>;
     /// 跑 testing（回归优先 + 验收对账）。
-    fn run_testing(&mut self) -> Result<TestingTurn>;
+    fn run_testing(&mut self, ui: &mut dyn UserLink) -> Result<TestingTurn>;
 }
 
 /// 编排输入。
@@ -86,7 +92,11 @@ pub struct ChangeOutcome {
 }
 
 /// 跑完整条 change 流程（从断点继续）。
-pub fn run<S: ChangeSession>(run: ChangeRun<'_>, session: &mut S) -> Result<ChangeOutcome> {
+pub fn run<S: ChangeSession>(
+    run: ChangeRun<'_>,
+    session: &mut S,
+    ui: &mut dyn UserLink,
+) -> Result<ChangeOutcome> {
     let mut state = load(run.store, run.change_id, run.baseline_sha);
     if state.baseline_sha.is_empty() {
         state.baseline_sha = run.baseline_sha.to_string();
@@ -95,7 +105,7 @@ pub fn run<S: ChangeSession>(run: ChangeRun<'_>, session: &mut S) -> Result<Chan
 
     // ---- plan ----
     if matches!(state.phase, ChangePhase::Plan) {
-        match session.run_plan(state.roundtrips)? {
+        match session.run_plan(ui, state.roundtrips)? {
             PlanTurn::Pass => {
                 state.phase = ChangePhase::Coding;
                 save(run.store, &state)?;
@@ -112,7 +122,7 @@ pub fn run<S: ChangeSession>(run: ChangeRun<'_>, session: &mut S) -> Result<Chan
     // ---- coding ⇄ plan ----
     if matches!(state.phase, ChangePhase::Coding) {
         loop {
-            let turn = session.run_coding(state.roundtrips)?;
+            let turn = session.run_coding(ui, state.roundtrips)?;
             match boundary::classify(&turn.changed, &whitelist, &turn.reply) {
                 BoundaryVerdict::InBoundary => {
                     state.phase = ChangePhase::Testing;
@@ -137,7 +147,7 @@ pub fn run<S: ChangeSession>(run: ChangeRun<'_>, session: &mut S) -> Result<Chan
                         &gaps,
                     )?;
                     boundary::merge_gaps_into_whitelist(&mut whitelist, &gaps);
-                    match session.amend_plan(&gaps, state.roundtrips)? {
+                    match session.amend_plan(ui, &gaps, state.roundtrips)? {
                         PlanTurn::Pass => {
                             save(run.store, &state)?;
                             continue;
@@ -159,7 +169,7 @@ pub fn run<S: ChangeSession>(run: ChangeRun<'_>, session: &mut S) -> Result<Chan
     // （回注次数记在断点里，跳会话累计，不会被重启清零）。
     let mut acceptance_done: Vec<String> = state.acceptance_done.clone();
     if matches!(state.phase, ChangePhase::Testing) {
-        match session.run_testing()? {
+        match session.run_testing(ui)? {
             TestingTurn::Pass {
                 acceptance_done: done,
             } => {
@@ -249,6 +259,13 @@ mod tests {
         v.iter().map(|x| x.to_string()).collect()
     }
 
+    struct NoUser;
+    impl crate::sop::planning::UserLink for NoUser {
+        fn ask(&mut self, q: &str, _options: &[&str]) -> Result<String> {
+            Err(DevforgeError::System(format!("单测不应问用户：{q}")))
+        }
+    }
+
     /// 脚本化 session：按队列吐出各阶段结果，并记录调用序列。
     struct Scripted {
         plans: VecDeque<PlanTurn>,
@@ -271,19 +288,28 @@ mod tests {
     }
 
     impl ChangeSession for Scripted {
-        fn run_plan(&mut self, rt: usize) -> Result<PlanTurn> {
+        fn run_plan(&mut self, _ui: &mut dyn crate::sop::planning::UserLink, rt: usize) -> Result<PlanTurn> {
             self.log.push(format!("plan(rt={rt})"));
             Ok(self.plans.pop_front().expect("plan 脚本耗尽"))
         }
-        fn amend_plan(&mut self, gaps: &[ImpactGap], rt: usize) -> Result<PlanTurn> {
+        fn amend_plan(
+            &mut self,
+            _ui: &mut dyn crate::sop::planning::UserLink,
+            gaps: &[ImpactGap],
+            rt: usize,
+        ) -> Result<PlanTurn> {
             self.log.push(format!("amend(rt={rt},gaps={})", gaps.len()));
             Ok(self.amends.pop_front().expect("amend 脚本耗尽"))
         }
-        fn run_coding(&mut self, rt: usize) -> Result<CodingTurn> {
+        fn run_coding(
+            &mut self,
+            _ui: &mut dyn crate::sop::planning::UserLink,
+            rt: usize,
+        ) -> Result<CodingTurn> {
             self.log.push(format!("coding(rt={rt})"));
             Ok(self.codings.pop_front().expect("coding 脚本耗尽"))
         }
-        fn run_testing(&mut self) -> Result<TestingTurn> {
+        fn run_testing(&mut self, _ui: &mut dyn crate::sop::planning::UserLink) -> Result<TestingTurn> {
             self.log.push("testing".into());
             Ok(self.testings.pop_front().expect("testing 脚本耗尽"))
         }
@@ -338,7 +364,9 @@ mod tests {
         session.codings.push_back(in_boundary());
         session.testings.push_back(pass_testing());
 
-        let out = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session).unwrap();
+        let mut ui = NoUser;
+        let out = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap();
         assert_eq!(out.state.phase, ChangePhase::Done);
         assert_eq!(out.report.roundtrips, 0);
         assert_eq!(
@@ -365,7 +393,9 @@ mod tests {
         });
         session.testings.push_back(pass_testing());
 
-        let out = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session).unwrap();
+        let mut ui = NoUser;
+        let out = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap();
         assert_eq!(out.state.phase, ChangePhase::Done);
         assert_eq!(out.state.roundtrips, 1, "往返计数必须记下来");
         assert_eq!(
@@ -402,7 +432,9 @@ mod tests {
             changed: s(&["src/a.rs", "src/rogue.rs"]),
         });
 
-        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session).unwrap_err();
+        let mut ui = NoUser;
+        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap_err();
         assert!(err.to_string().contains("范围膨胀"), "{err}");
         assert!(err.is_quality_failure());
         let saved = load(&st, "change-20261020-x", "base123");
@@ -427,7 +459,9 @@ mod tests {
             session.amends.push_back(PlanTurn::Pass);
         }
 
-        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session).unwrap_err();
+        let mut ui = NoUser;
+        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap_err();
         assert!(err.to_string().contains("上限 3"), "{err}");
         assert!(err.is_quality_failure(), "往返超限不该自动重启");
         let saved = load(&st, "change-20261020-x", "base123");
@@ -449,7 +483,9 @@ mod tests {
         session.codings.push_back(in_boundary());
         session.testings.push_back(pass_testing());
 
-        let out = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session).unwrap();
+        let mut ui = NoUser;
+        let out = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap();
         assert_eq!(out.state.roundtrips, 2, "续跑不得清零往返计数");
         assert_eq!(out.report.roundtrips, 2);
         assert!(
@@ -470,7 +506,9 @@ mod tests {
             failures: s(&["tests/test_a.py:12 断言失败"]),
         });
 
-        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session).unwrap_err();
+        let mut ui = NoUser;
+        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("回注 coding"), "{msg}");
         assert!(!msg.contains("test_a.py:12"), "回注不得带定位：{msg}");
@@ -493,7 +531,9 @@ mod tests {
             failures: s(&["回归红了"]),
         });
 
-        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session).unwrap_err();
+        let mut ui = NoUser;
+        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("上限 3"), "{msg}");
         let saved = load(&st, "change-20261020-x", "base123");
@@ -511,9 +551,11 @@ mod tests {
             acceptance_done: s(&["x=1 → 2"]),
         });
 
+        let mut ui = NoUser;
         let err = run(
             cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2", "空输入报错"]),
             &mut session,
+            &mut ui,
         )
         .unwrap_err();
         assert!(err.to_string().contains("缺 1 条"), "{err}");
@@ -528,7 +570,9 @@ mod tests {
         session.plans.push_back(PlanTurn::Fail {
             issues: vec!["影响面缺调用方".into()],
         });
-        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x"]), &mut session).unwrap_err();
+        let mut ui = NoUser;
+        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x"]), &mut session, &mut ui)
+            .unwrap_err();
         assert!(err.to_string().contains("计划审查未通过"), "{err}");
         assert!(err.is_quality_failure());
     }
