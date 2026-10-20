@@ -368,6 +368,10 @@ impl ChangeSession for ProdChangeSession {
         }
     }
 
+    fn plan_reviews(&self) -> usize {
+        1
+    }
+
     fn plan_facts(&mut self) -> Result<(Vec<String>, Vec<String>)> {
         let text = std::fs::read_to_string(self.ctx.plan_path()).ctx(format!(
             "读计划 {} 失败",

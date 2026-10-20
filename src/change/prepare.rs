@@ -45,10 +45,13 @@ pub fn prepare(
     let level = DocLevel::parse(doc_level)?;
     let date = date_segment(today.0, today.1, today.2);
 
-    // 1) change-id 与黑板目录（幂等：同一任务重复触发复用）
-    let (change_id, change_dir) =
-        assign_change_id(plans_root, project, task, requirement, &date)?;
+    // 1) change-id（幂等）与黑板目录（SOP 级：状态/证据/实施步骤都在这）
+    let (change_id, _id_dir) = assign_change_id(plans_root, project, task, requirement, &date)?;
     let blackboard = crate::change::change_id::change_root(plans_root, project, task);
+    // 计划目录在**目标仓**（D003：计划要可提交、可审查、可回查）
+    let plan_dir = repo.join("docs/plantree/changes").join(&change_id);
+    std::fs::create_dir_all(&plan_dir)
+        .map_err(|e| DevforgeError::System(format!("建目录 {} 失败：{e}", plan_dir.display())))?;
 
     // 2) 文档档位（complete 需要先跑 doc-from-zero，本层不假装自己写完了文档）
     let doc_action = docs::apply(repo, level)?;
@@ -58,14 +61,11 @@ pub fn prepare(
         ));
     }
 
-    // 3) 基线（无 .git 则 init + 全量提交；sha 落到计划目录）
-    let plan_dir = repo.join("docs/plantree/changes").join(&change_id);
-    std::fs::create_dir_all(&plan_dir)
-        .map_err(|e| DevforgeError::System(format!("建目录 {} 失败：{e}", plan_dir.display())))?;
+    // 3) 基线（无 .git 则 init + 全量提交；sha 落到目标仓的计划目录）
     let baseline = ensure_baseline(repo, &plan_dir)?;
 
-    // 4) 黑板骨架（impl-steps 与证据都在这里，agent 直接写）
-    for sub in ["evidence", "testing", "coding/reports"] {
+    // 4) 黑板骨架（impl-steps / 证据 / 审查报告都在这里，agent 直接写）
+    for sub in ["evidence", "testing/reports", "coding/reports"] {
         let dir = blackboard.join(sub);
         std::fs::create_dir_all(&dir)
             .map_err(|e| DevforgeError::System(format!("建目录 {} 失败：{e}", dir.display())))?;
@@ -74,11 +74,7 @@ pub fn prepare(
     Ok(ChangePrep {
         change_id,
         blackboard,
-        change_dir: if change_dir.is_dir() {
-            change_dir
-        } else {
-            plan_dir
-        },
+        change_dir: plan_dir,
         baseline,
         doc_level: level,
         doc_action,
@@ -114,6 +110,19 @@ mod tests {
         .unwrap();
 
         assert_eq!(prep.change_id, "change-20261020-add-book-api");
+        // 计划目录必须落在**目标仓**（D003：可提交、可审查、可回查）
+        assert_eq!(
+            prep.change_dir,
+            repo.path()
+                .join("docs/plantree/changes")
+                .join(&prep.change_id),
+            "change_dir 指的是目标仓计划目录，不是黑板"
+        );
+        assert!(prep.change_dir.is_dir());
+        assert!(
+            !prep.change_dir.starts_with(&prep.blackboard),
+            "计划目录与黑板是两处，不能混"
+        );
         let baseline_txt = repo
             .path()
             .join("docs/plantree/changes")
@@ -125,13 +134,18 @@ mod tests {
             prep.baseline.sha
         );
         assert!(prep.baseline.created_repo, "无 .git 时应新建仓库");
-        for sub in ["evidence", "testing", "coding/reports"] {
+        for sub in ["evidence", "testing/reports", "coding/reports"] {
             assert!(
                 prep.blackboard.join(sub).is_dir(),
                 "黑板缺子目录 {sub}：{}",
                 prep.blackboard.display()
             );
         }
+        assert!(
+            prep.blackboard.ends_with("proj/task1/change"),
+            "黑板应是 SOP 级目录 plans/<p>/<t>/change：{}",
+            prep.blackboard.display()
+        );
     }
 
     #[test]

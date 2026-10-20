@@ -3,7 +3,7 @@
 //! 这里只做装配：确定性逻辑在 `crate::change::*`，判断在提示词与机械门里。
 //! 单测用协议级 mock（见 `server::tests`），不 spawn 真 pi。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::BuiltinRpcEngine;
 use crate::change::orchestrator::{ChangeRun, run as run_orchestrator};
@@ -79,10 +79,10 @@ impl BuiltinRpcEngine {
             self.require_profile(p)?;
         }
 
-        let blackboard = self.plans_root.join(&task.project).join(&task.id);
-        std::fs::create_dir_all(&blackboard).ctx("建黑板目录")?;
-        // 需求原文：调用方开跑前写进黑板（不给需求就没法规划）
-        let requirement_path = blackboard.join(REQUIREMENT_FILE);
+        let task_root = self.plans_root.join(&task.project).join(&task.id);
+        std::fs::create_dir_all(&task_root).ctx("建任务黑板目录")?;
+        // 需求原文：调用方开跑前写进任务黑板（不给需求就没法规划）
+        let requirement_path = task_root.join(REQUIREMENT_FILE);
         let requirement = std::fs::read_to_string(&requirement_path).map_err(|e| {
             DevforgeError::Quality(format!(
                 "缺少需求文件 {}（change SOP 开跑前必须写清楚要改什么）：{e}",
@@ -115,6 +115,9 @@ impl BuiltinRpcEngine {
             "change 门 0 完成"
         );
 
+        // 会话的工作目录与证据根 = SOP 级黑板（门 0 已建好骨架）
+        let blackboard = prep.blackboard.clone();
+
         // 计划事实（续跑时计划文件已存在，先回读）
         let (criteria, whitelist) = match std::fs::read_to_string(prep.change_dir.join("change-plan.md"))
         {
@@ -122,15 +125,7 @@ impl BuiltinRpcEngine {
             Err(_) => (Vec::new(), Vec::new()),
         };
 
-        let ctx = ChangeCtx {
-            repo: task.workspace.clone(),
-            blackboard: blackboard.clone(),
-            change_dir: prep.change_dir.clone(),
-            change_id: prep.change_id.clone(),
-            baseline: prep.baseline.sha.clone(),
-            requirement: requirement.clone(),
-            doc_level: prep.doc_level,
-        };
+        let ctx = build_ctx(&prep, &task.workspace, &requirement);
 
         // 会话装配：三个干活（长驻）+ 三个审查（每轮新实例，用完即弃）
         let run_id = run.id.0.clone();
@@ -244,6 +239,19 @@ impl BuiltinRpcEngine {
     }
 }
 
+/// 把门 0 产出装配成会话上下文（抽出来单测：真实 run 不需要 pi 也能验路径）。
+pub fn build_ctx(prep: &crate::change::prepare::ChangePrep, repo: &Path, requirement: &str) -> ChangeCtx {
+    ChangeCtx {
+        repo: repo.to_path_buf(),
+        blackboard: prep.blackboard.clone(),
+        change_dir: prep.change_dir.clone(),
+        change_id: prep.change_id.clone(),
+        baseline: prep.baseline.sha.clone(),
+        requirement: requirement.to_string(),
+        doc_level: prep.doc_level,
+    }
+}
+
 /// 今天的 `(年, 月, 日)`（`DEVFORGE_TODAY` 可覆盖）。
 fn today_parts() -> (i32, u32, u32) {
     let seg = crate::change::change_id::date_segment_now();
@@ -295,6 +303,40 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn ctx_paths_point_at_repo_plan_dir_and_sop_blackboard() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "// a\n").unwrap();
+        let prep = crate::change::prepare::prepare(
+            &tmp.path().join("plans"),
+            &repo,
+            "p",
+            "t",
+            "add x",
+            "none",
+            (2026, 10, 20),
+        )
+        .unwrap();
+        let ctx = build_ctx(&prep, &repo, "add x");
+        assert_eq!(
+            ctx.plan_path(),
+            repo.join("docs/plantree/changes")
+                .join(&prep.change_id)
+                .join("change-plan.md"),
+            "计划路径必须在目标仓（提示词与 D003 一致）"
+        );
+        assert!(
+            ctx.blackboard.ends_with("p/t/change"),
+            "证据根必须是 SOP 级黑板：{}",
+            ctx.blackboard.display()
+        );
+        assert!(ctx.blackboard.join("evidence").is_dir(), "门 0 骨架要在会话用的黑板上");
+        assert!(ctx.blackboard.join("testing/reports").is_dir());
+        assert_eq!(ctx.baseline, prep.baseline.sha);
     }
 
     #[test]

@@ -73,6 +73,11 @@ pub trait ChangeSession {
     fn plan_facts(&mut self) -> Result<(Vec<String>, Vec<String>)> {
         Ok((Vec::new(), Vec::new()))
     }
+
+    /// plan 阶段消耗的审查轮次（计入报告；默认 0，脚本化 session 不审）。
+    fn plan_reviews(&self) -> usize {
+        0
+    }
 }
 
 /// 编排输入。
@@ -117,6 +122,7 @@ pub fn run<S: ChangeSession>(
     if matches!(state.phase, ChangePhase::Plan) {
         match session.run_plan(ui, state.roundtrips)? {
             PlanTurn::Pass => {
+                state.review_rounds += session.plan_reviews();
                 let (c, w) = session.plan_facts()?;
                 if !c.is_empty() {
                     criteria = c;
@@ -167,6 +173,7 @@ pub fn run<S: ChangeSession>(
                     boundary::merge_gaps_into_whitelist(&mut whitelist, &gaps);
                     match session.amend_plan(ui, &gaps, state.roundtrips)? {
                         PlanTurn::Pass => {
+                            state.review_rounds += session.plan_reviews();
                             let (c, w) = session.plan_facts()?;
                             if !c.is_empty() {
                                 criteria = c;
@@ -300,6 +307,7 @@ mod tests {
         codings: VecDeque<CodingTurn>,
         testings: VecDeque<TestingTurn>,
         coding_error: Option<String>,
+        plan_review_count: usize,
         pub log: Vec<String>,
     }
 
@@ -311,6 +319,7 @@ mod tests {
                 codings: VecDeque::new(),
                 testings: VecDeque::new(),
                 coding_error: None,
+                plan_review_count: 0,
                 log: Vec::new(),
             }
         }
@@ -330,6 +339,10 @@ mod tests {
             self.log.push(format!("amend(rt={rt},gaps={})", gaps.len()));
             Ok(self.amends.pop_front().expect("amend 脚本耗尽"))
         }
+        fn plan_reviews(&self) -> usize {
+            self.plan_review_count
+        }
+
         fn run_coding(
             &mut self,
             _ui: &mut dyn crate::sop::planning::UserLink,
@@ -629,6 +642,24 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("缺 1 条"), "{err}");
         assert!(err.to_string().contains("空输入报错"), "{err}");
+    }
+
+    #[test]
+    fn plan_reviews_are_counted_in_report() {
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        let mut session = Scripted::new();
+        session.plan_review_count = 1;
+        session.plans.push_back(PlanTurn::Pass);
+        session.codings.push_back(in_boundary());
+        session.testings.push_back(pass_testing());
+        let mut ui = NoUser;
+        let out = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap();
+        assert_eq!(
+            out.report.review_rounds, 3,
+            "plan + coding + testing 三轮审查都要计入报告"
+        );
     }
 
     #[test]
