@@ -196,29 +196,37 @@ impl BuiltinRpcEngine {
         let started = std::time::Instant::now();
         let session_root = self.session_root.clone();
         let ui = self.ui.clone();
-        let project = task.project.clone();
-        let task_id = task.id.clone();
         let workspace = task.workspace.clone();
         let change_id = prep.change_id.clone();
         let baseline = prep.baseline.sha.clone();
+        let watch_dirs = session_dirs(&self.session_root).to_vec();
 
-        let result = run_orchestrator(
-            ChangeRun {
-                store: &store,
-                repo: &workspace,
-                change_id: &change_id,
-                baseline_sha: &baseline,
-                criteria,
-                whitelist,
-                usage: String::new(),
-                run_id,
-                wall_secs: 0,
+        // 取消/超时/失活与其他 SOP 同口径：跑在 watchdog 里，不然 cancel 端点停不下来
+        let sop_result = super::run_with_watchdog(
+            control,
+            run_id.clone(),
+            self.idle_ms,
+            watch_dirs,
+            || {
+                run_orchestrator(
+                    ChangeRun {
+                        store: &store,
+                        repo: &workspace,
+                        change_id: &change_id,
+                        baseline_sha: &baseline,
+                        criteria,
+                        whitelist,
+                        usage: String::new(),
+                        run_id: run_id.clone(),
+                        wall_secs: 0,
+                    },
+                    &mut session,
+                    &mut RelayUserLink { relay: ui },
+                )
             },
-            &mut session,
-            &mut RelayUserLink { relay: ui },
         );
 
-        match result {
+        match sop_result {
             Ok(mut outcome) => {
                 let finalized = finalize(&mut outcome, &session_root, &workspace, started)?;
                 tracing::info!(
@@ -229,7 +237,6 @@ impl BuiltinRpcEngine {
                     roundtrips = outcome.report.roundtrips,
                     "change SOP 通过"
                 );
-                let _ = (project, task_id, control);
                 Ok(RunOutcome::Completed)
             }
             Err(e) => self.map_intervention(control, "change-engine", e),
