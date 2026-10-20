@@ -116,6 +116,13 @@ pub const CODING_AGENT_PROMPT: &str = "# Coding Agent（编码 Agent）\n\
 预审证据落到 coding/stages.md 当前阶段条目下：绝对词清单 + 每条反例的实测结果 + 断言强度说明（哪条断言能在错实现下变红）。缺预审证据的阶段不算完成。\n\
 4. **文档门禁（doc-lint）**：文档按 `doc-contract` skill 写（条目模板/必填节/反模式/真实性）。发 stage-complete 前在代码工作区跑 `devforge doc-lint <docs 目录> --repo <代码工作区>`，**退出码必须 0**；必填节缺失、幽灵实体/路径、死链全部以工具输出为准（不适用必须写 `N/A` 并给理由，省略不算）。命令原文 + 退出码 + 输出摘要写进 coding/stages.md；有 FAIL 就先补文档，不许带着红章发阶段完成。\n\
 \n\
+## 工程纪律（引用 coding-discipline skill）\n\
+\n\
+本仓的工程纪律**只有一份**：`coding-discipline` skill（12 条：行为断言 / 先证后报 / 减法优先 / 最小 diff / 根因 / 边界收口 / 类型纪律 / 读者负担 / 上下文守护 / 不阻塞人类 / 可验证单元 / 幂等）。改代码前读它、按它做；条款本体不在本提示词里复述。\n\
+\n\
+- **行为断言**：预审第 2 条的判据补齐另一半——断言要两头成立：① 换个错实现它会红（能失败）；② **只做内部重构、对外行为不变时它仍然绿**（不过拟合实现）。写不出「错实现形态」的断言，当场重写。\n\
+- **先证后报**：预审证据的**口径**以 skill 的「先证后报」条目为准——命令原文 + 真实退出码 + 输出摘要，缺一不可；没跑过不许写「应该没问题」。\n\
+\n\
 ## 阶段完成协议（强制，逐字遵守）\n\
 \n\
 当前阶段 todo 全部完成、单测全绿、文档同步、**提交前预审四条全过（证据已落 stages.md，含 doc-lint 退出码 0）**后，在回复末尾单独一行输出：\n\
@@ -150,6 +157,7 @@ kickoff 消息会告知：黑板路径（当前目录，含 plan tree 与 coding
 6. **doc-lint 复核（确定门禁）**：在代码工作区跑 `devforge doc-lint <docs 目录> --repo <代码工作区>`，**退出码非 0 = 文档 FAIL**；另抽查两条——必填节是否真对着契约（缺节且无 `N/A` = 撒谎）、文档提到的实体是否真存在（工具报幽灵而声称写了 = 撒谎）。别只看 coder 自述的退出码，自己跑一遍。\n\
 7. **todo 实物审计**：对照 coding/todo.md 逐项验实物（读代码、必要时跑单测）——没做到的不许算完成，防绕过打勾。\n\
 8. **树完成判定**：锚点是 plan tree 的目标**对照实际代码与文档**逐项核验——当前阶段全过后，看树还有没有未达成的目标：有 → advance；全部达成 → finish。stages.md 只是过程工具，划漏了任务照样算未完成。\n\
+9. **自证核对（先证后报 / 行为断言）**：对照 `coding-discipline` skill 的「先证后报」与「行为断言」两条——被审方声称跑过的命令，证据里有没有**命令原文 + 退出码 + 摘要**，证据能不能复现；关键断言有没有写明「错实现形态」（换个错实现会红、只做内部重构仍绿）。只有自述没有证据 = FAIL。\n\
 \n\
 ## 工具纪律\n\
 \n\
@@ -572,6 +580,14 @@ pub const CHANGE_CODING_AGENT_PROMPT: &str = r#"# Change Coding Agent（变更�
 - 改动要有**计划依据**：每一行 diff 能对应到计划的某一条；顺手改名、格式化、删无用代码都属于无依据改动，不做。
 - 文档同步：碰到需求覆盖的接口/行为变化，更新 `docs/contexts/` 对应对应文档，并保证 `devforge doc-lint` 退出码 0。
 
+## 提交前预审（强制；不过关不发 stage-complete）
+
+预审就是当自己的审查官。纪律**只有一份**：`coding-discipline` skill（12 条工程纪律的唯一事实源）——按它逐条过，条款本体不在本提示词里复述。本 change 路径另有一道机械门兜底（自证证据，见下第 3 条）。
+
+1. **纪律自检**：按 `coding-discipline` skill 逐条过（行为断言 / 先证后报 / 减法优先 / 最小 diff / 根因 / 边界收口 / 类型纪律 / 读者负担 / 上下文守护 / 不阻塞人类 / 可验证单元 / 幂等），命中的条目逐条交代结论（本轮没命中的也要写「已检查，不适用」）。
+2. **行为断言**：新增或改动的断言必须两头成立——① 换个错实现它会红（能失败）；② **只做内部重构、对外行为不变时它仍然绿**（不过拟合实现）。只断言状态字段、只断言「不报错」= 无效断言。
+3. **先证后报**：按 skill 的「先证后报」条目做——本轮改动相关的测试要真跑，**命令原文 + 真实退出码 + 输出摘要**写进黑板 `evidence/self-check.log`（**覆盖写**，不许沿用上一轮残留）；没跑过不许说「应该没问题」。引擎会验这份证据（存在 + 退出码为 0），红着提交会被质量门拦下。
+
 ## 发现计划不够时（重要）
 
 如果必须改白名单外的文件，**不要默默改**：停下来输出声明块，让引擎把 run 打回 plan 补边界：
@@ -613,6 +629,7 @@ pub const CHANGE_CODING_REVIEW_PROMPT: &str = r#"# Change Coding Review Agent（
 4. **真跑门禁**：自己跑构建 + 改动区域的单测（全量回归归测试阶段）。红 = FAIL，带上失败输出摘要。
 5. **文档**：行为变了而 `docs/contexts/` 没跟、或 `devforge doc-lint` 不绿 = FAIL。
 6. **新依赖**：计划里没有的新依赖 = FAIL。
+7. **自证核对（先证后报 / 行为断言）**：黑板 `evidence/self-check.log` 的命令与退出码是否真实、是否覆盖**本轮 diff**（对照 `coding-discipline` skill 的「先证后报」与「行为断言」两条）；被审方声称「跑过了」有没有可复核的证据；关键断言有没有写明「错实现形态」。证据与本轮 diff 对不上 = FAIL。
 
 ## 收尾
 
@@ -789,6 +806,7 @@ impl ConfigManifest {
                     model: "deepseek-flash".into(),
                     skills: vec![
                         "doc-contract".into(),
+                        "coding-discipline".into(),
                         "rust-best-practices".into(),
                         "go-best-practices".into(),
                         "python-best-practices".into(),
@@ -804,6 +822,7 @@ impl ConfigManifest {
                     model: "grok-4.7".into(),
                     skills: vec![
                         "doc-contract".into(),
+                        "coding-discipline".into(),
                         "rust-best-practices".into(),
                         "go-best-practices".into(),
                         "python-best-practices".into(),
@@ -901,6 +920,7 @@ impl ConfigManifest {
                     extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
                     model: "deepseek-flash".into(),
                     skills: vec![
+                        "coding-discipline".into(),
                         "rust-best-practices".into(),
                         "go-best-practices".into(),
                         "python-best-practices".into(),
@@ -915,7 +935,7 @@ impl ConfigManifest {
                     role_prompt: CHANGE_CODING_REVIEW_PROMPT.into(),
                     extra_packages: vec![],
                     model: "grok-4.7".into(),
-                    skills: vec![],
+                    skills: vec!["coding-discipline".into()],
                     // D016：审查靠对账与读 diff，不给 context7
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
@@ -1090,7 +1110,7 @@ mod tests {
         assert_eq!(cca.mcp.len(), 2, "codegraph + context7");
         assert_eq!(cca.mcp[1].name, "context7", "改真代码要查第三方 API");
         assert_eq!(cca.extra_packages, ca.extra_packages, "与 MVP coding 同档供给");
-        assert_eq!(cca.skills.len(), 4, "四语言 best-practices");
+        assert_eq!(cca.skills.len(), 5, "四语言 best-practices + coding-discipline");
         let ccr = m.get_agent("change-coding-review").unwrap();
         assert_eq!(ccr.model, "grok-4.7");
         assert_eq!(ccr.mcp.len(), 1, "审查只给 codegraph（D016）");
@@ -1135,6 +1155,75 @@ mod tests {
                 "{name} 缺少 doc-contract skill"
             );
         }
+    }
+
+    #[test]
+    fn coding_discipline_skill_goes_to_exactly_the_four_coding_agents() {
+        // 纪律唯一事实源：只发给写代码与审代码的四个 Agent（4 正 + 11 负 = 15）
+        let m = ConfigManifest::builtin();
+        for name in [
+            "coding-agent",
+            "coding-review",
+            "change-coding-agent",
+            "change-coding-review",
+        ] {
+            let a = m.get_agent(name).unwrap();
+            assert!(
+                a.skills.iter().any(|s| s == "coding-discipline"),
+                "{name} 缺少 coding-discipline skill"
+            );
+        }
+        for name in [
+            "plan-agent",
+            "plan-review",
+            "change-plan-agent",
+            "change-plan-review",
+            "test-agent",
+            "test-review",
+            "change-test-agent",
+            "change-test-review",
+            "doc-fix",
+            "doc-agent",
+            "doc-review",
+        ] {
+            let a = m.get_agent(name).unwrap();
+            assert!(
+                !a.skills.iter().any(|s| s == "coding-discipline"),
+                "{name} 不该拿 coding-discipline skill"
+            );
+        }
+        assert_eq!(m.agents.len(), 15, "4 正 + 11 负 = 15");
+    }
+
+    #[test]
+    fn coding_prompts_carry_discipline_anchors() {
+        // 写代码方：纪律 skill + 行为断言 + 先证后报
+        for anchor in ["coding-discipline", "行为断言", "先证后报"] {
+            assert!(
+                CODING_AGENT_PROMPT.contains(anchor),
+                "MVP coding 提示词缺：{anchor}"
+            );
+            assert!(
+                CHANGE_CODING_AGENT_PROMPT.contains(anchor),
+                "change coding 提示词缺：{anchor}"
+            );
+        }
+        // 行为断言要两头成立（补齐「只做内部重构仍绿」这半边）
+        for prompt in [CODING_AGENT_PROMPT, CHANGE_CODING_AGENT_PROMPT] {
+            assert!(
+                prompt.contains("只做内部重构"),
+                "行为断言判据缺「只做内部重构仍绿」这半边"
+            );
+        }
+        // 审代码方：自证核对审查面（先证后报）
+        assert!(
+            CODING_REVIEW_PROMPT.contains("先证后报"),
+            "MVP review 提示词缺自证核对面"
+        );
+        assert!(
+            CHANGE_CODING_REVIEW_PROMPT.contains("先证后报"),
+            "change review 提示词缺自证核对面"
+        );
     }
 
     /// 代码生成器：把 6 个 change agents 导出成 e2e 夹具（漂移时重跑刷新）。
