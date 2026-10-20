@@ -91,7 +91,8 @@ SOP 内部一律 `change-<阶段>-<角色>`：`change-plan-agent` / `change-plan
 
 ## 相关
 
-- `roadmap.md`：任务拆解与里程碑
+- `roadmap.md`：任务拆解与里程碑（**M0–M3 全部 ✅**：T008/M1/M3 验收实证 `evidence-t008-change-e2e.md`，2026-10-20 test_26 v5 真链 31 PASS / 0 FAIL）
 - `open-questions.md`：待定问题
 - `decisions/README.md`：已拍板决策
 - `topics/impact-analysis.md`：影响面与 codegraph 用法口径
+- `evidence-t008-result-snapshot.json`：终版 e2e 结果快照
