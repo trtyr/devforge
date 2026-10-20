@@ -5,6 +5,10 @@
 
 ## Phase 0 · 门 0 与基线
 
+- [ ] **(T000) 共用前置：无标记重推有界**——coding/testing 两个 loop 各加计数与常量，连续 3 次无标记 → 第 4 次判基础设施故障；反向测试覆盖。
+  - 验收：连续 4 次不发标记的 mock 会必须报错（非无限循环）；既有零硬限制测试不受影响。
+  - 影响：005 decisions/015、007 decisions/D013；与 change 同步生效。
+
 - [ ] **(T001) 基线建立**——无 `.git` → `git init` + **全量提交**（提交信息固定前缀）；有 `.git` → 记录 HEAD。
   - 验收：一个新 clone 的裸目录跑完门 0 后 `git log --oneline` 有且仅有一条 `devforge: baseline`；基线 sha 落 `baseline.txt`。
 - [ ] **(T002) `doc_level` 开关**——`none`（默认）/ `essential` / `complete`；`essential` 时先跑 doc-from-zero 轻量档。

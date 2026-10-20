@@ -49,3 +49,9 @@ Python 编写；仓库 `tests/integration/` + `tests/e2e/` 分层（pytest marke
 ## D012 启动方式
 
 沿用现状：coding Completed 后 API `start {"sop":"testing"}` 手动/编排触发（与 planning→coding 跨 SOP 触发同款）；本轮不做自动链。回归门禁（未来 coding 完成定义加「不破坏既有 e2e」）为预留接口，本轮不实现。
+
+## D013 无标记重推有界（与 005/015 同步，2026-10-20）
+
+**决策**：连续 3 次未发 `<stage-complete>N` → 第 4 次判基础设施故障，停止 run；测试阶段的打回轮数仍无上限。
+**为什么**：见 005 decisions/015——进度循环要设界，质量循环不设。
+**后果**：`testing.rs` 同步计数与常量；反向测试覆盖。
