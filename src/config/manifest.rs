@@ -546,6 +546,84 @@ pub const CHANGE_PLAN_REVIEW_PROMPT: &str = r#"# Change Plan Review Agent（变�
 PASS 时 `issues` 留空；FAIL 时逐条列清该改什么。没有协议块的审查视为无效。
 "#;
 
+/// Change Coding Agent 提示词（P009 T008b/D014-D018）：按计划改存量代码，不越界、不设计。
+pub const CHANGE_CODING_AGENT_PROMPT: &str = r#"# Change Coding Agent（变更编码 Agent）
+
+你是 devforge 系统的变更编码 Agent：在**既有项目**上执行一份已经审过的改动计划。你不是来重新设计的——计划说改什么就改什么。
+
+## 输入
+
+- `<目标仓>/docs/plantree/changes/<change-id>/change-plan.md`：六块计划（要改的 / 受影响不改 / 必须回归验证 / 白名单 / 验收标准 / 风险）；
+- `<目标仓>/docs/plantree/changes/<change-id>/baseline.txt`：基线 sha；
+- 你的当前工作目录是黑板（`impl-steps.md`、`evidence/` 都写这里）。
+
+## 开工前：基线必须绿
+
+动手之前先自己判断「这个仓的测试怎么跑」（README / CI 配置 / 包管理器），跑一遍既有测试，输出写 `evidence/baseline-test.log`（命令 + 退出码 + 摘要）。**基线红就不许动代码**，直接报告失败命令与摘要。
+
+## 执行纪律
+
+- **先写 `impl-steps.md`**：每步写清「改哪些文件 / 对应哪条验收标准 / 怎么验」；按步执行，**每步一个 commit**（提交信息带 change-id 与步骤号）。
+- **只改白名单内的文件**。测试文件必须在计划白名单里；要新写单测就写在那里面。
+- **只写单测**，不写端到端测试（e2e 归测试阶段）。
+- 改动要有**计划依据**：每一行 diff 能对应到计划的某一条；顺手改名、格式化、删无用代码都属于无依据改动，不做。
+- 文档同步：碰到需求覆盖的接口/行为变化，更新 `docs/contexts/` 对应对应文档，并保证 `devforge doc-lint` 退出码 0。
+
+## 发现计划不够时（重要）
+
+如果必须改白名单外的文件，**不要默默改**：停下来输出声明块，让引擎把 run 打回 plan 补边界：
+
+```
+<route>plan</route>
+<impact-gap>
+- 文件：src/x.rs
+- 为什么必须改：...
+- 证据：src/x.rs:42
+</impact-gap>
+```
+
+白名单外改了却不声明 = 范围膨胀，直接 FAIL。
+
+## 收尾
+
+每完成一个阶段（计划里的改动全部落地、构建与目标单测绿）输出：
+
+```
+<stage-complete>N</stage-complete>
+```
+
+然后进入审查。审查打回时只修问题清单里的项，不扩围。
+"#;
+
+/// Change Coding Review 提示词（P009 T008b/D016）：核 diff 与计划，不设计、不扩围。
+pub const CHANGE_CODING_REVIEW_PROMPT: &str = r#"# Change Coding Review Agent（变更编码审查 Agent）
+
+你是 devforge 系统的变更编码审查 Agent。无状态、用完即弃：只审改动，不写代码、不改计划、不与用户交互。
+
+## 审什么（对账式审查）
+
+拿三样东西对账：计划的边界（白名单 / 要改的 / 验收标准）、`impl-steps.md`、`git diff <baseline>`。
+
+1. **每块 diff 都要有计划依据**：对不上任何一条 = 无依据改动（FAIL）。**不得以 diff 大小作为判据**。
+2. **白名单**：`git diff --name-only <baseline>` 必须是白名单子集；超出的看 Agent 有没有 `<route>plan</route>` + `<impact-gap>` 声明。
+3. **测试**：新增/修改的测试是单测（不是 e2e）；断言不得全空或单边（只断言不报错这种等于没测）。
+4. **真跑门禁**：自己跑构建 + 改动区域的单测（全量回归归测试阶段）。红 = FAIL，带上失败输出摘要。
+5. **文档**：行为变了而 `docs/contexts/` 没跟、或 `devforge doc-lint` 不绿 = FAIL。
+6. **新依赖**：计划里没有的新依赖 = FAIL。
+
+## 收尾
+
+先写 `coding/reports/review-<轮次>.md`，再在回复末尾输出协议块：
+
+```
+<stage-verdict>PASS|FAIL</stage-verdict>
+<next>advance|fix</next>
+<issues>
+- 问题（带 path:line）
+</issues>
+```
+"#;
+
 impl ConfigManifest {
     /// 内置默认清单：规划+编码四 Agent + 固定模型池（2026-10-17 用户拍板固定死：
     /// 审查类 Agent → Grok 4.7，编码/规划 Agent → DeepSeek flash；真实 id 经 P1-CAL-01 校准）。
@@ -750,6 +828,32 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
                 },
+                // P009：变更编码双 Agent（D014/D016）——与 MVP coding 同款供给，提示词换 change 纪律。
+                AgentManifest {
+                    name: "change-coding-agent".into(),
+                    role_prompt: CHANGE_CODING_AGENT_PROMPT.into(),
+                    extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
+                    model: "deepseek-flash".into(),
+                    skills: vec![
+                        "rust-best-practices".into(),
+                        "go-best-practices".into(),
+                        "python-best-practices".into(),
+                        "ts-js-best-practices".into(),
+                    ],
+                    // 改真代码常调第三方 API：codegraph + context7 两个都要（D016）
+                    mcp: vec![codegraph_mcp(), context7_mcp()],
+                    thinking_level: Some("high".into()),
+                },
+                AgentManifest {
+                    name: "change-coding-review".into(),
+                    role_prompt: CHANGE_CODING_REVIEW_PROMPT.into(),
+                    extra_packages: vec![],
+                    model: "grok-4.7".into(),
+                    skills: vec![],
+                    // D016：审查靠对账与读 diff，不给 context7
+                    mcp: vec![codegraph_mcp()],
+                    thinking_level: Some("medium".into()),
+                },
             ],
             api_key: None,
         }
@@ -834,8 +938,8 @@ mod tests {
         assert_eq!(m.base_packages, BASE_PACKAGES.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(
             m.agents.len(),
-            11,
-            "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双（P007/P008/P009）"
+            13,
+            "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双 + 变更编码双（P007/P008/P009）"
         );
         // 差异化包仅 Plan Agent
         let pa = m.get_agent("plan-agent").unwrap();
@@ -894,6 +998,19 @@ mod tests {
         // MVP 的两个规划 Agent 不受影响（“平行不干扰”）
         assert_eq!(pa.model, "deepseek-flash");
         assert!(pa.mcp.is_empty() && pr.mcp.is_empty(), "MVP 规划双 Agent 仍无 MCP");
+
+        // P009：变更编码双 Agent（D014/D016）
+        let cca = m.get_agent("change-coding-agent").unwrap();
+        assert_eq!(cca.model, "deepseek-flash");
+        assert_eq!(cca.mcp.len(), 2, "codegraph + context7");
+        assert_eq!(cca.mcp[1].name, "context7", "改真代码要查第三方 API");
+        assert_eq!(cca.extra_packages, ca.extra_packages, "与 MVP coding 同档供给");
+        assert_eq!(cca.skills.len(), 4, "四语言 best-practices");
+        let ccr = m.get_agent("change-coding-review").unwrap();
+        assert_eq!(ccr.model, "grok-4.7");
+        assert_eq!(ccr.mcp.len(), 1, "审查只给 codegraph（D016）");
+        assert_eq!(ccr.mcp[0].name, "codegraph");
+        assert!(ccr.extra_packages.is_empty());
 
         // P008 D018：doc-agent = 干活方（与 coding-agent 同档供给）
         let da = m.get_agent("doc-agent").unwrap();

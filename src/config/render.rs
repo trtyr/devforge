@@ -668,8 +668,8 @@ mod tests {
         let rendered = renderer(&manifest).render_all(root.path()).unwrap();
         assert_eq!(
             rendered.len(),
-            11,
-            "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双（P007/P008/P009）"
+            13,
+            "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双 + 变更编码双（P007/P008/P009）"
         );
         for name in [
             "plan-agent",

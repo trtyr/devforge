@@ -161,7 +161,7 @@ def main() -> int:
             status, _ = server.req("PUT", "/config/manifest", manifest, timeout=300.0)
             r.check(status == 202, "PUT 剥包 manifest == 202", f"status={status}")
             ev = sse.wait_for(
-                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 11,
+                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 13,
                 timeout=300.0,
             )
             r.check(ev is not None, "九 profile 渲染完成（剥包快路径）", f"{ev}")
