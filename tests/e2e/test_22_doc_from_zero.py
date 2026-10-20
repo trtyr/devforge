@@ -32,7 +32,7 @@ NINE = (
     "doc-agent",
     "doc-review",
 )
-DOC_TIMEOUT = 7200.0  # 120 分钟窗口：fixture 很小，只是模型慢
+DOC_TIMEOUT = float(os.environ.get("DOC_TIMEOUT", "7200"))  # 默认 120 分钟；真仓可用环境变量放大
 
 ENTRY_PY = '''"""极简书目 CLI（doc-from-zero fixture：无文档、无 git）。"""
 

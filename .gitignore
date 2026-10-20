@@ -1,5 +1,8 @@
 /target
 
+# codegraph 索引（本机派生资产，不入库）
+.codegraph/
+
 # python bytecode
 __pycache__/
 *.pyc
