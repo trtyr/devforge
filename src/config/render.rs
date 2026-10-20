@@ -598,7 +598,12 @@ mod tests {
         assert_eq!(newapi["api"], "openai-completions");
         assert_eq!(newapi["baseUrl"], "https://newapi.trtyr.top/v1");
         let list = newapi["models"].as_array().unwrap();
-        assert_eq!(list.len(), 2, "池内同 provider 两个模型全量分发");
+        assert_eq!(list.len(), 3, "池内同 provider 的模型全量分发");
+        assert!(
+            list.iter()
+                .any(|m| m["id"] == "MiniMax-M3.1-Flash" && m["contextWindow"] == 1_000_000),
+            "doc-agent 用的 MiniMax 必须在 models.json 里: {list:?}"
+        );
         assert!(list
             .iter()
             .any(|m| m["id"] == "mokeywork/deepseek-flash"

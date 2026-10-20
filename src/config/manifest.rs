@@ -522,6 +522,13 @@ impl ConfigManifest {
                     context_window: 1_000_000,
                     max_tokens: 65_536,
                 },
+                ModelEntry {
+                    id: "minimax-m3.1-flash".into(),
+                    provider: "newapi".into(),
+                    model_id: "MiniMax-M3.1-Flash".into(),
+                    context_window: 1_000_000,
+                    max_tokens: 65_536,
+                },
             ],
             agents: vec![
                 AgentManifest {
@@ -613,7 +620,7 @@ impl ConfigManifest {
                     name: "doc-agent".into(),
                     role_prompt: DOC_AGENT_PROMPT.into(),
                     extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
-                    model: "deepseek-flash".into(),
+                    model: "minimax-m3.1-flash".into(),
                     skills: vec![
                         "doc-contract".into(),
                         "rust-best-practices".into(),
@@ -737,7 +744,10 @@ mod tests {
 
         // P008 D018：doc-agent = 干活方（与 coding-agent 同档供给）
         let da = m.get_agent("doc-agent").unwrap();
-        assert_eq!(da.model, "deepseek-flash");
+        assert_eq!(
+            da.model, "minimax-m3.1-flash",
+            "doc-agent 自 2026-10-20 起用 MiniMax-M3.1-Flash"
+        );
         assert_eq!(da.extra_packages, ca.extra_packages);
         assert_eq!(da.mcp.len(), 2, "codegraph + context7");
         assert_eq!(da.mcp[0].name, "codegraph");
