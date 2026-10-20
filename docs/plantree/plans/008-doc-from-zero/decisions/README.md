@@ -186,3 +186,17 @@
   - 审查：`<doc-verdict>PASS|FAIL</doc-verdict>` + `<route>phase0|phase1|phase2|phase3|finish</route>` + `<issues>`（FAIL 时全量列）
   - 缺/非法 route → 保守 `phase3`；协议违例上限 `MAX_PROTOCOL_VIOLATIONS = 3`。
 - **SOP 名**：`doc-from-zero`（与 `planning`/`coding`/`testing` 同款注册，触发 `start {"sop":"doc-from-zero"}`）。
+
+## D021 · 增量模式可执行细则（D015 落地，2026-10-20）
+
+- **入口**：`DEVFORGE_DOC_BASE=<sha|ref>`（显式基线）或 `DEVFORGE_DOC_INCREMENTAL=1`（用状态里记的 `base_sha`）。两者都没有 → 全量，行为与今天一致。
+- **基线记账**：RunState 扩展段新增 `base_sha`。首次运行（无该字段）写入当时 HEAD；**只有终审 PASS 才推进**到当前 HEAD（失败保留旧值，下次仍算同一批变更）。无 git / 无 HEAD → 不写、下轮全量。
+- **变更来源**：`git diff --name-status <base> HEAD`；再加上 `git status --porcelain` 里未提交的改动文件（漏提交不等于没改）。
+- **实体定位**：变更文件 → 新清单里该 `path` 的 `unit_id`；新增文件不在旧清单时**重建清单**（单元编号靠 `unit_seq` 水位不漂移）。删除/改名的符号：旧清单与新清单在变更文件上的 `canonical_name` 差集。
+- **语义传播**：上述符号名在全仓源码做**词边界**扫描（跳过 `docs/`、`.git`、`target`、`.codegraph`、`node_modules`、构建产物）→ 命中文件的 unit 入集合。
+  - 不用 codegraph 的理由：图索引是派生且可能陈旧；文本引用索引保守（多命中可接受，**漏命中不可接受**），且零外部依赖。
+- **汇编上溯**：`README` / `01-architecture` / `02-dataflow` / `10-runbook` 提到受影响单元（文档路径或实体名）→ 标记「汇编复核」；单元重写完后再核。
+- **失效规则**：`affected = 受影响单元 ∪ （doc-lint 红时的全部 done）`；只把 affected 从 done 移除，其余跳过。
+- **一致性校验（T024）**：重写后跑 `doc-audit` 机械三查（覆盖/实体/链接）+ 汇编陈旧检查（汇编里的 `path:line` 不存在或指向已删符号 → 报 FAIL 级问题）。终审照旧全局跑，不因增量放水。
+- **降级路径**：无状态、无 `base_sha`、无 git、清单缺失或损坏 → 全量 + `warn`（`note` 写进续跑说明，报告里也记一行）。
+- **为什么记在状态里而不是参数里**：增量是「同一任务的下一次运行」，基线属于任务记忆；参数只用来覆盖它。

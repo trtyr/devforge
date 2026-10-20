@@ -4,6 +4,7 @@
 //! 由引擎在"交审前/审查时"调用，结果作为确定性证据注入审查输入（D012）。
 
 pub mod audit;
+pub mod impact;
 pub mod inventory;
 pub mod lint;
 pub mod usage;
