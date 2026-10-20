@@ -9,7 +9,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::change::boundary::{parse_route, replan_instruction, ImpactGap};
-use crate::change::coding_gate::{changed_files, check_baseline_log, check_step_commits, read_steps};
+use crate::change::coding_gate::{
+    changed_files, check_baseline_log, check_self_check, check_step_commits, read_steps,
+};
 use crate::change::gate0::DocLevel;
 use crate::change::orchestrator::{ChangeSession, CodingTurn, PlanTurn, TestingTurn};
 use crate::change::plan_audit::review_instruction;
@@ -100,13 +102,15 @@ pub fn coding_review_instruction(ctx: &ChangeCtx, changed: &[String]) -> String 
 2. 改动是否全在白名单内；越界是否有 `<route>plan</route>` + `<impact-gap>` 申报（有申报就不该进到你这一步）。\n\
 3. 测试是否为单测（不是 e2e），断言不得全空或单边。\n\
 4. 是否引入计划外依赖。\n\
-5. 行为变了而 `docs/contexts/` 没跟、或 `devforge doc-lint` 不绿 = FAIL。\n\n\
+5. 行为变了而 `docs/contexts/` 没跟、或 `devforge doc-lint` 不绿 = FAIL。\n\
+6. **自证证据**（先证后报 / 行为断言）：黑板 `{}` 的命令与退出码是否真实、是否覆盖**本轮 diff**；被审方声称「跑过了」有没有可复核的证据；关键断言有没有写明「错实现形态」。证据与本轮 diff 对不上 = FAIL。\n\n\
 先写 `coding/reports/review.md`，末尾输出：<stage-verdict>PASS|FAIL</stage-verdict> + <next>advance|fix</next> + <issues>（FAIL 时带 path:line）。",
         ctx.change_id,
         ctx.plan_path().display(),
         ctx.blackboard.display(),
         ctx.baseline,
-        changed.join("、")
+        changed.join("、"),
+        crate::change::coding_gate::SELF_CHECK_LOG
     )
 }
 
@@ -134,12 +138,14 @@ pub fn coding_kickoff(ctx: &ChangeCtx) -> String {
 顺序：先跑既有测试并把命令与退出码写进 `evidence/baseline-test.log`（红就停）；\
 再写 `impl-steps.md`（每步：文件 / 对应验收标准 / 怎么验），按步执行、每步一提交（提交信息含 change-id 与 `step N`）。\n\
 只改计划白名单内的文件；越界必须输出 `<route>plan</route>` + `<impact-gap>`。\n\
+本轮改完还要留**自证证据**（先证后报）：把本轮相关测试的**命令原文 + 真实退出码 + 输出摘要**写进黑板 `{}`（**覆盖写**，不许沿用上一轮残留）——引擎会验这份证据（存在 + 退出码为 0），缺了或红着会被质量门拦下。\n\
 完成后输出 `<stage-complete>1</stage-complete>`。",
         ctx.change_id,
         ctx.baseline,
         ctx.repo.display(),
         ctx.plan_path().display(),
-        ctx.blackboard.display()
+        ctx.blackboard.display(),
+        crate::change::coding_gate::SELF_CHECK_LOG
     )
 }
 
@@ -299,6 +305,8 @@ impl ChangeSession for ProdChangeSession {
             });
         }
         require_marker("change-coding-agent", &reply)?;
+        // 先证后报：自证证据缺失或红 → Quality（不进审查）
+        check_self_check(&self.ctx.blackboard)?;
         // 实施步骤与按步提交必须对得上
         let steps = read_steps(&self.ctx.blackboard)?;
         check_step_commits(&self.ctx.repo, &self.ctx.baseline, &self.ctx.change_id, &steps)?;
@@ -656,6 +664,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            f.ctx.blackboard.join("evidence/self-check.log"),
+            "command: cargo test\nexit_code: 0\n",
+        )
+        .unwrap();
+        std::fs::write(
             f.ctx.blackboard.join("impl-steps.md"),
             "# 实施步骤\n## 步骤 1 改 a\n",
         )
@@ -714,6 +727,58 @@ mod tests {
             seen[0]
         );
         assert!(seen[1].contains("impl-steps"), "第二轮才是真实 coding：{}", seen[1]);
+    }
+
+    #[test]
+    fn coding_without_self_check_evidence_fails_before_review() {
+        // 先证后报：Agent 发了 stage-complete，但黑板没有合规自证证据 → Quality，且不进审查
+        let f = fixture(true);
+        coding_ready(&f);
+        std::fs::remove_file(f.ctx.blackboard.join("evidence/self-check.log")).unwrap();
+        let agent = Agent::new(&[
+            "基线绿了\n<stage-complete>1</stage-complete>",
+            "改完了\n<stage-complete>1</stage-complete>",
+        ]);
+        let review = ReviewFactory::new(&[PLAN_PASS]);
+        let seen_review = review.seen.clone();
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&[])),
+            plan_review: Box::new(ReviewFactory::new(&[])),
+            coding_agent: Box::new(agent),
+            coding_review: Box::new(review),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let err = session.run_coding(&mut NoUser, 0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("evidence/self-check.log"), "{msg}");
+        assert!(
+            seen_review.borrow().is_empty(),
+            "没有合规自证证据不得进 coding review"
+        );
+    }
+
+    #[test]
+    fn coding_with_self_check_evidence_enters_review() {
+        // 有合规自证证据 → 正常进审查（轮次 1）
+        let f = fixture(true);
+        coding_ready(&f);
+        let agent = Agent::new(&[
+            "基线绿了\n<stage-complete>1</stage-complete>",
+            "改完了\n<stage-complete>1</stage-complete>",
+        ]);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&[])),
+            plan_review: Box::new(ReviewFactory::new(&[])),
+            coding_agent: Box::new(agent),
+            coding_review: Box::new(ReviewFactory::new(&[PLAN_PASS])),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let turn = session.run_coding(&mut NoUser, 0).unwrap();
+        assert_eq!(turn.reviews, 1, "有合规自证证据才进 coding review");
     }
 
     #[test]
