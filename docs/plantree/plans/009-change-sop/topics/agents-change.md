@@ -135,7 +135,10 @@
 
 ### 2.6 供给
 
-- `change-coding-agent`：deepseek-flash + codegraph + context7 + 四语言 best-practices 技能（与 MVP `coding-agent` 同款，但提示词换成 change 纪律）
-- `change-coding-review`：grok-4.7 + codegraph，thinking medium，能跑命令（只读验证）
+- `change-coding-agent`：deepseek-flash + **codegraph + context7** + 四语言 best-practices 技能（与 MVP `coding-agent` 同款供给，仅提示词换成 change 纪律）
+  - **为什么给 context7**：它跟 MVP coding 一样在真写代码，改的又常常是别人库的调用；不给文档等于蒙眼改，只能靠猜 API 形状
+- `change-coding-review`：grok-4.7 + codegraph（不需要 context7——审查不靠写实现，靠对账与读 diff），thinking medium，能跑命令（只读验证）
+
+> 供给锚点已在单测里钉住（T008b），后续改供给必须先改这一节。
 
 ## 阶段 3 · testing（待补）

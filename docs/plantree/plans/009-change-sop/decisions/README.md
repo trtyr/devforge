@@ -105,3 +105,10 @@
 **为什么**：plan 是**参考与目标**，不是实现指令。plan agent 不是编码专家，它排的顺序没有权威；硬写进去只会在执行时多一层“计划写错了”的扯皮。
 **影响**：审查对账时同时看两边——plan 的影响面/边界（范围对不对）与 coding 自己的 impl-steps（步骤自洽不自洽）。
 **拍板**：用户 2026-10-20（纠正了实施顺序归属）。
+
+## D016 · change-coding-agent 给 codegraph + context7
+
+**决定**：`change-coding-agent` = deepseek-flash + codegraph + context7 + 四语言 best-practices，与 MVP `coding-agent` 同款供给。
+`change-coding-review` 只给 codegraph（审查靠对账与读 diff，不靠写实现）。
+**为什么**：它在真写代码，改的又常常是别人库的调用；不给 context7 就只能猜 API 形状。
+**拍板**：用户 2026-10-20。

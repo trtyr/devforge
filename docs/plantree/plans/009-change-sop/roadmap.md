@@ -26,6 +26,9 @@
 
 ## Phase B · coding 门
 
+- [ ] **(T008b) `change-coding-agent` / `change-coding-review` profile**——coding 侧与 MVP 同款供给（codegraph + **context7** + 四语言 best-practices + 提示词换 change 纪律）；review 侧 grok-4.7 + codegraph，能跑只读命令。
+  - 验收：单测断言两个 profile 的 mcp / model / skills 符合 D016。
+
 - [ ] **(T009) 越界二分与往返**——coding 完成后引擎算 diff 对白名单：全内 → testing；越界且 agent 已 `<route>plan</route>` + `<impact-gap>`（文件/理由/证据）→ 打回 plan 补边界（`change-plan-review` 只审增量，仍不看代码）→ 重进 coding；越界无申报 → FAIL（范围膨胀）。
   - 验收：两个反向用例各一条单测——故意改白名单外且不申报 → FAIL；故意改白名单外但带 impact-gap → 回 plan 且白名单被追加。
 - [ ] **(T013) change 编排器**——不要照搬 `run_coding`：它有基线、有 plan 产出、允许 coding → plan 的**反向回退**；往返计数上限 3，每次写 `docs/plantree/changes/<change-id>/history.md`。
