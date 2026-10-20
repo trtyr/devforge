@@ -52,6 +52,6 @@ Python 编写；仓库 `tests/integration/` + `tests/e2e/` 分层（pytest marke
 
 ## D013 无标记重推有界（与 005/015 同步，2026-10-20）
 
-**决策**：连续 3 次未发 `<stage-complete>N` → 第 4 次判基础设施故障，停止 run；测试阶段的打回轮数仍无上限。
+**决策**：连续 3 次未发 `<stage-complete>N` → 第 4 次判**质量失败**（`DevforgeError::Quality`，不触发自动重启；plan 010 D004），停止 run；测试阶段的打回轮数仍无上限。
 **为什么**：见 005 decisions/015——进度循环要设界，质量循环不设。
 **后果**：`testing.rs` 同步计数与常量；反向测试覆盖。

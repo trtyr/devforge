@@ -5,7 +5,7 @@
 
 ## Phase 0 · 门 0 与基线
 
-- [ ] **(T000) 共用前置：无标记重推有界**——coding/testing 两个 loop 各加计数与常量，连续 3 次无标记 → 第 4 次判基础设施故障；反向测试覆盖。
+- [ ] **(T000) 共用前置：无标记重推有界**——coding/testing 两个 loop 各加计数与常量，连续 3 次无标记 → 第 4 次判**质量失败**（`DevforgeError::Quality`，不触发自动重启，plan 010 D004）；反向测试覆盖。
   - 验收：连续 4 次不发标记的 mock 会必须报错（非无限循环）；既有零硬限制测试不受影响。
   - 影响：005 decisions/015、007 decisions/D013；与 change 同步生效。
 
@@ -17,7 +17,6 @@
   - 验收：重复触发同一任务不生成第二个 change-id（幂等）。
 
 ## Phase A · plan（本次的重点）
-
 - [ ] **(T004) `change-plan-agent` profile**——deepseek-flash + codegraph MCP + `plan-tree` 技能；与 `plan-agent` 平行不干扰。
 - [ ] **(T005) `change-plan-review` profile**——grok-4.7 + codegraph（核调用关系）+ `plan-tree`；与 `plan-review` 平行。
 - [ ] **(T006) 提示词：六块产出**——需求复述/影响面/三张表/边界/**验收标准**/风险；影响面每条必须 `path:line`；**不写实施顺序**（归 coding）、**不写回归命令**（归 coding/testing）、不拿测试结果当证据。
@@ -26,7 +25,7 @@
   - 验收：三条反向用例各一条单测（缺证据 / 漏调用方 / 验收条目写“功能正常”）。
 - [ ] **(T007b) 引擎侧计划审计**——`path:line` 存在性、白名单路径存在性、「要改的」⊆ 白名单，机械输出注入审查（审查官不重算）。
   - 验收：故意写一个不存在的路径 → 审计里必须逐条列出。
-- [ ] **(T008) plan 阶段端到端**——真实小需求跑通 plan，产出六块齐全、审查 PASS。
+- [ ] **(T008) plan 阶段端到端** — **已移出代码阶段**（用户 2026-10-20：代码阶段只写单测，不跑端到端），与 M1 一起入验收阶段。
 
 ## Phase B · coding 门
 
@@ -48,7 +47,7 @@
 
 - [ ] **(T011) 回归 + 变更 e2e（testing）**——test agent 先跑全套回归（`evidence/regression.log`），红则直接 `<route>coding</route>`；再为变更点写 e2e，输出验收对照表（每条验收标准 → 测试 `path:line`）。
   - 验收：既有套件人为打断后 run 必须 FAIL 并回注 coding；验收标准漏一条 → FAIL。
-- [ ] **(T011b) 续跑检查点**——`changes/<id>/state.json` 由引擎写（阶段/基线/往返/已完成步骤与验收项/审查轮次），断了能从断点续。
+- [ ] **(T011b) 续跑检查点**——checkpoint 住黑板 `plans/<p>/<t>/change/state.json`（引擎写，010 D022a/D001），存阶段/基线/往返/已完成步骤与验收项/审查轮次；断了能从断点续。
   - 验收：在 testing 中途模拟进程退出，重跑能从 testing 继续，往返计数不丢。
 
 ## Phase D · 收尾
