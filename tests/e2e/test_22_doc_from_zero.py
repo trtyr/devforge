@@ -222,12 +222,16 @@ def main() -> int:
         gate = meta / "gate0-closures.md"
         r.check(gate.exists(), "门 0：闭包校验证据落盘")
 
-        # 单元滚动
-        state_path = meta / "state.json"
-        r.check(state_path.exists(), "检查点 state.json 落盘")
+        # 单元滚动（plan 010 D001：检查点住黑板，不在产物目录）
+        state_path = server.home / ".devforge" / "plans" / "devforge" / "d1" / "doc-from-zero" / "state.json"
+        r.check(state_path.exists(), "检查点 state.json 落盘（黑板）")
         state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
-        done = state.get("done", [])
+        done = (state.get("data") or {}).get("done", [])
         r.check(len(done) >= 1, f"至少一个单元通过审查并落盘（{done}）")
+        r.check(
+            not (meta / "state.json").exists(),
+            "产物目录不得再出现 state.json（运行状态不寄居产物）",
+        )
 
         # 正文文档
         body_docs = [p for p in docs.rglob("*.md") if "_meta" not in p.parts]
