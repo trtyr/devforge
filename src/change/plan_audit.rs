@@ -689,8 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn review_instruction_carries_verdict_facts_and_new_criteria() {
-        // 错实现形态：把「裁决门事实 / 新审点」从审查指令里删掉 → 本用例必须变红
+    fn review_instruction_carries_verdict_facts_and_new_criteria() {        // 错实现形态：把「裁决门事实 / 新审点」从审查指令里删掉 → 本用例必须变红
         let r = repo();
         let plan = plan_with_ambiguity("- 复合词算一个词还是两个词\n");
         let a = audit(&plan, r.path());
@@ -704,5 +703,56 @@ mod tests {
         for anchor in ["留痕核对", "分类恰当性", "结构缺失"] {
             assert!(text.contains(anchor), "审查指令缺新审点：{anchor}");
         }
+    }
+
+    /// D024 登记守卫：台账里 D024 登记一次，D009 标题带「供给部分由 D024 增补」的旁注。
+    ///
+    /// 错实现形态：把 D024 删了 / 把 D009 的旁注删了 → 本用例必须变红。
+    #[test]
+    fn decision_ledger_registers_d024_and_annotates_d009() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/plantree/plans/009-change-sop/decisions/README.md");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("决策台账不可读：{}", path.display()));
+        assert_eq!(
+            text.matches("## D024 ·").count(),
+            1,
+            "D024 在台账里必须只登记一次"
+        );
+        let d009 = text
+            .lines()
+            .find(|l| l.starts_with("## D009 ·"))
+            .expect("D009 标题在位");
+        assert!(
+            d009.contains("D024"),
+            "D009 标题要带「供给部分由 D024 增补」的旁注（两边都标）：{d009}"
+        );
+    }
+
+    /// 文档口径守卫：agents-change.md 的答复载体 / 供给 / 审点三处与代码一致。
+    ///
+    /// 错实现形态：把文档里的载体口径或审点删了 → 本用例必须变红。
+    #[test]
+    fn agents_change_doc_matches_the_implemented_contract() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/plantree/plans/009-change-sop/topics/agents-change.md");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("文档不可读：{}", path.display()));
+        // ① 答复载体：标记 + 字段 + 禁默认放行
+        for anchor in [VERDICT_MUST_ASK, VERDICT_SELF, VERDICT_ANSWER_FIELD] {
+            assert!(text.contains(anchor), "文档缺答复载体口径：{anchor}");
+        }
+        assert!(
+            text.contains("禁止") || text.contains("不许"),
+            "文档缺「禁止带默认值自决放行」的口径"
+        );
+        // ② 供给：ask 包
+        assert!(
+            text.contains("ask-user-question"),
+            "文档缺 ask 包供给口径（问询环的根因行）"
+        );
+        // ③ 审点：留痕核对 + 分类恰当性
+        assert!(text.contains("留痕核对"), "文档缺留痕核对审点");
+        assert!(text.contains("分类恰当性"), "文档缺分类恰当性审点");
     }
 }

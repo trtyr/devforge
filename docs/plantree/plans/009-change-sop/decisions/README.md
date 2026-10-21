@@ -61,11 +61,12 @@
 **为什么**：会被豁免的往往正是关键文件；漏登一个文件，后面 diff 就看不见它。真正可能有 git 的大仓也走不到这条分支。
 **拍板**：用户 2026-10-20。
 
-## D009 · change-plan 只给 codegraph
+## D009 · change-plan 只给 codegraph（npm 包供给由 D024 增补）
 
 **决定**：`change-plan` profile = deepseek-flash + **仅 codegraph MCP**；不给 context7，不给 `doc-contract`。
 **为什么**：改既有代码靠结构信息（谁调它、它依赖谁）；库文档帮助有限但会稀释注意力。`doc-contract` 是实体文档的契约，计划文档套它会制造无意义的必填节。
 **拍板**：用户 2026-10-20。
+**增补（2026-10-21）**：本条只约束 **MCP 供给**（仍然只给 codegraph）；**npm 包供给**由 D024 增补（`change-plan-agent` 装 ask 包，用来真问用户）。两层互不冲突——只标一边等于旧决策看着仍有效。
 
 ## D010 · plan 不跑测试
 
@@ -162,3 +163,12 @@
 **为什么**：①纪律只有一份才不漂移——原样 vendor 24 份会让 profile 膨胀，且 pstack 的 principle skill 靠 `poteto-mode` 按名路由，本仓 coding agent 没有这层路由（skill 必须留在系统提示的技能清单里才能被按需加载：frontmatter 要有非空 `description`，且**不设** `disable-model-invocation: true`）；②纪律光写没人查等于白写——「先证后报」里能机械判的那部分（证据存在 + 退出码为 0）下沉成门，与仓内「厚 Agent、薄编排」一致；③MVP 的 `CodingSopLoop::run` 未进黑板路径（`src/sop/coding.rs:113`），加门要动编排 API，本次只治理 live 的 change 路径。
 **影响**：四份 coding/review 提示词按各自现状分别改（只引用 skill，不复述既有条款，避免口径冲突）；change coding 轮多一道机械门（kickoff 与审查指令写清证据路径与写法，审查侧核对证据与本轮 diff）；新文件 `assets/skills/coding-discipline/SKILL.md` 是 `src/config/skill_assets.rs` 的编译期依赖，必须与注册改动同一次提交落地。
 **拍板**：计划 `change-20261020-backnotprop-pstack-github-ai-skills-home`（2026-10-20）。
+
+## D024 · 问询环：供给 + 结构契约 + 硬门 + 审查审点
+
+**决定**：①**供给**——`change-plan-agent` 装 ask 包（`npm:@juicesharp/rpiv-ask-user-question`，与 MVP `plan-agent` 同包）：问询环此前在**供给层就不存在**（agent 手里没有能发 `extension_ui_request` 的工具）；②**产出侧结构契约**——歧义单独成小节（标题含「歧义」），每条写成顶层列表行并带分类标记：`[必须裁决]`（需求与代码都定不下来、且影响验收口径）必须先用 `ask-user-question` 真问用户、把答复**逐字**写进同条目的 `用户裁决：` 字段，**禁止**带默认值自决放行；`[自决]`（不涉及验收口径）由 agent 按判断定；无歧义也要显式写「无歧义」；③**引擎侧确定性硬门**（`change::plan_audit::audit_verdicts`）——歧义块里标了 `[必须裁决]` 却缺**非空** `用户裁决：` → 计划轮直接打回（`PlanTurn::Fail`，不进审查轮，走既有 3 轮修复回路）；④**审查侧语义审点**——新增**留痕核对**与**分类恰当性**两条，并把裁决门的确定性事实（未分类条目、散文里的必须裁决声明、计数）注入审查指令。
+**为什么**：上一场自举实测 `questions_total=0`——change plan agent 从来没跟用户说过一句话：它把「必须用户裁决」的歧义全按默认值自决放行，写进计划、过审、进 coding。上一场已证明「只改提示词」不够（模型会静默自决），故四层叠加：供给（有没有工具）+ 产出契约（怎么写）+ 硬门（写没留痕，机械判）+ 审查审点（该不该问，语义判）。分工与仓内既有约定一致（D012：引擎算确定性的东西，审查官只做语义判断）。
+**与 D009 的关系**：D009 只约束 **MCP 供给**（change-plan 仍只给 codegraph，不给 context7）；D024 增补的是 **npm 包供给**（ask 包）。
+**已知能力边界**：硬门只判「标了必须裁决却没留痕」，判不了「该不该问」——把该问的标成 `[自决]` 是绕过，归审查官的分类恰当性审点 + 真链 e2e 见证兜底。
+**遗留（本靶只登记，不改）**：①`change-coding-review` 无包，比 MVP `coding-review` 少一个诊断包 `pi-lens`；②`change-test-agent` 比 MVP `test-agent` 多一个 `pi-lens`（与 MVP 黑盒纪律相悖）；③**testing 阶段的验收测试从不提交**——上一场遗留的 880 行未提交补录让下一场 coding 继承脏工作区，越界门（`git diff --name-only <baseline>`）判范围膨胀；本场已用 `git stash` 归位（内容可恢复）并登记。
+**拍板**：计划 `change-20261021-change-sop-path-line-src-config-manifest`（2026-10-21）。
