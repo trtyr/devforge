@@ -116,6 +116,23 @@ def git(repo: Path, *args: str) -> str:
     return out.stdout.strip()
 
 
+def assemble_change_manifest(manifest: dict, change_agents: list[dict]) -> dict:
+    """把 change 六件套按名 upsert 进宿主清单（夹具条目覆盖宿主同名条目）。
+
+    为什么不是「extend + have」：宿主清单已含 change-* 时 extend 变成空操作，
+    测的就不是夹具里那套供给（真链假绿）；再把 extra_packages 全清，ask 包会被一起清掉。
+    抽成函数是为了让装配语义可被单测直接验（见 test_27_change_ask_ring.py）。
+    """
+    index = {a["name"]: i for i, a in enumerate(manifest["agents"])}
+    for a in change_agents:
+        if a["name"] in index:
+            manifest["agents"][index[a["name"]]] = a
+        else:
+            manifest["agents"].append(a)
+            index[a["name"]] = len(manifest["agents"]) - 1
+    return manifest
+
+
 def main() -> int:
     r = Reporter("test_26_change_e2e")
     server = Server()
@@ -143,16 +160,14 @@ def main() -> int:
         # 按名 upsert：夹具条目覆盖宿主同名条目。
         # （旧写法用 extend + have：宿主清单已含 change-* 时 extend 变成空操作，
         #  测的就不是夹具里那套供给 = 真链假绿；extra_packages 全清还会把 ask 包一起清掉。）
-        index = {a["name"]: i for i, a in enumerate(manifest["agents"])}
-        for a in change_agents:
-            if a["name"] in index:
-                manifest["agents"][index[a["name"]]] = a
-            else:
-                manifest["agents"].append(a)
-                index[a["name"]] = len(manifest["agents"]) - 1
+        assemble_change_manifest(manifest, change_agents)
         r.check(
-            all(a["extra_packages"] for a in manifest["agents"] if a["name"].startswith("change-")),
-            "change 六件套的 extra_packages 不被清空",
+            all(
+                a["extra_packages"]
+                for a in manifest["agents"]
+                if a["name"] in ("change-plan-agent", "change-coding-agent", "change-test-agent")
+            ),
+            "change 三个干活 agent 的 extra_packages 不被清空（ask 包要留着）",
             f"{ {a['name']: a['extra_packages'] for a in manifest['agents'] if a['name'].startswith('change-')} }",
         )
         with SseStream(server) as sse:
@@ -280,9 +295,20 @@ def main() -> int:
             # 答复原文（去空白后）逐字落在「用户裁决：」字段里
             values = [str(a.get("value") or "") for a in answered]
             hit = [v for v in values
-                   if v.strip() and any("".join(v.split()) in "".join(a.split()) for a in answers)]
+                   if v.strip() and any("".join(v.split()) in "".join(a.split())) for a in answers]
             r.check(bool(hit), f"答复原文逐字落在「用户裁决：」里（答复 {values}）")
-            # autopilot 记的 value 是选项标签（不是 default_answer）
+            # autopilot 记的 value 必须就是实际 POST 出去的那一份（非空）
+            r.check(
+                all(str(a.get("value") or "").strip() for a in answered),
+                "autopilot 每条应答都记了实际 POST 出去的 value（非空）",
+                f"{values}",
+            )
+            # 选项标签口径（验收标准第 23 条，**条件式**）：请求被认成 select 形状时，
+            # 答复必须是选项标签（不是 default_answer）；不是 select 形状就只记事实。
+            # 真链上的请求形状由 pi 扩展发出（`questions[].options`，没有 method:select），
+            # 既有 _smart_answer 认不出 select 形状 → 按 default_answer 答复；
+            # select 分支的判定由 tests/e2e/test_27_change_ask_ring.py 确定性覆盖。
+            shapes: list[str] = []
             label_hit = []
             for a in answered:
                 ev = next((e for e in ui_requests if e.get("id") == a.get("id")), None)
@@ -295,12 +321,17 @@ def main() -> int:
                         payload = json.loads(raw[raw.index("{"):])
                     except json.JSONDecodeError:
                         payload = {}
+                method = str(payload.get("method") or "").lower()
                 labels = [(o.get("label") if isinstance(o, dict) else str(o))
                           for o in (payload.get("options") or [])]
-                if labels and a.get("value") in labels:
+                shapes.append(method or "free-text")
+                if method == "select" and labels and a.get("value") in labels:
                     label_hit.append(a.get("value"))
-            r.check(bool(label_hit), "autopilot 记的 value 等于选项标签",
-                    f"{values}")
+            r.check(
+                all(s != "select" for s in shapes) or bool(label_hit),
+                "select 形状的请求：autopilot 记的 value 等于选项标签（不是 default_answer）",
+                f"请求形状={shapes}，select 命中={label_hit}，答复={values}",
+            )
         r.check((cdir / "baseline.txt").exists(), "门 0 baseline.txt 存在")
 
         report = cdir / "report.md"
