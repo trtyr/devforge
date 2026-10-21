@@ -4,12 +4,14 @@
 //! - **回归优先**：test agent 先跑既有全套测试并把结果落 `evidence/regression.log`；
 //!   日志退出码非 0 却声称「回归没问题」= 说谎，FAIL。
 //! - **验收对账**：计划的每条验收标准都必须对到测试 `path:line`；缺一条即零覆盖（FAIL）。
-//! - **回注不带定位**：bug 打回 coding/plan 时只给失败摘要，**不给文件行号**——测试 agent 读的是行为，
-//!   不是代码；给了定位就等于让它越界做本地化（D018/D019）。
+//! - **回注带失败明细原文**：bug 打回 coding/plan 时把失败明细**逐条原文**（含 `path:line`）
+//!   带给实现方——回注是 coding agent 的**输入面**，不给定位等于让它自己猜
+//!   （D025 改写 D018/D019 的「不做定位」口径：两个路由目标同口径，交付面与日志面同源）。
 
 use std::path::Path;
 
 use crate::change::coding_gate::parse_baseline_log;
+use crate::change::state::TestFailureContext;
 use crate::error::{DevforgeError, Result};
 
 /// 回归证据（相对黑板）。
@@ -109,34 +111,40 @@ pub fn reconcile_acceptance(criteria: &[String], table: &[AcceptanceMatch]) -> R
     Ok(criteria.len())
 }
 
-/// 生成回注给 coding/plan 的消息：**只给失败摘要，不带文件行号定位**。
+/// 生成回注给 coding/plan 的消息：失败明细**逐条原文**（含 `path:line`）。
 ///
-/// `target` 只影响措辞（`coding` / `plan`），不改变「不给定位」这条硬约束。
+/// `target` 只影响措辞（`coding` / `plan`），两个目标同口径：明细同源
+/// （`failures` 是 test agent 给的原文，不剥定位、不改写、不截断）。
 pub fn route_back_message(target: &str, failures: &[String]) -> String {
-    let mut out = format!(
-        "测试阶段未通过，按 <route>{target}</route> 回去处理。请自己定位原因（本消息不提供文件位置）。\n失败摘要：\n"
-    );
-    for f in failures {
-        out.push_str(&format!("- {}\n", strip_locations(f)));
-    }
-    out
+    format!(
+        "测试阶段未通过，按 <route>{target}</route> 回去处理。\n失败明细：\n{}\n",
+        failure_details(failures)
+    )
 }
 
-/// 去掉文本里的 `path:line` 定位（防止上游把定位顺手带进来）。
-fn strip_locations(text: &str) -> String {
-    let mut out = String::new();
-    for tok in text.split_whitespace() {
-        let is_loc = tok
-            .rsplit_once(':')
-            .is_some_and(|(p, l)| p.contains('.') && l.chars().all(|c| c.is_ascii_digit()) && !l.is_empty());
-        if is_loc {
-            out.push_str("<位置略>");
-        } else {
-            out.push_str(tok);
-        }
-        out.push(' ');
-    }
-    out.trim_end().to_string()
+/// 失败明细渲染：issues 逐条原文，一行一条。
+///
+/// 回注消息与 coding 送达块共用这一份渲染 → 同一失败在三个出口同源（不漂移）。
+pub fn failure_details(failures: &[String]) -> String {
+    failures
+        .iter()
+        .map(|f| format!("- {f}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// coding 送达块的标题行（逐字可查：验收按这句话对账）。
+pub const FAILURE_BLOCK_TITLE: &str = "上一轮测试失败明细如下（逐条原文）";
+
+/// coding 送达块：上一轮测试失败的明细（逐条原文）。
+///
+/// 这是回注内容在 **coding agent 输入面**上的形态；明细与日志面/失败原因文本同源。
+pub fn coding_failure_block(failure: &TestFailureContext) -> String {
+    format!(
+        "{}：\n{}",
+        FAILURE_BLOCK_TITLE,
+        failure_details(&failure.issues)
+    )
 }
 
 #[cfg(test)]
@@ -206,24 +214,67 @@ mod tests {
     }
 
     #[test]
-    fn route_back_message_carries_no_location() {
+    fn route_back_message_carries_the_failure_details_verbatim() {
+        // 错实现形态：回注把 path:line 剥成 <位置略>（旧口径）→ 本用例必须变红
         let msg = route_back_message(
             "coding",
-            &["tests/test_a.py:12 断言失败".to_string(), "接口返回 500".to_string()],
+            &[
+                "tests/test_a.py:12 断言失败".to_string(),
+                "接口返回 500".to_string(),
+            ],
         );
         assert!(msg.contains("<route>coding</route>"));
-        assert!(!msg.contains("test_a.py:12"), "回注不得带定位：{msg}");
-        assert!(msg.contains("<位置略>"), "{msg}");
-        // 用计划的 path_refs 解析器复核：消息里不得再出现可解析的 path:line
+        assert!(msg.contains("tests/test_a.py:12"), "回注必须带定位：{msg}");
+        assert!(msg.contains("接口返回 500"), "回注必须带全部明细：{msg}");
+        assert!(!msg.contains("<位置略>"), "不许再剥定位：{msg}");
+        assert!(!msg.contains("请自己定位原因"), "不许写零信息话术：{msg}");
+        assert!(!msg.contains("本消息不提供文件位置"), "不许写零信息话术：{msg}");
+        // 用计划的 path_refs 解析器复核：明细里的 path:line 必须仍可解析
         assert!(
-            crate::change::plan_audit::path_refs(&msg).is_empty(),
-            "回注消息里出现了 path:line：{msg}"
+            crate::change::plan_audit::path_refs(&msg).contains(&("tests/test_a.py".to_string(), 12)),
+            "回注消息里的 path:line 必须可解析：{msg}"
         );
     }
 
     #[test]
-    fn route_to_plan_is_also_possible() {
-        let msg = route_back_message("plan", &["验收标准与实现不符".to_string()]);
+    fn route_to_plan_carries_the_same_details() {
+        // 错实现形态：plan 目标仍剥定位（两个路由目标不同口径）→ 本用例必须变红
+        let msg = route_back_message("plan", &["tests/test_a.py:12 断言失败".to_string()]);
         assert!(msg.contains("<route>plan</route>"), "{msg}");
+        assert!(msg.contains("tests/test_a.py:12"), "两个路由目标同口径：{msg}");
+        assert!(!msg.contains("<位置略>"), "{msg}");
+        assert!(!msg.contains("本消息不提供文件位置"), "{msg}");
+    }
+
+    #[test]
+    fn failure_details_render_one_issue_per_line_verbatim() {
+        // 错实现形态：渲染时改写/截断明细 → 本用例必须变红
+        let details = failure_details(&[
+            "a.rs:1 失败".to_string(),
+            "b.rs:2 失败".to_string(),
+        ]);
+        assert_eq!(details, "- a.rs:1 失败\n- b.rs:2 失败");
+    }
+
+    #[test]
+    fn coding_failure_block_carries_the_title_and_verbatim_issues() {
+        // 错实现形态：送达块漏标题行 / 漏一条 issue / 夹带零信息话术 → 本用例必须变红
+        let ctx = TestFailureContext {
+            round: 1,
+            issues: vec![
+                "tests/change_ask_ring.rs:557 断言失败".to_string(),
+                "接口返回 500".to_string(),
+            ],
+        };
+        let block = coding_failure_block(&ctx);
+        assert!(block.contains(FAILURE_BLOCK_TITLE), "送达块要有标题行：{block}");
+        assert!(
+            block.contains("tests/change_ask_ring.rs:557"),
+            "送达块要逐字带失败明细：{block}"
+        );
+        assert!(block.contains("接口返回 500"), "送达块要带全部明细：{block}");
+        assert!(!block.contains("请自己定位原因"), "{block}");
+        assert!(!block.contains("本消息不提供文件位置"), "{block}");
+        assert!(!block.contains("<位置略>"), "{block}");
     }
 }

@@ -50,7 +50,7 @@ pub enum TestingTurn {
         /// 本阶段消耗的审查轮次（test review）。
         reviews: usize,
     },
-    /// 回归/测试失败 → 回注 coding（不给定位）。
+    /// 回归/测试失败 → 回注 coding（带失败明细原文，含 `path:line`）。
     RouteCoding { failures: Vec<String> },
     /// 发现计划层面的问题 → 回 plan。
     RoutePlan { failures: Vec<String> },
@@ -257,7 +257,7 @@ pub fn run<S: ChangeSession>(
                         failures.join("；")
                     )));
                 }
-                // 回注只带摘要（不给 path:line 定位）——测试 agent 读行为不读代码
+                // 回注带失败明细原文（含 path:line）——明细同源：coding 拿到的与日志面/失败原因文本一致
                 let msg = crate::change::testing_gate::route_back_message("coding", &failures);
                 tracing::warn!(component = "change-orchestrator", %msg, "测试失败回注 coding");
                 state.phase = ChangePhase::Coding;
@@ -599,7 +599,10 @@ mod tests {
             .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("回注 coding"), "{msg}");
-        assert!(!msg.contains("test_a.py:12"), "回注不得带定位：{msg}");
+        assert!(
+            msg.contains("tests/test_a.py:12"),
+            "回注必须带定位（失败明细逐条原文）：{msg}"
+        );
         let saved = load(&st, "change-20261020-x", "base123");
         assert_eq!(saved.phase, ChangePhase::Coding, "应回到 coding");
     }
