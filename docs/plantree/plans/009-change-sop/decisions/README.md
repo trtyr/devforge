@@ -120,11 +120,12 @@
 **为什么**：引擎根本不知道这个项目的测试怎么跑（pytest / go test / npm / make），凭什么是它来指挥；跑测试是 agent 的本职。
 **拍板**：用户 2026-10-20。
 
-## D018 · 回归失败直接丢回 coding，不做定位
+## D018 · 回归失败直接丢回 coding（定位口径由 D025 改写）
 
 **决定**：testing 阶段回归红 → 直接 `<route>coding</route>` 带失败摘要；不要求 test agent 分析“是谁弄坏的”。
 **为什么**：test agent 只看行为不看代码，定位不了；定位是实现方的事。
 **拍板**：用户 2026-10-20。
+**旁注（2026-10-21）**：本条的「不做定位」口径由 D025 改写——回注改为带**失败明细逐条原文**（含 `path:line`）；「不要求 test agent 分析是谁弄坏的」这半条不变。
 
 ## D019 · testing 不给 codegraph
 
@@ -172,3 +173,10 @@
 **已知能力边界**：硬门只判「标了必须裁决却没留痕」，判不了「该不该问」——把该问的标成 `[自决]` 是绕过，归审查官的分类恰当性审点 + 真链 e2e 见证兜底。
 **遗留（本靶只登记，不改）**：①`change-coding-review` 无包，比 MVP `coding-review` 少一个诊断包 `pi-lens`；②`change-test-agent` 比 MVP `test-agent` 多一个 `pi-lens`（与 MVP 黑盒纪律相悖）；③**testing 阶段的验收测试从不提交**——上一场遗留的 880 行未提交补录让下一场 coding 继承脏工作区，越界门（`git diff --name-only <baseline>`）判范围膨胀；本场已用 `git stash` 归位（内容可恢复）并登记。
 **拍板**：计划 `change-20261021-change-sop-path-line-src-config-manifest`（2026-10-21）。
+
+## D025 · 回注失败上下文送达 coding agent（失败明细逐条原文）
+
+**决定**：①**送达通道**——测试阶段回注 coding 时，把**上一轮测试失败的明细逐条原文**（含 `path:line`）写进断点的失败上下文（`TestFailureContext { round, issues }`：`round` = 第几轮回注，与 `test_reroutes` 同值；`issues` = test agent 给的原文，不剥不改写不截断），并在**下一轮 coding 的开工语**里以送达块送达（标题行「上一轮测试失败明细如下（逐条原文）」+ 明细逐条一行）；**无上下文时开工语逐字不变**（不注入任何空块）。②**三出口同源**——coding 开工语、WARN 日志、Quality 失败原因文本的失败明细**同源同原文**；回注消息**不再剥 `path:line`**、**不再写「请自己定位原因」类零信息话术**（D018/D019 的定位口径由本条改写）。③**清除语义三条规则**——**覆盖**（新一次回注的 issues 覆盖旧的，不追加）、**消费即清**（coding 轮过门转 testing 时清）、**终态清**（run 到 done 时清）；**例外**：回注超限分支**既不写也不清**（超限前有上下文就原样保留——该分支没有下一次 coding 轮）。④**续跑一致性**——上下文住在断点里，崩溃/重启后照样在同一轮送达同一份（幂等），清除点也照样在同一条状态迁移上生效。
+**为什么**：上一场终审查出一条硬事实——回注消息此前只有两个出口（Quality 错误文本、WARN 日志），都是**运维/日志面**，不是 coding agent 的**输入面**；`ChangeState` 没有任何字段存上一轮失败 → 「让 coding 方能定位」在当前数据流下不可能成立。不剥定位、不写零信息话术，是因为同一失败在三个出口出现两套内容时，运维看到的与 coding 拿到的对不上。
+**影响**：改动落在 `src/change/state.rs`（失败上下文 + 断点字段 + 写入/清除 helper）、`src/change/testing_gate.rs`（回注渲染 + 共用明细渲染）、`src/change/session.rs`（开工语送达块）、`src/change/orchestrator.rs`（写入/清除三处状态迁移 + `ChangeSession::run_coding` 增上下文参数）、`src/change/mod.rs`（re-export）；`ChangeSession` 是对外 re-export 的 trait，签名变更属破坏性变更（本仓是应用不是库，仓内只有两处实现）。**本条只登记不解决**：①回注轮的**可达性**——基线门要求 `evidence/baseline-test.log` 退出码为 0，而回注轮里测试是红的，基线门可能在 coding 开工语之前就把 run 判死；②test agent 侧「不猜文件位置」的生产者侧纪律（`src/config/manifest.rs`）本场不放开 → 实际送达的 issues 可能没有 `path:line`；③`route` 无 issues 时的拒收/追补（下一场协议硬化）。
+**拍板**：计划 `change-20261021-coding-agent-c4-path-line-coding-src-cha`（2026-10-21；用户裁决 Q1 三出口同源、Q2 台账占 D025）。

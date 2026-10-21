@@ -21,7 +21,7 @@
 
 ## 差异三：testing 多了回归与验收对账
 
-- **回归先行**：先跑全套既有测试，红 → 直接 `<route>coding</route>`，不做定位
+- **回归先行**：先跑全套既有测试，红 → 直接 `<route>coding</route>`，回注带**失败明细逐条原文（含 `path:line`）**
 - **e2e 只补变更点**，不重建整套
 - **验收对账**：plan 每条验收标准必须指到测试 `path:line`；缺一条 = FAIL
 - **回退方向**：doc 问题也走 `<route>coding</route>`（MVP 是 reroute=doc-side → doc-fix 子 SOP）

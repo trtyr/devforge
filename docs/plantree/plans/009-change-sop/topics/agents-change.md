@@ -169,7 +169,7 @@ MVP 只证第一件；change 必须两件都证，而且顺序是先证第二件
 | 1 | 起点是既有系统 | 有现成测试套件 → **先跑全套回归**，红就停 |
 | 2 | e2e 只补变更点 | 不为新需求重建整套测试，避免 diff 撑大、避免测旧功能出假问题 |
 | 3 | 验收要逐条对账 | plan 的每条验收标准都要指到一个测试的 `path:line`，缺一条 = FAIL |
-| 4 | 回归失败直接丢回 coding | 测试 Agent 不看代码、不做定位；它只负责证伪，定位是实现方的事 |
+| 4 | 回归失败直接丢回 coding | 测试 Agent 只负责证伪，不分析原因；它把**失败明细逐条原文（含 `path:line`）**回注给 coding agent，定位信息随明细一起给，实现方照单修 |
 
 ### 3.3 流程（五步）
 1. **回归**：agent 自己判断怎么跑（README / CI / 包管理器），跑全套既有测试，输出落 `evidence/regression.log`（命令 + 退出码 + 尾巴）。**红 → 直接 `<route>coding</route>`**。
@@ -208,7 +208,7 @@ MVP 只证第一件；change 必须两件都证，而且顺序是先证第二件
 
 - 每阶段完成 → `<stage-complete>N</stage-complete>`；无标记重推上限 3 次
 - 测试 review FAIL → `<route>coding</route>`（默认）或 `<route>plan</route>`（需求理解错）
-- 回归红 → `<route>coding</route>`，不定位、不分析原因
+- 回归红 → `<route>coding</route>`，带**失败明细逐条原文（含 `path:line`）**，不分析原因
 
 ### 3.9 检查点
 

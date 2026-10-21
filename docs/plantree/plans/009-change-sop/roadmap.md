@@ -70,6 +70,9 @@
 - [x] **(T011b) 续跑检查点**——checkpoint 住黑板 `plans/<p>/<t>/change/state.json`（引擎写，010 D022a/D001），存阶段/基线/往返/已完成步骤与验收项/审查轮次；断了能从断点续。
   - 验收：在 testing 中途模拟进程退出，重跑能从 testing 继续，往返计数不丢。
   - **证据**：commit `8a2c222`（`change::state` + `resume_keeps_roundtrips_across_sessions`）。
+- [x] **(T011c) 回注失败上下文送达 coding agent**——测试阶段回注 coding 时，把上一轮失败明细**逐条原文**（含 `path:line`）写进断点的失败上下文（轮次 + issues），下一轮 coding 的开工语按标题行「上一轮测试失败明细如下（逐条原文）」送达；回注不再剥定位、不写零信息话术（口径由 D025 改写 D018）。
+  - 验收：回注写入 → 重跑送达 → 清除语义（覆盖 / 消费即清 / 终态清，超限分支既不写也不清）→ 续跑一致，逐条单测可对账。
+  - **证据**：commit `3df53f2`（白名单守卫常量刷新）、`df8dd30`（`change::state` 失败上下文 + 断点字段）、`28968ee`（`change::testing_gate` 回注口径翻转 + 共用明细渲染）、`036e884`（`change::session` 开工语送达块）、`a492364`（`change::orchestrator` 写入/清除三段语义）。
 
 ## Phase D · 收尾
 
