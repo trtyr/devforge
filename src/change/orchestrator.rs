@@ -182,6 +182,8 @@ pub fn run<S: ChangeSession>(
             state.review_rounds += turn.reviews;
             match boundary::classify(&turn.changed, &whitelist, &turn.reply) {
                 BoundaryVerdict::InBoundary => {
+                    // 消费即清：coding 一旦过门，上一轮失败上下文就过期了
+                    state.clear_test_failure();
                     state.phase = ChangePhase::Testing;
                     save(run.store, &state)?;
                     break;
@@ -253,6 +255,8 @@ pub fn run<S: ChangeSession>(
                     )));
                 }
                 state.phase = ChangePhase::Done;
+                // 终态清：收尾不留过期状态
+                state.clear_test_failure();
                 save(run.store, &state)?;
             }
             TestingTurn::RouteCoding { failures } => {
@@ -268,6 +272,9 @@ pub fn run<S: ChangeSession>(
                 // 回注带失败明细原文（含 path:line）——明细同源：coding 拿到的与日志面/失败原因文本一致
                 let msg = crate::change::testing_gate::route_back_message("coding", &failures);
                 tracing::warn!(component = "change-orchestrator", %msg, "测试失败回注 coding");
+                // 写入失败上下文（下一轮 coding 的送达面）；超限分支不写——那里没有下一次 coding 轮
+                let round = state.test_reroutes;
+                state.set_test_failure(round, failures.clone());
                 state.phase = ChangePhase::Coding;
                 save(run.store, &state)?;
                 return Err(DevforgeError::Quality(format!(
@@ -648,6 +655,178 @@ mod tests {
     }
 
     #[test]
+    fn reroute_writes_the_failure_context_into_the_checkpoint() {
+        // 错实现形态：回注时不写失败上下文（下一轮 coding 拿不到明细）→ 本用例必须变红
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        let mut session = Scripted::new();
+        session.plans.push_back(PlanTurn::Pass);
+        session.codings.push_back(in_boundary());
+        session.testings.push_back(TestingTurn::RouteCoding {
+            failures: s(&[
+                "tests/change_ask_ring.rs:557 断言失败",
+                "接口返回 500",
+            ]),
+        });
+
+        let mut ui = NoUser;
+        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("回注 coding"), "{msg}");
+        assert!(
+            msg.contains("tests/change_ask_ring.rs:557"),
+            "失败原因文本要带明细原文（三出口同源）：{msg}"
+        );
+        let saved = load(&st, "change-20261020-x", "base123");
+        assert_eq!(saved.test_reroutes, 1, "回注计数要记 1");
+        let ctx = saved.last_test_failure.expect("回注必须写入失败上下文");
+        assert_eq!(ctx.round, 1, "轮次 = 第几轮回注");
+        assert_eq!(
+            ctx.issues,
+            s(&[
+                "tests/change_ask_ring.rs:557 断言失败",
+                "接口返回 500"
+            ]),
+            "issues 要逐条原文（含 path:line）"
+        );
+    }
+
+    #[test]
+    fn failure_context_survives_across_sessions() {
+        // 错实现形态：上下文只活在本次调用的内存里 → 续跑时送达面断链，本用例必须变红
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        let mut session = Scripted::new();
+        session.plans.push_back(PlanTurn::Pass);
+        session.codings.push_back(in_boundary());
+        session.testings.push_back(TestingTurn::RouteCoding {
+            failures: s(&["tests/change_ask_ring.rs:557 断言失败"]),
+        });
+        let mut ui = NoUser;
+        let _ = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap_err();
+
+        // 新会话：同一黑板路径重新加载
+        let st2 = StateStore::new(
+            tmp.path(),
+            StateKey::new("proj", "task", crate::change::state::CHANGE_SOP),
+        );
+        let resumed = load(&st2, "change-20261020-x", "base123");
+        let ctx = resumed
+            .last_test_failure
+            .expect("跨会话必须保留失败上下文");
+        assert_eq!(ctx.round, 1, "轮次不变");
+        assert_eq!(
+            ctx.issues,
+            s(&["tests/change_ask_ring.rs:557 断言失败"]),
+            "明细逐字不变"
+        );
+    }
+
+    #[test]
+    fn coding_success_clears_the_failure_context() {
+        // 错实现形态：coding 过门后不消费上下文（过期失败被继续喂给下一轮）→ 本用例必须变红
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        let mut seeded = ChangeState::new("change-20261020-x", "base123");
+        seeded.phase = ChangePhase::Coding;
+        seeded.set_test_failure(1, vec!["tests/change_ask_ring.rs:557 断言失败".to_string()]);
+        save(&st, &seeded).unwrap();
+
+        let mut session = Scripted::new();
+        session.codings.push_back(in_boundary());
+        // testing 走 RoutePlan（不改上下文）→ 只观测 coding 过门后的清除
+        session.testings.push_back(TestingTurn::RoutePlan {
+            failures: s(&["计划问题"]),
+        });
+        let mut ui = NoUser;
+        let _ = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap_err();
+
+        let saved = load(&st, "change-20261020-x", "base123");
+        assert_eq!(
+            saved.last_test_failure, None,
+            "coding 过门后上下文应被消费清空"
+        );
+    }
+
+    #[test]
+    fn second_reroute_overwrites_the_failure_context() {
+        // 错实现形态：新一次回注把 issues 追加到旧列表 → 已修好的旧失败又被喂回去
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        let mut seeded = ChangeState::new("change-20261020-x", "base123");
+        seeded.phase = ChangePhase::Testing;
+        seeded.test_reroutes = 1;
+        seeded.set_test_failure(1, vec!["旧失败".to_string()]);
+        save(&st, &seeded).unwrap();
+
+        let mut session = Scripted::new();
+        session.testings.push_back(TestingTurn::RouteCoding {
+            failures: s(&["新失败"]),
+        });
+        let mut ui = NoUser;
+        let _ = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap_err();
+
+        let saved = load(&st, "change-20261020-x", "base123");
+        let ctx = saved.last_test_failure.expect("应有上下文");
+        assert_eq!(ctx.round, 2, "轮次 = 第几轮回注");
+        assert_eq!(ctx.issues, s(&["新失败"]), "新 issues 覆盖旧的，不追加");
+    }
+
+    #[test]
+    fn testing_pass_clears_the_failure_context() {
+        // 错实现形态：run 到 done 不清上下文（收尾留过期状态）→ 本用例必须变红
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        let mut seeded = ChangeState::new("change-20261020-x", "base123");
+        seeded.phase = ChangePhase::Testing;
+        seeded.set_test_failure(1, vec!["tests/change_ask_ring.rs:557 断言失败".to_string()]);
+        save(&st, &seeded).unwrap();
+
+        let mut session = Scripted::new();
+        session.testings.push_back(pass_testing());
+        let mut ui = NoUser;
+        let out = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap();
+        assert_eq!(out.state.phase, ChangePhase::Done);
+        assert_eq!(out.state.last_test_failure, None, "终态清：run 结束不留上下文");
+    }
+
+    #[test]
+    fn reroute_over_the_limit_keeps_the_failure_context_untouched() {
+        // 错实现形态：超限分支也写/也清上下文 → 本用例必须变红
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        let mut seeded = ChangeState::new("change-20261020-x", "base123");
+        seeded.phase = ChangePhase::Testing;
+        seeded.test_reroutes = MAX_TEST_REROUTES;
+        seeded.set_test_failure(MAX_TEST_REROUTES, vec!["旧失败".to_string()]);
+        save(&st, &seeded).unwrap();
+
+        let mut session = Scripted::new();
+        session.testings.push_back(TestingTurn::RouteCoding {
+            failures: s(&["新失败"]),
+        });
+        let mut ui = NoUser;
+        let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+            .unwrap_err();
+        assert!(err.to_string().contains("上限 3"), "{err}");
+        let saved = load(&st, "change-20261020-x", "base123");
+        assert_eq!(saved.test_reroutes, MAX_TEST_REROUTES + 1);
+        assert_eq!(
+            saved.last_test_failure,
+            Some(TestFailureContext {
+                round: MAX_TEST_REROUTES,
+                issues: vec!["旧失败".to_string()],
+            }),
+            "超限分支既不写也不清：超限前的上下文原样保留"
+        );
+    }
+
+    #[test]
     fn mock_chain_produces_report_and_done_state() {
         // 接口级（进程内）全链：plan→coding→testing→report，不碰真 pi
         let tmp = tempfile::tempdir().unwrap();
@@ -699,6 +878,10 @@ mod tests {
         assert!(msg.contains("上限 3"), "{msg}");
         let saved = load(&st, "change-20261020-x", "base123");
         assert_eq!(saved.test_reroutes, MAX_TEST_REROUTES + 1);
+        assert_eq!(
+            saved.last_test_failure, None,
+            "超限前没有上下文就仍为「无上下文」"
+        );
     }
 
     #[test]
