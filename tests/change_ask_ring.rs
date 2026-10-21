@@ -28,18 +28,19 @@ use devforge::sop::planning::{PlanAgentSession, ReviewSession, ReviewSessionFact
 const ASK_PKG: &str = "npm:@juicesharp/rpiv-ask-user-question";
 
 /// 本变更的基线提交（计划 §1.1）。
-const BASELINE: &str = "30208734c035145ede001958a10ee8a5ea5cd633";
+const BASELINE: &str = "5d7bfd023f50fd6463d796cad5bd9c479f03d7c3";
 
 /// 计划的 coding 轮白名单（计划 §4）。
 const WHITELIST: &[&str] = &[
-    "src/config/manifest.rs",
-    "src/change/plan_audit.rs",
+    "src/change/state.rs",
+    "src/change/testing_gate.rs",
     "src/change/session.rs",
-    "tests/e2e/fixtures/change_agents.json",
-    "tests/e2e/test_26_change_e2e.py",
-    "tests/e2e/common.py",
+    "src/change/orchestrator.rs",
+    "src/change/mod.rs",
+    "tests/change_ask_ring.rs",
     "docs/plantree/plans/009-change-sop/decisions/README.md",
     "docs/plantree/plans/009-change-sop/topics/agents-change.md",
+    "docs/plantree/plans/009-change-sop/topics/vs-mvp.md",
     "docs/plantree/plans/009-change-sop/roadmap.md",
 ];
 
