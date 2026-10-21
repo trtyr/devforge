@@ -12,7 +12,7 @@ use std::path::Path;
 
 use crate::change::boundary::{self, BoundaryVerdict, ImpactGap};
 use crate::change::report::{self, AcceptanceSummary, ChangeReport, summarize_acceptance};
-use crate::change::state::{ChangePhase, ChangeState, load, save};
+use crate::change::state::{ChangePhase, ChangeState, TestFailureContext, load, save};
 use crate::error::{DevforgeError, Result};
 use crate::runstate::StateStore;
 use crate::sop::planning::UserLink;
@@ -75,7 +75,15 @@ pub trait ChangeSession {
         round: usize,
     ) -> Result<PlanTurn>;
     /// 跑 coding（含按步提交）。
-    fn run_coding(&mut self, ui: &mut dyn UserLink, roundtrip: usize) -> Result<CodingTurn>;
+    ///
+    /// `last_failure` = 上一轮测试失败的上下文（`None` = 无上下文）：回注轮把它送进
+    /// coding 开工语（送达面）；`None` 时开工语逐字不变。
+    fn run_coding(
+        &mut self,
+        ui: &mut dyn UserLink,
+        roundtrip: usize,
+        last_failure: Option<&TestFailureContext>,
+    ) -> Result<CodingTurn>;
     /// 跑 testing（回归优先 + 验收对账）。
     fn run_testing(&mut self, ui: &mut dyn UserLink) -> Result<TestingTurn>;
 
@@ -170,7 +178,7 @@ pub fn run<S: ChangeSession>(
     // ---- coding ⇄ plan ----
     if matches!(state.phase, ChangePhase::Coding) {
         loop {
-            let turn = session.run_coding(ui, state.roundtrips)?;
+            let turn = session.run_coding(ui, state.roundtrips, state.last_test_failure.as_ref())?;
             state.review_rounds += turn.reviews;
             match boundary::classify(&turn.changed, &whitelist, &turn.reply) {
                 BoundaryVerdict::InBoundary => {
@@ -334,6 +342,8 @@ mod tests {
         testings: VecDeque<TestingTurn>,
         coding_error: Option<String>,
         plan_review_count: usize,
+        /// 每轮 coding 收到的失败上下文（`None` = 无上下文）——送达面的观测点。
+        seen_failures: Vec<Option<TestFailureContext>>,
         pub log: Vec<String>,
     }
 
@@ -347,6 +357,7 @@ mod tests {
                 testings: VecDeque::new(),
                 coding_error: None,
                 plan_review_count: 0,
+                seen_failures: Vec::new(),
                 log: Vec::new(),
             }
         }
@@ -384,8 +395,10 @@ mod tests {
             &mut self,
             _ui: &mut dyn crate::sop::planning::UserLink,
             rt: usize,
+            last_failure: Option<&TestFailureContext>,
         ) -> Result<CodingTurn> {
             self.log.push(format!("coding(rt={rt})"));
+            self.seen_failures.push(last_failure.cloned());
             if let Some(msg) = &self.coding_error {
                 return Err(DevforgeError::Quality(msg.clone()));
             }
@@ -580,6 +593,33 @@ mod tests {
             !session.log.iter().any(|l| l.starts_with("plan")),
             "plan 已完成，续跑不该重跑：{:?}",
             session.log
+        );
+    }
+
+    #[test]
+    fn the_failure_context_reaches_the_coding_session() {
+        // 错实现形态：编排层不把断点里的上下文传给 coding 会话（送达面断链）→ 本用例必须变红
+        let tmp = tempfile::tempdir().unwrap();
+        let st = store(tmp.path());
+        // 预置断点：coding 阶段 + 一份失败上下文
+        let mut seeded = ChangeState::new("change-20261020-x", "base123");
+        seeded.phase = ChangePhase::Coding;
+        seeded.set_test_failure(1, vec!["tests/test_a.py:12 断言失败".to_string()]);
+        save(&st, &seeded).unwrap();
+
+        let mut session = Scripted::new();
+        session.codings.push_back(in_boundary());
+        session.testings.push_back(pass_testing());
+
+        let mut ui = NoUser;
+        run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui).unwrap();
+        assert_eq!(
+            session.seen_failures,
+            vec![Some(TestFailureContext {
+                round: 1,
+                issues: vec!["tests/test_a.py:12 断言失败".to_string()],
+            })],
+            "coding 会话必须收到断点里的失败上下文（送达面）"
         );
     }
 

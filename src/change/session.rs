@@ -15,6 +15,7 @@ use crate::change::coding_gate::{
 use crate::change::gate0::DocLevel;
 use crate::change::orchestrator::{ChangeSession, CodingTurn, PlanTurn, TestingTurn};
 use crate::change::plan_audit::review_instruction;
+use crate::change::state::TestFailureContext;
 use crate::change::testing_gate::{
     check_regression_log, parse_acceptance_table, REGRESSION_LOG,
 };
@@ -133,8 +134,13 @@ pub fn testing_review_instruction(ctx: &ChangeCtx) -> String {
     )
 }
 
-pub fn coding_kickoff(ctx: &ChangeCtx) -> String {
-    format!(
+/// coding 开工语。
+///
+/// `failure` = 上一轮测试失败的上下文（`None` = 无上下文）：
+/// - `None` → 正文**逐字**等于改动前的开工语（不注入任何空块）；
+/// - `Some` → 追加送达块（标题行 + 失败明细逐条原文），明细与回注面/日志面同源。
+pub fn coding_kickoff(ctx: &ChangeCtx, failure: Option<&TestFailureContext>) -> String {
+    let base = format!(
         "你是 change-coding-agent。change-id：`{}`，基线 `{}`。\n\
 目标仓：{}\n计划：{}\n黑板（当前目录）：{}\n\n\
 顺序：先跑既有测试并把命令与退出码写进 `evidence/baseline-test.log`（红就停）；\
@@ -148,7 +154,14 @@ pub fn coding_kickoff(ctx: &ChangeCtx) -> String {
         ctx.plan_path().display(),
         ctx.blackboard.display(),
         crate::change::coding_gate::SELF_CHECK_LOG
-    )
+    );
+    match failure {
+        Some(f) => format!(
+            "{base}\n\n{}",
+            crate::change::testing_gate::coding_failure_block(f)
+        ),
+        None => base,
+    }
 }
 
 pub fn testing_kickoff(ctx: &ChangeCtx) -> String {
@@ -299,7 +312,12 @@ impl ChangeSession for ProdChangeSession {
         self.run_plan_with(ui, &message)
     }
 
-    fn run_coding(&mut self, ui: &mut dyn UserLink, _roundtrip: usize) -> Result<CodingTurn> {
+    fn run_coding(
+        &mut self,
+        ui: &mut dyn UserLink,
+        _roundtrip: usize,
+        last_failure: Option<&TestFailureContext>,
+    ) -> Result<CodingTurn> {
         // ① 基线轮：先让 agent 只跑既有测试写证据（此时还没允许改代码）
         let baseline_reply = self.coding_agent.converse(&baseline_kickoff(&self.ctx), ui)?;
         require_marker("change-coding-agent（基线轮）", &baseline_reply)?;
@@ -307,7 +325,9 @@ impl ChangeSession for ProdChangeSession {
         check_baseline_log(&self.ctx.blackboard)?;
 
         // ② coding 轮：真实改代码；越界申报按 D008 只发 <route>plan</route> + <impact-gap>，不打标记
-        let reply = self.coding_agent.converse(&coding_kickoff(&self.ctx), ui)?;
+        let reply = self
+            .coding_agent
+            .converse(&coding_kickoff(&self.ctx, last_failure), ui)?;
         if parse_route(&reply).as_deref() == Some("plan") {
             let changed = changed_files(&self.ctx.repo, &self.ctx.baseline).unwrap_or_default();
             return Ok(CodingTurn {
@@ -813,6 +833,104 @@ mod tests {
     }
 
     #[test]
+    fn coding_kickoff_without_context_has_no_failure_block() {
+        // 错实现形态：无上下文时也注入空块（标题行 + 空明细）→ 本用例必须变红
+        let f = fixture(false);
+        let kick = coding_kickoff(&f.ctx, None);
+        assert!(
+            !kick.contains(crate::change::testing_gate::FAILURE_BLOCK_TITLE),
+            "无上下文时不得注入送达块：{kick}"
+        );
+        assert!(!kick.contains("失败明细"), "无上下文时不得注入明细：{kick}");
+        assert!(
+            kick.starts_with("你是 change-coding-agent。change-id：`change-1`"),
+            "开工语首行不能变：{kick}"
+        );
+        assert!(
+            kick.ends_with("完成后输出 `<stage-complete>1</stage-complete>`。"),
+            "开工语末句不能变：{kick}"
+        );
+    }
+
+    #[test]
+    fn coding_kickoff_with_context_carries_the_failure_details_verbatim() {
+        // 错实现形态：送达块漏标题行 / 漏一条明细 / 剥掉 path:line → 本用例必须变红
+        let f = fixture(false);
+        let ctx = TestFailureContext {
+            round: 1,
+            issues: vec![
+                "tests/change_ask_ring.rs:557 断言失败".to_string(),
+                "接口返回 500".to_string(),
+            ],
+        };
+        let kick = coding_kickoff(&f.ctx, Some(&ctx));
+        assert!(
+            kick.contains(crate::change::testing_gate::FAILURE_BLOCK_TITLE),
+            "送达块要有标题行：{kick}"
+        );
+        assert!(
+            kick.contains("tests/change_ask_ring.rs:557"),
+            "送达块要逐字带失败明细：{kick}"
+        );
+        assert!(kick.contains("接口返回 500"), "送达块要带全部明细：{kick}");
+        assert!(!kick.contains("请自己定位原因"), "{kick}");
+        assert!(!kick.contains("本消息不提供文件位置"), "{kick}");
+        assert!(!kick.contains("<位置略>"), "{kick}");
+    }
+
+    #[test]
+    fn coding_kickoff_with_context_only_appends_the_block() {
+        // 错实现形态：注入上下文时把开工语本体也改了（不再是「只追加」）→ 本用例必须变红
+        let f = fixture(false);
+        let ctx = TestFailureContext {
+            round: 1,
+            issues: vec!["a.rs:1 失败".to_string()],
+        };
+        let plain = coding_kickoff(&f.ctx, None);
+        let with = coding_kickoff(&f.ctx, Some(&ctx));
+        assert_eq!(
+            with,
+            format!(
+                "{plain}\n\n{}",
+                crate::change::testing_gate::coding_failure_block(&ctx)
+            ),
+            "有上下文时只应在开工语后追加送达块"
+        );
+    }
+
+    #[test]
+    fn the_placeholder_issue_text_is_delivered_verbatim() {
+        // 错实现形态：空 issues 时合成的占位文案被丢弃/改写 → 本用例必须变红
+        let f = fixture(true);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&[])),
+            plan_review: Box::new(ReviewFactory::new(&[])),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&["回归红了\n<route>coding</route>"])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let TestingTurn::RouteCoding { failures } = session.run_testing(&mut NoUser).unwrap() else {
+            panic!("应回注 coding");
+        };
+        assert_eq!(
+            failures,
+            vec!["测试阶段判定失败（未给出 issues 明细）".to_string()],
+            "空 issues 时合成的占位文案是唯一一条 issue"
+        );
+        let ctx = TestFailureContext {
+            round: 1,
+            issues: failures,
+        };
+        let kick = coding_kickoff(&f.ctx, Some(&ctx));
+        assert!(
+            kick.contains("测试阶段判定失败（未给出 issues 明细）"),
+            "占位文案要原样送达：{kick}"
+        );
+    }
+
+    #[test]
     fn coding_runs_gates_and_returns_changed_files() {
         let f = fixture(true);
         coding_ready(&f);
@@ -830,7 +948,7 @@ mod tests {
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
         };
-        let turn = session.run_coding(&mut NoUser, 0).unwrap();
+        let turn = session.run_coding(&mut NoUser, 0, None).unwrap();
         assert!(turn.changed.contains(&"src/a.rs".to_string()), "{:?}", turn.changed);
         assert_eq!(turn.reviews, 1, "coding review 必须真跑一次");
         let seen = seen.borrow();
@@ -869,7 +987,7 @@ mod tests {
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
         };
-        let err = session.run_coding(&mut NoUser, 0).unwrap_err();
+        let err = session.run_coding(&mut NoUser, 0, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("evidence/self-check.log"), "{msg}");
         assert!(
@@ -896,7 +1014,7 @@ mod tests {
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
         };
-        let turn = session.run_coding(&mut NoUser, 0).unwrap();
+        let turn = session.run_coding(&mut NoUser, 0, None).unwrap();
         assert_eq!(turn.reviews, 1, "有合规自证证据才进 coding review");
     }
 
@@ -921,7 +1039,7 @@ mod tests {
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
         };
-        let err = session.run_coding(&mut NoUser, 0).unwrap_err();
+        let err = session.run_coding(&mut NoUser, 0, None).unwrap_err();
         assert!(err.to_string().contains("基线不是绿的"), "{err}");
         assert_eq!(seen.borrow().len(), 1, "红基线后不得再叫 agent 去改代码");
     }
@@ -945,7 +1063,7 @@ mod tests {
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
         };
-        let turn = session.run_coding(&mut NoUser, 0).unwrap();
+        let turn = session.run_coding(&mut NoUser, 0, None).unwrap();
         assert!(turn.reply.contains("<route>plan</route>"), "{}", turn.reply);
         assert_eq!(turn.reviews, 0, "申报轮不过 coding review");
     }
@@ -967,7 +1085,7 @@ mod tests {
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
         };
-        let err = session.run_coding(&mut NoUser, 0).unwrap_err();
+        let err = session.run_coding(&mut NoUser, 0, None).unwrap_err();
         assert!(err.to_string().contains("变更编码审查未通过"), "{err}");
         assert!(err.to_string().contains("src/a.rs"), "{err}");
     }
