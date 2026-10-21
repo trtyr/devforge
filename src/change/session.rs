@@ -69,6 +69,8 @@ pub fn plan_kickoff(ctx: &ChangeCtx) -> String {
 文档档位：{}（计划阶段照常读已有文档；不要自己去跑文档流水线）\n\n\
 产出：`{}`（六块：需求复述与歧义 / 影响面（每条 path:line）/ 三张表 / 白名单 / 验收标准 / 风险）。\n\
 工具纪律：结构问题一律走 codegraph；不要写实施顺序，不要写回归命令，不要改代码。\n\
+问询纪律：歧义条目标了 `[必须裁决]` 的，先用 ask-user-question 真问用户（不要自问自答、不要编造答复），\
+把用户答复逐字写进同一条目的 `用户裁决：` 字段；不许带默认值自决放行。\n\
 完成后在回复末尾单独一行输出 `<stage-complete>1</stage-complete>`。",
         ctx.change_id,
         ctx.repo.display(),
@@ -221,6 +223,14 @@ impl ProdChangeSession {
         let plan_text = std::fs::read_to_string(&plan_path).map_err(|e| {
             DevforgeError::Quality(format!("计划文件不可读（{}）：{e}", plan_path.display()))
         })?;
+        // 确定性硬门：标了「必须裁决」却没留痕 → 直接打回，不进审查轮
+        // （确定性判定不交给审查官重判；打回走既有修复回路，轮次由 MAX_PLAN_FIXES 约束）
+        let verdicts = crate::change::plan_audit::audit_verdicts(&plan_text);
+        if !verdicts.is_clean() {
+            return Ok(PlanTurn::Fail {
+                issues: verdicts.issues,
+            });
+        }
         let audit = crate::change::plan_audit::audit_plan_file(&plan_path, &self.ctx.repo).map_err(
             |e| {
                 DevforgeError::Quality(format!("计划文件不可读（{}）：{e}", plan_path.display()))
@@ -275,6 +285,8 @@ impl ChangeSession for ProdChangeSession {
         let message = format!(
             "计划审查第 {round} 轮打回，逐条修复计划文件 `{}` 后重交：\n{}\n\n\
              只改计划文件本身（补全 path:line 全路径、补缺失块、修验收标准）；\
+             问询纪律：若某条歧义标了 `[必须裁决]` 却缺 `用户裁决：` 留痕，先用 ask-user-question 问用户，\
+把答复逐字写进该条目（不许带默认值自决放行）；\n\
              改完输出 <stage-complete>1</stage-complete> 等重审。",
             self.ctx.plan_path().display(),
             issues
@@ -498,6 +510,8 @@ mod tests {
     fn plan_text() -> String {
         "# 变更计划\n\n\
 ## 1 需求复述\n改 a。\n\n\
+### 1.1 歧义与本计划采用的默认\n\
+- [自决] 命名细节由 agent 定\n\n\
 ## 2 影响面\n- `src/a.rs:1`\n\n\
 ## 3 要改的\n| `src/a.rs` | 需求 |\n\n\
 ## 4 白名单\n`src/a.rs`\n\n\
@@ -653,6 +667,111 @@ mod tests {
         };
         let err = session.run_plan(&mut NoUser, 0).unwrap_err();
         assert!(err.to_string().contains("stage-complete"), "{err}");
+    }
+
+    /// 把计划文件里的歧义条目换成给定内容（其余块不动）。
+    fn write_plan(f: &Fixture, body: &str) {
+        let text = plan_text().replace("- [自决] 命名细节由 agent 定", body);
+        std::fs::write(f.ctx.plan_path(), text).unwrap();
+    }
+
+    fn plan_session(f: &Fixture, plan_agent: Agent, plan_review: ReviewFactory) -> ProdChangeSession {
+        ProdChangeSession {
+            plan_agent: Box::new(plan_agent),
+            plan_review: Box::new(plan_review),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        }
+    }
+
+    #[test]
+    fn plan_with_must_ask_without_answer_fails_before_review() {
+        // 错实现形态：把「裁决门」从计划轮里摘掉 → 本用例必须变红（会变成 Pass）
+        let f = fixture(false);
+        write_plan(&f, "- [必须裁决] 复合词算一个词还是两个词");
+        // 审查队列空：若硬门放行到审查，脚本耗尽直接 panic
+        let plan_review = ReviewFactory::new(&[]);
+        let seen_review = plan_review.seen.clone();
+        let mut session = plan_session(
+            &f,
+            Agent::new(&["写完了\n<stage-complete>1</stage-complete>"]),
+            plan_review,
+        );
+        match session.run_plan(&mut NoUser, 0).unwrap() {
+            PlanTurn::Fail { issues } => assert!(
+                issues.iter().any(|i| i.contains("必须裁决")),
+                "打回问题要点名必须裁决：{issues:?}"
+            ),
+            other => panic!("应为 Fail，实际 {other:?}"),
+        }
+        assert!(
+            seen_review.borrow().is_empty(),
+            "硬门不过不得进审查轮（确定性判定不交审查官重判）"
+        );
+    }
+
+    #[test]
+    fn plan_with_must_ask_and_answer_passes_and_review_sees_verdict_facts() {
+        // 错实现形态：把「裁决门事实注入审查指令」删掉 → 本用例必须变红
+        let f = fixture(false);
+        write_plan(
+            &f,
+            "- [必须裁决] 复合词算一个词还是两个词\n  用户裁决：算一个词",
+        );
+        let plan_review = ReviewFactory::new(&[PLAN_PASS]);
+        let seen_review = plan_review.seen.clone();
+        let mut session = plan_session(
+            &f,
+            Agent::new(&["写完了\n<stage-complete>1</stage-complete>"]),
+            plan_review,
+        );
+        let turn = session.run_plan(&mut NoUser, 0).unwrap();
+        assert_eq!(turn, PlanTurn::Pass, "留痕齐全的计划应当过审");
+        let seen = seen_review.borrow();
+        assert_eq!(seen.len(), 1, "审查轮次应当是 1");
+        assert!(
+            seen[0].contains("裁决门事实"),
+            "审查指令要注入裁决门事实：{}",
+            seen[0]
+        );
+        assert!(
+            seen[0].contains("留痕核对") && seen[0].contains("分类恰当性"),
+            "审查指令要带新审点：{}",
+            seen[0]
+        );
+    }
+
+    #[test]
+    fn fix_plan_message_carries_the_ask_instruction() {
+        // 错实现形态：把打回消息里的 ask 指令删掉 → 本用例必须变红
+        let f = fixture(false);
+        let agent = Agent::new(&["改好了\n<stage-complete>1</stage-complete>"]);
+        let seen = agent.seen.clone();
+        let mut session = plan_session(&f, agent, ReviewFactory::new(&[PLAN_PASS]));
+        session
+            .fix_plan(&mut NoUser, &["歧义条目缺留痕".to_string()], 1)
+            .unwrap();
+        let msg = &seen.borrow()[0];
+        assert!(
+            msg.contains("ask-user-question"),
+            "打回消息要告诉 agent 下一步问用户：{msg}"
+        );
+        assert!(
+            msg.contains("用户裁决"),
+            "打回消息要点名留痕字段：{msg}"
+        );
+    }
+
+    #[test]
+    fn plan_kickoff_carries_the_ask_contract() {
+        // 错实现形态：把 kickoff 里的问询契约删掉 → 本用例必须变红
+        let f = fixture(false);
+        let kick = plan_kickoff(&f.ctx);
+        assert!(kick.contains("ask-user-question"), "开工语要含问询锚点：{kick}");
+        assert!(kick.contains("用户裁决"), "开工语要含留痕字段锚点：{kick}");
     }
 
     fn coding_ready(f: &Fixture) -> usize {
