@@ -490,7 +490,7 @@ pub const CHANGE_PLAN_AGENT_PROMPT: &str = r#"# Change Plan Agent（变更规划
 
 必填六块，缺一块即不可交审：
 
-1. **需求复述与歧义** —— 用自己的话说清要做什么；列出无法从需求/代码确定、必须问用户的点（问了就把答案写进来）。
+1. **需求复述与歧义** —— 用自己的话说清要做什么；**歧义单独成一小节**（标题含「歧义」），每条歧义写成**顶层列表行**（行首无缩进、以 `- ` 开头），并按下节的分类契约逐条打标。
 2. **影响面** —— 分三层列出，每条必须带 `path:line`：
    - 直接命中：需求点名的功能/符号所在位置；
    - 调用链：谁调用它、它调用谁（哪些必须跟着改、哪些只是受影响）；
@@ -501,6 +501,19 @@ pub const CHANGE_PLAN_AGENT_PROMPT: &str = r#"# Change Plan Agent（变更规划
    **格式硬约束**：验收标准必须用无序列表逐条写（每行以 `-` 开头，一行一条）；
    **禁用表格**——下游引擎只认列表行做一对一对账，写成表格 = 对账永远对不齐，整个 run 直接 Quality。
 6. **风险** —— 文档与代码不一致（`path:line`）、缓存/构建产物、兼容性、数据迁移等。
+
+## 歧义条目的分类契约（机械门逐字核对，标记不许改写）
+
+歧义小节里的**每条**顶层列表行，行首必须带**且只带**一个分类标记：
+
+- `[必须裁决]` —— 这条**需求与代码都定不下来、且影响验收口径**，必须由用户拍板。
+  做法：先用 **ask-user-question** 工具真问用户（不要在正文里自问自答、不要编造答复），
+  再把用户答复**逐字**抄进**同一条目**的 `用户裁决：` 字段
+  （例：`- [必须裁决] 复合词算一个词还是两个词`，下一行写 `  用户裁决：算一个词`）。
+  **禁止**带默认值自决放行；**禁止**把该问的标成 `[自决]` 绕过去。
+- `[自决]` —— 这条不涉及验收口径（或需求与代码已能定），你按判断定，写清理由即可。
+- 标记不许省：不打标的条目会被审查判 FAIL。
+- 一条歧义都没有时，也要显式写一行 `- [自决] 无歧义`（不许留空小节）。
 
 ## 明确不做
 
@@ -535,6 +548,9 @@ pub const CHANGE_PLAN_REVIEW_PROMPT: &str = r#"# Change Plan Review Agent（变�
 3. **白名单自洽** —— `要改的` 每一项都在白名单里；白名单里每个文件都有理由。
 4. **验收标准可观测** —— 每条能写成「给定输入 → 期望输出」；写「功能正常」「体验良好」这类不可判定的 = FAIL。
 5. **风险诚实** —— 已知耦合、文档与代码不一致、缓存/构建产物有没有写进去。
+6. **留痕核对** —— 歧义小节里标了 `[必须裁决]` 的条目必须带**非空**的 `用户裁决：` 字段（用户答复原文逐字抄）；缺字段 = FAIL。
+7. **分类恰当性** —— 需求与代码都定不下来、且影响验收口径的歧义被标成 `[自决]`（带默认值自决放行）= FAIL。
+8. **结构缺失** —— 歧义小节缺失，或小节里的条目既没标 `[必须裁决]` 也没标 `[自决]` = FAIL。
 
 ## 你不审什么
 
@@ -896,7 +912,9 @@ impl ConfigManifest {
                 AgentManifest {
                     name: "change-plan-agent".into(),
                     role_prompt: CHANGE_PLAN_AGENT_PROMPT.into(),
-                    extra_packages: vec![],
+                    // 问询环的供给层：没有 ask 包就没有 extension_ui_request 工具，
+                    // 计划里的「必须问用户」就永远问不出去（与 MVP plan-agent 同包）。
+                    extra_packages: vec![PLAN_AGENT_EXTRA.into()],
                     model: "deepseek-flash".into(),
                     skills: vec!["plan-tree".into()],
                     // D009：只给 codegraph，不给 context7（本阶段不查外部库文档）
@@ -1035,6 +1053,89 @@ mod tests {
                 "change-plan-review 提示词缺纪律：{anchor}"
             );
         }
+        // 问询环的四个锚点，且标记字面量与机械门常量**逐字相同**（改一边不改另一边 = 门空转）
+        for anchor in [
+            crate::change::plan_audit::VERDICT_MUST_ASK,
+            crate::change::plan_audit::VERDICT_SELF,
+            crate::change::plan_audit::VERDICT_ANSWER_FIELD,
+            "ask-user-question",
+        ] {
+            assert!(
+                CHANGE_PLAN_AGENT_PROMPT.contains(anchor),
+                "change-plan 提示词缺问询契约锚点：{anchor}"
+            );
+        }
+        // 审查侧两条新审点 + 同一批标记字面量
+        for anchor in ["留痕核对", "分类恰当性", "结构缺失"] {
+            assert!(
+                CHANGE_PLAN_REVIEW_PROMPT.contains(anchor),
+                "change-plan-review 提示词缺新审点：{anchor}"
+            );
+        }
+        for anchor in [
+            crate::change::plan_audit::VERDICT_MUST_ASK,
+            crate::change::plan_audit::VERDICT_ANSWER_FIELD,
+        ] {
+            assert!(
+                CHANGE_PLAN_REVIEW_PROMPT.contains(anchor),
+                "change-plan-review 提示词缺标记字面量：{anchor}"
+            );
+        }
+    }
+
+    /// 需求 2 的落点：change 六件套逐个钉住供给（谁有 ask 包、谁没有）。
+    ///
+    /// 错实现形态：给某个 agent 顺手加包/删包 → 本用例必须变红。
+    #[test]
+    fn change_six_agents_have_pinned_supplies() {
+        let m = ConfigManifest::builtin();
+        let ask = "npm:@juicesharp/rpiv-ask-user-question";
+        // 干活方要能问用户（ask 包）；审查方不与用户交互（无包）。
+        let expect: [(&str, &[&str]); 6] = [
+            ("change-plan-agent", &[ask]),
+            ("change-plan-review", &[]),
+            ("change-coding-agent", CODING_AGENT_EXTRA),
+            ("change-coding-review", &[]),
+            ("change-test-agent", CODING_AGENT_EXTRA),
+            ("change-test-review", &[]),
+        ];
+        for (name, packages) in expect {
+            let a = m.get_agent(name).unwrap();
+            assert_eq!(
+                a.extra_packages,
+                packages.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                "{name} 的差异化包与钉死的供给不符：{:?}",
+                a.extra_packages
+            );
+        }
+    }
+
+    /// 其余九个 Agent 的差异化包逐字段钉死：改一处不许误伤别处。
+    ///
+    /// 错实现形态：顺手给别的 agent 加包/删包 → 本用例必须变红。
+    #[test]
+    fn other_agents_supplies_are_unchanged() {
+        let m = ConfigManifest::builtin();
+        let expect: [(&str, &[&str]); 9] = [
+            ("plan-agent", &[PLAN_AGENT_EXTRA]),
+            ("plan-review", &[]),
+            ("coding-agent", CODING_AGENT_EXTRA),
+            ("coding-review", CODING_REVIEW_EXTRA),
+            ("test-agent", TEST_AGENT_EXTRA),
+            ("test-review", &[]),
+            ("doc-fix", CODING_AGENT_EXTRA),
+            ("doc-agent", CODING_AGENT_EXTRA),
+            ("doc-review", &[]),
+        ];
+        for (name, packages) in expect {
+            let a = m.get_agent(name).unwrap();
+            assert_eq!(
+                a.extra_packages,
+                packages.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                "{name} 的差异化包被误改了：{:?}",
+                a.extra_packages
+            );
+        }
     }
 
     #[test]
@@ -1094,7 +1195,11 @@ mod tests {
         assert_eq!(cpa.skills, vec!["plan-tree".to_string()]);
         assert_eq!(cpa.mcp.len(), 1, "只给 codegraph（D009）");
         assert_eq!(cpa.mcp[0].name, "codegraph");
-        assert!(cpa.extra_packages.is_empty());
+        assert_eq!(
+            cpa.extra_packages,
+            vec![PLAN_AGENT_EXTRA.to_string()],
+            "问询环的供给层：change-plan-agent 必须拿 ask 包（与 MVP plan-agent 同包）"
+        );
         let cpr = m.get_agent("change-plan-review").unwrap();
         assert_eq!(cpr.model, "grok-4.7", "审查固定 grok");
         assert_eq!(cpr.mcp.len(), 1, "审计划要核调用关系（D012）");
