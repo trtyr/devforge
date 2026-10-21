@@ -35,6 +35,19 @@ impl ChangePhase {
     }
 }
 
+/// 上一轮测试失败的上下文（回注给 coding agent 的送达面内容）。
+///
+/// `issues` = test agent 给出的失败明细**逐条原文**（含 `path:line`，不剥不改写）；
+/// `round` = 第几轮测试→coding 回注（与 `ChangeState::test_reroutes` 同值）。
+/// 住在断点里：崩溃/重启后续跑照样在同一轮送达同一份（幂等）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestFailureContext {
+    /// 第几轮回注（首次回注 = 1）。
+    pub round: usize,
+    /// 失败明细逐条原文（含 `path:line`）。
+    pub issues: Vec<String>,
+}
+
 /// change run 的断点内容。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeState {
@@ -59,6 +72,12 @@ pub struct ChangeState {
     /// change-id（跨会话核对同一件事）。
     #[serde(default)]
     pub change_id: String,
+    /// 上一轮测试失败的上下文（`None` = 无上下文）。
+    ///
+    /// 缺键安全：serde 对**缺键的 `Option<T>` 返回 `None`**（不报 `missing_field`），
+    /// 旧断点文件没有这个键时照样加载成功（计数不丢）。
+    #[serde(default)]
+    pub last_test_failure: Option<TestFailureContext>,
 }
 
 impl ChangeState {
@@ -72,6 +91,7 @@ impl ChangeState {
             review_rounds: 0,
             test_reroutes: 0,
             change_id: change_id.into(),
+            last_test_failure: None,
         }
     }
 
@@ -120,6 +140,19 @@ impl ChangeState {
 
     pub fn bump_test_reroute(&mut self) {
         self.test_reroutes += 1;
+    }
+
+    /// 写入失败上下文（**覆盖**语义：新一次回注的 issues 覆盖旧的，不追加）。
+    ///
+    /// 覆盖而不是追加的理由：test agent 每轮重跑全套，报出来的就是当前还红的东西，
+    /// 追加只会把已修好的旧失败继续喂给 agent。
+    pub fn set_test_failure(&mut self, round: usize, issues: Vec<String>) {
+        self.last_test_failure = Some(TestFailureContext { round, issues });
+    }
+
+    /// 清除失败上下文（消费即清 / 终态清）。
+    pub fn clear_test_failure(&mut self) {
+        self.last_test_failure = None;
     }
 }
 
@@ -227,6 +260,87 @@ mod tests {
         st.mark_acceptance_done("a");
         assert_eq!(st.impl_steps_done, vec![1]);
         assert_eq!(st.acceptance_done, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn failure_context_persists_across_sessions() {
+        // 错实现形态：上下文只活在内存里（不落盘）→ 续跑丢明细，本用例必须变红
+        let tmp = tempfile::tempdir().unwrap();
+        let s = store(tmp.path());
+        let mut st = ChangeState::new("c1", "sha1");
+        st.set_test_failure(
+            1,
+            vec![
+                "tests/change_ask_ring.rs:557 断言失败".to_string(),
+                "接口返回 500".to_string(),
+            ],
+        );
+        save(&s, &st).unwrap();
+
+        // 新会话（新 StateStore，同一黑板路径）续跑：上下文仍在、明细逐字不变
+        let s2 = StateStore::new(tmp.path(), StateKey::new("proj", "task", CHANGE_SOP));
+        let got = load(&s2, "c1", "sha1");
+        let ctx = got.last_test_failure.expect("失败上下文必须跨会话保留");
+        assert_eq!(ctx.round, 1, "轮次要原样保留");
+        assert_eq!(
+            ctx.issues,
+            vec![
+                "tests/change_ask_ring.rs:557 断言失败".to_string(),
+                "接口返回 500".to_string()
+            ],
+            "失败明细必须逐条原文保留（含 path:line）"
+        );
+    }
+
+    #[test]
+    fn old_checkpoint_without_failure_key_still_loads() {
+        // 错实现形态：新字段没加 default / 用了非 Option → 旧断点反序列化失败被 .ok() 吞掉
+        // → 断点冷启动（计数归零）→ 本用例必须变红
+        let tmp = tempfile::tempdir().unwrap();
+        let s = store(tmp.path());
+        let mut rs = s.fresh_state();
+        // 旧版断点：change 段里没有失败上下文这个键
+        rs.data = serde_json::json!({"change": {
+            "phase": "coding",
+            "baseline_sha": "sha1",
+            "roundtrips": 2,
+            "impl_steps_done": [1, 2],
+            "acceptance_done": ["x=1 → 2"],
+            "review_rounds": 1,
+            "test_reroutes": 2,
+            "change_id": "c1"
+        }});
+        s.save(&mut rs).unwrap();
+
+        let got = load(&s, "c1", "sha1");
+        assert_eq!(
+            got.last_test_failure, None,
+            "旧断点没有失败上下文 → 加载后应是「无上下文」"
+        );
+        assert_eq!(got.phase, ChangePhase::Coding, "旧断点不能被冷启动重置");
+        assert_eq!(got.roundtrips, 2, "往返计数不能丢");
+        assert_eq!(got.test_reroutes, 2, "回注计数不能丢");
+        assert_eq!(got.impl_steps_done, vec![1, 2], "已完成步骤不能丢");
+        assert_eq!(got.acceptance_done, vec!["x=1 → 2".to_string()]);
+    }
+
+    #[test]
+    fn failure_context_is_overwritten_not_appended() {
+        // 错实现形态：新一次回注把 issues 追加到旧列表 → 已修好的旧失败又被喂回去
+        let mut st = ChangeState::new("c1", "sha1");
+        st.set_test_failure(1, vec!["旧失败".to_string()]);
+        st.set_test_failure(2, vec!["新失败".to_string()]);
+        let ctx = st.last_test_failure.expect("应有上下文");
+        assert_eq!(ctx.round, 2, "轮次要跟着更新");
+        assert_eq!(ctx.issues, vec!["新失败".to_string()], "新 issues 覆盖旧的");
+    }
+
+    #[test]
+    fn clearing_failure_context_empties_it() {
+        let mut st = ChangeState::new("c1", "sha1");
+        st.set_test_failure(1, vec!["失败".to_string()]);
+        st.clear_test_failure();
+        assert_eq!(st.last_test_failure, None, "清除后应回到「无上下文」");
     }
 
     #[test]
