@@ -96,6 +96,7 @@ python3 -m unittest discover -s tests -v
 REQUIREMENT = """给 textkit 新增一个公开函数 `count_words(text: str) -> int`：
 
 - 语义：按空白切分统计单词数；连续空白算一个分隔符；空串或纯空白返回 0。
+- 口径（此条由需求方定）：连字符连写的复合词（如 `e-mail`、`well-known`）算**一个词**还是**两个词**？需求原文没写，代码里也定不下来——此条由需求方拍板，定了之后写进单测的期望值。
 - 落点：`textkit/clean.py`，并从包 `__init__` 导出。
 - 测试：在 `tests/test_clean.py` 补对应单测（至少覆盖：普通句子 / 多重空白 / 空串 / 纯空白）。
 - 文档：README「公开接口」清单同步加一行。
@@ -135,12 +136,25 @@ def main() -> int:
 
         key = real_api_key("newapi")
         _, manifest = server.req("GET", "/config/manifest")
-        have = {a["name"] for a in manifest["agents"]}
         manifest["api_key"] = key
         manifest["base_packages"] = []
         for a in manifest["agents"]:
             a["extra_packages"] = []
-        manifest["agents"].extend(a for a in change_agents if a["name"] not in have)
+        # 按名 upsert：夹具条目覆盖宿主同名条目。
+        # （旧写法用 extend + have：宿主清单已含 change-* 时 extend 变成空操作，
+        #  测的就不是夹具里那套供给 = 真链假绿；extra_packages 全清还会把 ask 包一起清掉。）
+        index = {a["name"]: i for i, a in enumerate(manifest["agents"])}
+        for a in change_agents:
+            if a["name"] in index:
+                manifest["agents"][index[a["name"]]] = a
+            else:
+                manifest["agents"].append(a)
+                index[a["name"]] = len(manifest["agents"]) - 1
+        r.check(
+            all(a["extra_packages"] for a in manifest["agents"] if a["name"].startswith("change-")),
+            "change 六件套的 extra_packages 不被清空",
+            f"{ {a['name']: a['extra_packages'] for a in manifest['agents'] if a['name'].startswith('change-')} }",
+        )
         with SseStream(server) as sse:
             status, _ = server.req("PUT", "/config/manifest", manifest, timeout=300.0)
             r.check(status == 202, "PUT manifest（+change 六件套）== 202", f"status={status}")
@@ -155,6 +169,21 @@ def main() -> int:
         for a in change_agents:
             p = server.home / ".devforge" / "profiles" / a["name"] / "models.json"
             r.check(p.exists(), f"{a['name']} 渲染出 models.json")
+
+        # 问询环的供给层：渲染出的 change-plan-agent profile 必须带 ask 包
+        settings_path = (server.home / ".devforge" / "profiles" / "change-plan-agent"
+                         / "settings.json")
+        pkgs: list[str] = []
+        if settings_path.exists():
+            try:
+                pkgs = json.loads(settings_path.read_text(encoding="utf-8")).get("packages") or []
+            except json.JSONDecodeError:
+                pkgs = []
+        r.check(
+            "npm:@juicesharp/rpiv-ask-user-question" in pkgs,
+            "change-plan-agent profile 带 ask 包（问询环的供给层）",
+            f"{pkgs}",
+        )
 
         # ---- fixture 仓（带 git 基线）----
         repo = server.home / "workspace" / "textkit"
@@ -204,8 +233,25 @@ def main() -> int:
                     final = runs[-1]["status"]
                     break
                 time.sleep(15.0)
+            # 给 autopilot 一点时间把尾部的 ui.request 应答完（对齐请求数与应答数）
+            time.sleep(2.0)
             autopilot.stop()
             elapsed = time.time() - t0
+            sse_events = list(sse.events)
+            answered = list(autopilot.answered)
+
+        # 问询环在真链上真的发生过：SSE 上有 ui.request，且应答数与请求数对齐
+        ui_requests = [e for e in sse_events if e.get("type") == "ui.request"]
+        r.check(len(ui_requests) >= 1, f"SSE 出现 ui.request（{len(ui_requests)} 个）")
+        r.check(
+            len(answered) == len(ui_requests),
+            f"应答数与请求数对齐（应答 {len(answered)} / 请求 {len(ui_requests)}）",
+            f"{[a.get('id') for a in answered]}",
+        )
+        r.check(
+            all(any(e.get("id") == a.get("id") for e in ui_requests) for a in answered),
+            "每条应答都对应一个真实的 ui.request",
+        )
 
         r.check(final == "Settled", f"run 终态 Settled（{elapsed/60:.0f}min）", f"final={final}")
         if final != "Settled":
@@ -225,6 +271,36 @@ def main() -> int:
             text = plan.read_text(encoding="utf-8")
             for block in ["需求复述", "影响面", "白名单", "验收标准", "风险"]:
                 r.check(block in text, f"计划含「{block}」块")
+            # 问询环闭合的产物：标了「[必须裁决]」的条目 + 非空「用户裁决：」留痕
+            must_ask = [ln for ln in text.splitlines() if "[必须裁决]" in ln]
+            r.check(bool(must_ask), f"计划里有「[必须裁决]」条目（{len(must_ask)} 条）")
+            answers = [ln.split("用户裁决：", 1)[1].strip()
+                       for ln in text.splitlines() if "用户裁决：" in ln]
+            r.check(any(answers), "计划里有非空的「用户裁决：」留痕")
+            # 答复原文（去空白后）逐字落在「用户裁决：」字段里
+            values = [str(a.get("value") or "") for a in answered]
+            hit = [v for v in values
+                   if v.strip() and any("".join(v.split()) in "".join(a.split()) for a in answers)]
+            r.check(bool(hit), f"答复原文逐字落在「用户裁决：」里（答复 {values}）")
+            # autopilot 记的 value 是选项标签（不是 default_answer）
+            label_hit = []
+            for a in answered:
+                ev = next((e for e in ui_requests if e.get("id") == a.get("id")), None)
+                if not ev:
+                    continue
+                raw = ev.get("question") or ""
+                payload = {}
+                if isinstance(raw, str) and "{" in raw:
+                    try:
+                        payload = json.loads(raw[raw.index("{"):])
+                    except json.JSONDecodeError:
+                        payload = {}
+                labels = [(o.get("label") if isinstance(o, dict) else str(o))
+                          for o in (payload.get("options") or [])]
+                if labels and a.get("value") in labels:
+                    label_hit.append(a.get("value"))
+            r.check(bool(label_hit), "autopilot 记的 value 等于选项标签",
+                    f"{values}")
         r.check((cdir / "baseline.txt").exists(), "门 0 baseline.txt 存在")
 
         report = cdir / "report.md"

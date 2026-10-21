@@ -358,12 +358,16 @@ class UiAutoPilot:
             for ev in self.sse.events:
                 if ev.get("type") == "ui.request" and ev.get("id") not in self._seen:
                     self._seen.add(ev["id"])
+                    answer = self._smart_answer(ev)
                     try:
                         status, _ = self.server.req(
-                            "POST", f"/ui/{ev['id']}/answer", self._smart_answer(ev)
+                            "POST", f"/ui/{ev['id']}/answer", answer
                         )
+                        # value = 实际 POST 出去的答复原文（供「答复 ↔ 计划」逐字核对；
+                        # 只加字段，不改已有键语义）
                         self.answered.append({"id": ev["id"], "status": status,
-                                              "question": ev.get("question")})
+                                              "question": ev.get("question"),
+                                              "value": answer.get("value")})
                         print(f"[autopilot] 应答 {ev['id']}（{ev.get('question')}）→ {status}")
                     except OSError as e:
                         print(f"[autopilot] 应答失败: {e}")
