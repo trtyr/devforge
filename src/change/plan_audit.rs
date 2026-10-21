@@ -22,6 +22,183 @@ pub const PLAN_BLOCKS: [&str; 6] = [
 /// 不可观测的验收措辞（出现且没有 `→` 即判不可判）。
 const VAGUE_ACCEPTANCE: [&str; 4] = ["功能正常", "正常工作", "体验良好", "没问题"];
 
+// ---------------- 问询环的结构契约（提示词与机械门共用同一批字面量） ----------------
+//
+// 分工同 D012：门只判**结构与留痕**（确定性），「该不该问」这种语义判断交审查官。
+// 同一批字面量出现两处（提示词 / 门），唯一的防漂移手段是提示词锚点单测双向钉住
+// （`src/config/manifest.rs` 断言提示词含这里的常量）——改一边不改另一边 = 门空转。
+
+/// 标记：这条歧义**必须由用户裁决**（不许带默认值自决放行）。
+pub const VERDICT_MUST_ASK: &str = "[必须裁决]";
+
+/// 标记：这条歧义可由 agent 自决（分类恰当性由审查官判）。
+pub const VERDICT_SELF: &str = "[自决]";
+
+/// 载体：用户答复原文（逐字抄）写在同一条目里。
+pub const VERDICT_ANSWER_FIELD: &str = "用户裁决：";
+
+/// 裁决门结论：只判结构与留痕（确定性），不判语义。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VerdictAudit {
+    /// 硬失败：标了「必须裁决」却没留痕 → 计划轮直接打回。
+    pub issues: Vec<String>,
+    /// 确定性事实：注入审查指令，审查官在其之上做语义判断（分类恰当性、结构缺失）。
+    pub facts: Vec<String>,
+}
+
+impl VerdictAudit {
+    pub fn is_clean(&self) -> bool {
+        self.issues.is_empty()
+    }
+
+    /// 渲染成注入审查指令的文本。
+    pub fn render_facts(&self) -> String {
+        if self.facts.is_empty() {
+            return "（无）\n".to_string();
+        }
+        let mut out = String::new();
+        for f in &self.facts {
+            out.push_str(&format!("- {f}\n"));
+        }
+        out
+    }
+}
+
+/// 裁决门：核对计划里的「必须用户裁决」条目有没有留痕。
+///
+/// **不进 `audit()`**：既有四条机械审计的行为一个字不动，这里是独立的纯函数
+/// （`audit()` / `audit_plan_file()` 的签名与语义都不变）。
+///
+/// 判据（只判结构，不判语义）：
+/// - 硬失败：歧义块里标了 `[必须裁决]` 的条目，缺**非空**的 `用户裁决：` 字段；
+/// - 只进事实（交审查官判）：歧义块缺失、未分类的顶层条目、顶层散文里的必须裁决声明。
+pub fn audit_verdicts(plan: &str) -> VerdictAudit {
+    let mut a = VerdictAudit::default();
+    let Some(block) = ambiguity_block(plan) else {
+        a.facts.push(
+            "歧义块缺失：计划里没有含「歧义」的标题——无法核对「必须裁决」条目的留痕".to_string(),
+        );
+        return a;
+    };
+    let (entries, prose) = top_level_entries(&block);
+    let (mut must, mut self_decided, mut unclassified) = (0usize, 0usize, 0usize);
+    for e in &entries {
+        if e.text.contains(VERDICT_MUST_ASK) {
+            must += 1;
+            if answer_of(&e.text).is_none() {
+                a.issues.push(format!(
+                    "歧义条目标了「{VERDICT_MUST_ASK}」却没有「{VERDICT_ANSWER_FIELD}」留痕：{} —— \
+必须先用 ask-user-question 问用户，把答复逐字写进「{VERDICT_ANSWER_FIELD}」字段，不许带默认值自决放行",
+                    e.first
+                ));
+            }
+        } else if e.text.contains(VERDICT_SELF) {
+            self_decided += 1;
+        } else {
+            unclassified += 1;
+            a.facts.push(format!(
+                "歧义块里有未分类的顶层条目（既没标「{VERDICT_MUST_ASK}」也没标「{VERDICT_SELF}」）：{}",
+                e.first
+            ));
+        }
+    }
+    for p in &prose {
+        // 「必须…裁决」的散文声明（必须用户裁决 / 必须裁决 / 必须由用户裁决……）
+        if p.contains("必须") && p.contains("裁决") {
+            a.facts.push(format!(
+                "歧义块里有顶层散文声明必须裁决、但没有对应的分类条目：{p}"
+            ));
+        }
+    }
+    a.facts.push(format!(
+        "歧义块统计：必须裁决 {must} 条 / 自决 {self_decided} 条 / 未分类 {unclassified} 条"
+    ));
+    a
+}
+
+/// 歧义块：**最后一个**含「歧义」的标题之后、到下一个标题为止的内容行。
+///
+/// 后出现的同名标题覆盖先前的（既有 `section_lines` 语义）——计划的「需求复述与歧义」
+/// 与「歧义与本计划采用的默认」两处同名时，只判后者。
+fn ambiguity_block(plan: &str) -> Option<Vec<&str>> {
+    let lines: Vec<&str> = plan.lines().collect();
+    // 最后一个含「歧义」的标题（后出现的同名标题覆盖先前的——既有 `section_lines` 语义）
+    let start = lines
+        .iter()
+        .rposition(|l| l.trim_start().starts_with('#') && l.contains("歧义"))?;
+    let mut block = Vec::new();
+    for line in &lines[start + 1..] {
+        if line.trim_start().starts_with('#') {
+            break;
+        }
+        block.push(*line);
+    }
+    Some(block)
+}
+
+/// 顶层条目：顶层列表行 + 其缩进续行（条目是「一条歧义」的单位）。
+struct Entry {
+    /// 条目首行（报错时引用它）。
+    first: String,
+    /// 条目全文（首行 + 续行）——`用户裁决：` 字段可能在续行上。
+    text: String,
+}
+
+/// 顶层列表行 = 行首无缩进且以 `- ` / `* ` 开头（**带空格**）；分隔线与散文行都不算。
+fn is_top_level_list(trimmed: &str) -> bool {
+    trimmed.starts_with("- ") || trimmed.starts_with("* ")
+}
+
+/// 分隔线（`---` / `***` / `___`）不是散文。
+fn is_separator(trimmed: &str) -> bool {
+    trimmed.len() >= 3
+        && trimmed
+            .chars()
+            .all(|c| c == '-' || c == '*' || c == '_')
+}
+
+/// 拆块：顶层条目 + 顶层散文行。
+fn top_level_entries(block: &[&str]) -> (Vec<Entry>, Vec<String>) {
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut prose: Vec<String> = Vec::new();
+    for raw in block {
+        let indented = raw.starts_with(' ') || raw.starts_with('\t');
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !indented {
+            if is_top_level_list(trimmed) {
+                entries.push(Entry {
+                    first: trimmed.to_string(),
+                    text: trimmed.to_string(),
+                });
+            } else if !is_separator(trimmed) {
+                prose.push(trimmed.to_string());
+            }
+        } else if let Some(last) = entries.last_mut() {
+            last.text.push('\n');
+            last.text.push_str(trimmed);
+        }
+    }
+    (entries, prose)
+}
+
+/// 条目里的用户答复原文：`用户裁决：` 之后的非空文本。
+///
+/// 容忍 ASCII 冒号（`用户裁决:`）——硬门因一个标点误判要白烧掉一轮修复上限。
+fn answer_of(text: &str) -> Option<&str> {
+    for field in [VERDICT_ANSWER_FIELD, "用户裁决:"] {
+        if let Some((_, rest)) = text.split_once(field) {
+            let answer = rest.trim();
+            if !answer.is_empty() {
+                return Some(answer);
+            }
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlanAudit {
     /// 确定性发现（审查官不得重算，只在此基础上做语义判断）。
@@ -212,6 +389,7 @@ pub fn review_instruction(
     plan_text: &str,
     audit: &PlanAudit,
 ) -> String {
+    let verdicts = audit_verdicts(plan_text);
     format!(
         "你是 change-plan-review。审的是**计划**（change-id `{change_id}`），不是代码：\
 不看 diff、不跑验收命令、不写任何文件。\n\n\
@@ -221,12 +399,17 @@ pub fn review_instruction(
 2. 证据真实：每条影响面带 path:line 且指向真实位置。\n\
 3. 白名单自洽：要改的 ⊆ 白名单，白名单每个文件有理由。\n\
 4. 验收标准可观测：每条能写成「给定输入 → 期望输出」；写「功能正常」这类不可判定的 = FAIL。\n\
-5. 风险诚实：已知耦合、文档与代码不一致、缓存/构建产物有没有写进去。\n\n\
+5. 风险诚实：已知耦合、文档与代码不一致、缓存/构建产物有没有写进去。\n\
+6. 留痕核对：歧义块里标了「{VERDICT_MUST_ASK}」的条目必须带非空的「{VERDICT_ANSWER_FIELD}」字段（答复原文逐字抄）；缺字段 = FAIL。\n\
+7. 分类恰当性：需求与代码都定不下来、且影响验收口径的歧义被标成「{VERDICT_SELF}」（带默认值自决放行）= FAIL。\n\
+8. 结构缺失：歧义块缺失，或块内条目既没标「{VERDICT_MUST_ASK}」也没标「{VERDICT_SELF}」= FAIL。\n\n\
 ## 引擎审计（确定性，勿质疑、勿重算）\n\n{}\n\n\
+## 裁决门事实（确定性，勿质疑、勿重算）\n\n{}\n\n\
 ## 计划全文（`{}`）\n\n```markdown\n{}\n```\n\n\
 末尾输出协议块：<stage-verdict>PASS|FAIL</stage-verdict> + <next>advance|fix</next> + <issues>（FAIL 时逐条，带 path:line）。",
         plan_path.display(),
         audit.render(),
+        verdicts.render_facts(),
         plan_path.display(),
         plan_text
     )
@@ -379,5 +562,147 @@ mod tests {
             text.contains("给定 x=1 → 返回 2"),
             "审查指令必须附计划全文：{text}"
         );
+    }
+
+    // ---------------- 裁决门（问询环的结构与留痕） ----------------
+
+    /// 造一份带「歧义」小节的计划（其余五块齐全，不影响本组用例）。
+    fn plan_with_ambiguity(items: &str) -> String {
+        format!(
+            "# 变更计划\n\n\
+## 1 需求复述\n改 a。\n\n\
+### 1.1 歧义与本计划采用的默认\n\
+{items}\n\n\
+## 2 影响面\n- `src/a.rs:1`\n\n\
+## 3 要改的\n| `src/a.rs` | 需求 |\n\n\
+## 4 白名单\n`src/a.rs`\n\n\
+## 5 验收标准\n- 给定 x=1 → 返回 2\n\n\
+## 6 风险\n- 无\n"
+        )
+    }
+
+    #[test]
+    fn must_ask_entry_without_answer_field_is_a_hard_issue() {
+        // 错实现形态：把「留痕检查」删掉（只数条目不看字段）→ 本用例必须变红
+        let plan = plan_with_ambiguity("- [必须裁决] 复合词算一个词还是两个词\n");
+        let a = audit_verdicts(&plan);
+        assert!(
+            a.issues.len() >= 1,
+            "标了必须裁决却没留痕必须判失败：{:?}",
+            a.facts
+        );
+        let issue = &a.issues[0];
+        assert!(issue.contains("必须裁决"), "问题要点名标记：{issue}");
+        assert!(
+            issue.contains("ask-user-question"),
+            "问题要告诉 agent 下一步该干什么：{issue}"
+        );
+    }
+
+    #[test]
+    fn must_ask_entry_with_answer_field_passes() {
+        // 错实现形态：把「续行里的字段」当没留痕（只认首行）→ 本用例必须变红
+        let plan = plan_with_ambiguity(
+            "- [必须裁决] 复合词算一个词还是两个词\n  用户裁决：算一个词\n",
+        );
+        let a = audit_verdicts(&plan);
+        assert!(a.is_clean(), "留痕齐全不该有问题：{:?}", a.issues);
+        // 同一条目同行写也认
+        let inline = plan_with_ambiguity("- [必须裁决] 口径未定（用户裁决：算一个词）\n");
+        assert!(
+            audit_verdicts(&inline).is_clean(),
+            "同行留痕也该通过：{:?}",
+            audit_verdicts(&inline).issues
+        );
+    }
+
+    #[test]
+    fn must_ask_entry_with_empty_answer_field_is_a_hard_issue() {
+        // 错实现形态：把「字段在但答复为空」当已留痕 → 本用例必须变红
+        let plan = plan_with_ambiguity("- [必须裁决] 口径未定\n  用户裁决：\n");
+        let a = audit_verdicts(&plan);
+        assert!(
+            a.issues.len() >= 1,
+            "字段在但答复为空 = 没问过：{:?}",
+            a.facts
+        );
+    }
+
+    #[test]
+    fn all_self_decided_entries_pass() {
+        // 错实现形态：把「[自决] 也要求留痕」→ 本用例必须变红（自决项不触发问询要求）
+        let plan = plan_with_ambiguity("- [自决] 内部实现细节由 agent 定\n");
+        let a = audit_verdicts(&plan);
+        assert!(a.is_clean(), "全是自决项不该有问题：{:?}", a.issues);
+    }
+
+    #[test]
+    fn unclassified_entry_is_a_fact_not_a_failure() {
+        // 错实现形态：把「未分类条目」当硬失败 → 本用例必须变红（分类恰当性交审查官）
+        let plan = plan_with_ambiguity("- 复合词算一个词还是两个词\n");
+        let a = audit_verdicts(&plan);
+        assert!(a.is_clean(), "未分类条目不判硬失败：{:?}", a.issues);
+        assert!(
+            a.facts.iter().any(|f| f.contains("未分类") && f.contains("复合词")),
+            "未分类条目要进确定性事实：{:?}",
+            a.facts
+        );
+    }
+
+    #[test]
+    fn prose_declaration_is_a_fact_not_a_failure() {
+        // 错实现形态：把「散文里的必须裁决声明」当硬失败 → 本用例必须变红
+        let plan = plan_with_ambiguity("这条口径必须用户裁决。\n- [自决] 别的点\n");
+        let a = audit_verdicts(&plan);
+        assert!(a.is_clean(), "散文声明不判硬失败：{:?}", a.issues);
+        assert!(
+            a.facts.iter().any(|f| f.contains("散文") && f.contains("必须用户裁决")),
+            "散文声明要进确定性事实：{:?}",
+            a.facts
+        );
+    }
+
+    #[test]
+    fn missing_ambiguity_block_is_a_fact_not_a_failure() {
+        // 错实现形态：把「歧义块缺失」当硬失败 → 本用例必须变红（结构缺失归审查官）
+        let plan = "# 变更计划\n\n## 1 需求复述\n改 a。\n";
+        let a = audit_verdicts(&plan);
+        assert!(a.is_clean(), "歧义块缺失不判硬失败：{:?}", a.issues);
+        assert!(
+            a.facts.iter().any(|f| f.contains("歧义块缺失")),
+            "歧义块缺失要进确定性事实：{:?}",
+            a.facts
+        );
+    }
+
+    #[test]
+    fn last_ambiguity_heading_wins() {
+        // 错实现形态：把「同名标题取第一个」→ 本用例必须变红
+        // （计划里「需求复述与歧义」与「歧义与本计划采用的默认」两处同名，只判后者）
+        let plan = "# 变更计划\n\n\
+## 1 需求复述与歧义\n\
+- [必须裁决] 这条在旧标题下（不该被看到）\n\n\
+### 1.3 歧义与本计划采用的默认\n\
+- [自决] 这条在后面的标题下\n";
+        let a = audit_verdicts(plan);
+        assert!(a.is_clean(), "后出现的同名标题覆盖先前的：{:?}", a.issues);
+    }
+
+    #[test]
+    fn review_instruction_carries_verdict_facts_and_new_criteria() {
+        // 错实现形态：把「裁决门事实 / 新审点」从审查指令里删掉 → 本用例必须变红
+        let r = repo();
+        let plan = plan_with_ambiguity("- 复合词算一个词还是两个词\n");
+        let a = audit(&plan, r.path());
+        let plan_path = r.path().join("docs/changes/x/change-plan.md");
+        let text = review_instruction("change-20261021-x", &plan_path, &plan, &a);
+        assert!(text.contains("裁决门事实"), "审查指令要带裁决门事实段：{text}");
+        assert!(
+            text.contains("未分类") && text.contains("复合词"),
+            "未分类条目要出现在审查指令里：{text}"
+        );
+        for anchor in ["留痕核对", "分类恰当性", "结构缺失"] {
+            assert!(text.contains(anchor), "审查指令缺新审点：{anchor}");
+        }
     }
 }
