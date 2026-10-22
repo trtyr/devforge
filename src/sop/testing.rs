@@ -20,6 +20,7 @@ use std::path::Path;
 use crate::error::Result;
 use crate::sop::coding_protocol::{parse_stage_complete, NextAction};
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
+use crate::sop::review_gate::{review_with_gate, ReviewBudget, ReviewOutcome};
 use crate::sop::testing_protocol::{parse_test_review_report, Reroute};
 
 /// Test Agent 开场指令：黑板（cwd）与代码工作区双路径告知 + 文档指针（D006）。
@@ -71,8 +72,9 @@ fn testing_advance_message(stage: u64, notes: &[String]) -> String {
     msg
 }
 
-/// 协议违例重试上限（C19-R1）：超过即判基础设施故障，快速报错。
-pub const MAX_TEST_PROTOCOL_VIOLATIONS: usize = 3;
+/// 协议违例重试上限（C19-R1）：审查输出不合规时重跑审查而不是回注被测 Agent。
+/// 单一事实源在 [`crate::sop::review_gate`]（D026），此处只做别名。
+pub const MAX_TEST_PROTOCOL_VIOLATIONS: usize = crate::sop::review_gate::MAX_PROTOCOL_VIOLATIONS;
 
 /// 测试 SOP 报告 / 进度账本（移交恢复时由编排层持有并回传）。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -159,7 +161,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
         mut step: Step,
         mut report: TestingReport,
     ) -> Result<TestingOutcome> {
-        let mut violations = 0usize;
+        // 审查预算的生命周期 = 一次 drive（与既有违例计数同口径）
+        let mut budget = ReviewBudget::default();
         let mut nudges = 0usize;
         loop {
             match step {
@@ -181,33 +184,27 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                     step = Step::Review(stage);
                 }
                 Step::Review(stage) => {
-                    // C19-R1：协议违例（审查输出本身不合规）→ 重跑审查，不回注被测 Agent
-                    let parsed = loop {
-                        report.review_rounds += 1;
-                        let mut session = self.review_factory.open()?;
-                        let review_text = session
-                            .review(&testing_review_instruction(workspace, report.review_rounds))?;
-                        drop(session);
-
-                        let parsed = parse_test_review_report(&review_text);
-                        if !parsed.protocol_violation {
-                            break parsed;
-                        }
-                        violations += 1;
-                        if violations > MAX_TEST_PROTOCOL_VIOLATIONS {
-                            return Err(crate::error::DevforgeError::Quality(format!(
-                                "测试审查连续 {} 轮输出协议违例（缺 stage-verdict/next），判定为质量失败（不自动重启），停止 run：{}",
-                                violations,
-                                parsed.issues.join("；")
-                            )));
-                        }
-                        tracing::warn!(
-                            component = "testing-sop",
-                            round = report.review_rounds,
-                            violations,
-                            "测试审查输出协议违例，重跑本轮审查（不回注被测 Agent）"
-                        );
-                    };
+                    // C19-R1 + D026：协议违例（审查输出本身不合规）→ 换新实例重审，不回注被测 Agent；
+                    // 实例失败（空回复/早退/通道错误）→ 换新实例重试。
+                    let (parsed, opened) = review_with_gate(
+                        &mut self.review_factory,
+                        report.review_rounds,
+                        |round| testing_review_instruction(workspace, round),
+                        &mut budget,
+                        |text| {
+                            let r = parse_test_review_report(text);
+                            let reason = if r.protocol_violation {
+                                Some(r.issues.join("；"))
+                            } else {
+                                None
+                            };
+                            Ok(ReviewOutcome {
+                                report: r,
+                                violation: reason,
+                            })
+                        },
+                    )?;
+                    report.review_rounds += opened;
                     match (parsed.verdict, parsed.next) {
                         (StageVerdictRe::Pass, NextAction::Finish) => {
                             report.stages_completed.push(stage);

@@ -18,6 +18,7 @@ use std::path::Path;
 use crate::error::Result;
 use crate::sop::coding_protocol::{parse_review_report, parse_stage_complete, NextAction};
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
+use crate::sop::review_gate::{outcome_of_review_report, review_with_gate, ReviewBudget};
 
 /// 回复尾巴（错误里带证据，供事后定位；按字符边界截取）。
 pub fn tail(text: &str) -> String {
@@ -76,9 +77,9 @@ fn advance_message(stage: u64, notes: &[String]) -> String {
     msg
 }
 
-/// 协议违例重试上限（C19-R1）：审查输出不合规（缺协议块/未知值/自相矛盾）时
-/// 重跑审查而不是回注被审 Agent；连续违例超过此数视为基础设施故障，快速报错。
-pub const MAX_PROTOCOL_VIOLATIONS: usize = 3;
+/// 协议违例重试上限（C19-R1）：审查输出不合规时重跑审查而不是回注被审 Agent。
+/// 单一事实源在 [`crate::sop::review_gate`]（D026），此处只做别名。
+pub const MAX_PROTOCOL_VIOLATIONS: usize = crate::sop::review_gate::MAX_PROTOCOL_VIOLATIONS;
 
 /// 编码 SOP 报告。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,7 +122,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> CodingSopLoop<P, F> {
         let mut stages_completed = Vec::new();
         let mut review_rounds = 0usize;
         let mut issues_total = 0usize;
-        let mut protocol_violations = 0usize;
+        // 审查预算的生命周期 = 整个 run（违例重审与实例失败重试都从这里计数）
+        let mut budget = ReviewBudget::default();
         let mut nudges = 0usize;
 
         loop {
@@ -141,34 +143,17 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> CodingSopLoop<P, F> {
             nudges = 0;
 
             // 本轮审查：全新实例，用完即弃。
-            // C19-R1：协议违例（审查输出本身不合规）→ 重跑本轮审查（新 fresh 实例），
-            // 绝不把违例问题当作代码问题回注给 Coding Agent。
-            let report = loop {
-                review_rounds += 1;
-                let mut session = self.review_factory.open()?;
-                let instruction = coding_review_instruction(workspace, review_rounds);
-                let review_text = session.review(&instruction)?;
-                drop(session);
-
-                let report = parse_review_report(&review_text)?;
-                if !report.protocol_violation {
-                    break report;
-                }
-                protocol_violations += 1;
-                if protocol_violations > MAX_PROTOCOL_VIOLATIONS {
-                    return Err(crate::error::DevforgeError::Quality(format!(
-                        "审查连续 {} 轮输出协议违例（缺少 stage-verdict/next 块），判定为质量失败（不自动重启），停止 run：{}",
-                        protocol_violations,
-                        report.issues.join("；")
-                    )));
-                }
-                tracing::warn!(
-                    component = "coding-sop",
-                    round = review_rounds,
-                    violations = protocol_violations,
-                    "审查输出协议违例，重跑本轮审查（不回注被审 Agent）"
-                );
-            };
+            // C19-R1 + D026：协议违例（审查输出本身不合规）→ 换新实例重审（新 fresh 实例），
+            // 绝不把违例问题当作代码问题回注给 Coding Agent；实例失败（空回复/早退/通道错误）
+            // → 换新实例重试；两者超上限分别判质量失败与基础设施故障。
+            let (report, opened) = review_with_gate(
+                &mut self.review_factory,
+                review_rounds,
+                |round| coding_review_instruction(workspace, round),
+                &mut budget,
+                |text| Ok(outcome_of_review_report(parse_review_report(text)?)),
+            )?;
+            review_rounds += opened;
             match (report.verdict, report.next) {
                 (crate::sop::coding_protocol::StageVerdict::Pass, NextAction::Finish) => {
                     stages_completed.push(stage);
