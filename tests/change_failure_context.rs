@@ -30,30 +30,36 @@ use devforge::sop::planning::{PlanAgentSession, ReviewSession, ReviewSessionFact
 
 /// 本变更的基线提交（计划 §1.1）。
 /// 10-22 运维：与 change_ask_ring 保持同值（a16 互检）；两场之间守卫 ignore（F10/F13）。
-const BASELINE: &str = "ad485549e0981b402bd53d64f2dc7e07c79e47b7";
+/// 口径：本场开工时的 HEAD（计划写的 `a0be947…` 之后操作员又落了两个提交，
+/// 其中 `a36f6b7` 动了非 tests/ 文件 → 守卫扫整段 `BASELINE..HEAD` 时必红；
+/// 台账 F10 的既定处置 =「常量刷新」到本变更提交集合的起点）。
+const BASELINE: &str = "a36f6b79dec2e681db8daed0da067f9abd47a9f5";
 
-/// 计划 §4 的白名单（coding 步的 19 个文件 = 20 个减去唯一的测试阶段文件
-/// `tests/change_review_protocol.rs`）。
+/// 计划 §4 的白名单去掉唯一的测试阶段文件 `tests/f6_observability.rs`
+/// = **coding 步的 22 个文件**。
 const WHITELIST: &[&str] = &[
-    "src/sop/review_gate.rs",
-    "src/sop/mod.rs",
-    "src/sop/coding_protocol.rs",
-    "src/sop/output.rs",
+    "src/observability/mod.rs",
+    "src/observability/heartbeat.rs",
+    "src/observability/tombstone.rs",
+    "src/lib.rs",
+    "src/main.rs",
+    "src/engine/retry.rs",
+    "src/engine/client.rs",
+    "src/server/mod.rs",
+    "src/server/handlers.rs",
+    "src/server/tests.rs",
+    "src/change/orchestrator.rs",
+    "src/change/session.rs",
     "src/sop/planning.rs",
     "src/sop/coding.rs",
     "src/sop/testing.rs",
-    "src/change/session.rs",
-    "src/change/boundary.rs",
-    "src/config/manifest.rs",
-    "src/server/change_engine.rs",
-    "src/server/tests.rs",
+    "src/sop/doc_from_zero.rs",
+    "src/sop/doc_fix.rs",
     "tests/change_ask_ring.rs",
     "tests/change_failure_context.rs",
-    "tests/e2e/fixtures/change_agents.json",
-    "docs/plantree/plans/009-change-sop/decisions/README.md",
-    "docs/plantree/plans/009-change-sop/topics/agents-change.md",
-    "docs/plantree/plans/009-change-sop/topics/vs-mvp.md",
-    "docs/plantree/plans/009-change-sop/roadmap.md",
+    "tests/change_review_protocol.rs",
+    "docs/plantree/plans/010-run-resume/decisions/README.md",
+    "docs/plantree/plans/010-run-resume/roadmap.md",
 ];
 
 /// 一条带 `path:line` 的失败明细（验收标准里的样例原文）。
@@ -256,7 +262,8 @@ fn a1_new_state_has_no_context_and_none_kickoff_is_verbatim_unchanged() {
     );
 
     // ② 无上下文时开工语逐字等于**基线提交里那版**的开工语
-    //    （本场计划批准的协议契约 Q13 除外：那一句是计划要求的改动，其余措辞仍逐字锁死）
+    //    （计划批准的协议契约一句除外：它已在基线提交里（c3 场 step 5 引入），
+    //    故两侧都剥掉这一句再比——常量刷到新基线后，基线那版本来就含它）
     let kick = coding_kickoff(&ctx, None);
     assert!(
         kick.contains(KICKOFF_PROTOCOL_CLAUSE),
@@ -264,7 +271,7 @@ fn a1_new_state_has_no_context_and_none_kickoff_is_verbatim_unchanged() {
     );
     assert_eq!(
         kick.replace(KICKOFF_PROTOCOL_CLAUSE, ""),
-        baseline_coding_kickoff(&ctx),
+        baseline_coding_kickoff(&ctx).replace(KICKOFF_PROTOCOL_CLAUSE, ""),
         "无上下文时的开工语必须逐字等于改动前那版"
     );
     assert!(
@@ -1022,7 +1029,6 @@ fn parse_whitelist(src: &str) -> Vec<String> {
 /// 10-22 运维：两场之间无 step 提交，此守卫恒红 → `#[ignore]`（F10/F13：
 /// 守卫常量随场增殖，两场之间全体转红，真修 = gate 时物化）。
 #[test]
-#[ignore = "守卫常量由 change run 刷新；两场之间无 step 提交（F10/F13）"]
 fn a17_the_change_commits_stay_inside_the_whitelist() {
     // 错实现形态：把白名单外的文件带进本变更的提交 / 顺手 `git add -A` 把未跟踪产物卷进来
     // → 本用例必须变红
@@ -1053,7 +1059,7 @@ fn a17_the_change_commits_stay_inside_the_whitelist() {
             }
         }
     }
-    // 白名单里的 10 个文件都要真的被本场改到（不是「少改了」也算过）
+    // 白名单里的 22 个文件都要真的被本场改到（不是「少改了」也算过）
     for f in WHITELIST {
         assert!(
             coding_files.iter().any(|x| x == f),

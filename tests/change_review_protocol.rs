@@ -41,53 +41,62 @@ use devforge::sop::review_gate::{
 // ---------------- 常量 ----------------
 
 /// 本变更的基线提交（计划 §1.1）。
-const BASELINE: &str = "ad485549e0981b402bd53d64f2dc7e07c79e47b7";
+/// 口径：本场开工时的 HEAD（计划写的 `a0be947…` 之后操作员又落了两个提交，
+/// 其中 `a36f6b7` 动了非 tests/ 文件 → 守卫扫整段 `BASELINE..HEAD` 时必红；
+/// 台账 F10 的既定处置 =「常量刷新」到本变更提交集合的起点）。
+const BASELINE: &str = "a36f6b79dec2e681db8daed0da067f9abd47a9f5";
 
-/// 计划 §4 的白名单（**20 个**文件 = coding 步 19 个 + 测试阶段 1 个）。
+/// 计划 §4 的白名单（**23 个**文件 = coding 步 22 个 + 测试阶段 1 个）。
 const PLAN_WHITELIST: &[&str] = &[
-    "src/sop/review_gate.rs",
-    "src/sop/mod.rs",
-    "src/sop/coding_protocol.rs",
-    "src/sop/output.rs",
+    "src/observability/mod.rs",
+    "src/observability/heartbeat.rs",
+    "src/observability/tombstone.rs",
+    "src/lib.rs",
+    "src/main.rs",
+    "src/engine/retry.rs",
+    "src/engine/client.rs",
+    "src/server/mod.rs",
+    "src/server/handlers.rs",
+    "src/server/tests.rs",
+    "src/change/orchestrator.rs",
+    "src/change/session.rs",
     "src/sop/planning.rs",
     "src/sop/coding.rs",
     "src/sop/testing.rs",
-    "src/change/session.rs",
-    "src/change/boundary.rs",
-    "src/config/manifest.rs",
-    "src/server/change_engine.rs",
-    "src/server/tests.rs",
-    "tests/change_review_protocol.rs",
+    "src/sop/doc_from_zero.rs",
+    "src/sop/doc_fix.rs",
+    "tests/f6_observability.rs",
     "tests/change_ask_ring.rs",
     "tests/change_failure_context.rs",
-    "tests/e2e/fixtures/change_agents.json",
-    "docs/plantree/plans/009-change-sop/decisions/README.md",
-    "docs/plantree/plans/009-change-sop/topics/agents-change.md",
-    "docs/plantree/plans/009-change-sop/topics/vs-mvp.md",
-    "docs/plantree/plans/009-change-sop/roadmap.md",
+    "tests/change_review_protocol.rs",
+    "docs/plantree/plans/010-run-resume/decisions/README.md",
+    "docs/plantree/plans/010-run-resume/roadmap.md",
 ];
 
-/// 计划 §4 白名单去掉唯一的测试阶段文件 = **coding 步 19 个**。
+/// 计划 §4 白名单去掉唯一的测试阶段文件 = **coding 步 22 个**。
 const CODING_WHITELIST: &[&str] = &[
-    "src/sop/review_gate.rs",
-    "src/sop/mod.rs",
-    "src/sop/coding_protocol.rs",
-    "src/sop/output.rs",
+    "src/observability/mod.rs",
+    "src/observability/heartbeat.rs",
+    "src/observability/tombstone.rs",
+    "src/lib.rs",
+    "src/main.rs",
+    "src/engine/retry.rs",
+    "src/engine/client.rs",
+    "src/server/mod.rs",
+    "src/server/handlers.rs",
+    "src/server/tests.rs",
+    "src/change/orchestrator.rs",
+    "src/change/session.rs",
     "src/sop/planning.rs",
     "src/sop/coding.rs",
     "src/sop/testing.rs",
-    "src/change/session.rs",
-    "src/change/boundary.rs",
-    "src/config/manifest.rs",
-    "src/server/change_engine.rs",
-    "src/server/tests.rs",
+    "src/sop/doc_from_zero.rs",
+    "src/sop/doc_fix.rs",
     "tests/change_ask_ring.rs",
     "tests/change_failure_context.rs",
-    "tests/e2e/fixtures/change_agents.json",
-    "docs/plantree/plans/009-change-sop/decisions/README.md",
-    "docs/plantree/plans/009-change-sop/topics/agents-change.md",
-    "docs/plantree/plans/009-change-sop/topics/vs-mvp.md",
-    "docs/plantree/plans/009-change-sop/roadmap.md",
+    "tests/change_review_protocol.rs",
+    "docs/plantree/plans/010-run-resume/decisions/README.md",
+    "docs/plantree/plans/010-run-resume/roadmap.md",
 ];
 
 /// 引擎**不再**合成的占位文案（裁决 B：空箱拒收 + 追补）。
@@ -1310,9 +1319,8 @@ fn a28_topic_docs_match_the_new_contract() {
 
 // ---------------- 验收 29/30/31：白名单常量与提交内容 ----------------
 
-/// 验收 29 · 守卫文件的两个常量 = 本场基线 + coding 白名单 19 个文件，提交扫描通过。
+/// 验收 29 · 守卫文件的两个常量 = 本场基线 + coding 白名单 22 个文件，提交扫描通过。
 #[test]
-#[ignore = "守卫常量由 change run 刷新；两场之间无 step 提交（F10/F13）"]
 fn a29_guard_constants_point_at_this_change() {
     // 错实现形态：常量没刷新（还指着上一场的基线 / 上一场的白名单）→ 本用例必须变红
     let guard = std::fs::read_to_string(repo_root().join("tests/change_ask_ring.rs"))
@@ -1332,7 +1340,7 @@ fn a29_guard_constants_point_at_this_change() {
         assert!(listed.iter().any(|x| x == f), "守卫的 WHITELIST 缺 {f}");
     }
     assert!(
-        !listed.iter().any(|x| x == "tests/change_review_protocol.rs"),
+        !listed.iter().any(|x| x == "tests/f6_observability.rs"),
         "测试阶段文件不得进 coding 步白名单常量"
     );
 
@@ -1389,9 +1397,8 @@ fn a30_acceptance_file_constants_match_the_guard() {
     );
 }
 
-/// 验收 31 · 本变更的提交内容 ⊆ 计划 §4 白名单（20 个文件），未跟踪产物不入库。
+/// 验收 31 · 本变更的提交内容 ⊆ 计划 §4 白名单（23 个文件），未跟踪产物不入库。
 #[test]
-#[ignore = "守卫常量由 change run 刷新；两场之间无 step 提交（F10/F13）"]
 fn a31_the_change_commits_stay_inside_the_plan_whitelist() {
     // 错实现形态：把白名单外的文件带进本变更的提交 / 顺手 `git add -A` 把未跟踪产物卷进来 → 本用例必须变红
     let root = repo_root();
@@ -1429,15 +1436,19 @@ fn a31_the_change_commits_stay_inside_the_plan_whitelist() {
     }
 }
 
-/// 验收 31（续）· 计划 §4 白名单 = 20 个文件（coding 19 + 测试阶段 1）。
+/// 验收 31（续）· 计划 §4 白名单 = 23 个文件（coding 22 + 测试阶段 1）。
 #[test]
-fn a32_the_plan_whitelist_has_twenty_files() {
-    // 错实现形态：白名单数目写错（19/21）→ 本用例必须变红
-    assert_eq!(PLAN_WHITELIST.len(), 20, "计划 §4 白名单 = 20 个文件");
-    assert_eq!(CODING_WHITELIST.len(), 19, "coding 步白名单 = 19 个文件");
+fn a32_the_plan_whitelist_has_twenty_three_files() {
+    // 错实现形态：白名单数目写错（21/24）→ 本用例必须变红
+    assert_eq!(PLAN_WHITELIST.len(), 23, "计划 §4 白名单 = 23 个文件");
+    assert_eq!(CODING_WHITELIST.len(), 22, "coding 步白名单 = 22 个文件");
     assert!(
-        PLAN_WHITELIST.contains(&"tests/change_review_protocol.rs"),
+        PLAN_WHITELIST.contains(&"tests/f6_observability.rs"),
         "计划 §4 白名单要含唯一的测试阶段文件"
+    );
+    assert!(
+        !CODING_WHITELIST.contains(&"tests/f6_observability.rs"),
+        "测试阶段文件不得进 coding 步白名单"
     );
 }
 
