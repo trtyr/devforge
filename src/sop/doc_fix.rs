@@ -310,6 +310,10 @@ mod tests {
             "里程碑的 target 必须是发出它的模块：{}",
             opens[0]
         );
+        // 全部里程碑条目：级别 INFO + 带 component 字段（计划 §5）
+        for line in text.lines().filter(|l| l.contains("\"event\":")) {
+            crate::observability::test_support::assert_milestone_shape(line);
+        }
 
         // 打回重写：一对 fix.start / fix.end（含轮次）
         let starts: Vec<&str> = text.lines().filter(|l| l.contains("fix.start")).collect();

@@ -355,6 +355,24 @@ pub mod test_support {
         f();
         BUFFER.with(|b| b.borrow().clone())
     }
+
+    /// 断言一条**里程碑**条目的形状：级别 INFO + 带 `component` 字段。
+    ///
+    /// 计划 §5：「给定全部里程碑条目 → 级别为 **INFO**、字段含 `component` 与 `event`」。
+    /// 错实现形态（任一命中即红）：①里程碑落成 WARN/ERROR（级别不是 INFO）
+    /// ②`component` 字段被删（事后按组件过滤就废了）。
+    ///
+    /// 只钉**形状**，不钉 `component` 的取值（组件名由各模块自选，契约是「有这个字段」）。
+    pub fn assert_milestone_shape(line: &str) {
+        assert!(
+            line.contains("\"level\":\"INFO\""),
+            "里程碑的级别必须是 INFO：{line}"
+        );
+        assert!(
+            line.contains("\"component\":\""),
+            "里程碑要带 component 字段：{line}"
+        );
+    }
 }
 
 #[cfg(test)]
