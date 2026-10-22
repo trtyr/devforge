@@ -148,7 +148,7 @@ pub fn coding_kickoff(ctx: &ChangeCtx, failure: Option<&TestFailureContext>) -> 
 目标仓：{}\n计划：{}\n黑板（当前目录）：{}\n\n\
 顺序：先跑既有测试并把命令与退出码写进 `evidence/baseline-test.log`（红就停）；\
 再写 `impl-steps.md`（每步：文件 / 对应验收标准 / 怎么验），按步执行、每步一提交（提交信息含 change-id 与 `step N`）。\n\
-只改计划白名单内的文件；越界必须输出 `<route>plan</route>` + `<impact-gap>`。\n\
+只改计划白名单内的文件；越界必须输出 `<route>plan</route>` + `<impact-gap>`（**声明块放在回复末尾**，其后不要再写别的）。\n\
 本轮改完还要留**自证证据**（先证后报）：把本轮相关测试的**命令原文 + 真实退出码 + 输出摘要**写进黑板 `{}`（**覆盖写**，不许沿用上一轮残留）——引擎会验这份证据（存在 + 退出码为 0），缺了或红着会被质量门拦下。\n\
 完成后输出 `<stage-complete>1</stage-complete>`。",
         ctx.change_id,
@@ -167,6 +167,14 @@ pub fn coding_kickoff(ctx: &ChangeCtx, failure: Option<&TestFailureContext>) -> 
     }
 }
 
+/// 空箱拒收的追补上限：连续这么多次回注路由仍不带 `<issues>` → 质量失败（不自动重启）。
+pub const MAX_EMPTY_ISSUES_NUDGES: usize = 3;
+
+/// 空箱拒收的追补话术：路由块带了、失败明细没带 → 请补齐后重发。
+pub const ISSUES_NUDGE: &str = "\
+你输出了回注路由，但没有给出 <issues> 失败明细（每条一行，`- ` 开头）。\
+这条回注已被引擎拒收：请补齐失败明细后重发 —— 路由块与 <issues> 块都放在回复末尾。";
+
 pub fn testing_kickoff(ctx: &ChangeCtx) -> String {
     format!(
         "你是 change-test-agent。change-id：`{}`。\n\
@@ -175,7 +183,8 @@ pub fn testing_kickoff(ctx: &ChangeCtx) -> String {
 顺序：先跑既有全套回归并把命令与退出码写进 `{}`；再为变更点写测试；\
 把对账表写到 `testing/acceptance.md`（每行 `- <验收标准原文> → <测试文件>:<行>`）；\
 至少做一次反向验证。\n\
-失败时输出 `<route>coding</route>`（计划问题用 `<route>plan</route>`）并附失败摘要；\
+失败时输出 `<route>coding</route>`（计划问题用 `<route>plan</route>`），并用 `<issues>` 块逐条列失败明细\
+（每条一行，`- ` 开头）；**路由块与 `<issues>` 块都放在回复末尾**，其后不要再写别的。\n\
 通过时输出 `<stage-complete>1</stage-complete>`。",
         ctx.change_id,
         ctx.repo.display(),
@@ -366,30 +375,36 @@ impl ChangeSession for ProdChangeSession {
         }
     }
 
-    fn run_testing(&mut self, ui: &mut dyn UserLink) -> Result<TestingTurn> {        let reply = self.test_agent.converse(&testing_kickoff(&self.ctx), ui)?;
-        let route = parse_route(&reply);
-        match route.as_deref() {
-            Some("coding") => {
-                let failures = issues_of(&reply);
-                return Ok(TestingTurn::RouteCoding {
-                    failures: if failures.is_empty() {
-                        vec!["测试阶段判定失败（未给出 issues 明细）".into()]
-                    } else {
-                        failures
-                    },
-                });
+    fn run_testing(&mut self, ui: &mut dyn UserLink) -> Result<TestingTurn> {
+        // 路由判定 + 空箱拒收：带路由但不带 `<issues>` 的回注不收（裁决 B），追一条补齐话术后重发
+        let mut message = testing_kickoff(&self.ctx);
+        let mut nudges = 0usize;
+        let (reply, route, failures) = loop {
+            let reply = self.test_agent.converse(&message, ui)?;
+            let route = parse_route(&reply);
+            match route.as_deref() {
+                Some("coding") | Some("plan") => {
+                    let failures = issues_of(&reply);
+                    if !failures.is_empty() {
+                        break (reply, route, failures);
+                    }
+                    // 空箱拒收：没有失败明细的回注不产生 RouteCoding/RoutePlan，也不合成占位文案
+                    nudges += 1;
+                    if nudges > MAX_EMPTY_ISSUES_NUDGES {
+                        return Err(DevforgeError::Quality(format!(
+                            "测试阶段连续 {nudges} 次回注路由但未给出 issues 明细（未给出 issues 明细），判定为质量失败（不自动重启）"
+                        )));
+                    }
+                    message = ISSUES_NUDGE.to_string();
+                }
+                _ => break (reply, None, Vec::new()),
             }
-            Some("plan") => {
-                let failures = issues_of(&reply);
-                return Ok(TestingTurn::RoutePlan {
-                    failures: if failures.is_empty() {
-                        vec!["测试阶段判定需求/计划问题（未给出 issues 明细）".into()]
-                    } else {
-                        failures
-                    },
-                });
-            }
-            _ => {}
+        };
+        if let Some(route) = route {
+            return Ok(match route.as_str() {
+                "coding" => TestingTurn::RouteCoding { failures },
+                _ => TestingTurn::RoutePlan { failures },
+            });
         }
         require_marker("change-test-agent", &reply)?;
         // 声称通过 → 回归日志必须是绿的
@@ -891,34 +906,71 @@ mod tests {
     }
 
     #[test]
-    fn the_placeholder_issue_text_is_delivered_verbatim() {
-        // 错实现形态：空 issues 时合成的占位文案被丢弃/改写 → 本用例必须变红
+    fn empty_issues_route_is_rejected_then_accepted_verbatim() {
+        // 错实现形态：空箱被合成占位文案（「测试阶段判定失败（未给出 issues 明细）」）并当失败明细回注
+        // → 本用例必须变红
+        let f = fixture(true);
+        let agent = Agent::new(&[
+            "回归红了\n<route>coding</route>",
+            "补齐了\n<route>coding</route>\n<issues>\n- tests/a_test.rs:10 断言失败\n- tests/b_test.rs:20 断言失败\n</issues>",
+        ]);
+        let seen = agent.seen.clone();
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&[])),
+            plan_review: Box::new(ReviewFactory::new(&[])),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(agent),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let turn = session.run_testing(&mut NoUser).unwrap();
+        let TestingTurn::RouteCoding { failures } = turn else {
+            panic!("补齐明细后应回注 coding，实际 {turn:?}");
+        };
+        assert_eq!(
+            failures,
+            vec![
+                "tests/a_test.rs:10 断言失败".to_string(),
+                "tests/b_test.rs:20 断言失败".to_string()
+            ],
+            "失败明细逐条原文（无占位文案、无引擎合成文案）"
+        );
+        // 被拒收的那一轮要追一条「请补齐失败明细后重发」
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "被拒收后要追一次");
+        assert!(
+            seen[1].contains("请补齐失败明细后重发"),
+            "追补话术要带补齐要求：{}",
+            seen[1]
+        );
+    }
+
+    #[test]
+    fn repeated_empty_issues_routes_fail_fast() {
+        // 错实现形态：空箱被合成占位文案当失败明细回注（不 Quality）→ 本用例必须变红
         let f = fixture(true);
         let mut session = ProdChangeSession {
             plan_agent: Box::new(Agent::new(&[])),
             plan_review: Box::new(ReviewFactory::new(&[])),
             coding_agent: Box::new(Agent::new(&[])),
             coding_review: Box::new(ReviewFactory::new(&[])),
-            test_agent: Box::new(Agent::new(&["回归红了\n<route>coding</route>"])),
+            test_agent: Box::new(Agent::new(&[
+                "回归红了\n<route>coding</route>",
+                "回归红了\n<route>coding</route>",
+                "回归红了\n<route>coding</route>",
+                "回归红了\n<route>coding</route>",
+            ])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
         };
-        let TestingTurn::RouteCoding { failures } = session.run_testing(&mut NoUser).unwrap() else {
-            panic!("应回注 coding");
-        };
-        assert_eq!(
-            failures,
-            vec!["测试阶段判定失败（未给出 issues 明细）".to_string()],
-            "空 issues 时合成的占位文案是唯一一条 issue"
-        );
-        let ctx = TestFailureContext {
-            round: 1,
-            issues: failures,
-        };
-        let kick = coding_kickoff(&f.ctx, Some(&ctx));
+        let err = session.run_testing(&mut NoUser).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("未给出 issues 明细"), "{msg}");
+        assert!(msg.contains("4 次"), "错误文本要带连续计数: {msg}");
         assert!(
-            kick.contains("测试阶段判定失败（未给出 issues 明细）"),
-            "占位文案要原样送达：{kick}"
+            !msg.contains("测试阶段判定失败（未给出 issues 明细）"),
+            "全程不得出现占位文案: {msg}"
         );
     }
 

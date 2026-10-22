@@ -58,8 +58,11 @@ const WHITELIST: &[&str] = &[
 const ISSUE_WITH_LOCATION: &str = "tests/change_ask_ring.rs:557 台账计数断言失败";
 /// 一条不带位置的失败明细。
 const ISSUE_PLAIN: &str = "接口返回 500";
-/// 引擎在 test agent 不给 `<issues>` 时合成的占位文案（现状不动，属下一场协议硬化）。
+/// 引擎**不再**合成的占位文案（裁决 B：空箱拒收 + 追补，不再拿占位文案当失败明细）。
 const PLACEHOLDER_ISSUE: &str = "测试阶段判定失败（未给出 issues 明细）";
+/// 本场计划批准的开工语协议契约（Q13）：声明块放在回复末尾。
+/// a1 的「逐字等于基线那版」只在这句上让路（其余措辞仍逐字锁死）。
+const KICKOFF_PROTOCOL_CLAUSE: &str = "（**声明块放在回复末尾**，其后不要再写别的）";
 
 /// 三处「零信息 / 阉割痕迹」话术（验收标准 5、6、7 逐条点名）。
 const ZERO_INFO_TRACES: &[&str] = &["请自己定位原因", "本消息不提供文件位置", "<位置略>"];
@@ -251,9 +254,14 @@ fn a1_new_state_has_no_context_and_none_kickoff_is_verbatim_unchanged() {
     );
 
     // ② 无上下文时开工语逐字等于**基线提交里那版**的开工语
+    //    （本场计划批准的协议契约 Q13 除外：那一句是计划要求的改动，其余措辞仍逐字锁死）
     let kick = coding_kickoff(&ctx, None);
+    assert!(
+        kick.contains(KICKOFF_PROTOCOL_CLAUSE),
+        "本场批准的协议契约必须在开工语里：{kick}"
+    );
     assert_eq!(
-        kick,
+        kick.replace(KICKOFF_PROTOCOL_CLAUSE, ""),
         baseline_coding_kickoff(&ctx),
         "无上下文时的开工语必须逐字等于改动前那版"
     );
@@ -748,17 +756,17 @@ fn a12_old_checkpoint_without_the_failure_key_still_loads() {
     assert_eq!(loaded.review_rounds, 3, "审查轮次不得丢");
 }
 
-// ---------------- 验收 13：占位文案照原样送达 ----------------
+// ---------------- 验收 13：空箱拒收（不合成占位文案） ----------------
 
-/// 验收 13 · test agent 回 `<route>coding</route>` 且不带 `<issues>` → 引擎合成占位文案，
-/// 该占位文案作为**一条** issue 原样进上下文，并被逐字送进 kickoff。
+/// 验收 13 · test agent 回 `<route>coding</route>` 且不带 `<issues>` → 引擎**拒收**该回注
+/// （不产生 `RouteCoding`、不合成占位文案），连追 3 次仍不带 → 质量失败（错误文本含「未给出 issues 明细」）。
 #[test]
-fn a13_placeholder_issue_text_is_delivered_verbatim() {
-    // 错实现形态：占位文案被改写 / 被当成多条 / 没进上下文 → 本用例必须变红
+fn a13_empty_issues_route_is_rejected_without_a_placeholder() {
+    // 错实现形态：空箱被合成占位文案并当失败明细回注 → 本用例必须变红
     let tmp = tempfile::tempdir().unwrap();
     let ctx = ctx_in(tmp.path());
 
-    // 真 session 侧：test agent 只回路由、不给 issues
+    // 真 session 侧：test agent 只回路由、不给 issues（每次都一样 → 连续拒收到判死）
     let reply = "<route>coding</route>\n<stage-complete>1</stage-complete>".to_string();
     let mut prod = ProdChangeSession {
         plan_agent: Box::new(FixedAgent::new("<stage-complete>1</stage-complete>".into())),
@@ -770,48 +778,21 @@ fn a13_placeholder_issue_text_is_delivered_verbatim() {
         ctx: ctx.clone(),
     };
     let mut ui = NoUser;
-    let turn = prod.run_testing(&mut ui).unwrap();
-    let TestingTurn::RouteCoding { failures } = turn else {
-        panic!("test agent 回 <route>coding</route> 时应得到 RouteCoding");
-    };
-    assert_eq!(
-        failures,
-        vec![PLACEHOLDER_ISSUE.to_string()],
-        "引擎仍合成占位文案（现状不动）"
-    );
-
-    // 编排侧：占位文案作为一条 issue 进上下文
-    let st = store(tmp.path());
-    let mut session = Scripted::new();
-    session.plans.push_back(PlanTurn::Pass);
-    session.codings.push_back(in_boundary());
-    session.testings.push_back(TestingTurn::RouteCoding {
-        failures: failures.clone(),
-    });
-    let mut ui2 = NoUser;
-    let _ = run_change(
-        cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]),
-        &mut session,
-        &mut ui2,
-    );
-    let saved = load(&st, "change-20261020-x", "base123");
-    let failure = saved.last_test_failure.clone().expect("占位文案必须进上下文");
-    assert_eq!(failure.round, 1);
-    assert_eq!(
-        failure.issues,
-        vec![PLACEHOLDER_ISSUE.to_string()],
-        "占位文案作为一条 issue 原样入上下文"
-    );
-
-    // 送达面：逐字送进 kickoff
-    let kick = coding_kickoff(&ctx, saved.last_test_failure.as_ref());
+    let err = prod
+        .run_testing(&mut ui)
+        .expect_err("空箱回注不得被当成 RouteCoding 收下");
+    let msg = err.to_string();
     assert!(
-        kick.contains(PLACEHOLDER_ISSUE),
-        "占位文案必须逐字送进 kickoff：{kick}"
+        msg.contains("未给出 issues 明细"),
+        "错误文本要说明缺的是 issues 明细: {msg}"
     );
     assert!(
-        kick.contains(FAILURE_BLOCK_TITLE),
-        "占位文案照样走标题行送达块：{kick}"
+        !msg.contains(PLACEHOLDER_ISSUE),
+        "空箱不得被合成占位文案: {msg}"
+    );
+    assert!(
+        err.is_quality_failure(),
+        "连续空箱是质量失败（不自动重启）: {msg}"
     );
 }
 
