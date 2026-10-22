@@ -1,0 +1,108 @@
+{
+  "script": "test_26_change_e2e",
+  "checks": [
+    {
+      "name": "change 六件套夹具加载",
+      "ok": true,
+      "detail": "['change-plan-agent', 'change-plan-review', 'change-coding-agent', 'change-coding-review', 'change-test-agent', 'change-test-review']"
+    },
+    {
+      "name": "change 三个干活 agent 的 extra_packages 不被清空（ask 包要留着）",
+      "ok": true,
+      "detail": "{'change-plan-agent': ['npm:@juicesharp/rpiv-ask-user-question'], 'change-plan-review': [], 'change-coding-agent': ['npm:@juicesharp/rpiv-ask-user-question', 'npm:@juicesharp/rpiv-todo', 'npm:pi-lens'], 'change-coding-review': [], 'change-test-agent': ['npm:@juicesharp/rpiv-ask-user-question', 'npm:@juicesharp/rpiv-todo', 'npm:pi-lens'], 'change-test-review': []}"
+    },
+    {
+      "name": "PUT manifest（+change 六件套）== 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "15 profile 渲染完成（含 change 六件套）",
+      "ok": true,
+      "detail": "{'rendered': 15, 'type': 'config.rendered'}"
+    },
+    {
+      "name": "change-plan-agent 渲染出 models.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "change-plan-review 渲染出 models.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "change-coding-agent 渲染出 models.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "change-coding-review 渲染出 models.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "change-test-agent 渲染出 models.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "change-test-review 渲染出 models.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "change-plan-agent profile 带 ask 包（问询环的供给层）",
+      "ok": true,
+      "detail": "['npm:@juicesharp/rpiv-ask-user-question']"
+    },
+    {
+      "name": "fixture 基线测试绿",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "项目创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "任务 c1（sop=change）创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "requirement.md 落任务黑板",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "start change == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "SSE 出现 ui.request（2 个）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "应答数与请求数对齐（应答 2 / 请求 2）",
+      "ok": true,
+      "detail": "['ui-1', 'ui-2']"
+    },
+    {
+      "name": "每条应答都对应一个真实的 ui.request",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "run 终态 Settled（16min）",
+      "ok": false,
+      "detail": "final=Failed"
+    }
+  ],
+  "issues": [],
+  "passed": 19,
+  "failed": 1
+}

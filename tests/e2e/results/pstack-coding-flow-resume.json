@@ -1,0 +1,33 @@
+{
+  "script": "pstack-coding-flow-resume",
+  "checks": [
+    {
+      "name": "项目重建（同名同路径）",
+      "ok": true,
+      "detail": "status=201, body={'name': 'devforge-self', 'local_path': '/home/trtyr/code-work/devforge', 'created_at_ms': 1792511625707}"
+    },
+    {
+      "name": "任务重建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "start（续跑）== 202",
+      "ok": true,
+      "detail": "status=202, body={'note': None, 'resumed': True, 'sop': 'change'}"
+    },
+    {
+      "name": "断点认账 resumed=true",
+      "ok": true,
+      "detail": "{'note': None, 'resumed': True, 'sop': 'change'}"
+    },
+    {
+      "name": "run 终态（Settled）",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "issues": [],
+  "passed": 5,
+  "failed": 0
+}

@@ -1,0 +1,93 @@
+{
+  "script": "test_25_fault_retry",
+  "checks": [
+    {
+      "name": "故障代理就绪 :43849（静默间隔规则，GAP=120s）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "PUT 剥包 manifest == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "profile 渲染完成",
+      "ok": true,
+      "detail": "{'rendered': 9, 'type': 'config.rendered'}"
+    },
+    {
+      "name": "doc-review baseUrl 已指向故障代理",
+      "ok": true,
+      "detail": "http://127.0.0.1:43849/v1"
+    },
+    {
+      "name": "项目创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "任务创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "start == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "run 终态 Settled（2860s）",
+      "ok": true,
+      "detail": "final=Settled"
+    },
+    {
+      "name": "观测到 run.retry 事件（1 次）",
+      "ok": true,
+      "detail": "[{'attempt': 2, 'project': 'fault-app', 'run_id': 'f57ec5f8-a43d-42a3-aa03-1d8c9aa93022', 'task': 'd1', 'type': 'run.retry'}]"
+    },
+    {
+      "name": "retry 事件 attempt 递增到 2",
+      "ok": true,
+      "detail": "[{'attempt': 2, 'project': 'fault-app', 'run_id': 'f57ec5f8-a43d-42a3-aa03-1d8c9aa93022', 'task': 'd1', 'type': 'run.retry'}]"
+    },
+    {
+      "name": "黑板 state.json attempt==2（重启落盘）",
+      "ok": true,
+      "detail": "attempt=2"
+    },
+    {
+      "name": "两单元文档齐全（7 篇）",
+      "ok": true,
+      "detail": "['alpha/__init__.py.md', 'alpha/a.py.alpha_sum.md', 'alpha/a.py.md', 'beta/__init__.py.md', 'beta/b.py.beta_count.md', 'beta/b.py.md', 'runbook.md']"
+    },
+    {
+      "name": "运行账单存在",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "report.md 记录尝试次数（尝试: 2）",
+      "ok": true,
+      "detail": "['- 尝试: 2（1 = 首次；>1 含自动重启）']"
+    },
+    {
+      "name": "代理注入了故障（16 次 500）",
+      "ok": true,
+      "detail": "至少耗尽一轮实例重试"
+    },
+    {
+      "name": "代理已切换放行（静默触发）",
+      "ok": true,
+      "detail": "重启后审查走通"
+    },
+    {
+      "name": "代理透传真上游 76 次",
+      "ok": true,
+      "detail": "重启后审查走通"
+    }
+  ],
+  "issues": [],
+  "passed": 17,
+  "failed": 0
+}
