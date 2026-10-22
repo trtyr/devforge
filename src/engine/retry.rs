@@ -271,20 +271,8 @@ mod log_capture_tests {
     //! ③ 尝试耗尽时少一条 `run.attempt_exhausted`（或次数字段错）。
 
     use super::*;
-    use std::sync::Mutex;
 
-    /// 跑一段闭包并把 JSONL 日志收进临时文件，返回日志全文。
-    fn capture_jsonl(f: impl FnOnce()) -> String {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("out.jsonl");
-        let file = std::fs::File::create(&path).unwrap();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .with_writer(Mutex::new(file))
-            .finish();
-        tracing::subscriber::with_default(subscriber, f);
-        std::fs::read_to_string(&path).unwrap()
-    }
+    use crate::observability::test_support::capture_jsonl;
 
     #[test]
     fn infra_failures_are_logged_as_error_with_the_full_error_text() {
@@ -343,13 +331,15 @@ mod log_capture_tests {
     #[test]
     fn the_retry_layer_updates_the_run_context_attempt() {
         // 错实现形态：重试层不更新 run 上下文 → `map_intervention` 读到的 attempt 不是本次的
-        crate::observability::begin_run("run-attempt", "coding");
+        let id = "run-attempt";
+        crate::observability::begin_run(id, "coding");
         let (_result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), |_| {
             Err(DevforgeError::System("挂了".into()))
         });
         assert_eq!(attempts, 4);
         let snap = crate::observability::current().expect("run 上下文应存在");
         assert_eq!(snap.attempt, 4, "run 上下文的 attempt 应与本次尝试一致");
-        crate::observability::end_run();
+        assert_eq!(crate::observability::attempt(), 4, "attempt 读取口应给同一个值");
+        crate::observability::end_run(id);
     }
 }

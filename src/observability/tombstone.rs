@@ -37,17 +37,18 @@ impl HookHandle {
     }
 }
 
-/// 安装 panic hook：panic 时写墓碑，然后**链回**上一个 hook。
+/// 安装 panic hook：panic 时写墓碑到 `root`，然后**链回**上一个 hook。
 ///
+/// `root` = 观测根（由调用方解析好；写不进去 → 降级，不 panic）。
 /// 返回句柄（装完要还原时用 [`HookHandle::restore`]）。
-pub fn install_hook() -> HookHandle {
+pub fn install_hook(root: std::path::PathBuf) -> HookHandle {
     let previous = std::panic::take_hook();
     let slot = Arc::new(Mutex::new(Some(previous)));
     let chained = slot.clone();
     std::panic::set_hook(Box::new(move |info| {
         // 墓碑写入永不 panic：失败只记一行 stderr（catch_unwind 兜底二次 panic）
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Err(e) = write_tombstone(&super::root(), info) {
+            if let Err(e) = write_tombstone(&root, info) {
                 eprintln!("[observability] 墓碑写入失败（已降级）：{e}");
             }
         }));
@@ -120,7 +121,6 @@ mod tests {
     fn tombstone_records_panic_text_and_location_and_chains_the_previous_hook() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let dir = tempfile::tempdir().unwrap();
-        super::super::set_root(dir.path());
         // 先装一个「上一个 hook」：它的副作用（置位）必须仍然发生 → 证链回语义
         let original = std::panic::take_hook();
         let called = Arc::new(AtomicBool::new(false));
@@ -128,7 +128,7 @@ mod tests {
         std::panic::set_hook(Box::new(move |_| {
             flag.store(true, Ordering::SeqCst);
         }));
-        let handle = install_hook();
+        let handle = install_hook(dir.path().to_path_buf());
         let result = std::panic::catch_unwind(|| {
             panic!("boom-{}", 42);
         });
@@ -173,7 +173,7 @@ mod tests {
         let unwritable = dir.path().join("not-a-dir");
         std::fs::write(&unwritable, b"x").unwrap();
         let original = std::panic::take_hook();
-        let handle = install_hook();
+        let handle = install_hook(unwritable.clone());
         let result = std::panic::catch_unwind(|| {
             panic!("boom-unwritable");
         });
@@ -184,6 +184,31 @@ mod tests {
         assert!(
             !unwritable.join("tombstones").exists(),
             "写不进去时不应留下半成品目录"
+        );
+    }
+
+    #[test]
+    fn tombstone_uses_a_placeholder_run_id_when_no_run_is_active() {
+        // 错实现形态：无活动 run 时不写墓碑（证据丢失）→ 本用例必须变红
+        let dir = tempfile::tempdir().unwrap();
+        // 本线程没有活动 run（线程级归属）→ 墓碑用占位 run id
+        let original = std::panic::take_hook();
+        let handle = install_hook(dir.path().to_path_buf());
+        let result = std::panic::catch_unwind(|| {
+            panic!("boom-no-run");
+        });
+        assert!(result.is_err());
+        handle.restore();
+        std::panic::set_hook(original);
+        let dir_entries: Vec<PathBuf> = std::fs::read_dir(dir.path().join("tombstones"))
+            .expect("墓碑目录应存在")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        assert_eq!(dir_entries.len(), 1, "无活动 run 也要留墓碑：{dir_entries:?}");
+        let text = std::fs::read_to_string(&dir_entries[0]).unwrap();
+        assert!(
+            text.contains(&format!("run_id: {NO_RUN}")),
+            "无活动 run 时用占位 run id：{text}"
         );
     }
 

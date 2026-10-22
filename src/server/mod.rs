@@ -1037,7 +1037,7 @@ impl BuiltinRpcEngine {
             tracing::warn!(
                 component,
                 event = "run.attempt_failed",
-                attempt = crate::observability::current().map(|s| s.attempt).unwrap_or(0),
+                attempt = crate::observability::attempt(),
                 error = %e,
                 error_chain = %error_chain,
                 retryable = false,
@@ -2102,14 +2102,8 @@ mod coding_engine_tests {
         // 错实现形态：①质量失败落 ERROR（应 WARN）②缺 `error_chain` / `attempt` / `retryable`
         // ③只留既有那条无字段的 WARN → 本用例必须变红
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("out.jsonl");
-        let file = std::fs::File::create(&path).unwrap();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .with_writer(std::sync::Mutex::new(file))
-            .finish();
         let engine = f1_engine(dir.path().join("profiles"), PathBuf::from("/tmp"));
-        tracing::subscriber::with_default(subscriber, || {
+        let text = crate::observability::test_support::capture_jsonl(|| {
             let outcome = engine
                 .map_intervention(
                     &RunControl::new(),
@@ -2122,7 +2116,6 @@ mod coding_engine_tests {
                 "质量失败仍是明确的 Failed（不重启）"
             );
         });
-        let text = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = text
             .lines()
             .filter(|l| l.contains("run.attempt_failed"))

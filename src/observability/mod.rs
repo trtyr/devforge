@@ -1,16 +1,17 @@
 //! 可观测性（plan 010 · F6 靶）：run 上下文 + 观测根解析 + 心跳/墓碑的公共面。
 //!
 //! 三件交付物共用这一层的词汇：
-//! - **run 上下文**（run id / 阶段 / 步骤 / attempt）：进程级单例。MVP 是串行执行
-//!   （同一时刻只有一个 run），故这里不做并发隔离（将来并发化时两个 run 的上下文会互相覆盖，
-//!   登记为遗留）。
+//! - **run 上下文**（run id / 阶段 / 步骤 / attempt）：当前线程的 run 归属 + 进程级的快照表。
+//!   MVP 是串行执行（同一时刻只有一个 run），故线程级归属足够；快照表让**别的线程**
+//!   （watchdog 线程、panic hook）也能读到「当前阶段」。
 //! - **观测根**（root）：心跳与墓碑都落它下面。解析顺序（Q4）：
 //!   **进程内注入**（单测用）> `DEVFORGE_HOME` > `HOME/.devforge`（生产默认）。
 //! - **里程碑字段**：由各调用点**内联**写 `tracing::info!`——`tracing` 的 `target` 必须是
 //!   发出它的模块，包装函数会让所有里程碑共用同一个 target，「按 target 过滤」这条需求直接作废。
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 use crate::error::DevforgeError;
@@ -28,114 +29,147 @@ pub struct RunSnapshot {
     pub attempt: u32,
 }
 
-/// 进程级状态（run 上下文 + 角色计数 + 注入的观测根）。
-#[derive(Default)]
-struct ObsState {
-    run: Option<RunSnapshot>,
-    /// 角色内审查轮次计数（key = 角色名；change 侧拿不到共享门的实例数，Q6/R21）。
+/// 进程级的 run 快照表（run id → 快照）。
+///
+/// 为什么要一张表：watchdog 线程与 panic hook 在**别的线程**上跑，
+/// 它们要读「这次 run 走到哪个阶段了」——线程级上下文看不到，得从表里取。
+static RUNS: OnceLock<Mutex<HashMap<String, RunSnapshot>>> = OnceLock::new();
+
+fn runs() -> &'static Mutex<HashMap<String, RunSnapshot>> {
+    RUNS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 当前线程的 run 归属。
+#[derive(Debug, Default)]
+struct LocalState {
+    /// 当前线程正在跑的 run id（无 = 不在这个 run 里）。
+    run_id: Option<String>,
+    /// 当前线程的尝试次数（重试层与 `map_intervention` 同线程 → 读到的是同一个值）。
+    attempt: u32,
+    /// 角色内审查轮次计数（key = 角色名）。
     review_rounds: HashMap<String, u32>,
-    /// 注入的观测根（None = 按 `DEVFORGE_HOME` / `HOME` 解析）。
-    root: Option<PathBuf>,
-    /// 上次刷心跳的时刻（低频兜底的节流）。
-    last_touch_ms: u64,
 }
 
-fn state() -> &'static Mutex<ObsState> {
-    static STATE: OnceLock<Mutex<ObsState>> = OnceLock::new();
-    STATE.get_or_init(|| Mutex::new(ObsState::default()))
+thread_local! {
+    static LOCAL: RefCell<LocalState> = RefCell::new(LocalState::new());
 }
 
-/// 置位 run 上下文（run 开始）：同时清零角色内审查轮次计数。
+impl LocalState {
+    fn new() -> Self {
+        Self {
+            run_id: None,
+            attempt: 0,
+            review_rounds: HashMap::new(),
+        }
+    }
+}
+
+/// 置位 run 上下文（run 开始，在 run 线程上调用）：登记快照并清零角色内审查轮次计数。
 pub fn begin_run(run_id: &str, phase: &str) {
-    let mut st = state().lock().expect("observability 状态锁");
-    st.run = Some(RunSnapshot {
+    let snap = RunSnapshot {
         run_id: run_id.to_string(),
         phase: phase.to_string(),
         step: String::new(),
         attempt: 1,
+    };
+    runs().lock().expect("observability 快照表锁").insert(run_id.to_string(), snap);
+    LOCAL.with(|l| {
+        let mut l = l.borrow_mut();
+        l.run_id = Some(run_id.to_string());
+        l.attempt = 1;
+        l.review_rounds.clear();
     });
-    st.review_rounds.clear();
-    st.last_touch_ms = 0;
-    drop(st);
-    touch();
+    write_heartbeat(run_id);
 }
 
 /// 清位 run 上下文（run 结束）：**心跳文件保留**最后一次状态（不删——那是死亡现场的证据）。
-pub fn end_run() {
-    let mut st = state().lock().expect("observability 状态锁");
-    st.run = None;
-    st.review_rounds.clear();
+pub fn end_run(run_id: &str) {
+    runs().lock().expect("observability 快照表锁").remove(run_id);
+    LOCAL.with(|l| {
+        let mut l = l.borrow_mut();
+        if l.run_id.as_deref() == Some(run_id) {
+            l.run_id = None;
+        }
+    });
 }
 
 /// 更新阶段（编排层阶段转换时调用；顺带刷心跳）。
-pub fn set_phase(phase: &str) {
+pub fn set_phase(run_id: &str, phase: &str) {
     {
-        let mut st = state().lock().expect("observability 状态锁");
-        if let Some(run) = st.run.as_mut() {
-            run.phase = phase.to_string();
-        } else {
+        let mut table = runs().lock().expect("observability 快照表锁");
+        let Some(snap) = table.get_mut(run_id) else {
             return;
-        }
+        };
+        snap.phase = phase.to_string();
     }
-    touch();
+    write_heartbeat(run_id);
 }
 
 /// 更新步骤（阶段内更细的一格）。
-pub fn set_step(step: &str) {
-    {
-        let mut st = state().lock().expect("observability 状态锁");
-        let Some(run) = st.run.as_mut() else {
-            return;
-        };
-        run.step = step.to_string();
-    }
-    touch();
+pub fn set_step(run_id: &str, step: &str) {
+    let mut table = runs().lock().expect("observability 快照表锁");
+    let Some(snap) = table.get_mut(run_id) else {
+        return;
+    };
+    snap.step = step.to_string();
 }
 
-/// 更新尝试次数（重试层每次尝试更新；`map_intervention` 从同一处读，两处字段才同构）。
+/// 更新尝试次数（重试层每次尝试更新；`map_intervention` 从同一线程读同一个值 → 两处字段同构）。
 pub fn set_attempt(attempt: u32) {
-    let mut st = state().lock().expect("observability 状态锁");
-    if let Some(run) = st.run.as_mut() {
-        run.attempt = attempt;
+    LOCAL.with(|l| l.borrow_mut().attempt = attempt);
+    let run_id = LOCAL.with(|l| l.borrow().run_id.clone());
+    if let Some(id) = run_id {
+        let mut table = runs().lock().expect("observability 快照表锁");
+        if let Some(snap) = table.get_mut(&id) {
+            snap.attempt = attempt;
+        }
     }
+}
+
+/// 当前线程的尝试次数（无 run 上下文 = 0）。
+pub fn attempt() -> u32 {
+    LOCAL.with(|l| l.borrow().attempt)
 }
 
 /// 当前 run 快照（无活动 run = `None`）。
 pub fn current() -> Option<RunSnapshot> {
-    let st = state().lock().expect("observability 状态锁");
-    st.run.clone()
+    let id = LOCAL.with(|l| l.borrow().run_id.clone())?;
+    runs().lock().expect("observability 快照表锁").get(&id).cloned()
 }
 
 /// 角色内审查轮次（1-based）：同一角色在本次 run 内第几次开庭。
 ///
 /// change 侧的 `review_once` 恒传 `base_round=0`（共享门返回的实例数是**返回值**，调用前拿不到），
-/// 故按 `(run, role)` 计数（R21）。
+/// 故按角色计数（R21）。
 pub fn next_review_round(role: &str) -> u32 {
-    let mut st = state().lock().expect("observability 状态锁");
-    let counter = st.review_rounds.entry(role.to_string()).or_insert(0);
-    *counter += 1;
-    *counter
+    LOCAL.with(|l| {
+        let mut l = l.borrow_mut();
+        let counter = l.review_rounds.entry(role.to_string()).or_insert(0);
+        *counter += 1;
+        *counter
+    })
 }
 
 /// 低频兜底刷新的节流间隔（毫秒）：watchdog 每 300ms 一跳，心跳不必跟着每跳写盘。
 pub const HEARTBEAT_REFRESH_MS: u64 = 1_000;
 
-/// 刷心跳（无活动 run 时**不写**；低频兜底由 watchdog 调用，节流到
-/// [`HEARTBEAT_REFRESH_MS`] 一次——阶段/步骤变化走 `set_phase`/`set_step`，不受节流）。
-pub fn touch() {
-    let snap = {
-        let st = state().lock().expect("observability 状态锁");
-        st.run.clone()
+/// 各 run 的上次刷心跳时刻（节流用）。
+static LAST_TOUCH: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+
+fn last_touch() -> &'static Mutex<HashMap<String, u64>> {
+    LAST_TOUCH.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 写心跳（无该 run 的快照时不写）。
+pub fn write_heartbeat(run_id: &str) {
+    let Some(snap) = runs()
+        .lock()
+        .expect("observability 快照表锁")
+        .get(run_id)
+        .cloned()
+    else {
+        return;
     };
-    let Some(snap) = snap else { return };
-    let now = crate::domain::now_ms();
-    {
-        let mut st = state().lock().expect("observability 状态锁");
-        if now.saturating_sub(st.last_touch_ms) < HEARTBEAT_REFRESH_MS {
-            return;
-        }
-        st.last_touch_ms = now;
-    }
     let root = root();
     if let Err(e) = heartbeat::write(&root, &snap) {
         // 刷心跳失败不打断 run（best-effort）：只在 debug 里留痕
@@ -143,15 +177,35 @@ pub fn touch() {
     }
 }
 
+/// 低频兜底刷新（watchdog 调用）：节流到 [`HEARTBEAT_REFRESH_MS`] 一次
+/// ——阶段/步骤变化走 `set_phase`/`set_step`，不受节流。
+pub fn touch_run(run_id: &str) {
+    let now = crate::domain::now_ms();
+    {
+        let mut table = last_touch().lock().expect("observability 节流锁");
+        let last = table.get(run_id).copied().unwrap_or(0);
+        if now.saturating_sub(last) < HEARTBEAT_REFRESH_MS {
+            return;
+        }
+        table.insert(run_id.to_string(), now);
+    }
+    write_heartbeat(run_id);
+}
+
 /// 注入观测根（单测用；生产由 `DEVFORGE_HOME` / `HOME/.devforge` 解析）。
 pub fn set_root(root: impl Into<PathBuf>) {
-    let mut st = state().lock().expect("observability 状态锁");
-    st.root = Some(root.into());
+    let mut slot = root_slot().lock().expect("observability 根锁");
+    *slot = Some(root.into());
+}
+
+fn root_slot() -> &'static Mutex<Option<PathBuf>> {
+    static SLOT: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
 }
 
 /// 解析观测根：进程内注入 > `DEVFORGE_HOME` > `HOME/.devforge`。
 pub fn root() -> PathBuf {
-    if let Some(r) = state().lock().expect("observability 状态锁").root.clone() {
+    if let Some(r) = root_slot().lock().expect("observability 根锁").clone() {
         return r;
     }
     resolve_root(
@@ -190,6 +244,64 @@ pub mod heartbeat;
 /// 死亡取证（panic 墓碑）。
 pub mod tombstone;
 
+/// 测试支撑：把一段闭包里的 tracing 日志收成 JSONL 全文（行为断言核对「日志面」用）。
+///
+/// **为什么用全局订阅器 + 线程级缓冲**：`tracing` 的 callsite 兴趣是**全局缓存**的
+/// （第一次求值时定型，之后不再变）。用线程级 `with_default` 捕获时，别的用例先跑过
+/// 同一个 callsite 就会把它缓存成「永不记录」→ 捕获器随机收不到（并行测试下必现）。
+/// 故：全局装一个订阅器（所有 callsite 恒为 interested），日志按**线程**分流进各自的缓冲，
+/// 捕获时只取本线程的缓冲 → 既不受别的用例干扰，也不串味。
+#[cfg(test)]
+pub mod test_support {
+    use std::cell::RefCell;
+    use std::sync::Once;
+
+    thread_local! {
+        /// 本线程的日志缓冲（JSONL 文本）。
+        static BUFFER: RefCell<String> = const { RefCell::new(String::new()) };
+    }
+
+    /// 写进本线程缓冲的 writer（全局订阅器的落盘口）。
+    struct ThreadBufferWriter;
+
+    impl std::io::Write for ThreadBufferWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            BUFFER.with(|b| b.borrow_mut().push_str(&String::from_utf8_lossy(buf)));
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ThreadBufferWriter {
+        type Writer = ThreadBufferWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            ThreadBufferWriter
+        }
+    }
+
+    /// 装全局订阅器（进程内一次；callsite 恒为 interested → 不会因别的用例先跑而变死）。
+    pub fn install() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let subscriber = tracing_subscriber::fmt()
+                .json()
+                .with_writer(ThreadBufferWriter)
+                .finish();
+            let _ = tracing::subscriber::set_global_default(subscriber);
+        });
+    }
+
+    /// 跑一段闭包并返回**本线程**的 JSONL 日志全文。
+    pub fn capture_jsonl(f: impl FnOnce()) -> String {
+        install();
+        BUFFER.with(|b| b.borrow_mut().clear());
+        f();
+        BUFFER.with(|b| b.borrow().clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,28 +334,41 @@ mod tests {
 
     #[test]
     fn run_context_carries_phase_step_and_attempt() {
-        begin_run("run-1", "coding");
-        set_phase("testing");
-        set_step("review:change-plan-review");
+        let id = "run-ctx-1";
+        begin_run(id, "coding");
+        set_phase(id, "testing");
+        set_step(id, "review:change-plan-review");
         set_attempt(3);
         let snap = current().expect("run 上下文应存在");
-        assert_eq!(snap.run_id, "run-1");
+        assert_eq!(snap.run_id, id);
         assert_eq!(snap.phase, "testing");
         assert_eq!(snap.step, "review:change-plan-review");
         assert_eq!(snap.attempt, 3);
-        end_run();
+        assert_eq!(attempt(), 3, "attempt 从同一处读");
+        end_run(id);
         assert!(current().is_none(), "run 结束后上下文应清位");
     }
 
     #[test]
+    fn run_context_is_scoped_to_the_current_thread() {
+        // 错实现形态：run 上下文是进程级单例（别的线程/别的 run 会串扰）→ 本用例必须变红
+        let id = "run-ctx-2";
+        begin_run(id, "plan");
+        let other = std::thread::spawn(|| current().is_none()).join().unwrap();
+        assert!(other, "别的线程不该看到本线程的 run 上下文");
+        end_run(id);
+    }
+
+    #[test]
     fn review_round_counts_per_role_and_resets_per_run() {
-        begin_run("run-1", "plan");
+        let id = "run-ctx-3";
+        begin_run(id, "plan");
         assert_eq!(next_review_round("change-plan-review"), 1);
         assert_eq!(next_review_round("change-plan-review"), 2);
         assert_eq!(next_review_round("change-coding-review"), 1);
-        begin_run("run-2", "plan");
+        begin_run(id, "plan");
         assert_eq!(next_review_round("change-plan-review"), 1, "新 run 的计数从 1 起");
-        end_run();
+        end_run(id);
     }
 
     #[test]
