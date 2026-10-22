@@ -233,6 +233,12 @@ pub async fn start_task(
     let decision =
         crate::runstate::resume::start_gate(&st.plans_root, &project, &task, &sop_name, fresh)
             .map_err(ApiError::from)?;
+    // 渲染闸门（用户裁决 A）：开跑前等「本 run 所需 profile 的 settings.json 落盘」
+    // 或「渲染结束」——等的是 awaitable 原语，不占 tokio worker（其它端点照常被处理）。
+    let required = crate::server::BuiltinRpcEngine::profiles_for_sop(&sop_name);
+    st.render_gate
+        .wait_for_profiles(&st.profiles_root, required)
+        .await;
     let engine = (st.engine_factory)();
     std::thread::spawn(move || run_in_background(st, project, task, engine));
     Ok((
@@ -379,22 +385,34 @@ pub async fn put_manifest(
         }
     }
     let agents = st.manifest.lock().expect("manifest 锁").agents.len();
+    // 渲染闸门：登记「渲染在途」——`start` 端点据此等本 run 所需 profile 就绪
+    // （用户裁决 A：开跑前等 profile 就绪，而不是开跑后被门卫判成「未渲染」而盲重启）
+    st.render_gate.begin_render();
     let st2 = st.clone();
     std::thread::spawn(move || {
-        let m = st2.manifest.lock().expect("manifest 锁").clone();
-        let renderer = crate::config::Renderer {
-            manifest: &m,
-            installer: st2.installer.as_ref(),
-            skills_source: None,
-        };
-        match renderer.render_all(&st2.profiles_root) {
-            Ok(rendered) => {
+        // 渲染线程异常也要释放闸门（否则 start 会一直等）——故把渲染包在 catch_unwind 里
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let m = st2.manifest.lock().expect("manifest 锁").clone();
+            let renderer = crate::config::Renderer {
+                manifest: &m,
+                installer: st2.installer.as_ref(),
+                skills_source: None,
+            };
+            renderer.render_all(&st2.profiles_root)
+        }));
+        match outcome {
+            Ok(Ok(rendered)) => {
                 st2.emit(json!({"type": "config.rendered", "rendered": rendered.len()}));
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 st2.emit(json!({"type": "config.render_failed", "error": e.to_string()}));
             }
+            Err(_) => {
+                st2.emit(json!({"type": "config.render_failed", "error": "渲染线程异常终止"}));
+            }
         }
+        // 渲染结束（成功/失败都算）→ 广播，等着的 start 请求不再等
+        st2.render_gate.end_render();
     });
     Ok((
         StatusCode::ACCEPTED,

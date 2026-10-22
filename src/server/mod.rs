@@ -246,6 +246,22 @@ impl RunEngine for BuiltinRpcEngine {
 }
 
 impl BuiltinRpcEngine {
+    /// 每个 SOP 需要的 profile（**唯一事实源**：门卫与渲染闸门读同一张表——清单只有一份，不会漂移）。
+    ///
+    /// change 一项**引用** `change_engine::CHANGE_PROFILES`（那个文件不属本变更、不进白名单，
+    /// 但事实源仍是它，不在这里另抄一份）。
+    pub fn profiles_for_sop(sop: &str) -> &'static [&'static str] {
+        match sop {
+            "planning" => &["plan-agent", "plan-review"],
+            "coding" => &["coding-agent", "coding-review"],
+            "testing" => &["test-agent", "test-review"],
+            "doc-from-zero" => &["doc-agent", "doc-review"],
+            "doc-fix" => &["doc-fix", "doc-review"],
+            "change" => &crate::server::change_engine::CHANGE_PROFILES,
+            _ => &[],
+        }
+    }
+
     /// F1 修复（e2e F1-MISSING-PROFILE-HANG）：spawn 前校验目标 profile 已渲染——
     /// 目录存在且含 settings.json（渲染器必然写出的最小标记）。缺失 → 立即报错
     /// （run 将 Failed，错误指明缺失路径），杜绝真 pi 以空 agent-dir 启动后挂
@@ -268,8 +284,9 @@ impl BuiltinRpcEngine {
 
     fn run_planning(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
         // F1：spawn 前门卫（agent + review 双角色），缺失即快速失败
-        self.require_profile("plan-agent")?;
-        self.require_profile("plan-review")?;
+        for p in Self::profiles_for_sop("planning") {
+            self.require_profile(p)?;
+        }
         // P8-ISSUE-04 修复：子进程工作目录 = plans/<项目>/<任务>/（decisions/002）
         let working_dir = self.plans_root.join(&task.project).join(&task.id);
         std::fs::create_dir_all(&working_dir).ctx("创建 plan root 目录")?;
@@ -326,8 +343,9 @@ impl BuiltinRpcEngine {
     /// 编码 SOP（P005）：黑板骨架 + CodeGraph 预检 + CodingSopLoop。
     fn run_coding(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
         // F1：spawn 前门卫（agent + review 双角色），缺失即快速失败——先于一切副作用
-        self.require_profile("coding-agent")?;
-        self.require_profile("coding-review")?;
+        for p in Self::profiles_for_sop("coding") {
+            self.require_profile(p)?;
+        }
         if task.workspace.as_os_str().is_empty() {
             return Err(crate::error::DevforgeError::Store(format!(
                 "任务 `{}/{}` 无代码工作区（项目登记的 local_path 为空），编码 SOP 需要项目地址",
@@ -400,8 +418,9 @@ impl BuiltinRpcEngine {
     /// doc-from-zero SOP（P008）：门 0（清单 + 闭包 + 单元）→ DocSopLoop 逐单元滚动。
     fn run_doc_from_zero(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
         let started = std::time::Instant::now();
-        self.require_profile("doc-agent")?;
-        self.require_profile("doc-review")?;
+        for p in Self::profiles_for_sop("doc-from-zero") {
+            self.require_profile(p)?;
+        }
         if task.workspace.as_os_str().is_empty() {
             return Err(crate::error::DevforgeError::Store(format!(
                 "任务 `{}/{}` 无代码工作区，doc-from-zero 需要项目地址",
@@ -809,8 +828,9 @@ impl BuiltinRpcEngine {
     /// 测试 SOP（P007）：testing/ 骨架 + TestingSopLoop（doc-side 移交时编排 doc-fix 子 SOP，D004）。
     fn run_testing(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
         // F1：spawn 前门卫（agent + review 双角色），缺失即快速失败——先于一切副作用
-        self.require_profile("test-agent")?;
-        self.require_profile("test-review")?;
+        for p in Self::profiles_for_sop("testing") {
+            self.require_profile(p)?;
+        }
         if task.workspace.as_os_str().is_empty() {
             return Err(crate::error::DevforgeError::Store(format!(
                 "任务 `{}/{}` 无代码工作区，测试 SOP 需要项目地址（写测 + 起被测系统）",
@@ -929,8 +949,9 @@ impl BuiltinRpcEngine {
     /// 文档修补 SOP（P007 D004）：testing/ 骨架 + DocFixSopLoop（doc-review 内置审查）。
     fn run_doc_fix(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
         // F1：spawn 前门卫（agent + review 双角色），缺失即快速失败——先于一切副作用
-        self.require_profile("doc-fix")?;
-        self.require_profile("doc-review")?;
+        for p in Self::profiles_for_sop("doc-fix") {
+            self.require_profile(p)?;
+        }
         if task.workspace.as_os_str().is_empty() {
             return Err(crate::error::DevforgeError::Store(format!(
                 "任务 `{}/{}` 无代码工作区，doc-fix triage 需要读代码核实事实",
@@ -1034,6 +1055,85 @@ impl BuiltinRpcEngine {
 
 // ---------- 服务器状态与路由 ----------
 
+/// 渲染闸门（用户裁决 A）：清单重渲染在途时，`start` 端点等「本 run 所需 profile 的
+/// `settings.json` 落盘」或「渲染结束」再开跑。
+///
+/// - 事实源：闸门与门卫读**同一张** per-SOP profile 表（[`BuiltinRpcEngine::profiles_for_sop`]），
+///   清单只有一份，不会漂移；
+/// - 等待是 **awaitable** 的（watch 通知 + 短间隔复查），**不占** tokio worker
+///   （不得用 `std::thread::sleep` 轮询）；
+/// - 闸门只等「所需 profile 的就绪」，**不等整轮渲染**（等整轮会把 `start` 变成分钟级阻塞点）。
+pub struct RenderGate {
+    /// 在途渲染数（>0 = 有渲染在途）。
+    in_flight: Mutex<usize>,
+    /// 渲染完成通知（值 = 已完成代数；每次完成自增 → 订阅者的 `changed()` 会醒）。
+    notify: tokio::sync::watch::Sender<u64>,
+}
+
+impl RenderGate {
+    pub fn new() -> Self {
+        let (tx, _rx) = tokio::sync::watch::channel(0u64);
+        Self {
+            in_flight: Mutex::new(0),
+            notify: tx,
+        }
+    }
+
+    /// 登记一次在途渲染（`PUT /config/manifest` 受理后调用）。
+    pub fn begin_render(&self) {
+        let mut n = self.in_flight.lock().expect("render gate 锁");
+        *n += 1;
+    }
+
+    /// 结束一次渲染（成功/失败都算）并广播。
+    pub fn end_render(&self) {
+        {
+            let mut n = self.in_flight.lock().expect("render gate 锁");
+            *n = n.saturating_sub(1);
+        }
+        self.notify.send_modify(|v| *v += 1);
+    }
+
+    /// 是否有渲染在途。
+    pub fn is_in_flight(&self) -> bool {
+        *self.in_flight.lock().expect("render gate 锁") > 0
+    }
+
+    /// 等「所需 profile 的 `settings.json` 落盘」或「渲染结束」。
+    ///
+    /// 返回即代表「可以开跑」：所需 profile 已就绪（后续门卫复查会过），
+    /// 或渲染已结束（缺 profile 则由门卫明确失败，不再盲重启）。
+    pub async fn wait_for_profiles(&self, profiles_root: &Path, required: &[&str]) {
+        if required.is_empty() {
+            return;
+        }
+        let mut rx = self.notify.subscribe();
+        loop {
+            if !self.is_in_flight() {
+                return; // 渲染不在途 → 直接开跑
+            }
+            if required
+                .iter()
+                .all(|p| profiles_root.join(p).join("settings.json").is_file())
+            {
+                return; // 所需 profile 已就绪 → 不等整轮渲染
+            }
+            // 等「渲染结束」信号，或短间隔后重查就绪状态
+            // （awaitable：不占 tokio worker；不用 std::thread::sleep 轮询）
+            tokio::select! {
+                _ = rx.changed() => return,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+            }
+        }
+    }
+}
+
+impl Default for RenderGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub type SharedState = Arc<ServerState>;
 
 pub struct ServerState {
@@ -1060,6 +1160,8 @@ pub struct ServerState {
     pub sessions_root: PathBuf,
     /// 运行级重试策略（plan 010 T005）：生产默认 10/30/90s；测试注入 fast。
     pub retry_policy: crate::engine::retry::RetryPolicy,
+    /// 渲染闸门（用户裁决 A）：`PUT /config/manifest` 在途时，`start` 端点等所需 profile 就绪。
+    pub render_gate: RenderGate,
 }
 
 impl ServerState {
@@ -1092,6 +1194,7 @@ impl ServerState {
             plans_root,
             sessions_root,
             retry_policy: crate::engine::retry::RetryPolicy::default(),
+            render_gate: RenderGate::new(),
         })
     }
 
@@ -1837,6 +1940,126 @@ mod coding_engine_tests {
             !plans.join("p").join("t").join("testing").exists(),
             "workspace 门也应先于骨架创建"
         );
+    }
+
+    // ---------- 010 F6 靶：per-SOP profile 表（门卫与闸门的唯一事实源） ----------
+
+    #[test]
+    fn profiles_for_sop_is_the_single_source_for_the_gate_and_the_door() {
+        // 错实现形态：闸门另抄一份 profile 清单（改了 SOP 的需求，闸门还在等旧清单）
+        // → 本用例必须变红
+        assert_eq!(
+            BuiltinRpcEngine::profiles_for_sop("planning"),
+            ["plan-agent", "plan-review"].as_slice()
+        );
+        assert_eq!(
+            BuiltinRpcEngine::profiles_for_sop("coding"),
+            ["coding-agent", "coding-review"].as_slice()
+        );
+        assert_eq!(
+            BuiltinRpcEngine::profiles_for_sop("testing"),
+            ["test-agent", "test-review"].as_slice()
+        );
+        assert_eq!(
+            BuiltinRpcEngine::profiles_for_sop("doc-from-zero"),
+            ["doc-agent", "doc-review"].as_slice()
+        );
+        assert_eq!(
+            BuiltinRpcEngine::profiles_for_sop("doc-fix"),
+            ["doc-fix", "doc-review"].as_slice()
+        );
+        assert_eq!(
+            BuiltinRpcEngine::profiles_for_sop("change"),
+            crate::server::change_engine::CHANGE_PROFILES.as_slice()
+        );
+        assert!(
+            BuiltinRpcEngine::profiles_for_sop("unknown-sop").is_empty(),
+            "未知 SOP 没有 profile 需求"
+        );
+    }
+
+    #[test]
+    fn the_door_checks_every_profile_of_the_sop() {
+        // 错实现形态：门卫只查干活 agent（漏掉审查角色）→ 缺审查 profile 也能开跑
+        // → 本用例必须变红
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = dir.path().join("profiles");
+        let agent = profiles.join("coding-agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(agent.join("settings.json"), "{}").unwrap();
+        let mut engine = f1_engine(profiles, dir.path().join("plans"));
+        let task = Task::new("t", "p", "coding", 1);
+        let run = Run::new("p", "t");
+        let control = RunControl::new();
+        let err = engine.execute(&task, &run, &control).unwrap_err();
+        assert!(
+            err.to_string().contains("coding-review"),
+            "审查 profile 缺失也要被门卫拦住：{err}"
+        );
+    }
+
+    // ---------- 010 F6 靶：渲染闸门 ----------
+
+    #[tokio::test]
+    async fn the_gate_waits_for_the_required_profiles_and_ignores_the_rest() {
+        // 错实现形态：闸门不等所需 profile（start 立刻开跑 → 门卫判未渲染 → 盲重启）
+        // 或等整轮渲染（start 变成分钟级阻塞点）→ 本用例必须变红
+        let dir = tempfile::tempdir().unwrap();
+        let gate = std::sync::Arc::new(RenderGate::new());
+        gate.begin_render();
+        let root = dir.path().to_path_buf();
+        let g = gate.clone();
+        let waiter = tokio::spawn(async move {
+            g.wait_for_profiles(&root, &["plan-agent", "plan-review"]).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(!waiter.is_finished(), "所需 profile 未就绪时闸门必须等");
+        // 所需 profile 就绪（其它 profile 仍缺、渲染仍在途）→ 放行
+        for p in ["plan-agent", "plan-review"] {
+            let d = dir.path().join(p);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("settings.json"), "{}").unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("所需 profile 就绪后闸门应放行")
+            .unwrap();
+        assert!(
+            gate.is_in_flight(),
+            "放行不改变渲染在途状态（闸门不等整轮渲染）"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_gate_releases_when_the_render_finishes_even_if_the_profile_is_missing() {
+        // 错实现形态：渲染结束也不放行（start 永远挂着）→ 本用例必须变红
+        let dir = tempfile::tempdir().unwrap();
+        let gate = std::sync::Arc::new(RenderGate::new());
+        gate.begin_render();
+        let root = dir.path().to_path_buf();
+        let g = gate.clone();
+        let waiter = tokio::spawn(async move {
+            g.wait_for_profiles(&root, &["plan-agent"]).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!waiter.is_finished(), "渲染仍在途且 profile 未就绪 → 继续等");
+        gate.end_render();
+        tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("渲染结束后闸门应放行（成败由门卫复查决定）")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_gate_does_not_wait_when_no_render_is_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = RenderGate::new();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            gate.wait_for_profiles(dir.path(), &["plan-agent"]),
+        )
+        .await
+        .expect("无渲染在途时不应等待");
     }
 
     // ---------- 010 F6 靶：原始错误可见 + profile 门卫的错误种类 ----------

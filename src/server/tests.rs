@@ -105,6 +105,9 @@ fn fixture_full(
     quality_fail: bool,
 ) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
+    // 观测根注入到该夹具的临时目录（Q4 路径 ①）：走真实 start 路径的单测把心跳写在这里，
+    // 用户 HOME 的 `.devforge/heartbeat/` 不被写脏。
+    crate::observability::set_root(dir.path().join("observability"));
     let calls = Arc::new(Mutex::new(Vec::new()));
     let calls2 = calls.clone();
     let failures = Arc::new(Mutex::new(fail_system_times));
@@ -237,6 +240,77 @@ async fn start_sop_override_switches_task_for_cross_sop_chain() {
     // 无 body 的 start → 沿用任务注册的 sop（不报错）
     let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t1/start", None).await;
     assert_eq!(resp.status(), 202);
+}
+
+#[tokio::test]
+async fn start_waits_at_the_render_gate_and_releases_when_the_render_finishes() {
+    // 错实现形态：闸门不存在（start 立即开跑 → 门卫判「profile 未渲染」→ 基础设施故障盲重启）
+    // → 本用例必须变红
+    let f = fixture();
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": "/tmp/ws-p"})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t1", "sop": "coding"})),
+    )
+    .await;
+    // 模拟「清单重渲染在途」：登记在途，暂不释放
+    f.state.render_gate.begin_render();
+    let waiting = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        send(&f.router, "POST", "/api/v1/projects/p/tasks/t1/start", None),
+    )
+    .await;
+    assert!(
+        waiting.is_err(),
+        "渲染在途时 start 不得立即开跑（应等闸门放行）"
+    );
+    // 渲染结束 → 闸门放行 → start 立即 202
+    f.state.render_gate.end_render();
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t1/start", None).await;
+    assert_eq!(resp.status(), 202);
+}
+
+#[tokio::test]
+async fn start_returns_immediately_when_the_required_profile_is_ready_even_if_a_render_is_in_flight() {
+    // 错实现形态：闸门等整轮渲染（start 变成分钟级阻塞点）→ 本用例必须变红
+    let f = fixture();
+    for p in ["coding-agent", "coding-review"] {
+        let d = f.state.profiles_root.join(p);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("settings.json"), "{}").unwrap();
+    }
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": "/tmp/ws-p"})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t1", "sop": "coding"})),
+    )
+    .await;
+    // 渲染仍在途，但本 run 所需 profile 已就绪 → 不等整轮渲染
+    f.state.render_gate.begin_render();
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        send(&f.router, "POST", "/api/v1/projects/p/tasks/t1/start", None),
+    )
+    .await
+    .expect("所需 profile 已就绪时 start 不得等整轮渲染");
+    assert_eq!(resp.status(), 202);
+    f.state.render_gate.end_render();
 }
 
 #[tokio::test]
