@@ -239,6 +239,8 @@ fn review_once(
 ) -> Result<(crate::sop::coding_protocol::ReviewReport, usize)> {
     // 「审查开庭」里程碑：在**发起**那一刻落（不是等审完）
     let round = crate::observability::next_review_round(role);
+    // 心跳的步骤字段：审查期间卡在哪个角色（死后据此回答「死在哪一步」）
+    crate::observability::set_step(&format!("review:{role}"));
     tracing::info!(
         component = "change-engine",
         event = "review.open",

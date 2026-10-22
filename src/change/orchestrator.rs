@@ -27,10 +27,10 @@ pub const MAX_PLAN_FIXES: usize = 3;
 ///
 /// 阶段名用 `ChangePhase` 的变体名（plan/coding/testing/done）——与心跳的阶段字段同一套词汇
 /// （事后「里程碑说怎么变的」与「心跳说死在哪个阶段」才对得上号）。
-fn phase_change(run_id: &str, state: &mut ChangeState, to: ChangePhase) {
+fn phase_change(state: &mut ChangeState, to: ChangePhase) {
     let from = state.phase;
     state.phase = to;
-    crate::observability::set_phase(run_id, to.as_str());
+    crate::observability::set_phase(to.as_str());
     tracing::info!(
         component = "change-orchestrator",
         event = "phase.change",
@@ -38,6 +38,17 @@ fn phase_change(run_id: &str, state: &mut ChangeState, to: ChangePhase) {
         to = to.as_str(),
         "change 阶段转换"
     );
+}
+
+/// 修复轮：把「正在做什么」写进心跳的步骤字段
+/// （心跳要能回答「死在哪个环节」，不只「死在哪个阶段」）。
+fn fix_step(state: &ChangeState, kind: &str, round: usize, begin: bool) {
+    let step = if begin {
+        format!("fix:{kind}:{round}")
+    } else {
+        state.phase.as_str().to_string()
+    };
+    crate::observability::set_step(&step);
 }
 
 /// 计划阶段结果。
@@ -163,6 +174,7 @@ pub fn run<S: ChangeSession>(
                 session.run_plan(ui, state.roundtrips)?
             } else {
                 // 计划修复轮：fix.start → 重写计划 → fix.end（含修复轮次）
+                fix_step(&state, "plan", fix_round, true);
                 tracing::info!(
                     component = "change-orchestrator",
                     event = "fix.start",
@@ -170,6 +182,7 @@ pub fn run<S: ChangeSession>(
                     "计划修复轮开始"
                 );
                 let turn = session.fix_plan(ui, &issues, fix_round)?;
+                fix_step(&state, "plan", fix_round, false);
                 tracing::info!(
                     component = "change-orchestrator",
                     event = "fix.end",
@@ -188,7 +201,7 @@ pub fn run<S: ChangeSession>(
                     if !w.is_empty() {
                         whitelist = w;
                     }
-                    phase_change(&run.run_id, &mut state, ChangePhase::Coding);
+                    phase_change(&mut state, ChangePhase::Coding);
                     save(run.store, &state)?;
                     break;
                 }
@@ -215,7 +228,7 @@ pub fn run<S: ChangeSession>(
                 BoundaryVerdict::InBoundary => {
                     // 消费即清：coding 一旦过门，上一轮失败上下文就过期了
                     state.clear_test_failure();
-                    phase_change(&run.run_id, &mut state, ChangePhase::Testing);
+                    phase_change(&mut state, ChangePhase::Testing);
                     save(run.store, &state)?;
                     break;
                 }
@@ -238,6 +251,7 @@ pub fn run<S: ChangeSession>(
                     )?;
                     boundary::merge_gaps_into_whitelist(&mut whitelist, &gaps);
                     // 补边界往返：fix.start → 补计划 → fix.end（含往返轮次）
+                    fix_step(&state, "boundary", state.roundtrips, true);
                     tracing::info!(
                         component = "change-orchestrator",
                         event = "fix.start",
@@ -245,6 +259,7 @@ pub fn run<S: ChangeSession>(
                         "补边界往返开始"
                     );
                     let amend = session.amend_plan(ui, &gaps, state.roundtrips)?;
+                    fix_step(&state, "boundary", state.roundtrips, false);
                     tracing::info!(
                         component = "change-orchestrator",
                         event = "fix.end",
@@ -299,7 +314,7 @@ pub fn run<S: ChangeSession>(
                         summary.missing.join("；")
                     )));
                 }
-                phase_change(&run.run_id, &mut state, ChangePhase::Done);
+                phase_change(&mut state, ChangePhase::Done);
                 // 终态清：收尾不留过期状态
                 state.clear_test_failure();
                 save(run.store, &state)?;
@@ -320,6 +335,7 @@ pub fn run<S: ChangeSession>(
                 // 写入失败上下文（下一轮 coding 的送达面）；超限分支不写——那里没有下一次 coding 轮
                 let round = state.test_reroutes;
                 // 测试→coding 回注：fix.start → 写入送达面 → fix.end（含回注轮次）
+                fix_step(&state, "test-reroute", round, true);
                 tracing::info!(
                     component = "change-orchestrator",
                     event = "fix.start",
@@ -327,8 +343,9 @@ pub fn run<S: ChangeSession>(
                     "测试回注 coding 开始"
                 );
                 state.set_test_failure(round, failures.clone());
-                phase_change(&run.run_id, &mut state, ChangePhase::Coding);
+                phase_change(&mut state, ChangePhase::Coding);
                 save(run.store, &state)?;
+                fix_step(&state, "test-reroute", round, false);
                 tracing::info!(
                     component = "change-orchestrator",
                     event = "fix.end",
@@ -341,7 +358,7 @@ pub fn run<S: ChangeSession>(
             }
             TestingTurn::RoutePlan { failures } => {
                 let msg = crate::change::testing_gate::route_back_message("plan", &failures);
-                phase_change(&run.run_id, &mut state, ChangePhase::Plan);
+                phase_change(&mut state, ChangePhase::Plan);
                 save(run.store, &state)?;
                 return Err(DevforgeError::Quality(format!(
                     "测试发现计划问题，已回注 plan。{msg}"

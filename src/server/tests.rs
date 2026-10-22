@@ -107,7 +107,8 @@ fn fixture_full(
     let dir = tempfile::tempdir().unwrap();
     // 观测根注入到该夹具的临时目录（Q4 路径 ①）：走真实 start 路径的单测把心跳写在这里，
     // 用户 HOME 的 `.devforge/heartbeat/` 不被写脏。
-    crate::observability::set_root(dir.path().join("observability"));
+    // 注入到**本实例**（不是进程级全局）→ 与其它并行单测不抢 root（R13 的落点漂移）。
+    let obs_root = dir.path().join("observability");
     let calls = Arc::new(Mutex::new(Vec::new()));
     let calls2 = calls.clone();
     let failures = Arc::new(Mutex::new(fail_system_times));
@@ -137,6 +138,10 @@ fn fixture_full(
     Arc::get_mut(&mut state)
         .expect("路由未构建前应独占")
         .retry_policy = crate::engine::retry::RetryPolicy::fast();
+    // 观测根钉在本夹具的临时目录（路由构建前注入，Arc 共享后不可再改）
+    Arc::get_mut(&mut state)
+        .expect("路由未构建前应独占")
+        .obs_root = Some(obs_root);
     // token 在路由构建前注入（Arc 共享后不可再改）
     if let Some(t) = token {
         Arc::get_mut(&mut state).expect("路由未构建前应独占").token = Some(t.into());
@@ -162,7 +167,13 @@ async fn wait_settled(f: &Fixture, project: &str, task: &str) {
         )
         .await;
         let body = body_json(resp).await;
-        let st = body["runs"][0]["status"].as_str().unwrap_or("");
+        // 等**最新**那个 run 进终态：列表按插入序（`store.list_runs`），最后一条才是刚起的那个。
+        // 只看第一条会在「同一任务起第二次 run」时误判已终态 → 下一次 start 撞 409（串行槽）。
+        let st = body["runs"]
+            .as_array()
+            .and_then(|runs| runs.last())
+            .and_then(|r| r["status"].as_str())
+            .unwrap_or("");
         if st == "Settled" || st == "Failed" {
             return;
         }
@@ -769,6 +780,45 @@ async fn start_task_runs_engine_and_records() {
     // 再启动（任务已完成，可重跑）→ 新 run 留档
     let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
     assert_eq!(resp.status(), 202);
+}
+
+#[tokio::test]
+async fn the_run_writes_a_heartbeat_into_the_fixtures_dir_and_keeps_it() {
+    // 错实现形态：①run 不落心跳（观测根没注入 / run 上下文没置位）→ 死亡现场无证据
+    // ②run 结束把心跳删掉 → 「最后状态」丢失
+    let f = fixture();
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks", Some(json!({"id": "t", "sop": "planning"}))).await;
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    assert_eq!(resp.status(), 202);
+
+    // 轮询至 run 结束（引擎是 mock，立即完成）
+    let mut settled = false;
+    for _ in 0..100 {
+        let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
+        let body = body_json(resp).await;
+        if body["runs"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
+            && body["runs"][0]["status"] == "Settled"
+        {
+            settled = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(settled, "run 应在超时前 Settled");
+
+    // 心跳落在本夹具的观测根下（用户 HOME 不被写脏），且 run 结束后**保留**
+    let dir = f._dir.path().join("observability").join("heartbeat");
+    let entry = std::fs::read_dir(&dir)
+        .expect("夹具的观测根下应有心跳目录")
+        .filter_map(|e| e.ok())
+        .next()
+        .expect("夹具的观测根下应有心跳文件");
+    let text = std::fs::read_to_string(entry.path()).unwrap();
+    let hb: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(hb["phase"], "plan", "心跳的阶段 = 该 SOP 的阶段词汇：{text}");
+    assert!(hb["timestamp_ms"].as_u64().unwrap_or(0) > 0, "心跳要带时间戳：{text}");
+    assert!(!hb["run_id"].as_str().unwrap_or("").is_empty(), "心跳要带 run id：{text}");
 }
 
 #[tokio::test]

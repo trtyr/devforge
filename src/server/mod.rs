@@ -1162,6 +1162,9 @@ pub struct ServerState {
     pub retry_policy: crate::engine::retry::RetryPolicy,
     /// 渲染闸门（用户裁决 A）：`PUT /config/manifest` 在途时，`start` 端点等所需 profile 就绪。
     pub render_gate: RenderGate,
+    /// 观测根覆盖（Some = 本实例的 run 把心跳写在这里；None = 用进程级解析结果）。
+    /// 单测用它把落点钉在自己的临时目录 → 不落用户 HOME（R13），且**不与其它单测抢全局 root**。
+    pub obs_root: Option<PathBuf>,
 }
 
 impl ServerState {
@@ -1195,6 +1198,7 @@ impl ServerState {
             sessions_root,
             retry_policy: crate::engine::retry::RetryPolicy::default(),
             render_gate: RenderGate::new(),
+            obs_root: None,
         })
     }
 
@@ -1349,6 +1353,20 @@ pub fn run_in_background(
     };
     state.emit(json!({"type": "run.started", "project": project, "task": task_id, "run_id": run.id.0}));
 
+    // 观测上下文置位：run 归属本线程（引擎与重试层同线程 → attempt 字段同源），
+    // 心跳随之落盘（阶段 = 该 SOP 的阶段词汇，R24）。
+    let run_phase = run_phase_for_sop(task_snapshot.sop.as_str());
+    // 观测根：实例覆盖（单测）优先，否则用进程级解析结果；**每个 run 捕获一次** → 落点固定
+    let obs_root = state.obs_root.clone().unwrap_or_else(crate::observability::root);
+    crate::observability::begin_run_in(obs_root, &run.id.0, run_phase);
+    tracing::info!(
+        component = "run",
+        event = "phase.change",
+        from = "start",
+        to = run_phase,
+        "run 开始"
+    );
+
     // 干预面登记（P8-ISSUE-01）：cancel 端点置位 / 可选超时，watchdog 杀自家 pi
     let mut control = RunControl::new();
     if let Some(timeout) = state.run_timeout_ms {
@@ -1427,6 +1445,24 @@ pub fn run_in_background(
         "attempts": attempts,
         "ok": ok && matches!(outcome, Ok(RunOutcome::Completed)),
     }));
+    // 观测上下文清位：心跳文件**保留**最后一次状态（死亡现场的证据，不删）
+    crate::observability::end_run(&run.id.0);
+}
+
+/// 每个 SOP 的阶段词汇（心跳的阶段字段 = 阶段名；R24：与里程碑同一套值）。
+///
+/// change SOP 的首个阶段是 `ChangePhase::Plan`（编排层随后推进到 coding/testing/done）；
+/// 其余 SOP 用自己的阶段标识。
+fn run_phase_for_sop(sop: &str) -> &str {
+    match sop {
+        "change" => crate::change::state::ChangePhase::Plan.as_str(),
+        "planning" => "plan",
+        "coding" => "coding",
+        "testing" => "test",
+        "doc-from-zero" => "doc",
+        "doc-fix" => "doc-fix",
+        other => other,
+    }
 }
 
 // 台账条目类型在本模块的再导出（spawn 侧调用方记录用）
@@ -1498,6 +1534,9 @@ fn run_with_watchdog<T>(
                 if done_wd.load(Ordering::SeqCst) {
                     return;
                 }
+                // 心跳低频兜底刷新（节流在 observability 内）：run 停在同一阶段、长时间无事件时，
+                // 时间戳仍向前走 → 能区分「卡死」与「已死」（六个 SOP 全经过本线程）。
+                crate::observability::touch_run(&run_id);
                 let now = crate::domain::now_ms();
                 if control.is_cancelled() || control.timed_out(now) {
                     let killed = crate::engine::ledger::scan_and_kill_run(&run_id);
@@ -1566,6 +1605,33 @@ mod watchdog_tests {
             start.elapsed() < Duration::from_secs(5),
             "scope join 死锁：elapsed={:?}",
             start.elapsed()
+        );
+    }
+
+    #[test]
+    fn the_watchdog_refreshes_the_heartbeat_while_the_run_is_stalled() {
+        // 错实现形态：watchdog 不刷心跳（只有阶段转换才写）→ 长 agent 轮里心跳陈旧
+        // → 「卡死」与「已死」分不清（本用例必须变红）
+        let dir = tempfile::tempdir().unwrap();
+        let run_id = "watchdog-heartbeat";
+        // 观测根按 run 注入到临时目录（不抢进程级全局 → 与并行单测不互相干扰）
+        crate::observability::begin_run_in(dir.path().to_path_buf(), run_id, "plan");
+        let before = crate::observability::heartbeat::read(dir.path(), run_id)
+            .expect("心跳应已落盘")
+            .timestamp_ms;
+        let control = RunControl::new();
+        // 停 1.6s：心跳节流 1s → watchdog 的第 5 跳（~1.2s）必须落在观察窗**内**
+        // （停在 1.2s 会与那一跳撞在同一毫秒 → 偶发读不到刷新）
+        run_with_watchdog(&control, run_id.into(), None, vec![], || {
+            std::thread::sleep(Duration::from_millis(1600));
+        });
+        let after = crate::observability::heartbeat::read(dir.path(), run_id)
+            .expect("心跳应仍在")
+            .timestamp_ms;
+        crate::observability::end_run(run_id);
+        assert!(
+            after > before,
+            "心跳时间戳应随之刷新（区分「卡死」与「已死」）：before={before} after={after}"
         );
     }
 

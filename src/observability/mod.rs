@@ -8,6 +8,13 @@
 //!   **进程内注入**（单测用）> `DEVFORGE_HOME` > `HOME/.devforge`（生产默认）。
 //! - **里程碑字段**：由各调用点**内联**写 `tracing::info!`——`tracing` 的 `target` 必须是
 //!   发出它的模块，包装函数会让所有里程碑共用同一个 target，「按 target 过滤」这条需求直接作废。
+//!
+//! **阶段 / 步骤的词汇**（R24：心跳与里程碑必须同一套值，否则事后对不上号）：
+//! - `phase` = 阶段。change SOP 用 `ChangePhase` 的变体名（plan/coding/testing/done，由编排层写）；
+//!   其余 SOP 用自己的阶段标识（planning=plan、coding=coding、testing=test、doc-from-zero=doc、doc-fix=doc-fix，
+//!   由服务端在 run 开始时写）。
+//! - `step` = 阶段内更细的一格（`review:<角色名>` / `fix:<种类>:<轮次>`）——只有**知道 run 归属**的调用点写得动
+//!   （change 侧的编排层与会话层；MVP/doc 循环拿不到 run id → 它们只落里程碑，不动心跳）。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,7 +41,6 @@ pub struct RunSnapshot {
 /// 为什么要一张表：watchdog 线程与 panic hook 在**别的线程**上跑，
 /// 它们要读「这次 run 走到哪个阶段了」——线程级上下文看不到，得从表里取。
 static RUNS: OnceLock<Mutex<HashMap<String, RunSnapshot>>> = OnceLock::new();
-
 fn runs() -> &'static Mutex<HashMap<String, RunSnapshot>> {
     RUNS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -65,7 +71,17 @@ impl LocalState {
 }
 
 /// 置位 run 上下文（run 开始，在 run 线程上调用）：登记快照并清零角色内审查轮次计数。
+///
+/// 观测根在**此刻捕获**（见 [`begin_run_in`]）→ 本次 run 的证据落点固定，不因进程级注入漂移。
 pub fn begin_run(run_id: &str, phase: &str) {
+    begin_run_in(root(), run_id, phase);
+}
+
+/// 置位 run 上下文并**指定**观测根（本次 run 的心跳落点）。
+///
+/// 服务端按 run 注入（单测把落点钉在自己的临时目录 → 不落用户 HOME，R13）；
+/// 进程级注入（[`set_root`]）只是**默认**来源。
+pub fn begin_run_in(root: PathBuf, run_id: &str, phase: &str) {
     let snap = RunSnapshot {
         run_id: run_id.to_string(),
         phase: phase.to_string(),
@@ -73,6 +89,10 @@ pub fn begin_run(run_id: &str, phase: &str) {
         attempt: 1,
     };
     runs().lock().expect("observability 快照表锁").insert(run_id.to_string(), snap);
+    roots()
+        .lock()
+        .expect("observability 根表锁")
+        .insert(run_id.to_string(), root);
     LOCAL.with(|l| {
         let mut l = l.borrow_mut();
         l.run_id = Some(run_id.to_string());
@@ -82,9 +102,22 @@ pub fn begin_run(run_id: &str, phase: &str) {
     write_heartbeat(run_id);
 }
 
+/// 各 run 的观测根（run 开始时捕获；键 = run id）。
+static ROOTS: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+
+fn roots() -> &'static Mutex<HashMap<String, PathBuf>> {
+    ROOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 某 run 的观测根（未登记 = 该 run 不存在）。
+fn run_root(run_id: &str) -> Option<PathBuf> {
+    roots().lock().expect("observability 根表锁").get(run_id).cloned()
+}
+
 /// 清位 run 上下文（run 结束）：**心跳文件保留**最后一次状态（不删——那是死亡现场的证据）。
 pub fn end_run(run_id: &str) {
     runs().lock().expect("observability 快照表锁").remove(run_id);
+    roots().lock().expect("observability 根表锁").remove(run_id);
     LOCAL.with(|l| {
         let mut l = l.borrow_mut();
         if l.run_id.as_deref() == Some(run_id) {
@@ -94,24 +127,43 @@ pub fn end_run(run_id: &str) {
 }
 
 /// 更新阶段（编排层阶段转换时调用；顺带刷心跳）。
-pub fn set_phase(run_id: &str, phase: &str) {
+///
+/// **线程级归属**：调用点在 run 线程上（与 [`begin_run`] 同一线程）→ 不用传 run id；
+/// 跨线程读（watchdog 线程 / panic hook）走进程级快照表。
+pub fn set_phase(phase: &str) {
+    let Some(run_id) = current_run_id() else {
+        return;
+    };
     {
         let mut table = runs().lock().expect("observability 快照表锁");
-        let Some(snap) = table.get_mut(run_id) else {
+        let Some(snap) = table.get_mut(&run_id) else {
             return;
         };
         snap.phase = phase.to_string();
     }
-    write_heartbeat(run_id);
+    write_heartbeat(&run_id);
 }
 
-/// 更新步骤（阶段内更细的一格）。
-pub fn set_step(run_id: &str, step: &str) {
-    let mut table = runs().lock().expect("observability 快照表锁");
-    let Some(snap) = table.get_mut(run_id) else {
+/// 更新步骤（阶段内更细的一格：审查角色、修复轮次……）。
+///
+/// 线程级归属（同 [`set_phase`]）：调用点与 run 同线程 → 从线程的 run 归属取快照。
+pub fn set_step(step: &str) {
+    let Some(run_id) = current_run_id() else {
         return;
     };
-    snap.step = step.to_string();
+    {
+        let mut table = runs().lock().expect("observability 快照表锁");
+        let Some(snap) = table.get_mut(&run_id) else {
+            return;
+        };
+        snap.step = step.to_string();
+    }
+    write_heartbeat(&run_id);
+}
+
+/// 当前线程的 run id（无 = 不在这个 run 里）。
+fn current_run_id() -> Option<String> {
+    LOCAL.with(|l| l.borrow().run_id.clone())
 }
 
 /// 更新尝试次数（重试层每次尝试更新；`map_intervention` 从同一线程读同一个值 → 两处字段同构）。
@@ -170,7 +222,10 @@ pub fn write_heartbeat(run_id: &str) {
     else {
         return;
     };
-    let root = root();
+    // 落点 = 本 run 开始时捕获的观测根（不随进程级注入漂移）
+    let Some(root) = run_root(run_id) else {
+        return;
+    };
     if let Err(e) = heartbeat::write(&root, &snap) {
         // 刷心跳失败不打断 run（best-effort）：只在 debug 里留痕
         tracing::debug!(component = "observability", error = %e, "心跳写入失败");
@@ -335,9 +390,10 @@ mod tests {
     #[test]
     fn run_context_carries_phase_step_and_attempt() {
         let id = "run-ctx-1";
-        begin_run(id, "coding");
-        set_phase(id, "testing");
-        set_step(id, "review:change-plan-review");
+        let dir = tempfile::tempdir().unwrap();
+        begin_run_in(dir.path().to_path_buf(), id, "coding");
+        set_phase("testing");
+        set_step("review:change-plan-review");
         set_attempt(3);
         let snap = current().expect("run 上下文应存在");
         assert_eq!(snap.run_id, id);
@@ -350,10 +406,25 @@ mod tests {
     }
 
     #[test]
+    fn the_step_of_the_current_run_is_written_into_the_heartbeat() {
+        // 错实现形态：步骤不进心跳（只有阶段进）→ 死后只知道阶段，不知道卡在哪个环节
+        let dir = tempfile::tempdir().unwrap();
+        let id = "run-ctx-step";
+        // 观测根**按 run 注入**（不抢进程级全局 → 与并行单测不互相干扰）
+        begin_run_in(dir.path().to_path_buf(), id, "plan");
+        set_step("review:change-coding-review");
+        let hb = heartbeat::read(dir.path(), id).expect("心跳应已落盘");
+        assert_eq!(hb.phase, "plan");
+        assert_eq!(hb.step, "review:change-coding-review");
+        end_run(id);
+    }
+
+    #[test]
     fn run_context_is_scoped_to_the_current_thread() {
         // 错实现形态：run 上下文是进程级单例（别的线程/别的 run 会串扰）→ 本用例必须变红
         let id = "run-ctx-2";
-        begin_run(id, "plan");
+        let dir = tempfile::tempdir().unwrap();
+        begin_run_in(dir.path().to_path_buf(), id, "plan");
         let other = std::thread::spawn(|| current().is_none()).join().unwrap();
         assert!(other, "别的线程不该看到本线程的 run 上下文");
         end_run(id);
@@ -362,11 +433,12 @@ mod tests {
     #[test]
     fn review_round_counts_per_role_and_resets_per_run() {
         let id = "run-ctx-3";
-        begin_run(id, "plan");
+        let dir = tempfile::tempdir().unwrap();
+        begin_run_in(dir.path().to_path_buf(), id, "plan");
         assert_eq!(next_review_round("change-plan-review"), 1);
         assert_eq!(next_review_round("change-plan-review"), 2);
         assert_eq!(next_review_round("change-coding-review"), 1);
-        begin_run(id, "plan");
+        begin_run_in(dir.path().to_path_buf(), id, "plan");
         assert_eq!(next_review_round("change-plan-review"), 1, "新 run 的计数从 1 起");
         end_run(id);
     }

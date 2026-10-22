@@ -332,7 +332,9 @@ mod log_capture_tests {
     fn the_retry_layer_updates_the_run_context_attempt() {
         // 错实现形态：重试层不更新 run 上下文 → `map_intervention` 读到的 attempt 不是本次的
         let id = "run-attempt";
-        crate::observability::begin_run(id, "coding");
+        // 观测根按 run 注入到临时目录 → 不写用户 HOME
+        let dir = tempfile::tempdir().unwrap();
+        crate::observability::begin_run_in(dir.path().to_path_buf(), id, "coding");
         let (_result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), |_| {
             Err(DevforgeError::System("挂了".into()))
         });
