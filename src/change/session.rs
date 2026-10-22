@@ -229,10 +229,23 @@ fn issues_of(reply: &str) -> Vec<String> {
 /// - 协议违例（审查输出本身不合规）→ 换**全新实例**重审，超上限才 Quality（不自动重启）；
 /// - 实例失败（空回复 / 进程早退 / 模型通道错误）→ 换新实例重试，超上限判基础设施故障（可重启）；
 /// - 判负 → 交出报告与实例数（实例数即「审查轮次」，重审如实计入）。
+///
+/// `role` = 审查角色名（「审查开庭」里程碑的字段；轮次按角色内序号计——共享门返回的
+/// 实例数是**返回值**，调用前拿不到）。
 fn review_once(
     factory: &mut dyn ReviewSessionFactory,
+    role: &str,
     instruction: &str,
 ) -> Result<(crate::sop::coding_protocol::ReviewReport, usize)> {
+    // 「审查开庭」里程碑：在**发起**那一刻落（不是等审完）
+    let round = crate::observability::next_review_round(role);
+    tracing::info!(
+        component = "change-engine",
+        event = "review.open",
+        role,
+        round,
+        "审查开庭"
+    );
     let mut budget = ReviewBudget::default();
     review_with_gate(
         factory,
@@ -269,6 +282,7 @@ impl ProdChangeSession {
         // plan 侧的审查实例数（= 审查轮次）落字段：报告里的轮次如实反映重审（D026 · Q12）。
         let (report, plan_instances) = review_once(
             &mut *self.plan_review,
+            "change-plan-review",
             &review_instruction(&self.ctx.change_id, &plan_path, &plan_text, &audit),
         )?;
         self.plan_review_instances = plan_instances;
@@ -335,7 +349,25 @@ impl ChangeSession for ProdChangeSession {
         let baseline_reply = self.coding_agent.converse(&baseline_kickoff(&self.ctx), ui)?;
         require_marker("change-coding-agent（基线轮）", &baseline_reply)?;
         // 引擎不自己跑测试，只验证据：红/缺失就在这里拦住（coding 子进程不会再被叫去改代码）
-        check_baseline_log(&self.ctx.blackboard)?;
+        // 「基线门」里程碑：绿/红都落一条（红时错误文本里带退出码与命令）
+        let baseline = check_baseline_log(&self.ctx.blackboard);
+        match &baseline {
+            Ok(ev) => tracing::info!(
+                component = "change-engine",
+                event = "gate.baseline",
+                passed = true,
+                exit_code = ev.exit_code,
+                "基线门通过"
+            ),
+            Err(e) => tracing::info!(
+                component = "change-engine",
+                event = "gate.baseline",
+                passed = false,
+                error = %e,
+                "基线门未通过"
+            ),
+        }
+        baseline?;
 
         // ② coding 轮：真实改代码；越界申报按 D008 只发 <route>plan</route> + <impact-gap>，不打标记
         let reply = self
@@ -351,15 +383,59 @@ impl ChangeSession for ProdChangeSession {
         }
         require_marker("change-coding-agent", &reply)?;
         // 先证后报：自证证据缺失或红 → Quality（不进审查）
-        check_self_check(&self.ctx.blackboard)?;
+        // 「自证门」里程碑：绿/红都落一条
+        let self_check = check_self_check(&self.ctx.blackboard);
+        match &self_check {
+            Ok(ev) => tracing::info!(
+                component = "change-engine",
+                event = "gate.self_check",
+                passed = true,
+                exit_code = ev.exit_code,
+                "自证门通过"
+            ),
+            Err(e) => tracing::info!(
+                component = "change-engine",
+                event = "gate.self_check",
+                passed = false,
+                error = %e,
+                "自证门未通过"
+            ),
+        }
+        self_check?;
         // 实施步骤与按步提交必须对得上
         let steps = read_steps(&self.ctx.blackboard)?;
-        check_step_commits(&self.ctx.repo, &self.ctx.baseline, &self.ctx.change_id, &steps)?;
+        // 「步提交对账」里程碑：含步骤数与判定结论
+        let step_commits = check_step_commits(
+            &self.ctx.repo,
+            &self.ctx.baseline,
+            &self.ctx.change_id,
+            &steps,
+        );
+        match &step_commits {
+            Ok(n) => tracing::info!(
+                component = "change-engine",
+                event = "gate.step_commits",
+                passed = true,
+                steps = steps.len(),
+                commits = *n,
+                "步提交对账通过"
+            ),
+            Err(e) => tracing::info!(
+                component = "change-engine",
+                event = "gate.step_commits",
+                passed = false,
+                steps = steps.len(),
+                error = %e,
+                "步提交对账未通过"
+            ),
+        }
+        step_commits?;
         let changed = changed_files(&self.ctx.repo, &self.ctx.baseline)?;
 
         // ③ coding review：diff ↔ 计划对账（越界已由引擎先算，这里管语义）
         let (report, instances) = review_once(
             &mut *self.coding_review,
+            "change-coding-review",
             &coding_review_instruction(&self.ctx, &changed),
         )?;
         match report.verdict {
@@ -428,6 +504,7 @@ impl ChangeSession for ProdChangeSession {
         // test review：验回归证据与对账（只验证据，不重跑套件）
         let (report, instances) = review_once(
             &mut *self.test_review,
+            "change-test-review",
             &testing_review_instruction(&self.ctx),
         )?;
         match report.verdict {
@@ -1016,6 +1093,66 @@ mod tests {
             seen[0]
         );
         assert!(seen[1].contains("impl-steps"), "第二轮才是真实 coding：{}", seen[1]);
+    }
+
+    #[test]
+    fn coding_gates_and_review_open_are_logged_as_milestones() {
+        // 错实现形态：①三道机械门不落 gate.*（或缺判定结论）
+        // ②审查开庭不落 review.open（或缺角色名/轮次）→ 本用例必须变红
+        let f = fixture(true);
+        coding_ready(&f);
+        let agent = Agent::new(&[
+            "基线绿了\n<stage-complete>1</stage-complete>",
+            "改完了\n<stage-complete>1</stage-complete>",
+        ]);
+        let review = ReviewFactory::new(&[PLAN_PASS]);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&[])),
+            plan_review: Box::new(ReviewFactory::new(&[])),
+            coding_agent: Box::new(agent),
+            coding_review: Box::new(review),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+            plan_review_instances: 0,
+        };
+        let text = crate::observability::test_support::capture_jsonl(|| {
+            session.run_coding(&mut NoUser, 0, None).unwrap();
+        });
+
+        // 三道机械门各一条（含判定结论）
+        for (event, needle) in [
+            ("gate.baseline", "\"passed\":true"),
+            ("gate.self_check", "\"passed\":true"),
+            ("gate.step_commits", "\"passed\":true"),
+        ] {
+            let lines: Vec<&str> = text.lines().filter(|l| l.contains(event)).collect();
+            assert_eq!(lines.len(), 1, "{event} 应落一条：{text}");
+            assert!(lines[0].contains(needle), "{event} 要带判定结论：{}", lines[0]);
+        }
+        let steps_line = text
+            .lines()
+            .find(|l| l.contains("gate.step_commits"))
+            .expect("步提交对账应落一条");
+        assert!(
+            steps_line.contains("\"steps\":1"),
+            "步提交对账要带步骤数：{steps_line}"
+        );
+
+        // 审查开庭：恰好一条，含角色名与轮次
+        let opens: Vec<&str> = text.lines().filter(|l| l.contains("review.open")).collect();
+        assert_eq!(opens.len(), 1, "一次审查开庭应恰好一条：{text}");
+        assert!(
+            opens[0].contains("\"role\":\"change-coding-review\""),
+            "开庭要带角色名：{}",
+            opens[0]
+        );
+        assert!(opens[0].contains("\"round\":1"), "开庭要带轮次：{}", opens[0]);
+        assert!(
+            opens[0].contains("\"target\":\"devforge::change::session\""),
+            "里程碑的 target 必须是发出它的模块：{}",
+            opens[0]
+        );
     }
 
     #[test]
