@@ -546,6 +546,25 @@ fn quality_failure_sites_do_not_use_system_error() {
         .expect("doc_fix 协议违例消息应存在");
     let near = &doc_fix[at..(at + 120).min(doc_fix.len())];
     assert!(near.contains("质量失败"), "doc_fix 应判质量失败：{near}");
+    // D026：违例上限与实例失败上限的分层（迁到共享门后，这三个文件里不再有旧文案，
+    // 守卫必须扩到新模块，否则「绿但没守任何东西」）。
+    let gate = include_str!("../sop/review_gate.rs");
+    for (anchor, needle, why) in [
+        (
+            "DevforgeError::Quality",
+            "输出协议违例",
+            "协议违例上限必须判 Quality（不自动重启）",
+        ),
+        (
+            "DevforgeError::System",
+            "判定为基础设施故障",
+            "审查实例失败上限必须判 System（可重启）",
+        ),
+    ] {
+        let at = gate.find(anchor).expect("共享门里应有对应的错误构造");
+        let near = &gate[at..(at + 200).min(gate.len())];
+        assert!(near.contains(needle), "{why}：{near}");
+    }
     let server = include_str!("mod.rs");
     for anchor in ["终审未通过", "终审输出协议违例"] {
         let at = server.find(anchor).unwrap_or_else(|| panic!("找不到 {anchor}"));

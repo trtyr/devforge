@@ -617,6 +617,8 @@ pub const CHANGE_CODING_AGENT_PROMPT: &str = r#"# Change Coding Agent（变更�
 </impact-gap>
 ```
 
+**声明块放在回复末尾**（独占一行起、其后不要再写别的）——引擎只认尾部协议位，写在中间会被忽略。
+
 白名单外改了却不声明 = 范围膨胀，直接 FAIL。
 
 ## 收尾
@@ -685,6 +687,7 @@ pub const CHANGE_TEST_AGENT_PROMPT: &str = r#"# Change Test Agent（变更测试
 - **不改产品代码**（只写/改测试）；发现 bug 回注，不自己修。
 - 不跑宽匹配杀进程（`pkill -f` / `killall`）；只用随机高位端口与独立临时目录。
 - 回注只写失败现象与摘要，不猜文件位置——定位是 coding 的事。
+- 回注的失败明细用 `<issues>` 块逐条列（每条一行，`- ` 开头）；路由块与 `<issues>` 块**都放在回复末尾**，其后不要再写别的——引擎只认尾部协议位，写在中间会被忽略。
 
 ## 收尾
 
@@ -694,7 +697,7 @@ pub const CHANGE_TEST_AGENT_PROMPT: &str = r#"# Change Test Agent（变更测试
 <stage-complete>N</stage-complete>
 ```
 
-并把回注声明（如果失败）附上：`<route>coding|plan</route>`。
+失败时（如果失败）在回复末尾输出：`<route>coding|plan</route>` + `<issues>` 块（逐条列失败明细）。
 "#;
 
 /// Change Test Review 提示词：审测试是否真证明了变更且没漏验收。
