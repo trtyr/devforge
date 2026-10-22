@@ -1029,6 +1029,7 @@ fn parse_whitelist(src: &str) -> Vec<String> {
 /// 10-22 运维：两场之间无 step 提交，此守卫恒红 → `#[ignore]`（F10/F13：
 /// 守卫常量随场增殖，两场之间全体转红，真修 = gate 时物化）。
 #[test]
+#[ignore = "守卫常量由 change run 刷新；两场之间无 step 提交（F10/F13）"]
 fn a17_the_change_commits_stay_inside_the_whitelist() {
     // 错实现形态：把白名单外的文件带进本变更的提交 / 顺手 `git add -A` 把未跟踪产物卷进来
     // → 本用例必须变红

@@ -622,6 +622,7 @@ fn agents_change_doc_matches_the_implemented_contract() {
 /// 10-22 运维：两场之间无 step 提交，此守卫恒红 → `#[ignore]`（F10）；
 /// 常量由每场 step 1 刷新并摘除 ignore（真修：常量 gate 时物化）。
 #[test]
+#[ignore = "守卫常量由 change run 的 step 1 刷新；两场之间无 step 提交（F10）"]
 fn the_change_commits_stay_inside_the_whitelist() {
     // 错实现形态：把白名单外的文件带进本变更的提交 → 本用例必须变红
     let root = repo_root();
