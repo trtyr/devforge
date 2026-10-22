@@ -265,6 +265,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
         };
         let docs_root = repo.join(DOCS_DIR);
         let mut protocol_violations = 0usize;
+        // 阶段推进记录：上一个单元（首个单元的前驱 = "start"）
+        let mut last_unit: Option<String> = None;
 
         for unit in units {
             if let Some(only) = &self.only
@@ -281,6 +283,15 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                 self.store.save(&mut state)?;
             }
             let before = snapshot_files(&docs_root);
+            // 阶段推进：单元推进（上一个单元 → 当前单元）
+            tracing::info!(
+                component = "doc-sop",
+                event = "phase.change",
+                from = last_unit.clone().unwrap_or_else(|| "start".into()),
+                to = unit.as_str(),
+                "doc 单元推进"
+            );
+            last_unit = Some(unit.clone());
 
             let mut message = doc_kickoff(repo, unit, doc_level);
             if !self.resume_note.is_empty() {
@@ -289,8 +300,19 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                 self.resume_note.clear(); // 只对本单元生效
             }
             let mut nudges = 0usize;
+            // 被打回后待收尾的修复轮（回注在下一轮 agent 回合才发生 → fix.end 落在那一回合返回处）
+            let mut pending_fix: Option<u32> = None;
             loop {
                 let text = self.agent.converse(&message, ui)?;
+                // 上一轮单元审查判负后的回注已随本回合交卷 → 修复轮收尾
+                if let Some(round) = pending_fix.take() {
+                    tracing::info!(
+                        component = "doc-sop",
+                        event = "fix.end",
+                        round,
+                        "单元重写结束"
+                    );
+                }
                 let Some(done_unit) = parse_doc_complete(&text) else {
                     nudges += 1;
                     if nudges > MAX_DOC_CONTINUE_NUDGES {
@@ -312,8 +334,16 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
 
                 // 本轮审查：全新实例，用完即弃；协议违例重跑审查（C19-R1 口径）
                 let mut review_retries = 0usize;
-                let report = loop {
+                let (report, review_round) = loop {
                     let round = bump_review(&mut state);
+                    // 「审查开庭」里程碑：在**发起**那一刻落（轮次 = bump_review 的 1-based 计数，Q6）
+                    tracing::info!(
+                        component = "doc-sop",
+                        event = "review.open",
+                        role = "doc-review",
+                        round,
+                        "审查开庭"
+                    );
                     let mut session = self.review_factory.open()?;
                     let mut instruction = doc_review_instruction(unit, round);
                     if let Some(audit) = &self.audit {
@@ -359,7 +389,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
 
                     let report = parse_doc_review(&review_text)?;
                     if !report.protocol_violation {
-                        break report;
+                        break (report, round as u32);
                     }
                     protocol_violations += 1;
                     if protocol_violations > MAX_DOC_PROTOCOL_VIOLATIONS {
@@ -396,6 +426,14 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                     }
                     DocVerdict::Fail => {
                         add_issues(&mut state, report.issues.len());
+                        // 单元审查判负 → 回注 agent 重写：fix 起止一对（含轮次）
+                        tracing::info!(
+                            component = "doc-sop",
+                            event = "fix.start",
+                            round = review_round,
+                            "单元重写开始"
+                        );
+                        pending_fix = Some(review_round);
                         let mut msg = format!(
                             "{DOC_REMEDIATION_PREFIX}\n<route>{}</route>\n",
                             report.route.as_str()
@@ -608,6 +646,60 @@ mod tests {
         assert!(msgs.len() >= 2);
         assert!(msgs[1].contains("<route>phase1</route>"));
         assert!(msgs[1].contains("事实错"));
+    }
+
+    #[test]
+    fn review_open_fix_round_and_unit_advance_are_logged_as_milestones() {
+        // 错实现形态：①审查开庭不落 review.open（或缺角色名/轮次）
+        // ②单元判负后的重写不落 fix.start/fix.end ③单元推进不落 phase.change → 本用例必须变红
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = MockAgent::new(&[
+            "v1\n<doc-complete>unit-a-01</doc-complete>",
+            "v2\n<doc-complete>unit-a-01</doc-complete>",
+        ]);
+        let (f, _) = factory(&[
+            "<doc-verdict>FAIL</doc-verdict>\n<route>phase1</route>\n<issues>\n- 事实错\n</issues>",
+            "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
+        ]);
+        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
+        let units = vec!["unit-a-01".to_string()];
+        let text = crate::observability::test_support::capture_jsonl(|| {
+            lp.run(&mut NoUser, tmp.path(), &units, "complete").unwrap();
+        });
+
+        // 审查开庭：两轮各一条，角色名与轮次（首审 = 1，轮次 = bump_review 的 1-based 计数）
+        let opens: Vec<&str> = text.lines().filter(|l| l.contains("review.open")).collect();
+        assert_eq!(opens.len(), 2, "两轮审查应各落一条：{text}");
+        assert!(
+            opens[0].contains("\"role\":\"doc-review\""),
+            "开庭要带角色名：{}",
+            opens[0]
+        );
+        assert!(opens[0].contains("\"round\":1"), "首审轮次 = 1：{}", opens[0]);
+        assert!(opens[1].contains("\"round\":2"), "次审轮次 = 2：{}", opens[1]);
+        assert!(
+            opens[0].contains("\"target\":\"devforge::sop::doc_from_zero\""),
+            "里程碑的 target 必须是发出它的模块：{}",
+            opens[0]
+        );
+
+        // 单元判负后的重写：一对 fix.start / fix.end（含轮次）
+        let starts: Vec<&str> = text.lines().filter(|l| l.contains("fix.start")).collect();
+        let ends: Vec<&str> = text.lines().filter(|l| l.contains("fix.end")).collect();
+        assert_eq!(starts.len(), 1, "判负重写应落一条 fix.start：{text}");
+        assert_eq!(ends.len(), 1, "判负重写应落一条 fix.end：{text}");
+        assert!(starts[0].contains("\"round\":1"), "重写轮次要带上：{}", starts[0]);
+        assert!(ends[0].contains("\"round\":1"), "重写轮次要带上：{}", ends[0]);
+
+        // 单元推进：start → unit-a-01
+        let phases: Vec<&str> = text.lines().filter(|l| l.contains("phase.change")).collect();
+        assert_eq!(phases.len(), 1, "一个单元应落一条推进：{text}");
+        assert!(
+            phases[0].contains("\"from\":\"start\"")
+                && phases[0].contains("\"to\":\"unit-a-01\""),
+            "单元推进要从 start 到 unit-a-01：{}",
+            phases[0]
+        );
     }
 
     #[test]

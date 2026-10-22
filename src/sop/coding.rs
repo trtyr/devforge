@@ -125,9 +125,22 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> CodingSopLoop<P, F> {
         // 审查预算的生命周期 = 整个 run（违例重审与实例失败重试都从这里计数）
         let mut budget = ReviewBudget::default();
         let mut nudges = 0usize;
+        // 阶段推进记录：上一个阶段号（首个阶段的前驱 = "start"）
+        let mut last_stage: Option<u64> = None;
+        // 被打回后待收尾的修复轮（回注在下一轮 agent 回合才发生 → fix.end 落在那一回合返回处）
+        let mut pending_fix: Option<u32> = None;
 
         loop {
             let text = self.agent.converse(&message, ui)?;
+            // 上一轮打回的回注已随本回合交卷 → 修复轮收尾
+            if let Some(round) = pending_fix.take() {
+                tracing::info!(
+                    component = "coding-engine",
+                    event = "fix.end",
+                    round,
+                    "打回重写结束"
+                );
+            }
             let Some(stage) = parse_stage_complete(&text) else {
                 // 无有效标记 → 有界重推（005/015）：标记由模型生成，卡住时不能无限打转
                 nudges += 1;
@@ -141,11 +154,33 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> CodingSopLoop<P, F> {
                 continue;
             };
             nudges = 0;
+            // 阶段推进：agent 报出的新阶段号（前一个阶段 → 当前阶段）。
+            // 重发同一阶段号（打回后重交）**不是**推进 → 不落里程碑（from/to 同值 = 噪声）。
+            if last_stage != Some(stage) {
+                tracing::info!(
+                    component = "coding-engine",
+                    event = "phase.change",
+                    from = last_stage.map(|s| s.to_string()).unwrap_or_else(|| "start".into()),
+                    to = stage.to_string(),
+                    "MVP coding 阶段推进"
+                );
+                last_stage = Some(stage);
+            }
 
             // 本轮审查：全新实例，用完即弃。
             // C19-R1 + D026：协议违例（审查输出本身不合规）→ 换新实例重审（新 fresh 实例），
             // 绝不把违例问题当作代码问题回注给 Coding Agent；实例失败（空回复/早退/通道错误）
             // → 换新实例重试；两者超上限分别判质量失败与基础设施故障。
+            // 审查轮次口径（Q6）：`review_rounds` 是**已开过的实例数** → 本轮序号 = review_rounds + 1（首审 = 1）。
+            let review_round = (review_rounds + 1) as u32;
+            // 「审查开庭」里程碑：在**发起**那一刻落（不是等审完）
+            tracing::info!(
+                component = "coding-engine",
+                event = "review.open",
+                role = "coding-review",
+                round = review_round,
+                "审查开庭"
+            );
             let (report, opened) = review_with_gate(
                 &mut self.review_factory,
                 review_rounds,
@@ -170,6 +205,14 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> CodingSopLoop<P, F> {
                 // (Fail, Fix)——其余组合已被解析器保守归一为 (Fail, Fix)
                 _ => {
                     issues_total += report.issues.len();
+                    // 打回：fix 起止一对（含轮次）——回注在下一轮 agent 回合发生
+                    tracing::info!(
+                        component = "coding-engine",
+                        event = "fix.start",
+                        round = review_round,
+                        "打回重写开始"
+                    );
+                    pending_fix = Some(review_round);
                     message = format!(
                         "{CODING_REMEDIATION_PREFIX}\n{}",
                         report
@@ -352,6 +395,59 @@ mod tests {
         assert_eq!(report.stages_completed, vec![1, 2]);
         assert_eq!(report.review_rounds, 3);
         assert_eq!(report.issues_total, 1);
+    }
+
+    #[test]
+    fn review_open_and_fix_round_are_logged_as_milestones() {
+        // 错实现形态：①审查开庭不落 review.open（或缺角色名/轮次）
+        // ②打回重写不落 fix.start/fix.end（或缺轮次）→ 本用例必须变红
+        let agent = MockAgent::new(&[
+            Turn::Say("阶段 1 完成。\n<stage-complete>1</stage-complete>"),
+            Turn::ExpectContains(
+                "登录没处理过期 token",
+                "修好了。\n<stage-complete>1</stage-complete>",
+            ),
+        ]);
+        let mut factory = MockReviewFactory::new(&[FAIL_FIX_ONE, PASS_FINISH]);
+        let mut user = NoUser;
+        let text = crate::observability::test_support::capture_jsonl(|| {
+            CodingSopLoop::new(agent, &mut factory)
+                .run(&mut user, Path::new("/w"), "p", "t")
+                .unwrap();
+        });
+
+        // 审查开庭：两轮各一条，角色名与轮次（首审 = 1）
+        let opens: Vec<&str> = text.lines().filter(|l| l.contains("review.open")).collect();
+        assert_eq!(opens.len(), 2, "两轮审查应各落一条：{text}");
+        assert!(
+            opens[0].contains("\"role\":\"coding-review\""),
+            "开庭要带角色名：{}",
+            opens[0]
+        );
+        assert!(opens[0].contains("\"round\":1"), "首审轮次 = 1：{}", opens[0]);
+        assert!(opens[1].contains("\"round\":2"), "次审轮次 = 2：{}", opens[1]);
+        assert!(
+            opens[0].contains("\"target\":\"devforge::sop::coding\""),
+            "里程碑的 target 必须是发出它的模块：{}",
+            opens[0]
+        );
+
+        // 打回重写：一对 fix.start / fix.end（含轮次）
+        let starts: Vec<&str> = text.lines().filter(|l| l.contains("fix.start")).collect();
+        let ends: Vec<&str> = text.lines().filter(|l| l.contains("fix.end")).collect();
+        assert_eq!(starts.len(), 1, "打回应落一条 fix.start：{text}");
+        assert_eq!(ends.len(), 1, "打回应落一条 fix.end：{text}");
+        assert!(starts[0].contains("\"round\":1"), "打回轮次要带上：{}", starts[0]);
+        assert!(ends[0].contains("\"round\":1"), "打回轮次要带上：{}", ends[0]);
+
+        // 阶段推进：start → 1（重发同一阶段号不是推进 → 不重复落）
+        let phases: Vec<&str> = text.lines().filter(|l| l.contains("phase.change")).collect();
+        assert_eq!(phases.len(), 1, "只真推进时落一条：{text}");
+        assert!(
+            phases[0].contains("\"from\":\"start\"") && phases[0].contains("\"to\":\"1\""),
+            "首个阶段从 start 推进：{}",
+            phases[0]
+        );
     }
 
     #[test]

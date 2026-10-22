@@ -164,10 +164,23 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
         // 审查预算的生命周期 = 一次 drive（与既有违例计数同口径）
         let mut budget = ReviewBudget::default();
         let mut nudges = 0usize;
+        // 阶段推进记录：上一个阶段号（首个阶段的前驱 = "start"）
+        let mut last_stage: Option<u64> = None;
+        // 被打回后待收尾的修复轮（回注在下一轮 agent 回合才发生 → fix.end 落在那一回合返回处）
+        let mut pending_fix: Option<u32> = None;
         loop {
             match step {
                 Step::Agent(message) => {
                     let text = self.agent.converse(&message, ui)?;
+                    // 上一轮回注已随本回合交卷 → 修复轮收尾
+                    if let Some(round) = pending_fix.take() {
+                        tracing::info!(
+                            component = "testing-engine",
+                            event = "fix.end",
+                            round,
+                            "打回重写结束"
+                        );
+                    }
                     let Some(stage) = parse_stage_complete(&text) else {
                         // 无有效标记 → 有界重推（007 D013）
                         nudges += 1;
@@ -181,11 +194,33 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                         continue;
                     };
                     nudges = 0;
+                    // 阶段推进：agent 报出的新阶段号（前一个阶段 → 当前阶段）。
+                    // 重发同一阶段号（打回后重交）**不是**推进 → 不落里程碑（from/to 同值 = 噪声）。
+                    if last_stage != Some(stage) {
+                        tracing::info!(
+                            component = "testing-engine",
+                            event = "phase.change",
+                            from = last_stage.map(|s| s.to_string()).unwrap_or_else(|| "start".into()),
+                            to = stage.to_string(),
+                            "MVP testing 阶段推进"
+                        );
+                        last_stage = Some(stage);
+                    }
                     step = Step::Review(stage);
                 }
                 Step::Review(stage) => {
                     // C19-R1 + D026：协议违例（审查输出本身不合规）→ 换新实例重审，不回注被测 Agent；
                     // 实例失败（空回复/早退/通道错误）→ 换新实例重试。
+                    // 审查轮次口径（Q6）：`report.review_rounds` 是**已开过的实例数** → 本轮序号 = report.review_rounds + 1（首审 = 1）。
+                    let review_round = (report.review_rounds + 1) as u32;
+                    // 「审查开庭」里程碑：在**发起**那一刻落（不是等审完）
+                    tracing::info!(
+                        component = "testing-engine",
+                        event = "review.open",
+                        role = "test-review",
+                        round = review_round,
+                        "审查开庭"
+                    );
                     let (parsed, opened) = review_with_gate(
                         &mut self.review_factory,
                         report.review_rounds,
@@ -219,12 +254,28 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                             report.issues_total += parsed.issues.len();
                             if parsed.reroute == Reroute::DocSide {
                                 report.doc_fix_handoffs += 1;
+                                // 阶段推进：测试侧 → 文档侧（移交 doc-fix）
+                                tracing::info!(
+                                    component = "testing-engine",
+                                    event = "phase.change",
+                                    from = "test",
+                                    to = "doc",
+                                    "MVP testing 移交文档侧"
+                                );
                                 return Ok(TestingOutcome::DocSideHandoff {
                                     stage,
                                     issues: parsed.issues,
                                     report,
                                 });
                             }
+                            // 打回回注：fix 起止一对（含轮次）——回注在下一轮 agent 回合发生
+                            tracing::info!(
+                                component = "testing-engine",
+                                event = "fix.start",
+                                round = review_round,
+                                "打回重写开始"
+                            );
+                            pending_fix = Some(review_round);
                             step = Step::Agent(format!(
                                 "{TESTING_REMEDIATION_PREFIX}\n{}",
                                 parsed
@@ -391,6 +442,82 @@ mod tests {
         assert_eq!(report.doc_fix_handoffs, 0);
         // 审查实例用完即弃
         assert!(factory.opened.iter().all(|c| c.get()));
+    }
+
+    #[test]
+    fn review_open_fix_round_and_doc_handoff_are_logged_as_milestones() {
+        // 错实现形态：①审查开庭不落 review.open（或缺角色名/轮次）
+        // ②打回重写不落 fix.start/fix.end ③文档侧移交不落阶段推进 → 本用例必须变红
+        let agent = MockAgent::new(&[
+            Turn::Say("阶段 1 完成。\n<stage-complete>1</stage-complete>"),
+            Turn::ExpectContains("缺超时用例", "补好了。\n<stage-complete>1</stage-complete>"),
+        ]);
+        let mut factory = MockReviewFactory::new(&[FAIL_TEST_SIDE, PASS_FINISH]);
+        let mut user = NoUser;
+        let text = crate::observability::test_support::capture_jsonl(|| {
+            let outcome = TestingSopLoop::new(agent, &mut factory)
+                .run(&mut user, Path::new("/w"), "p", "t")
+                .unwrap();
+            let TestingOutcome::Completed(report) = outcome else {
+                panic!("应正常收工");
+            };
+            assert_eq!(report.issues_total, 1);
+        });
+
+        // 审查开庭：两轮各一条，角色名与轮次（首审 = 1）
+        let opens: Vec<&str> = text.lines().filter(|l| l.contains("review.open")).collect();
+        assert_eq!(opens.len(), 2, "两轮审查应各落一条：{text}");
+        assert!(
+            opens[0].contains("\"role\":\"test-review\""),
+            "开庭要带角色名：{}",
+            opens[0]
+        );
+        assert!(opens[0].contains("\"round\":1"), "首审轮次 = 1：{}", opens[0]);
+        assert!(opens[1].contains("\"round\":2"), "次审轮次 = 2：{}", opens[1]);
+        assert!(
+            opens[0].contains("\"target\":\"devforge::sop::testing\""),
+            "里程碑的 target 必须是发出它的模块：{}",
+            opens[0]
+        );
+
+        // 打回重写：一对 fix.start / fix.end（含轮次）
+        let starts: Vec<&str> = text.lines().filter(|l| l.contains("fix.start")).collect();
+        let ends: Vec<&str> = text.lines().filter(|l| l.contains("fix.end")).collect();
+        assert_eq!(starts.len(), 1, "打回应落一条 fix.start：{text}");
+        assert_eq!(ends.len(), 1, "打回应落一条 fix.end：{text}");
+        assert!(starts[0].contains("\"round\":1"), "打回轮次要带上：{}", starts[0]);
+        assert!(ends[0].contains("\"round\":1"), "打回轮次要带上：{}", ends[0]);
+
+        // 阶段推进：start → 1
+        let phases: Vec<&str> = text.lines().filter(|l| l.contains("phase.change")).collect();
+        assert_eq!(phases.len(), 1, "只真推进时落一条：{text}");
+        assert!(
+            phases[0].contains("\"from\":\"start\"") && phases[0].contains("\"to\":\"1\""),
+            "首个阶段从 start 推进：{}",
+            phases[0]
+        );
+    }
+
+    #[test]
+    fn the_doc_side_handoff_logs_a_phase_change_to_doc() {
+        // 错实现形态：文档侧移交不落 phase.change（from=test to=doc）→ 本用例必须变红
+        let agent = MockAgent::new(&[Turn::Say("阶段 1 完成。\n<stage-complete>1</stage-complete>")]);
+        let mut factory = MockReviewFactory::new(&[FAIL_DOC_SIDE]);
+        let mut user = NoUser;
+        let text = crate::observability::test_support::capture_jsonl(|| {
+            let outcome = TestingSopLoop::new(agent, &mut factory)
+                .run(&mut user, Path::new("/w"), "p", "t")
+                .unwrap();
+            let TestingOutcome::DocSideHandoff { report, .. } = outcome else {
+                panic!("应移交文档侧");
+            };
+            assert_eq!(report.doc_fix_handoffs, 1);
+        });
+        let phases: Vec<&str> = text.lines().filter(|l| l.contains("phase.change")).collect();
+        assert!(
+            phases.iter().any(|l| l.contains("\"from\":\"test\"") && l.contains("\"to\":\"doc\"")),
+            "移交文档侧要落一条 test → doc 的阶段推进：{text}"
+        );
     }
 
     #[test]

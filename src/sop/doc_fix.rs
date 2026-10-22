@@ -89,6 +89,15 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocFixSopLoop<P, F> {
         let mut violations = 0usize;
         loop {
             report.review_rounds += 1;
+            // 「审查开庭」里程碑：在**发起**那一刻落
+            // 轮次口径（Q6）：doc-fix 是**先自增再开实例** → 落 `report.review_rounds`，**不加 1**（首审 = 1）。
+            tracing::info!(
+                component = "docfix-engine",
+                event = "review.open",
+                role = "doc-review",
+                round = report.review_rounds,
+                "审查开庭"
+            );
             let mut session = self.review_factory.open()?;
             let review_text =
                 session.review(&doc_review_instruction(workspace, report.review_rounds))?;
@@ -120,7 +129,20 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocFixSopLoop<P, F> {
                             .collect::<Vec<_>>()
                             .join("\n")
                     );
+                    // 打回回注：fix 起止一对（含轮次）
+                    tracing::info!(
+                        component = "docfix-engine",
+                        event = "fix.start",
+                        round = report.review_rounds,
+                        "打回重写开始"
+                    );
                     self.agent.converse(&remediation, ui)?;
+                    tracing::info!(
+                        component = "docfix-engine",
+                        event = "fix.end",
+                        round = report.review_rounds,
+                        "打回重写结束"
+                    );
                 }
             }
         }
@@ -257,6 +279,45 @@ mod tests {
         assert_eq!(received.len(), 2);
         assert!(received[1].contains(DOC_FIX_REMEDIATION_PREFIX));
         assert!(received[1].contains("Runbook 缺种子数据节"));
+    }
+
+    #[test]
+    fn review_open_and_fix_round_are_logged_as_milestones() {
+        // 错实现形态：①审查开庭不落 review.open（或缺角色名/轮次）
+        // ②打回重写不落 fix.start/fix.end → 本用例必须变红
+        let agent = MockAgent::new(&["补了一版。", "又补了一版。"]);
+        let mut factory = MockReviewFactory::new(&[REVIEW_FAIL_MISSING_SEED, REVIEW_PASS]);
+        let mut user = NoUser;
+        let text = crate::observability::test_support::capture_jsonl(|| {
+            DocFixSopLoop::new(agent, &mut factory)
+                .run(&mut user, Path::new("/w"), "p", "t")
+                .unwrap();
+        });
+
+        // 审查开庭：两轮各一条，角色名与轮次
+        // 轮次口径（Q6/R22）：doc-fix 是**先自增再开实例** → 落 report.review_rounds，**不加 1**（首审 = 1）。
+        let opens: Vec<&str> = text.lines().filter(|l| l.contains("review.open")).collect();
+        assert_eq!(opens.len(), 2, "两轮审查应各落一条：{text}");
+        assert!(
+            opens[0].contains("\"role\":\"doc-review\""),
+            "开庭要带角色名：{}",
+            opens[0]
+        );
+        assert!(opens[0].contains("\"round\":1"), "首审轮次 = 1：{}", opens[0]);
+        assert!(opens[1].contains("\"round\":2"), "次审轮次 = 2：{}", opens[1]);
+        assert!(
+            opens[0].contains("\"target\":\"devforge::sop::doc_fix\""),
+            "里程碑的 target 必须是发出它的模块：{}",
+            opens[0]
+        );
+
+        // 打回重写：一对 fix.start / fix.end（含轮次）
+        let starts: Vec<&str> = text.lines().filter(|l| l.contains("fix.start")).collect();
+        let ends: Vec<&str> = text.lines().filter(|l| l.contains("fix.end")).collect();
+        assert_eq!(starts.len(), 1, "打回应落一条 fix.start：{text}");
+        assert_eq!(ends.len(), 1, "打回应落一条 fix.end：{text}");
+        assert!(starts[0].contains("\"round\":1"), "打回轮次要带上：{}", starts[0]);
+        assert!(ends[0].contains("\"round\":1"), "打回轮次要带上：{}", ends[0]);
     }
 
     #[test]

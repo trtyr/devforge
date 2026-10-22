@@ -184,6 +184,7 @@ impl RpcClient {
 
     /// 等待 agent_settled（pi 不会再自动继续 = 暂停保活点）。期间收集响应/流式文本/事件。
     pub fn wait_settled(&mut self) -> Result<WaitOutcome> {
+        let started_at_ms = now_ms();
         let mut out = WaitOutcome::default();
         loop {
             let line = self.next_line()?;
@@ -196,6 +197,7 @@ impl RpcClient {
                     let settled = e.is_agent_settled();
                     out.events.push(e);
                     if settled {
+                        self.log_turn_end(started_at_ms, &out);
                         return Ok(out);
                     }
                 }
@@ -213,6 +215,7 @@ impl RpcClient {
             &serde_json::Map<String, serde_json::Value>,
         ) -> Result<String>,
     ) -> Result<WaitOutcome> {
+        let started_at_ms = now_ms();
         let mut out = WaitOutcome::default();
         loop {
             let line = self.next_line()?;
@@ -255,11 +258,27 @@ impl RpcClient {
                     let settled = e.is_agent_settled();
                     out.events.push(e);
                     if settled {
+                        self.log_turn_end(started_at_ms, &out);
                         return Ok(out);
                     }
                 }
             }
         }
+    }
+
+    /// 「agent 轮次结束」里程碑（Q5：唯一落点，覆盖全部 SOP——change 侧不再另落）。
+    ///
+    /// 字段：角色名（`spec.role`）、本轮耗时（毫秒）、本轮产出字符数。
+    /// 作用：交卷 → 下一次开庭之间的空洞由此可算（此前那 15 分钟无任何记录）。
+    fn log_turn_end(&self, started_at_ms: u64, out: &WaitOutcome) {
+        tracing::info!(
+            component = "engine",
+            event = "agent.turn_end",
+            role = %self.spec.role,
+            turn_ms = now_ms().saturating_sub(started_at_ms),
+            chars = out.text.chars().count(),
+            "agent 轮次结束"
+        );
     }
 
     /// 校验某 id 的响应成功；失败则转为该角色 Agent 的失败错误（可恢复类）。
@@ -374,6 +393,38 @@ mod tests {
         assert_eq!(outcome.responses.len(), 1);
         assert!(outcome.responses[0].success);
         assert_eq!(outcome.text, "");
+        client.kill().unwrap();
+    }
+
+    #[test]
+    fn the_turn_end_milestone_is_logged_exactly_once_per_turn() {
+        // 错实现形态：①交卷不落 agent.turn_end（或缺角色名/耗时）
+        // ②同一轮落两条（重复记或 change 侧又落一条）→ 本用例必须变红
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_replay(
+            dir.path(),
+            &[RSP_OK, EVT_START, EVT_SETTLED],
+            "read _x\n", // 常驻等 stdin，避免 spawn/write 竞态
+        );
+        let mut client = spawn_sh(&script, dir.path());
+        let text = crate::observability::test_support::capture_jsonl(|| {
+            client.prompt("你好").unwrap();
+            client.wait_settled().unwrap();
+        });
+        let turns: Vec<&str> = text.lines().filter(|l| l.contains("agent.turn_end")).collect();
+        assert_eq!(turns.len(), 1, "一轮只落一条交卷事件：{text}");
+        assert!(
+            turns[0].contains("\"role\":\"plan-agent\""),
+            "交卷要带角色名：{}",
+            turns[0]
+        );
+        assert!(turns[0].contains("\"turn_ms\""), "交卷要带本轮耗时：{}", turns[0]);
+        assert!(turns[0].contains("\"chars\""), "交卷要带产出字符数：{}", turns[0]);
+        assert!(
+            turns[0].contains("\"target\":\"devforge::engine::client\""),
+            "里程碑的 target 必须是发出它的模块：{}",
+            turns[0]
+        );
         client.kill().unwrap();
     }
 

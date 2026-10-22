@@ -102,6 +102,14 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> PlanningLoop<P, F> {
             }
             message = "继续。完成前记得 ask-user-question 向用户确认，并在最终回复输出完成标记。".into();
         }
+        // 阶段推进：规划阶段交卷 → 进入审查阶段（里程碑：阶段怎么变的）
+        tracing::info!(
+            component = "planning-engine",
+            event = "phase.change",
+            from = "plan",
+            to = "review",
+            "MVP planning 阶段推进"
+        );
 
         // ---- REVIEW 循环：每轮全新实例；FAIL 打回后零校验自动重查 ----
         let mut rounds = 0usize;
@@ -111,6 +119,16 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> PlanningLoop<P, F> {
         loop {
             // 协议违例 → 换全新实例重审（≤3，超限质量失败，绝不把违例当 issue 回注规划 agent）；
             // 判负（FAIL + 非空 issues）→ 照旧回注活着的规划 agent（零校验自动重查）。
+            // 审查轮次口径（Q6）：`rounds` 是**已开过的实例数** → 本轮序号 = rounds + 1（首审 = 1）。
+            let review_round = rounds + 1;
+            // 「审查开庭」里程碑：在**发起**那一刻落（不是等审完）
+            tracing::info!(
+                component = "planning-engine",
+                event = "review.open",
+                role = "plan-review",
+                round = review_round,
+                "审查开庭"
+            );
             let (verdict, opened) = review_with_gate(
                 &mut self.review_factory,
                 rounds,
@@ -140,8 +158,21 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> PlanningLoop<P, F> {
                             .collect::<Vec<_>>()
                             .join("\n")
                     );
-                    // 回注活着的 Plan Agent（它的上下文连续）；修完零校验自动重查
+                    // 判负回注：fix 起止一对（含轮次）——回注活着的 Plan Agent（它的上下文连续）；
+                    // 修完零校验自动重查
+                    tracing::info!(
+                        component = "planning-engine",
+                        event = "fix.start",
+                        round = review_round,
+                        "判负回注开始"
+                    );
                     let _ = self.plan.converse(&remediation, ui)?;
+                    tracing::info!(
+                        component = "planning-engine",
+                        event = "fix.end",
+                        round = review_round,
+                        "判负回注结束"
+                    );
                 }
                 Verdict::ProtocolViolation { reason } => {
                     // 门已把违例收进「换新实例重审」通道：走到这里 = 门与解析器形状不一致
@@ -327,6 +358,54 @@ mod tests {
         assert_eq!(report.issues_total, 2);
         // 用户只被问过一次（初次完成确认）；两轮打回全程零打扰
         assert_eq!(user.asked.len(), 1);
+    }
+
+    #[test]
+    fn review_open_and_fix_round_are_logged_as_milestones() {
+        // 错实现形态：①审查开庭不落 review.open（或缺角色名/轮次）
+        // ②判负回注不落 fix.start/fix.end（或缺轮次）→ 本用例必须变红
+        let plan = MockPlan::new(&[
+            PlanTurn::AskDone,
+            PlanTurn::ExpectContains("规划说 Rust 又说 Python", "已修订。\n<plan-complete>"),
+        ]);
+        let mut factory = MockReviewFactory::new(&[FAIL_ONE, PASS]);
+        let mut user = MockUser::new(&["完成"]);
+        let text = crate::observability::test_support::capture_jsonl(|| {
+            PlanningLoop::new(plan, &mut factory).run(&mut user).unwrap();
+        });
+
+        // 审查开庭：两轮各一条，角色名与轮次（首审 = 1）
+        let opens: Vec<&str> = text.lines().filter(|l| l.contains("review.open")).collect();
+        assert_eq!(opens.len(), 2, "两轮审查应各落一条：{text}");
+        assert!(
+            opens[0].contains("\"role\":\"plan-review\""),
+            "开庭要带角色名：{}",
+            opens[0]
+        );
+        assert!(opens[0].contains("\"round\":1"), "首审轮次 = 1：{}", opens[0]);
+        assert!(opens[1].contains("\"round\":2"), "次审轮次 = 2：{}", opens[1]);
+        assert!(
+            opens[0].contains("\"target\":\"devforge::sop::planning\""),
+            "里程碑的 target 必须是发出它的模块：{}",
+            opens[0]
+        );
+
+        // 判负回注：一对 fix.start / fix.end（含轮次）
+        let starts: Vec<&str> = text.lines().filter(|l| l.contains("fix.start")).collect();
+        let ends: Vec<&str> = text.lines().filter(|l| l.contains("fix.end")).collect();
+        assert_eq!(starts.len(), 1, "判负回注应落一条 fix.start：{text}");
+        assert_eq!(ends.len(), 1, "判负回注应落一条 fix.end：{text}");
+        assert!(starts[0].contains("\"round\":1"), "回注轮次要带上：{}", starts[0]);
+        assert!(ends[0].contains("\"round\":1"), "回注轮次要带上：{}", ends[0]);
+
+        // 阶段推进：plan → review
+        let phases: Vec<&str> = text.lines().filter(|l| l.contains("phase.change")).collect();
+        assert_eq!(phases.len(), 1, "规划阶段推进应落一条：{text}");
+        assert!(
+            phases[0].contains("\"from\":\"plan\"") && phases[0].contains("\"to\":\"review\""),
+            "阶段推进要从 plan 到 review：{}",
+            phases[0]
+        );
     }
 
     #[test]
