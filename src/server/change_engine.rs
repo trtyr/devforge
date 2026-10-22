@@ -185,6 +185,7 @@ impl BuiltinRpcEngine {
             test_agent: Box::new(test_agent),
             test_review: Box::new(test_review),
             ctx: ctx.clone(),
+            plan_review_instances: 0,
         };
         let store = StateStore::new(
             self.plans_root.clone(),

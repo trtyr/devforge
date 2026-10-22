@@ -22,9 +22,7 @@ use crate::change::testing_gate::{
 use crate::error::{Context as _, DevforgeError, Result};
 use crate::sop::coding_protocol::{parse_review_report, parse_stage_complete, StageVerdict};
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
-use crate::sop::review_gate::{
-    outcome_of_review_report, review_with_gate, ReviewBudget,
-};
+use crate::sop::review_gate::{outcome_of_review_report, review_with_gate, ReviewBudget};
 
 /// 一次 change run 的固定上下文。
 #[derive(Debug, Clone)]
@@ -61,6 +59,8 @@ pub struct ProdChangeSession {
     pub test_agent: Box<dyn PlanAgentSession>,
     pub test_review: Box<dyn ReviewSessionFactory>,
     pub ctx: ChangeCtx,
+    /// plan 审查实际开过的实例数（= 报告里的「审查轮次」；违例重审与实例失败重试都计入）。
+    pub plan_review_instances: usize,
 }
 
 // ---------------- 提示词 ----------------
@@ -266,12 +266,12 @@ impl ProdChangeSession {
                 DevforgeError::Quality(format!("计划文件不可读（{}）：{e}", plan_path.display()))
             },
         )?;
-        // plan 侧的审查实例数（= 审查轮次）待步骤 9 落字段：`ProdChangeSession` 是字面量构造的，
-        // 加字段必须改 `src/server/change_engine.rs`（不在计划 §4 白名单内，已按 impact-gap 申报）。
-        let (report, _plan_instances) = review_once(
+        // plan 侧的审查实例数（= 审查轮次）落字段：报告里的轮次如实反映重审（D026 · Q12）。
+        let (report, plan_instances) = review_once(
             &mut *self.plan_review,
             &review_instruction(&self.ctx.change_id, &plan_path, &plan_text, &audit),
         )?;
+        self.plan_review_instances = plan_instances;
         match report.verdict {
             StageVerdict::Pass => Ok(PlanTurn::Pass),
             StageVerdict::Fail => Ok(PlanTurn::Fail {
@@ -443,7 +443,7 @@ impl ChangeSession for ProdChangeSession {
     }
 
     fn plan_reviews(&self) -> usize {
-        1
+        self.plan_review_instances
     }
 
     fn plan_facts(&mut self) -> Result<(Vec<String>, Vec<String>)> {
@@ -630,6 +630,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let (criteria, whitelist) = session.plan_facts().unwrap();
         assert_eq!(criteria, vec!["给定 x=1 → 返回 2".to_string()]);
@@ -651,6 +652,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let turn = session.run_plan(&mut NoUser, 0).unwrap();
         assert_eq!(turn, PlanTurn::Pass);
@@ -673,6 +675,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         match session.run_plan(&mut NoUser, 0).unwrap() {
             PlanTurn::Fail { issues } => assert!(issues.iter().any(|i| i.contains("调用方"))),
@@ -691,6 +694,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let err = session.run_plan(&mut NoUser, 0).unwrap_err();
         assert!(err.to_string().contains("stage-complete"), "{err}");
@@ -711,6 +715,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         }
     }
 
@@ -923,6 +928,7 @@ mod tests {
             test_agent: Box::new(agent),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let turn = session.run_testing(&mut NoUser).unwrap();
         let TestingTurn::RouteCoding { failures } = turn else {
@@ -963,6 +969,7 @@ mod tests {
             ])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let err = session.run_testing(&mut NoUser).unwrap_err();
         let msg = err.to_string();
@@ -991,6 +998,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let turn = session.run_coding(&mut NoUser, 0, None).unwrap();
         assert!(turn.changed.contains(&"src/a.rs".to_string()), "{:?}", turn.changed);
@@ -1030,6 +1038,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let err = session.run_coding(&mut NoUser, 0, None).unwrap_err();
         let msg = err.to_string();
@@ -1057,6 +1066,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let turn = session.run_coding(&mut NoUser, 0, None).unwrap();
         assert_eq!(turn.reviews, 1, "有合规自证证据才进 coding review");
@@ -1082,6 +1092,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let err = session.run_coding(&mut NoUser, 0, None).unwrap_err();
         assert!(err.to_string().contains("基线不是绿的"), "{err}");
@@ -1106,6 +1117,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let turn = session.run_coding(&mut NoUser, 0, None).unwrap();
         assert!(turn.reply.contains("<route>plan</route>"), "{}", turn.reply);
@@ -1128,6 +1140,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let err = session.run_coding(&mut NoUser, 0, None).unwrap_err();
         assert!(err.to_string().contains("变更编码审查未通过"), "{err}");
@@ -1158,6 +1171,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&["<stage-complete>1</stage-complete>"])),
             test_review: Box::new(ReviewFactory::new(&[fail])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let err = session.run_testing(&mut NoUser).unwrap_err();
         assert!(err.to_string().contains("变更测试审查未通过"), "{err}");
@@ -1186,6 +1200,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&["通过了\n<stage-complete>1</stage-complete>"])),
             test_review: Box::new(ReviewFactory::new(&[PLAN_PASS])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         match session.run_testing(&mut NoUser).unwrap() {
             TestingTurn::Pass { acceptance_done, .. } => {
@@ -1208,6 +1223,7 @@ mod tests {
             ])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         match session.run_testing(&mut NoUser).unwrap() {
             TestingTurn::RouteCoding { failures } => {
@@ -1240,6 +1256,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&["<stage-complete>1</stage-complete>"])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let err = session.run_testing(&mut NoUser).unwrap_err();
         assert!(err.to_string().contains("没有指到测试"), "{err}");
@@ -1295,6 +1312,32 @@ mod tests {
         Ok(text.to_string())
     }
 
+    /// plan 轮：审查发生过一次违例重审 → 报告里的「审查轮次」计入这次重审（实际开过的实例数）。
+    #[test]
+    fn plan_review_instances_count_the_retry() {
+        // 错实现形态：审查轮次恒为 1（违例重审被藏进「1 轮」）→ 本用例必须变红
+        let f = fixture(false);
+        let (review, _opened) =
+            ScriptedResultFactory::new(vec![ok("我忘了输出协议块"), ok(PLAN_PASS)]);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&["<stage-complete>1</stage-complete>"])),
+            plan_review: Box::new(review),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+            plan_review_instances: 0,
+        };
+        let turn = session.run_plan(&mut NoUser, 0).unwrap();
+        assert_eq!(turn, PlanTurn::Pass);
+        assert_eq!(
+            session.plan_reviews(),
+            2,
+            "审查轮次要计入违例重审（实际开过的实例数，不是恒为 1）"
+        );
+    }
+
     /// plan 轮：审查第一次协议违例、第二次 PASS → 换新实例重审，plan 轮判 Pass。
     #[test]
     fn plan_review_violation_retries_with_a_new_instance() {
@@ -1312,6 +1355,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let turn = session.run_plan(&mut NoUser, 0).unwrap();
         assert_eq!(turn, PlanTurn::Pass, "违例重审通过后 plan 轮判 Pass");
@@ -1337,6 +1381,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let err = session.run_plan(&mut NoUser, 0).unwrap_err();
         let msg = err.to_string();
@@ -1362,6 +1407,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let turn = session.run_plan(&mut NoUser, 0).unwrap();
         assert_eq!(turn, PlanTurn::Pass, "空回复后重审通过 → plan 轮判 Pass");
@@ -1387,6 +1433,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let err = session.run_plan(&mut NoUser, 0).unwrap_err();
         let msg = err.to_string();
@@ -1414,6 +1461,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let turn = session.run_plan(&mut NoUser, 0).unwrap();
         assert_eq!(turn, PlanTurn::Pass, "通道错误后重审通过 → plan 轮判 Pass");
@@ -1441,6 +1489,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&[])),
             test_review: Box::new(ReviewFactory::new(&[])),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let turn = session.run_coding(&mut NoUser, 0, None).unwrap();
         assert_eq!(turn.reviews, 2, "审查轮次要计入重审（实际开过的实例数）");
@@ -1476,6 +1525,7 @@ mod tests {
             test_agent: Box::new(Agent::new(&["<stage-complete>1</stage-complete>"])),
             test_review: Box::new(review),
             ctx: f.ctx.clone(),
+            plan_review_instances: 0,
         };
         let turn = session.run_testing(&mut NoUser).unwrap();
         let TestingTurn::Pass { reviews, .. } = turn else {

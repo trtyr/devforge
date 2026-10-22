@@ -31,7 +31,7 @@ use devforge::sop::planning::{PlanAgentSession, ReviewSession, ReviewSessionFact
 /// 本变更的基线提交（计划 §1.1）。
 const BASELINE: &str = "ad485549e0981b402bd53d64f2dc7e07c79e47b7";
 
-/// 计划 §4 的白名单（coding 步的 18 个文件 = 19 个减去唯一的测试阶段文件
+/// 计划 §4 的白名单（coding 步的 19 个文件 = 20 个减去唯一的测试阶段文件
 /// `tests/change_review_protocol.rs`）。
 const WHITELIST: &[&str] = &[
     "src/sop/review_gate.rs",
@@ -44,6 +44,7 @@ const WHITELIST: &[&str] = &[
     "src/change/session.rs",
     "src/change/boundary.rs",
     "src/config/manifest.rs",
+    "src/server/change_engine.rs",
     "src/server/tests.rs",
     "tests/change_ask_ring.rs",
     "tests/change_failure_context.rs",
@@ -776,6 +777,7 @@ fn a13_empty_issues_route_is_rejected_without_a_placeholder() {
         test_agent: Box::new(FixedAgent::new(reply)),
         test_review: Box::new(NoReview),
         ctx: ctx.clone(),
+        plan_review_instances: 0,
     };
     let mut ui = NoUser;
     let err = prod
