@@ -619,7 +619,10 @@ fn agents_change_doc_matches_the_implemented_contract() {
 // ---------------- 提交内容（验收 26） ----------------
 
 /// 验收 26 · 本变更的提交内容不越界：coding 步提交的文件 ⊆ 白名单，
-/// 且上一场遗留的未提交改动（`coding_gate.rs` / `skill_assets.rs`）不在本变更的 diff 里。
+/// 且上一场遗留的未提交改动不在本变更的 diff 里。
+/// 10-22 操作员补录：`src/change/coding_gate.rs` 已进本场 §4 白名单（step 15 的解析器修复落点，
+/// `change-plan.md:310`）→ 它的改动由上面的白名单口径合法化，不再按「上一场遗留」禁；
+/// `src/config/skill_assets.rs` 仍不在白名单 → 继续禁。
 /// 10-22 运维：两场之间无 step 提交，此守卫恒红 → `#[ignore]`（F10）；
 /// 常量由每场 step 1 刷新并摘除 ignore（真修：常量 gate 时物化）。
 #[test]
@@ -658,7 +661,12 @@ fn the_change_commits_stay_inside_the_whitelist() {
         "本变更的 coding 步提交一个都没找到（提交信息格式变了？）"
     );
     // 上一场遗留的未提交补录（+880 行）不得混进本变更
+    // 豁免的前提 = 该文件已在本场白名单里（改动合法）；前提消失 → 禁令自动恢复
+    // （不许靠改这份清单绕过：清单一空，禁令就整体失效）。
     for leftover in ["src/change/coding_gate.rs", "src/config/skill_assets.rs"] {
+        if WHITELIST.contains(&leftover) {
+            continue;
+        }
         let diff = git(
             &root,
             &["diff", "--name-only", BASELINE, "HEAD", "--", leftover],
