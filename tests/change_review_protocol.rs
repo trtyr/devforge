@@ -46,7 +46,8 @@ use devforge::sop::review_gate::{
 /// → 守卫的扫描范围与引擎的越界门同口径（同一个基线）。
 const BASELINE: &str = "a36f6b79dec2e681db8daed0da067f9abd47a9f5";
 
-/// 计划 §4 的白名单（**23 个**文件 = coding 步 22 个 + 测试阶段 1 个）。
+/// 计划 §4 的白名单（**24 个**文件 = coding 步 23 个 + 测试阶段 1 个；
+/// coding_gate.rs 为操作员补录扩容：resume5 死因 F16 解析器修复落点）。
 const PLAN_WHITELIST: &[&str] = &[
     "src/observability/mod.rs",
     "src/observability/heartbeat.rs",
@@ -69,11 +70,12 @@ const PLAN_WHITELIST: &[&str] = &[
     "tests/change_ask_ring.rs",
     "tests/change_failure_context.rs",
     "tests/change_review_protocol.rs",
+    "src/change/coding_gate.rs",
     "docs/plantree/plans/010-run-resume/decisions/README.md",
     "docs/plantree/plans/010-run-resume/roadmap.md",
 ];
 
-/// 计划 §4 白名单去掉唯一的测试阶段文件 = **coding 步 22 个**。
+/// 计划 §4 白名单去掉唯一的测试阶段文件 = **coding 步 23 个**。
 const CODING_WHITELIST: &[&str] = &[
     "src/observability/mod.rs",
     "src/observability/heartbeat.rs",
@@ -95,6 +97,7 @@ const CODING_WHITELIST: &[&str] = &[
     "tests/change_ask_ring.rs",
     "tests/change_failure_context.rs",
     "tests/change_review_protocol.rs",
+    "src/change/coding_gate.rs",
     "docs/plantree/plans/010-run-resume/decisions/README.md",
     "docs/plantree/plans/010-run-resume/roadmap.md",
 ];
@@ -1429,12 +1432,12 @@ fn a31_the_change_commits_stay_inside_the_plan_whitelist() {
     }
 }
 
-/// 验收 31（续）· 计划 §4 白名单 = 23 个文件（coding 22 + 测试阶段 1）。
+/// 验收 31（续）· 计划 §4 白名单 = 24 个文件（coding 23 + 测试阶段 1；coding_gate.rs 为操作员补录扩容）。
 #[test]
 fn a32_the_plan_whitelist_has_twenty_three_files() {
-    // 错实现形态：白名单数目写错（21/24）→ 本用例必须变红
-    assert_eq!(PLAN_WHITELIST.len(), 23, "计划 §4 白名单 = 23 个文件");
-    assert_eq!(CODING_WHITELIST.len(), 22, "coding 步白名单 = 22 个文件");
+    // 错实现形态：白名单数目写错（22/25）→ 本用例必须变红（函数名保留历史称呼）
+    assert_eq!(PLAN_WHITELIST.len(), 24, "计划 §4 白名单 = 24 个文件");
+    assert_eq!(CODING_WHITELIST.len(), 23, "coding 步白名单 = 23 个文件");
     assert!(
         PLAN_WHITELIST.contains(&"tests/f6_observability.rs"),
         "计划 §4 白名单要含唯一的测试阶段文件"

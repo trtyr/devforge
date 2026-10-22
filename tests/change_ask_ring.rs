@@ -57,6 +57,7 @@ const WHITELIST: &[&str] = &[
     "tests/change_ask_ring.rs",
     "tests/change_failure_context.rs",
     "tests/change_review_protocol.rs",
+    "src/change/coding_gate.rs",
     "docs/plantree/plans/010-run-resume/decisions/README.md",
     "docs/plantree/plans/010-run-resume/roadmap.md",
 ];
