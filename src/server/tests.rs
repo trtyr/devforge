@@ -325,6 +325,144 @@ async fn start_returns_immediately_when_the_required_profile_is_ready_even_if_a_
 }
 
 #[tokio::test]
+async fn other_endpoints_are_served_while_a_start_waits_at_the_render_gate() {
+    // 错实现形态：闸门等待用阻塞式等待占住 tokio worker（如 std::thread::sleep 轮询）
+    // → 等待期内其它端点的请求被拖到闸门放开之后才返回 → 本用例必须变红
+    let f = fixture();
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": "/tmp/ws-p"})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t1", "sop": "coding"})),
+    )
+    .await;
+
+    // 渲染在途 → start 挂在闸门上；兜底线程 1.5s 后放行（阻塞式实现下也不会把用例挂死）
+    f.state.render_gate.begin_render();
+    let router = f.router.clone();
+    let waiter = tokio::spawn(async move {
+        send(&router, "POST", "/api/v1/projects/p/tasks/t1/start", None).await
+    });
+    let released_at: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
+    let released_at2 = released_at.clone();
+    let state = f.state.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        *released_at2.lock().unwrap() = Some(std::time::Instant::now());
+        state.render_gate.end_render();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await; // 让 start 确实挂到闸门上
+
+    // 等待期内：同一服务器的其它端点必须照常被处理
+    let resp = send(&f.router, "GET", "/api/v1/projects", None).await;
+    let done_at = std::time::Instant::now();
+    assert_eq!(resp.status(), 200);
+    assert!(
+        !waiter.is_finished(),
+        "start 此刻应仍挂在闸门上（若已返回，本用例就没测到等待期）"
+    );
+    // 闸门若已被放开过，则本请求必须在放开之前就返回（阻塞式实现会拖到放开之后 → 红）
+    let released = *released_at.lock().unwrap();
+    if let Some(released) = released {
+        assert!(
+            done_at < released,
+            "闸门等待期间其它端点必须照常被处理（该请求被拖到闸门放开之后才返回）"
+        );
+    }
+
+    // 闸门放开 → start 正常 202（证明上面不是「start 早已返回」的假绿）
+    let resp = waiter.await.unwrap();
+    assert_eq!(resp.status(), 202);
+}
+
+#[tokio::test]
+async fn two_concurrent_starts_while_the_gate_waits_run_at_most_one() {
+    // 错实现形态：闸门把两个并发 start 都放行并各自开跑（双跑）→ run 数 > 1、引擎被调两次；
+    // 或：输的那一路静默消失（既没开跑、也没 run.error 事件）→ 事件里查不到 run.error
+    let f = fixture_with_engine(1500, None, None); // hang_ms=1500：胜出的 run 保持运行中
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": "/tmp/ws-p"})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t1", "sop": "coding"})),
+    )
+    .await;
+
+    // 渲染在途且所需 profile 未就绪 → 两个 start 都挂在闸门上（都过了 HTTP 层的串行槽快判）
+    f.state.render_gate.begin_render();
+    let r1 = f.router.clone();
+    let r2 = f.router.clone();
+    let a = tokio::spawn(async move {
+        send(&r1, "POST", "/api/v1/projects/p/tasks/t1/start", None).await
+    });
+    let b = tokio::spawn(async move {
+        send(&r2, "POST", "/api/v1/projects/p/tasks/t1/start", None).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // 放行：所需 profile 就绪（门卫要过）+ 渲染结束 → 闸门放开
+    for p in ["coding-agent", "coding-review"] {
+        let d = f.state.profiles_root.join(p);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("settings.json"), "{}").unwrap();
+    }
+    f.state.render_gate.end_render();
+
+    // 两个 start 都被受理（202）：串行槽的判定在后台线程里，不在 HTTP 层
+    assert_eq!(a.await.unwrap().status(), 202);
+    assert_eq!(b.await.unwrap().status(), 202);
+
+    // 输的那一路必须以 run.error 事件明确失败（不产生双跑）
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let run_errors = loop {
+        let n = f
+            .state
+            .bus
+            .replay_after(0)
+            .iter()
+            .filter(|(_, data)| data.contains("\"type\":\"run.error\""))
+            .count();
+        if n > 0 || std::time::Instant::now() > deadline {
+            break n;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    assert_eq!(
+        run_errors, 1,
+        "并发 start 只能有一个开跑，另一个必须以 run.error 事件明确失败"
+    );
+
+    // 至多一个 run 真正开跑、引擎只被调用一次
+    let body = body_json(
+        send(&f.router, "GET", "/api/v1/projects/p/tasks/t1/runs", None).await,
+    )
+    .await;
+    assert_eq!(
+        body["runs"].as_array().map(|r| r.len()),
+        Some(1),
+        "只能有一个 run 真正开跑：{body}"
+    );
+    let calls = f.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1, "引擎只能被调用一次：{calls:?}");
+
+    wait_settled(&f, "p", "t1").await;
+}
+
+#[tokio::test]
 async fn projects_crud_with_local_dir_creation() {
     let f = fixture();
     let dir = tempfile::tempdir().unwrap();
