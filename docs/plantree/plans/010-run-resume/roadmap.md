@@ -36,6 +36,20 @@
 - [x] **(T007) `doc-from-zero` 接入** — 状态从 `docs/contexts/_meta/` 搬到黑板 `plans/<p>/<t>/doc-from-zero/state.json`（D001）；done 证据 = 产出文件清单 + `doc-lint` 退出码（D003）；恢复语按 D005 由 SOP 提供。
   - 验收：清空 `docs/contexts/_meta/` 后第二次 start 仍能续；仅留旧位置 state 时判冷启动。
   - **证据**：commit `45be31c` + `1dc1521`（`checkpoint_lives_on_blackboard_not_in_output_dir` / `legacy_output_dir_state_does_not_participate_in_resume`）。
+
+## Phase 4 · 可观测性与死亡取证
+
+- [x] **(T010) 引擎可观测性三件套 + 渲染闸门** — ①原始错误分级落盘（基础类 ERROR / 质量类 WARN，字段同构，
+  落点在**决定重试之前**；终态再一条 `run.attempt_exhausted`）；②里程碑（阶段转换 / fix 往返 / 审查开庭 /
+  三道机械门判定 / agent 交卷，事件名固定八个，内联写在调用点 → `target` 可过滤）；③死亡取证
+  （panic 墓碑 + run 心跳；墓碑写入 best-effort 且必链回上一个 hook；心跳覆盖写 + watchdog 低频兜底刷新）。
+  附带**根因修复**：`start` 开跑前等所需 profile 就绪（渲染闸门，只等 `settings.json` 落盘、不等整轮渲染）
+  + 「profile 未就绪」改判配置错误 → 不再盲重启。
+  - 验收：逐条对账 `docs/plantree/changes/change-20261022-c7-1-start-src-server-tests-rs-145-fixtu/change-plan.md` §5；
+    仓内单测（含错实现形态反例）随各步提交。
+  - **证据**：本场十个 step 提交（`git log --oneline a36f6b7..HEAD`：守卫常量刷新=step 1、观测模块=step 2/5、错误分级=step 3、渲染闸门=step 4、里程碑=step 6/7、run 级与心跳=step 8、本文档=step 9、收尾=step 10）；**决策**：D006。
+  - **遗留**：日志不保证零丢失（墓碑与心跳才是硬证据）；闸门无兜底上界；run 上下文并发化后需再设计。
+
 ## 验收阶段（不在本轮代码阶段）
 
 > 本轮（代码阶段）只写单测，不跑端到端（用户 2026-10-20 口径）。以下两项待验收时再做，**不算本轮任务**。
@@ -50,9 +64,12 @@
 - **M2**：韧性可用（T005/T006）——外部故障自愈，质量失败照旧判死。
 - **M3**：doc SOP 接入（T007）。
 - **M4**（验收阶段）：e2e 续跑实证 + 真实故障实证（T008/T009）。
+- **M5**：可观测性与死亡取证（T010）——引擎内部发生了什么，事后查得出；boot 期不再盲重启。
 
 ## Deferred
 
 - 增量重生成（受影响单元才重做）——归 008 T023–T025。
 - 跨机器共享断点（黑板在单机上，远端调度不在此计划）。
 - run 级 UI 的「重试可视化」——只保证 API 字段可断言。
+- 渲染闸门的兜底上界（渲染线程挂死时 `start` 会一直等）——登记在 D006 遗留，本靶刻意不引入新超时。
+- 里程碑日志的零丢失（要换同步 fsync 通道，超出本靶范围）——登记在 D006 遗留。
