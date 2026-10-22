@@ -1312,7 +1312,6 @@ fn a28_topic_docs_match_the_new_contract() {
 
 /// 验收 29 · 守卫文件的两个常量 = 本场基线 + coding 白名单 22 个文件，提交扫描通过。
 #[test]
-#[ignore = "守卫常量由 change run 刷新；两场之间无 step 提交（F10/F13）"]
 fn a29_guard_constants_point_at_this_change() {
     // 错实现形态：常量没刷新（还指着上一场的基线 / 上一场的白名单）→ 本用例必须变红
     let guard = std::fs::read_to_string(repo_root().join("tests/change_ask_ring.rs"))
@@ -1391,7 +1390,6 @@ fn a30_acceptance_file_constants_match_the_guard() {
 
 /// 验收 31 · 本变更的提交内容 ⊆ 计划 §4 白名单（23 个文件），未跟踪产物不入库。
 #[test]
-#[ignore = "守卫常量由 change run 刷新；两场之间无 step 提交（F10/F13）"]
 fn a31_the_change_commits_stay_inside_the_plan_whitelist() {
     // 错实现形态：把白名单外的文件带进本变更的提交 / 顺手 `git add -A` 把未跟踪产物卷进来 → 本用例必须变红
     let root = repo_root();
