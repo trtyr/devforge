@@ -22,6 +22,9 @@ use crate::change::testing_gate::{
 use crate::error::{Context as _, DevforgeError, Result};
 use crate::sop::coding_protocol::{parse_review_report, parse_stage_complete, StageVerdict};
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
+use crate::sop::review_gate::{
+    outcome_of_review_report, review_with_gate, ReviewBudget,
+};
 
 /// 一次 change run 的固定上下文。
 #[derive(Debug, Clone)]
@@ -211,19 +214,24 @@ fn issues_of(reply: &str) -> Vec<String> {
         .collect()
 }
 
+/// 跑一次审查（开一个实例 → 审一次 → 解析），按三通道分类。
+///
+/// 返回（判负通道的报告，实际开过的实例数）：
+/// - 协议违例（审查输出本身不合规）→ 换**全新实例**重审，超上限才 Quality（不自动重启）；
+/// - 实例失败（空回复 / 进程早退 / 模型通道错误）→ 换新实例重试，超上限判基础设施故障（可重启）；
+/// - 判负 → 交出报告与实例数（实例数即「审查轮次」，重审如实计入）。
 fn review_once(
     factory: &mut dyn ReviewSessionFactory,
     instruction: &str,
-) -> Result<crate::sop::coding_protocol::ReviewReport> {
-    let mut session = factory.open()?;
-    let text = session.review(instruction)?;
-    drop(session);
-    if text.trim().is_empty() {
-        return Err(DevforgeError::System(
-            "审查会话无有效回复（进程正常结束但未产出一字）——按基础设施故障处理".into(),
-        ));
-    }
-    parse_review_report(&text)
+) -> Result<(crate::sop::coding_protocol::ReviewReport, usize)> {
+    let mut budget = ReviewBudget::default();
+    review_with_gate(
+        factory,
+        0,
+        |_| instruction.to_string(),
+        &mut budget,
+        |text| Ok(outcome_of_review_report(parse_review_report(text)?)),
+    )
 }
 
 impl ProdChangeSession {
@@ -249,16 +257,12 @@ impl ProdChangeSession {
                 DevforgeError::Quality(format!("计划文件不可读（{}）：{e}", plan_path.display()))
             },
         )?;
-        let report = review_once(
+        // plan 侧的审查实例数（= 审查轮次）待步骤 9 落字段：`ProdChangeSession` 是字面量构造的，
+        // 加字段必须改 `src/server/change_engine.rs`（不在计划 §4 白名单内，已按 impact-gap 申报）。
+        let (report, _plan_instances) = review_once(
             &mut *self.plan_review,
             &review_instruction(&self.ctx.change_id, &plan_path, &plan_text, &audit),
         )?;
-        if report.protocol_violation {
-            return Err(DevforgeError::Quality(format!(
-                "变更计划审查协议违例：{}",
-                report.issues.join("；")
-            )));
-        }
         match report.verdict {
             StageVerdict::Pass => Ok(PlanTurn::Pass),
             StageVerdict::Fail => Ok(PlanTurn::Fail {
@@ -345,21 +349,15 @@ impl ChangeSession for ProdChangeSession {
         let changed = changed_files(&self.ctx.repo, &self.ctx.baseline)?;
 
         // ③ coding review：diff ↔ 计划对账（越界已由引擎先算，这里管语义）
-        let report = review_once(
+        let (report, instances) = review_once(
             &mut *self.coding_review,
             &coding_review_instruction(&self.ctx, &changed),
         )?;
-        if report.protocol_violation {
-            return Err(DevforgeError::Quality(format!(
-                "变更编码审查协议违例：{}",
-                report.issues.join("；")
-            )));
-        }
         match report.verdict {
             StageVerdict::Pass => Ok(CodingTurn {
                 reply,
                 changed,
-                reviews: 1,
+                reviews: instances,
             }),
             StageVerdict::Fail => Err(DevforgeError::Quality(format!(
                 "变更编码审查未通过：{}",
@@ -413,20 +411,14 @@ impl ChangeSession for ProdChangeSession {
             }
         }
         // test review：验回归证据与对账（只验证据，不重跑套件）
-        let report = review_once(
+        let (report, instances) = review_once(
             &mut *self.test_review,
             &testing_review_instruction(&self.ctx),
         )?;
-        if report.protocol_violation {
-            return Err(DevforgeError::Quality(format!(
-                "变更测试审查协议违例：{}",
-                report.issues.join("；")
-            )));
-        }
         match report.verdict {
             StageVerdict::Pass => Ok(TestingTurn::Pass {
                 acceptance_done: done,
-                reviews: 1,
+                reviews: instances,
             }),
             StageVerdict::Fail => Err(DevforgeError::Quality(format!(
                 "变更测试审查未通过：{}",
@@ -1200,6 +1192,245 @@ mod tests {
         let err = session.run_testing(&mut NoUser).unwrap_err();
         assert!(err.to_string().contains("没有指到测试"), "{err}");
         let _ = &f.tmp;
+    }
+
+    // ---------------- 审查三通道：违例重审 / 实例失败重试（验收 1-8） ----------------
+
+    /// 按脚本返回结果的审查工厂（能回空回复 / 错误），并数开过几个实例。
+    struct ScriptedResultFactory {
+        replies: Rc<RefCell<VecDeque<Result<String>>>>,
+        opened: Rc<RefCell<usize>>,
+    }
+
+    impl ScriptedResultFactory {
+        fn new(replies: Vec<Result<String>>) -> (Self, Rc<RefCell<usize>>) {
+            let opened = Rc::new(RefCell::new(0));
+            (
+                Self {
+                    replies: Rc::new(RefCell::new(replies.into())),
+                    opened: opened.clone(),
+                },
+                opened,
+            )
+        }
+    }
+
+    struct ScriptedResultReview {
+        replies: Rc<RefCell<VecDeque<Result<String>>>>,
+        opened: Rc<RefCell<usize>>,
+    }
+
+    impl ReviewSession for ScriptedResultReview {
+        fn review(&mut self, _instruction: &str) -> Result<String> {
+            *self.opened.borrow_mut() += 1;
+            self.replies
+                .borrow_mut()
+                .pop_front()
+                .expect("Review 脚本耗尽")
+        }
+    }
+
+    impl ReviewSessionFactory for ScriptedResultFactory {
+        fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
+            Ok(Box::new(ScriptedResultReview {
+                replies: self.replies.clone(),
+                opened: self.opened.clone(),
+            }))
+        }
+    }
+
+    fn ok(text: &str) -> Result<String> {
+        Ok(text.to_string())
+    }
+
+    /// plan 轮：审查第一次协议违例、第二次 PASS → 换新实例重审，plan 轮判 Pass。
+    #[test]
+    fn plan_review_violation_retries_with_a_new_instance() {
+        // 错实现形态：把协议违例当判负（直接 Quality 终止 run）→ 本用例必须变红
+        let f = fixture(false);
+        let (review, opened) = ScriptedResultFactory::new(vec![
+            ok("我忘了输出协议块"),
+            ok(PLAN_PASS),
+        ]);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&["<stage-complete>1</stage-complete>"])),
+            plan_review: Box::new(review),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let turn = session.run_plan(&mut NoUser, 0).unwrap();
+        assert_eq!(turn, PlanTurn::Pass, "违例重审通过后 plan 轮判 Pass");
+        assert_eq!(*opened.borrow(), 2, "违例后必须开第二个全新审查实例");
+    }
+
+    /// plan 轮：连续 4 次协议违例 → 质量失败（不自动重启），错误文本含「协议违例」。
+    #[test]
+    fn four_plan_review_violations_are_a_quality_failure() {
+        // 错实现形态：违例超限判成基础设施故障（会被自动重启）→ 本用例必须变红
+        let f = fixture(false);
+        let (review, _opened) = ScriptedResultFactory::new(vec![
+            ok("缺块1"),
+            ok("缺块2"),
+            ok("缺块3"),
+            ok("缺块4"),
+        ]);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&["<stage-complete>1</stage-complete>"])),
+            plan_review: Box::new(review),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let err = session.run_plan(&mut NoUser, 0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("协议违例"), "{msg}");
+        assert!(
+            err.is_quality_failure(),
+            "违例超限是质量失败（不自动重启）: {msg}"
+        );
+    }
+
+    /// plan 轮：审查第一次空回复 → 换新实例重审（空回复不得被当成判负）。
+    #[test]
+    fn empty_review_reply_retries_with_a_new_instance() {
+        // 错实现形态：把空回复当判负（Quality）或直接判死 run → 本用例必须变红
+        let f = fixture(false);
+        let (review, opened) =
+            ScriptedResultFactory::new(vec![ok(""), ok(PLAN_PASS)]);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&["<stage-complete>1</stage-complete>"])),
+            plan_review: Box::new(review),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let turn = session.run_plan(&mut NoUser, 0).unwrap();
+        assert_eq!(turn, PlanTurn::Pass, "空回复后重审通过 → plan 轮判 Pass");
+        assert_eq!(*opened.borrow(), 2, "空回复后必须开第二个全新审查实例");
+    }
+
+    /// plan 轮：连续 4 次空回复 → 基础设施故障（System，可重启），错误文本含「基础设施故障」。
+    #[test]
+    fn four_empty_review_replies_are_an_infrastructure_failure() {
+        // 错实现形态：把实例失败判成质量失败（不重启）/ 判负 → 本用例必须变红
+        let f = fixture(false);
+        let (review, _opened) = ScriptedResultFactory::new(vec![
+            ok(""),
+            ok(""),
+            ok(""),
+            ok(""),
+        ]);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&["<stage-complete>1</stage-complete>"])),
+            plan_review: Box::new(review),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let err = session.run_plan(&mut NoUser, 0).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("基础设施故障"), "{msg}");
+        assert!(
+            !err.is_quality_failure(),
+            "实例失败耗尽是基础设施故障（可重启）: {msg}"
+        );
+    }
+
+    /// plan 轮：审查第一次返回错误（模型通道错误）→ 换新实例重审，不判负也不直接判死。
+    #[test]
+    fn review_error_retries_with_a_new_instance() {
+        // 错实现形态：把通道错误当判负 / 直接判死 run → 本用例必须变红
+        let f = fixture(false);
+        let (review, opened) = ScriptedResultFactory::new(vec![
+            Err(DevforgeError::System("模型通道 500".into())),
+            ok(PLAN_PASS),
+        ]);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&["<stage-complete>1</stage-complete>"])),
+            plan_review: Box::new(review),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let turn = session.run_plan(&mut NoUser, 0).unwrap();
+        assert_eq!(turn, PlanTurn::Pass, "通道错误后重审通过 → plan 轮判 Pass");
+        assert_eq!(*opened.borrow(), 2, "通道错误后必须开第二个全新审查实例");
+    }
+
+    /// coding 轮：审查第一次 FAIL 空箱（协议违例）→ 换新实例重审，第二个 PASS → coding 轮正常推进。
+    #[test]
+    fn coding_review_violation_retries_with_a_new_instance() {
+        // 错实现形态：把 FAIL 空箱当判负（终止 coding 轮 / 回注 coding agent）→ 本用例必须变红
+        let f = fixture(true);
+        coding_ready(&f);
+        let (review, opened) = ScriptedResultFactory::new(vec![
+            ok("<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>"),
+            ok(PLAN_PASS),
+        ]);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&[])),
+            plan_review: Box::new(ReviewFactory::new(&[])),
+            coding_agent: Box::new(Agent::new(&[
+                "<stage-complete>1</stage-complete>",
+                "<stage-complete>1</stage-complete>",
+            ])),
+            coding_review: Box::new(review),
+            test_agent: Box::new(Agent::new(&[])),
+            test_review: Box::new(ReviewFactory::new(&[])),
+            ctx: f.ctx.clone(),
+        };
+        let turn = session.run_coding(&mut NoUser, 0, None).unwrap();
+        assert_eq!(turn.reviews, 2, "审查轮次要计入重审（实际开过的实例数）");
+        assert_eq!(*opened.borrow(), 2, "违例后必须开第二个全新审查实例");
+    }
+
+    /// test 轮：审查第一次 FAIL 空箱（协议违例）→ 换新实例重审，第二个 PASS → testing 轮判 Pass。
+    #[test]
+    fn test_review_violation_retries_with_a_new_instance() {
+        // 错实现形态：把 FAIL 空箱当判负（终止 testing 轮 / 回注 coding agent）→ 本用例必须变红
+        let f = fixture(true);
+        std::fs::create_dir_all(f.ctx.blackboard.join("testing")).unwrap();
+        std::fs::create_dir_all(f.ctx.blackboard.join("evidence")).unwrap();
+        std::fs::write(
+            f.ctx.blackboard.join("evidence/regression.log"),
+            "command: cargo test\nexit_code: 0\n",
+        )
+        .unwrap();
+        std::fs::write(
+            f.ctx.blackboard.join("testing/acceptance.md"),
+            "- 给定 x=1 → 返回 2 → tests/a_test.rs:10\n",
+        )
+        .unwrap();
+        let (review, opened) = ScriptedResultFactory::new(vec![
+            ok("<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>"),
+            ok(PLAN_PASS),
+        ]);
+        let mut session = ProdChangeSession {
+            plan_agent: Box::new(Agent::new(&[])),
+            plan_review: Box::new(ReviewFactory::new(&[])),
+            coding_agent: Box::new(Agent::new(&[])),
+            coding_review: Box::new(ReviewFactory::new(&[])),
+            test_agent: Box::new(Agent::new(&["<stage-complete>1</stage-complete>"])),
+            test_review: Box::new(review),
+            ctx: f.ctx.clone(),
+        };
+        let turn = session.run_testing(&mut NoUser).unwrap();
+        let TestingTurn::Pass { reviews, .. } = turn else {
+            panic!("重审通过后 testing 轮应判 Pass，实际 {turn:?}");
+        };
+        assert_eq!(reviews, 2, "审查轮次要计入重审（实际开过的实例数）");
+        assert_eq!(*opened.borrow(), 2, "违例后必须开第二个全新审查实例");
     }
 }
 
