@@ -29,16 +29,25 @@ use devforge::sop::planning::{PlanAgentSession, ReviewSession, ReviewSessionFact
 // ---------------- 常量 ----------------
 
 /// 本变更的基线提交（计划 §1.1）。
-const BASELINE: &str = "5d7bfd023f50fd6463d796cad5bd9c479f03d7c3";
+const BASELINE: &str = "ad485549e0981b402bd53d64f2dc7e07c79e47b7";
 
-/// 计划 §4 的白名单（10 个文件）。
+/// 计划 §4 的白名单（coding 步的 18 个文件 = 19 个减去唯一的测试阶段文件
+/// `tests/change_review_protocol.rs`）。
 const WHITELIST: &[&str] = &[
-    "src/change/state.rs",
-    "src/change/testing_gate.rs",
+    "src/sop/review_gate.rs",
+    "src/sop/mod.rs",
+    "src/sop/coding_protocol.rs",
+    "src/sop/output.rs",
+    "src/sop/planning.rs",
+    "src/sop/coding.rs",
+    "src/sop/testing.rs",
     "src/change/session.rs",
-    "src/change/orchestrator.rs",
-    "src/change/mod.rs",
+    "src/change/boundary.rs",
+    "src/config/manifest.rs",
+    "src/server/tests.rs",
     "tests/change_ask_ring.rs",
+    "tests/change_failure_context.rs",
+    "tests/e2e/fixtures/change_agents.json",
     "docs/plantree/plans/009-change-sop/decisions/README.md",
     "docs/plantree/plans/009-change-sop/topics/agents-change.md",
     "docs/plantree/plans/009-change-sop/topics/vs-mvp.md",
