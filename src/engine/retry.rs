@@ -81,19 +81,30 @@ where
             log.push(format!("第{attempt}次: {e}"));
         }
         let retryable = is_infra_failure(&result) && !control.is_cancelled();
+        // 原始错误全量可见（010 F6 靶 · 需求 1）：每次尝试失败先落一条**分级**条目——
+        // 质量类失败落 WARN，其余落 ERROR；落盘点在**决定重试之前**（先记错误、再决定重启）。
+        if let Err(e) = &result {
+            crate::observability::set_attempt(attempt);
+            log_attempt_failed(attempt, e, retryable);
+        }
         if !retryable || attempt >= policy.max_attempts {
             // 多次尝试后仍失败：错误串必须带每次尝试的末段，否则事后无法定位是哪一次怎么挂的
-            if attempt > 1 && log.len() > 1 && result.is_err() {
-                return (
-                    Err(DevforgeError::System(format!(
-                        "{}（共尝试 {attempt} 次；尝试记录：{}）",
-                        log.last().cloned().unwrap_or_default(),
-                        log.join(" / ")
-                    ))),
-                    attempt,
-                );
+            let final_result = if attempt > 1 && log.len() > 1 && result.is_err() {
+                Err(DevforgeError::System(format!(
+                    "{}（共尝试 {attempt} 次；尝试记录：{}）",
+                    log.last().cloned().unwrap_or_default(),
+                    log.join(" / ")
+                )))
+            } else {
+                result
+            };
+            // 尝试耗尽的终态条目：含总尝试次数与最终错误全文（与尝试级条目同形状）
+            if attempt >= policy.max_attempts
+                && let Err(e) = &final_result
+            {
+                log_attempt_exhausted(attempt, e);
             }
-            return (result, attempt);
+            return (final_result, attempt);
         }
         if policy.sleep {
             let ms = policy.backoff_for(attempt);
@@ -102,6 +113,60 @@ where
             }
         }
         attempt += 1;
+    }
+}
+
+/// 尝试级失败条目（原始错误全量可见 · 需求 1）。
+///
+/// 分级：质量类失败（`DevforgeError::Quality`）落 **WARN**，其余一切失败落 **ERROR**。
+/// 字段与 `map_intervention` 的质量分支**同构**（`component` / `event` / `attempt` /
+/// `error` / `error_chain` / `retryable`）——两处字段名一致，事后按字段过滤才对得上。
+fn log_attempt_failed(attempt: u32, e: &DevforgeError, retryable: bool) {
+    let error_chain = crate::observability::error_chain(e);
+    if e.is_quality_failure() {
+        tracing::warn!(
+            component = "run-retry",
+            event = "run.attempt_failed",
+            attempt,
+            error = %e,
+            error_chain = %error_chain,
+            retryable,
+            "run 尝试失败（质量类，不重启）"
+        );
+    } else {
+        tracing::error!(
+            component = "run-retry",
+            event = "run.attempt_failed",
+            attempt,
+            error = %e,
+            error_chain = %error_chain,
+            retryable,
+            "run 尝试失败"
+        );
+    }
+}
+
+/// 尝试耗尽的终态条目（含总尝试次数与最终错误全文）。
+fn log_attempt_exhausted(attempt: u32, e: &DevforgeError) {
+    let error_chain = crate::observability::error_chain(e);
+    if e.is_quality_failure() {
+        tracing::warn!(
+            component = "run-retry",
+            event = "run.attempt_exhausted",
+            attempts = attempt,
+            error = %e,
+            error_chain = %error_chain,
+            "run 尝试耗尽（质量类）"
+        );
+    } else {
+        tracing::error!(
+            component = "run-retry",
+            event = "run.attempt_exhausted",
+            attempts = attempt,
+            error = %e,
+            error_chain = %error_chain,
+            "run 尝试耗尽"
+        );
     }
 }
 
@@ -192,5 +257,99 @@ mod tests {
             Err(DevforgeError::Store("任务不存在".into()));
         assert!(!is_infra_failure(&other));
         assert!(is_infra_failure(&infra()));
+    }
+}
+
+#[cfg(test)]
+mod log_capture_tests {
+    //! 「原始错误全量可见」的行为断言：钉**日志面**（JSONL 条目的级别与字段），
+    //! 不是钉内部实现（不数函数被调了几次）。
+    //!
+    //! 错实现形态（任一命中即红）：
+    //! ① 基础设施故障落 WARN（应 ERROR）/ 质量失败落 ERROR（应 WARN）；
+    //! ② 落盘时缺 `error_chain`（source 链看不见）/ 缺 `attempt` / `retryable`；
+    //! ③ 尝试耗尽时少一条 `run.attempt_exhausted`（或次数字段错）。
+
+    use super::*;
+    use std::sync::Mutex;
+
+    /// 跑一段闭包并把 JSONL 日志收进临时文件，返回日志全文。
+    fn capture_jsonl(f: impl FnOnce()) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.jsonl");
+        let file = std::fs::File::create(&path).unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(Mutex::new(file))
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        std::fs::read_to_string(&path).unwrap()
+    }
+
+    #[test]
+    fn infra_failures_are_logged_as_error_with_the_full_error_text() {
+        let text = capture_jsonl(|| {
+            let (result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), |n| {
+                Err(DevforgeError::System(format!("第 {n} 次挂了")))
+            });
+            assert_eq!(attempts, 4);
+            assert!(result.is_err());
+        });
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("run.attempt_failed"))
+            .collect();
+        assert_eq!(lines.len(), 4, "4 次尝试应各落一条尝试级条目：{text}");
+        for (i, line) in lines.iter().enumerate() {
+            let attempt = i + 1;
+            assert!(line.contains("\"level\":\"ERROR\""), "基础设施故障应落 ERROR：{line}");
+            assert!(line.contains("\"component\":\"run-retry\""), "{line}");
+            assert!(line.contains("\"event\":\"run.attempt_failed\""), "{line}");
+            assert!(line.contains(&format!("\"attempt\":{attempt}")), "{line}");
+            assert!(line.contains("\"retryable\":true"), "第 1 次失败后仍会重启：{line}");
+            assert!(line.contains("第"), "缺原始错误全文：{line}");
+            assert!(line.contains("error_chain"), "缺 source 链字段：{line}");
+        }
+        let exhausted: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("run.attempt_exhausted"))
+            .collect();
+        assert_eq!(exhausted.len(), 1, "应有且仅有一条终态条目：{text}");
+        assert!(exhausted[0].contains("\"attempts\":4"), "终态条目要带尝试次数：{}", exhausted[0]);
+        assert!(exhausted[0].contains("\"level\":\"ERROR\""), "{}", exhausted[0]);
+    }
+
+    #[test]
+    fn quality_failures_are_logged_as_warn_and_are_not_retried() {
+        let text = capture_jsonl(|| {
+            let (result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), |_| {
+                Err(DevforgeError::Quality("审查打回：缺验收标准".into()))
+            });
+            assert_eq!(attempts, 1, "质量失败不得重启");
+            assert!(result.is_err());
+        });
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("run.attempt_failed"))
+            .collect();
+        assert_eq!(lines.len(), 1, "质量失败应落一条条目：{text}");
+        assert!(lines[0].contains("\"level\":\"WARN\""), "质量失败应落 WARN：{}", lines[0]);
+        assert!(lines[0].contains("\"retryable\":false"), "质量失败不重启：{}", lines[0]);
+        assert!(lines[0].contains("\"attempt\":1"), "{}", lines[0]);
+        assert!(lines[0].contains("缺验收标准"), "缺原始错误全文：{}", lines[0]);
+        assert!(lines[0].contains("error_chain"), "缺 source 链字段：{}", lines[0]);
+    }
+
+    #[test]
+    fn the_retry_layer_updates_the_run_context_attempt() {
+        // 错实现形态：重试层不更新 run 上下文 → `map_intervention` 读到的 attempt 不是本次的
+        crate::observability::begin_run("run-attempt", "coding");
+        let (_result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), |_| {
+            Err(DevforgeError::System("挂了".into()))
+        });
+        assert_eq!(attempts, 4);
+        let snap = crate::observability::current().expect("run 上下文应存在");
+        assert_eq!(snap.attempt, 4, "run 上下文的 attempt 应与本次尝试一致");
+        crate::observability::end_run();
     }
 }

@@ -254,7 +254,10 @@ impl BuiltinRpcEngine {
         let dir = self.profile_root.join(role);
         let marker = dir.join("settings.json");
         if !marker.is_file() {
-            return Err(crate::error::DevforgeError::System(format!(
+            // 「profile 未就绪」是**配置问题**不是基础设施故障：重启不会让它变好
+            // （`is_infra_failure` 只认裸 `System` → 这里不进入自动重启分支，010 D004 口径的修正）。
+            // 错误**文本一字不改**（既有单测与 e2e 靠它指路）。
+            return Err(crate::error::DevforgeError::Config(format!(
                 "profile `{}` 未渲染（缺 {}）——先 PUT /api/v1/config/manifest 完成安装渲染，再启动 run",
                 dir.display(),
                 marker.display()
@@ -1003,10 +1006,25 @@ impl BuiltinRpcEngine {
             Ok(RunOutcome::Failed {
                 reason: "已超时（run 超时，被 watchdog 终止）".into(),
             })
-        } else if let crate::error::DevforgeError::Quality(msg) = e {
+        } else if let crate::error::DevforgeError::Quality(msg) = &e {
             // 质量失败（审查打回/协议违例达上限/越界申报）：明确的 Failed，**不进自动重启**（010 D004）
             tracing::warn!(component, reason = %msg, "SOP 质量失败（不重试）");
-            Ok(RunOutcome::Failed { reason: msg })
+            // 原始错误全量可见（010 F6 靶 · 需求 1）：质量类失败落 **WARN**，
+            // 字段与重试层那条**同构**（`event` / `attempt` / `error` / `error_chain` / `retryable`）——
+            // 质量失败在生产链路上到不了重试层（这里被转成 `Ok(Failed)`），不在这儿落就永远看不见。
+            let error_chain = crate::observability::error_chain(&e);
+            tracing::warn!(
+                component,
+                event = "run.attempt_failed",
+                attempt = crate::observability::current().map(|s| s.attempt).unwrap_or(0),
+                error = %e,
+                error_chain = %error_chain,
+                retryable = false,
+                "SOP 质量失败（原始错误已落盘，不重启）"
+            );
+            Ok(RunOutcome::Failed {
+                reason: msg.clone(),
+            })
         } else {
             tracing::warn!(component, error = %e, "SOP 非干预性失败");
             Err(e)
@@ -1819,6 +1837,82 @@ mod coding_engine_tests {
             !plans.join("p").join("t").join("testing").exists(),
             "workspace 门也应先于骨架创建"
         );
+    }
+
+    // ---------- 010 F6 靶：原始错误可见 + profile 门卫的错误种类 ----------
+
+    #[test]
+    fn profile_gate_failure_is_a_config_error_not_an_infrastructure_failure() {
+        // 错实现形态：仍用 `System`（会被 `is_infra_failure` 判成基础设施故障 → 盲重启 3 次）
+        // → 本用例必须变红
+        let dir = tempfile::tempdir().unwrap();
+        let engine = f1_engine(dir.path().to_path_buf(), PathBuf::from("/tmp"));
+        let err = engine.require_profile("coding-agent").unwrap_err();
+        assert!(
+            matches!(err, crate::error::DevforgeError::Config(_)),
+            "profile 未就绪应是配置错误（不是基础设施故障）：{err:?}"
+        );
+        assert!(
+            !crate::engine::retry::is_infra_failure(&Err(err)),
+            "配置错误不得被判为基础设施故障（否则会盲重启）"
+        );
+    }
+
+    #[test]
+    fn profile_gate_failure_keeps_its_text_unchanged() {
+        // 错实现形态：改写错误文案（既有单测与 e2e 靠它指路）→ 本用例必须变红
+        let dir = tempfile::tempdir().unwrap();
+        let engine = f1_engine(dir.path().to_path_buf(), PathBuf::from("/tmp"));
+        let err = engine.require_profile("coding-agent").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("coding-agent"), "报错应含角色目录: {msg}");
+        assert!(msg.contains("settings.json"), "报错应含缺失标记路径: {msg}");
+        assert!(msg.contains("未渲染"), "报错应说明未渲染: {msg}");
+        assert!(
+            msg.contains("先 PUT /api/v1/config/manifest"),
+            "报错应带处置建议: {msg}"
+        );
+    }
+
+    #[test]
+    fn quality_failure_in_map_intervention_is_logged_as_warn_with_the_retry_layer_fields() {
+        // 错实现形态：①质量失败落 ERROR（应 WARN）②缺 `error_chain` / `attempt` / `retryable`
+        // ③只留既有那条无字段的 WARN → 本用例必须变红
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.jsonl");
+        let file = std::fs::File::create(&path).unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(std::sync::Mutex::new(file))
+            .finish();
+        let engine = f1_engine(dir.path().join("profiles"), PathBuf::from("/tmp"));
+        tracing::subscriber::with_default(subscriber, || {
+            let outcome = engine
+                .map_intervention(
+                    &RunControl::new(),
+                    "change-engine",
+                    crate::error::DevforgeError::Quality("越界改动未申报".into()),
+                )
+                .unwrap();
+            assert!(
+                matches!(outcome, RunOutcome::Failed { .. }),
+                "质量失败仍是明确的 Failed（不重启）"
+            );
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("run.attempt_failed"))
+            .collect();
+        assert_eq!(lines.len(), 1, "质量失败应落一条同形状条目：{text}");
+        let line = lines[0];
+        assert!(line.contains("\"level\":\"WARN\""), "质量失败应落 WARN：{line}");
+        assert!(line.contains("\"event\":\"run.attempt_failed\""), "{line}");
+        assert!(line.contains("\"component\":\"change-engine\""), "{line}");
+        assert!(line.contains("\"attempt\":"), "缺 attempt 字段：{line}");
+        assert!(line.contains("\"retryable\":false"), "质量失败不重启：{line}");
+        assert!(line.contains("越界改动未申报"), "缺原始错误全文：{line}");
+        assert!(line.contains("error_chain"), "缺 source 链字段：{line}");
     }
 
     #[test]
