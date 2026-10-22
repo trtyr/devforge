@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::change::boundary::{parse_route, replan_instruction, ImpactGap};
 use crate::change::coding_gate::{
-    changed_files, check_baseline_log, check_self_check, check_step_commits, read_steps,
+    changed_files, check_baseline_log, check_self_check, check_step_commits, parse_baseline_log,
+    read_steps, BASELINE_LOG,
 };
 use crate::change::gate0::DocLevel;
 use crate::change::orchestrator::{ChangeSession, CodingTurn, PlanTurn, TestingTurn};
@@ -196,6 +197,15 @@ pub fn testing_kickoff(ctx: &ChangeCtx) -> String {
 
 // ---------------- 内部小工具 ----------------
 
+/// 证据文件里的退出码（门禁红路径要**按字段**带出退出码；读不到或解析不了就没有该字段）。
+///
+/// 复用门自己的解析口径（`parse_baseline_log`）→ 解析逻辑只有一份，不在这里另抄一份。
+/// 读不到时返回 `None`：tracing 的 `Option` 字段为 `None` 时**整个字段不落**（不是落成 null）。
+fn evidence_exit_code(path: &Path) -> Option<i32> {
+    let text = std::fs::read_to_string(path).ok()?;
+    parse_baseline_log(&text).ok().map(|ev| ev.exit_code)
+}
+
 fn require_marker(stage: &str, reply: &str) -> Result<()> {
     if parse_stage_complete(reply).is_none() {
         return Err(DevforgeError::Quality(format!(
@@ -351,7 +361,7 @@ impl ChangeSession for ProdChangeSession {
         let baseline_reply = self.coding_agent.converse(&baseline_kickoff(&self.ctx), ui)?;
         require_marker("change-coding-agent（基线轮）", &baseline_reply)?;
         // 引擎不自己跑测试，只验证据：红/缺失就在这里拦住（coding 子进程不会再被叫去改代码）
-        // 「基线门」里程碑：绿/红都落一条（红时错误文本里带退出码与命令）
+        // 「基线门」里程碑：绿/红都落一条（红时**按字段**带出退出码）
         let baseline = check_baseline_log(&self.ctx.blackboard);
         match &baseline {
             Ok(ev) => tracing::info!(
@@ -365,6 +375,9 @@ impl ChangeSession for ProdChangeSession {
                 component = "change-engine",
                 event = "gate.baseline",
                 passed = false,
+                // 红时也要把退出码**按字段**带出来（计划 §5「红时含退出码」）：
+                // 事后按字段过滤要看得见「退出码多少」，不能只埋在错误文本里。
+                exit_code = evidence_exit_code(&self.ctx.blackboard.join(BASELINE_LOG)),
                 error = %e,
                 "基线门未通过"
             ),
@@ -1237,9 +1250,25 @@ mod tests {
             ctx: f.ctx.clone(),
             plan_review_instances: 0,
         };
-        let err = session.run_coding(&mut NoUser, 0, None).unwrap_err();
-        assert!(err.to_string().contains("基线不是绿的"), "{err}");
+        let text = crate::observability::test_support::capture_jsonl(|| {
+            let err = session.run_coding(&mut NoUser, 0, None).unwrap_err();
+            assert!(err.to_string().contains("基线不是绿的"), "{err}");
+        });
         assert_eq!(seen.borrow().len(), 1, "红基线后不得再叫 agent 去改代码");
+
+        // 红基线也要落一条门禁里程碑：判定结论 + **退出码按字段带出**（计划 §5「红时含退出码」）
+        let gates: Vec<&str> = text.lines().filter(|l| l.contains("gate.baseline")).collect();
+        assert_eq!(gates.len(), 1, "基线门应落一条：{text}");
+        assert!(
+            gates[0].contains("\"passed\":false"),
+            "判定结论要落红：{}",
+            gates[0]
+        );
+        assert!(
+            gates[0].contains("\"exit_code\":1"),
+            "红基线要把退出码按字段带出来（不能只埋在错误文本里）：{}",
+            gates[0]
+        );
     }
 
     #[test]
