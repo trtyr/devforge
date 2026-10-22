@@ -145,6 +145,10 @@ async fn main() -> anyhow::Result<()> {
 
     devforge::logging::init(&root.join("logs"), "devforge")
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    // 观测根（心跳/墓碑的落点）：与日志目录同根，`DEVFORGE_HOME` 可覆盖（Q4）
+    devforge::observability::set_root(devforge::observability::root());
+    // 死亡取证：进程启动即装 panic hook（panic 原文 + 位置 + 当时阶段写进墓碑文件）
+    devforge::observability::tombstone::install_hook();
     tracing::info!(component = "main", "devforge 启动");
 
     // 配置清单：真源落盘 ~/.devforge/manifest.json（无则用内置默认生成）
