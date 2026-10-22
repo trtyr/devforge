@@ -90,6 +90,8 @@ pub struct ReviewReport {
 /// - `<stage-verdict>` 缺失/未闭合/未知值 → 保守 FAIL + 违例原因作为 issue
 /// - PASS 但 `<next>` 缺失/未知 → 保守 FAIL（PASS 必须携带去向）
 /// - FAIL 但 `<next>` 缺失 → 缺省 Fix（语义安全：FAIL 自然是修）
+/// - **FAIL 但不带 `<issues>`** → 判负却没有问题清单 = 审查输出不合规（协议违例），
+///   不是对被审对象的判定（错实现形态：把空箱当判负 → 违例被藏进「审查未通过」）
 /// - 语义矛盾（PASS+fix、FAIL+advance/finish）→ 保守 FAIL + 违例原因
 pub fn parse_review_report(text: &str) -> Result<ReviewReport> {
     let Some(verdict_raw) = extract_block(text, STAGE_VERDICT_TAG) else {
@@ -108,13 +110,19 @@ pub fn parse_review_report(text: &str) -> Result<ReviewReport> {
     let Some(next_raw) = extract_block(text, NEXT_TAG) else {
         // FAIL 缺 next 缺省 Fix；PASS 缺 next 是协议违例（PASS 必须携带去向）
         return match verdict {
-            StageVerdict::Fail => Ok(ReviewReport {
-                verdict,
-                next: NextAction::Fix,
-                issues: extract_lines(text, "issues"),
-                notes: Vec::new(),
-                protocol_violation: false,
-            }),
+            StageVerdict::Fail => {
+                let issues = extract_lines(text, "issues");
+                if issues.is_empty() {
+                    return Ok(conservative(FAIL_WITHOUT_ISSUES));
+                }
+                Ok(ReviewReport {
+                    verdict,
+                    next: NextAction::Fix,
+                    issues,
+                    notes: Vec::new(),
+                    protocol_violation: false,
+                })
+            }
             StageVerdict::Pass => Ok(conservative(
                 "stage-verdict=PASS 但缺 <next> 协议块（PASS 必须携带 fix|advance|finish 去向）",
             )),
@@ -144,14 +152,23 @@ pub fn parse_review_report(text: &str) -> Result<ReviewReport> {
         )));
     }
 
+    let issues = extract_lines(text, "issues");
+    if verdict == StageVerdict::Fail && issues.is_empty() {
+        // 判负却没有问题清单 = 审查输出不合规（协议违例），不是对被审对象的判定
+        return Ok(conservative(FAIL_WITHOUT_ISSUES));
+    }
+
     Ok(ReviewReport {
-        issues: extract_lines(text, "issues"),
+        issues,
         notes: extract_lines(text, NOTES_TAG),
         verdict,
         next,
         protocol_violation: false,
     })
 }
+
+/// FAIL 却不带 `<issues>` 的违例原因（判负必须逐条列问题）。
+const FAIL_WITHOUT_ISSUES: &str = "stage-verdict=FAIL 但缺 <issues> 清单（判负必须逐条列问题）";
 
 /// 保守 FAIL 报告（协议违例）：原因是审查输出本身不合规，**不是**代码问题；
 /// 标记 `protocol_violation` 让编排层重跑审查，而不是把这条回注给被审 Agent（C19-R1）。
@@ -305,6 +322,25 @@ mod tests {
         assert_eq!(r.verdict, StageVerdict::Fail);
         assert_eq!(r.next, NextAction::Fix);
         assert_eq!(r.issues, vec!["bug".to_string()]);
+    }
+
+    #[test]
+    fn report_fail_without_issues_is_a_protocol_violation() {
+        // 错实现形态：把「FAIL 但没列 issues」当成判负（protocol_violation = false）→ 本用例必须变红
+        for text in [
+            "<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>",
+            "<stage-verdict>FAIL</stage-verdict>",
+        ] {
+            let r = parse_review_report(text).unwrap();
+            assert!(
+                r.protocol_violation,
+                "判负没有 problems 清单 = 审查输出不合规: {text}"
+            );
+            assert!(
+                !r.issues.is_empty(),
+                "违例原因要进 issues（供错误文本用，不是被审对象的问题）: {text}"
+            );
+        }
     }
 
     #[test]

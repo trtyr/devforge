@@ -9,6 +9,7 @@
 //! - [`doc_fix`]：DocFixSopLoop 状态机（写文档模式 + doc-review 内置审查轮，P007 D004）
 //! - [`doc_from_zero`]：DocSopLoop 状态机（门0→单元滚动→审查，P008）
 //! - [`doc_protocol`]：doc-from-zero 三块协议（doc-complete / doc-verdict / route，P008）
+//! - [`review_gate`]：审查输出的三通道机制（判负 / 协议违例 / 实例失败，D026）
 
 pub mod coding;
 pub mod coding_protocol;
@@ -19,6 +20,7 @@ pub mod doc_protocol;
 pub mod doc_resume;
 pub mod output;
 pub mod planning;
+pub mod review_gate;
 pub mod rpc_bridge;
 pub mod testing;
 pub mod testing_protocol;
@@ -37,6 +39,10 @@ pub use output::{is_complete, parse_verdict, Verdict, COMPLETION_TAG};
 pub use planning::{
     PlanningLoop, PlanAgentSession, ReviewSession, ReviewSessionFactory, StageReport, UserLink,
     PLAN_KICKOFF, REMEDIATION_PREFIX, REVIEW_INSTRUCTION,
+};
+pub use review_gate::{
+    MAX_PROTOCOL_VIOLATIONS, MAX_REVIEW_INSTANCE_FAILURES, ReviewBudget, ReviewOutcome,
+    review_with_gate,
 };
 pub use rpc_bridge::{RpcPlanSession, RpcReviewFactory, RpcReviewSession};
 

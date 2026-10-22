@@ -12,7 +12,8 @@
 //! Review 永不碰用户（P004 边界）；用户交互只在 Plan 环节内（ask-user-question）。
 
 use crate::error::Result;
-use crate::sop::output::{is_complete, parse_verdict};
+use crate::sop::output::{is_complete, parse_verdict, Verdict};
+use crate::sop::review_gate::{review_with_gate, ReviewBudget, ReviewOutcome};
 
 /// Plan Agent 开场指令（角色 + 强制完成确认 + 完成标记约定）。
 pub const PLAN_KICKOFF: &str = "\
@@ -105,17 +106,31 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> PlanningLoop<P, F> {
         // ---- REVIEW 循环：每轮全新实例；FAIL 打回后零校验自动重查 ----
         let mut rounds = 0usize;
         let mut issues_total = 0usize;
+        // 预算的生命周期 = 整个 review 循环（违例重审与实例失败重试都从这里计数）
+        let mut budget = ReviewBudget::default();
         loop {
-            rounds += 1;
-            let mut session = self.review_factory.open()?;
-            let text = session.review(REVIEW_INSTRUCTION)?;
-            drop(session); // 用完即弃（无论结论），下一轮必是全新实例
-
-            match parse_verdict(&text)? {
-                crate::sop::output::Verdict::Pass => {
+            // 协议违例 → 换全新实例重审（≤3，超限质量失败，绝不把违例当 issue 回注规划 agent）；
+            // 判负（FAIL + 非空 issues）→ 照旧回注活着的规划 agent（零校验自动重查）。
+            let (verdict, opened) = review_with_gate(
+                &mut self.review_factory,
+                rounds,
+                |_| REVIEW_INSTRUCTION.to_string(),
+                &mut budget,
+                |text| {
+                    let v = parse_verdict(text)?;
+                    let violation = v.violation_reason();
+                    Ok(ReviewOutcome {
+                        report: v,
+                        violation,
+                    })
+                },
+            )?;
+            rounds += opened;
+            match verdict {
+                Verdict::Pass => {
                     return Ok(StageReport { rounds, issues_total });
                 }
-                crate::sop::output::Verdict::Fail { issues } => {
+                Verdict::Fail { issues } => {
                     issues_total += issues.len();
                     let remediation = format!(
                         "{REMEDIATION_PREFIX}\n{}",
@@ -127,6 +142,12 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> PlanningLoop<P, F> {
                     );
                     // 回注活着的 Plan Agent（它的上下文连续）；修完零校验自动重查
                     let _ = self.plan.converse(&remediation, ui)?;
+                }
+                Verdict::ProtocolViolation { reason } => {
+                    // 门已把违例收进「换新实例重审」通道：走到这里 = 门与解析器形状不一致
+                    return Err(crate::error::DevforgeError::System(format!(
+                        "审查协议违例未进门：{reason}"
+                    )));
                 }
             }
         }
@@ -170,6 +191,8 @@ mod tests {
         AskDone,
         /// 断言收到的消息包含片段（打回回注校验），然后回复
         ExpectContains(&'static str, &'static str),
+        /// 断言不再有第二轮对话（协议违例不得回注规划 agent）
+        NoSecondTurn,
     }
     struct MockPlan {
         turns: VecDeque<PlanTurn>,
@@ -188,6 +211,7 @@ mod tests {
             match self {
                 PlanTurn::AskDone => PlanTurn::AskDone,
                 PlanTurn::ExpectContains(a, b) => PlanTurn::ExpectContains(a, b),
+                PlanTurn::NoSecondTurn => PlanTurn::NoSecondTurn,
             }
         }
     }
@@ -209,6 +233,9 @@ mod tests {
                         "应收到含 `{needle}` 的消息，实际: {message}"
                     );
                     Ok(reply.into())
+                }
+                PlanTurn::NoSecondTurn => {
+                    panic!("规划 agent 不该收到第二轮回注，实际收到: {message}")
                 }
             }
         }
@@ -313,17 +340,32 @@ mod tests {
     }
 
     #[test]
-    fn missing_verdict_is_conservative_fail_then_remediation() {
-        // P8-ISSUE-10 修复：verdict 缺失不再硬崩，保守 FAIL（协议违例作 issue 回注）
-        // → 打回给规划 Agent → 新审查实例重审通过
-        let plan = MockPlan::new(&[
-            PlanTurn::AskDone,
-            PlanTurn::ExpectContains("<verdict> 协议块", "已核查，plan tree 本体无需变更"),
-        ]);
+    fn missing_verdict_is_a_violation_retried_with_a_new_instance() {
+        // 错实现形态：把协议违例当 issue 回注规划 agent（规划 agent 会收到「<verdict> 协议块」字样）
+        // → 本用例必须变红
+        let plan = MockPlan::new(&[PlanTurn::AskDone, PlanTurn::NoSecondTurn]);
         let mut factory = MockReviewFactory::new(&["我忘了输出块", PASS]);
         let mut user = MockUser::new(&["完成"]);
         let report = PlanningLoop::new(plan, &mut factory).run(&mut user).unwrap();
-        assert_eq!(report.rounds, 2);
-        assert_eq!(report.issues_total, 1);
+        assert_eq!(report.rounds, 2, "违例后换新实例重审");
+        assert_eq!(report.issues_total, 0, "违例不计入被审对象的问题数");
+        assert_eq!(factory.opened.len(), 2, "两个审查实例都开过且均为全新实例");
+    }
+
+    #[test]
+    fn repeated_protocol_violations_fail_fast() {
+        // 错实现形态：违例超限判成基础设施故障（会被自动重启）或无限重审 → 本用例必须变红
+        let plan = MockPlan::new(&[PlanTurn::AskDone, PlanTurn::NoSecondTurn]);
+        let mut factory = MockReviewFactory::new(&["缺块1", "缺块2", "缺块3", "缺块4"]);
+        let mut user = MockUser::new(&["完成"]);
+        let err = PlanningLoop::new(plan, &mut factory)
+            .run(&mut user)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("协议违例"), "{msg}");
+        assert!(
+            err.is_quality_failure(),
+            "违例超限是质量失败（不自动重启）: {msg}"
+        );
     }
 }
