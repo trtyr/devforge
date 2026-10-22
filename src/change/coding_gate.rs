@@ -38,7 +38,12 @@ fn parse_evidence_log(text: &str, file: &str, label: &str) -> Result<BaselineEvi
     let mut exit_code = None;
     let mut command = String::new();
     for line in text.lines() {
-        let t = line.trim();
+        let mut t = line.trim();
+        // F16：markdown 列表项容差——`- exit_code: 0` 与 `exit_code: 0` 语义相同，
+        // 列表符号不参与语义（10-22 c7b 场：agent 用列表项写证据，解析器判死）。
+        if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")).or_else(|| t.strip_prefix("+ ")) {
+            t = rest.trim_start();
+        }
         let lower = t.to_ascii_lowercase();
         if command.is_empty()
             && (lower.starts_with("command:") || t.starts_with("命令:") || t.starts_with("命令："))
@@ -227,16 +232,20 @@ pub fn commits_since(repo: &Path, baseline: &str) -> Result<Vec<String>> {
 }
 
 /// 提交信息里声明的步骤号（`change: <change-id> step 2` / `步骤 2`）。
+///
+/// F15：数字必须**紧跟**标记（允许空白/冒号/顿号分隔）——正文里任意位置的数字
+/// 不是步号（10-22 c7b 场：「…写进心跳的步骤字段…下一次 start 撞 409」
+/// 被「步骤字段」误中 + 远处吞到 409，产生幻影步号 409）。
 pub fn step_numbers_in(subject: &str) -> Vec<u32> {
     let mut out = Vec::new();
     let lower = subject.to_ascii_lowercase();
     for marker in ["step", "步骤"] {
         let mut rest = lower.as_str();
         while let Some(pos) = rest.find(marker) {
-            rest = &rest[pos + marker.len()..];
-            let digits: String = rest
+            let after = &rest[pos + marker.len()..];
+            let digits: String = after
                 .chars()
-                .skip_while(|c| !c.is_ascii_digit())
+                .skip_while(|c| matches!(c, ' ' | ':' | '：' | '.' | '、'))
                 .take_while(|c| c.is_ascii_digit())
                 .collect();
             if let Ok(n) = digits.parse::<u32>()
@@ -244,6 +253,7 @@ pub fn step_numbers_in(subject: &str) -> Vec<u32> {
             {
                 out.push(n);
             }
+            rest = after;
         }
     }
     out
@@ -477,6 +487,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_markdown_list_item_evidence() {
+        // F16：agent 用 markdown 列表项写证据（`- exit_code: 0`）语义与裸格式相同，
+        // 列表符号不参与语义（10-22 c7b 场：列表项被判「缺退出码」→ 整场 Quality）
+        let ev = parse_baseline_log("- command: `env -u X cargo test`\n- exit_code: 0\n").unwrap();
+        assert_eq!(ev.exit_code, 0);
+        assert_eq!(ev.command, "`env -u X cargo test`");
+    }
+
+    #[test]
+    fn parse_still_rejects_list_item_without_exit_code() {
+        // 容差只认列表符号，不放松语义：真缺退出码依旧拒
+        let err = parse_baseline_log("- command: cargo test\n- 摘要：567 passed\n").unwrap_err();
+        let crate::error::DevforgeError::Quality(msg) = &err else {
+            panic!("应是质量失败：{err}");
+        };
+        assert!(msg.contains("缺退出码"), "{msg}");
+    }
+
+    #[test]
     fn regression_claim_text_is_unchanged() {
         // 回归路径的文案不得被本次改造带偏（质量失败载荷仍以「回归日志不可解析」开头）
         let err = crate::change::testing_gate::check_regression_claim("command: cargo test\n", true)
@@ -595,5 +624,35 @@ mod tests {
         assert_eq!(step_numbers_in("change: c1 step 3"), vec![3]);
         assert_eq!(step_numbers_in("change: c1 步骤 2"), vec![2]);
         assert_eq!(step_numbers_in("change: c1 step 2 step 2"), vec![2]);
+    }
+
+    #[test]
+    fn step_numbers_ignore_digits_in_prose_after_a_marker() {
+        // F15：正文数字不是步号——标记后必须紧跟数字（允许空白/冒号分隔），
+        // 否则跳过该次出现，继续找下一个标记（不远处吞到别的数字）
+        assert_eq!(
+            step_numbers_in(
+                "change: c1 step 8 —— 把「正在做什么」写进心跳的步骤字段…下一次 start 撞 409"
+            ),
+            vec![8]
+        );
+        assert_eq!(step_numbers_in("change: c1 步骤字段里提到 409"), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn eleven_steps_with_prose_digits_reconcile_cleanly() {
+        // 模拟 c7b 场：11 步提交、其中一步标题正文含「409」——对账应恰好 1..=11
+        let subjects: Vec<String> = (1..=11)
+            .map(|n| {
+                let extra = if n == 8 { "…下一次 start 撞 409" } else { "" };
+                format!("change: c1 step {n} —— 第 {n} 步{extra}")
+            })
+            .collect();
+        let mut declared: Vec<u32> = subjects
+            .iter()
+            .flat_map(|s| step_numbers_in(s))
+            .collect();
+        declared.sort_unstable();
+        assert_eq!(declared, (1..=11).collect::<Vec<_>>());
     }
 }

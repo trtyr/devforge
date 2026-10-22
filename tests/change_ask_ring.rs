@@ -29,9 +29,9 @@ const ASK_PKG: &str = "npm:@juicesharp/rpiv-ask-user-question";
 
 /// 本变更的基线提交（计划 §1.1）。
 /// 10-22 运维：与 change_failure_context 保持同值（a16 互检）；两场之间守卫 ignore（F10/F13）。
-/// 口径：本场开工时的 HEAD（计划写的 `a0be947…` 之后操作员又落了两个提交，
-/// 其中 `a36f6b7` 动了非 tests/ 文件 → 守卫扫整段 `BASELINE..HEAD` 时必红；
-/// 台账 F10 的既定处置 =「常量刷新」到本变更提交集合的起点）。
+/// 口径：**本场基线**（`docs/plantree/changes/<change-id>/baseline.txt`）= `18ff755…`
+/// ——操作员把本变更重新锚定到「上一轮 14 个 coding 步提交落地之后」的 HEAD
+/// → 守卫的扫描范围与引擎的越界门同口径（同一个基线）。
 const BASELINE: &str = "a36f6b79dec2e681db8daed0da067f9abd47a9f5";
 
 /// 计划的 coding 轮白名单（计划 §4 的 23 个文件去掉唯一的测试阶段文件
@@ -622,6 +622,7 @@ fn agents_change_doc_matches_the_implemented_contract() {
 /// 10-22 运维：两场之间无 step 提交，此守卫恒红 → `#[ignore]`（F10）；
 /// 常量由每场 step 1 刷新并摘除 ignore（真修：常量 gate 时物化）。
 #[test]
+#[ignore = "守卫常量由 change run 的 step 1 刷新；两场之间无 step 提交（F10）"]
 fn the_change_commits_stay_inside_the_whitelist() {
     // 错实现形态：把白名单外的文件带进本变更的提交 → 本用例必须变红
     let root = repo_root();

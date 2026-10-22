@@ -456,7 +456,18 @@ async fn two_concurrent_starts_while_the_gate_waits_run_at_most_one() {
         Some(1),
         "只能有一个 run 真正开跑：{body}"
     );
-    let calls = f.calls.lock().unwrap().clone();
+    // 引擎只被调用一次：赢家的后台线程与输家的 run.error 事件是并发关系，
+    // 事件先到不代表调用已发生（全量跑下偶发读到 0）→ 有界等待后再计数
+    let calls = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let n = f.calls.lock().unwrap().clone();
+            if !n.is_empty() || std::time::Instant::now() > deadline {
+                break n;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    };
     assert_eq!(calls.len(), 1, "引擎只能被调用一次：{calls:?}");
 
     wait_settled(&f, "p", "t1").await;
@@ -886,6 +897,61 @@ async fn persistent_infra_failures_fail_after_four_attempts() {
     let key = crate::runstate::StateKey::new("p", "t", "planning");
     let st = crate::runstate::load(&f.state.plans_root, &key);
     assert_eq!(st.state().map(|s| s.attempt), Some(4));
+}
+
+/// 验收（计划 §5）· 「先记错误、再决定重启」：第 1 次基础设施故障的 ERROR 条目必须出现在
+/// 「基础设施故障，自动重启 run」WARN **之前**，且条目带 `attempt=1`。
+///
+/// 错实现形态：把重试层的逐次落盘挪到终态（只在尝试耗尽后落一条）→ 现场只剩「重启了」，
+/// 看不出「为什么重启」→ 本用例必须变红。
+///
+/// 为什么要跑**真实 run 路径**且**跑在本线程**：「自动重启 run」这条 WARN 只在服务端落
+/// （`src/server/mod.rs`），ERROR 条目只在重试层落（`src/engine/retry.rs`）——两处落点必须
+/// 出现在**同一条日志流**里才有先后可言；而捕获器按线程分流（`observability::test_support`），
+/// 经 HTTP `start` 的那条路会把 run 扔进别的线程 → 两处落点就散在不同缓冲里，看不到顺序。
+#[tokio::test]
+async fn the_infra_error_is_logged_before_the_restart_warning() {
+    let f = fixture_with_failures(1);
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t", "sop": "planning"})),
+    )
+    .await;
+    // 引擎：第 1 次抛基础设施故障，第 2 次成功 → 必然发生一次「自动重启」
+    let engine: crate::server::EngineBox = Box::new(MockEngine {
+        calls: Arc::new(Mutex::new(Vec::new())),
+        hang_ms: 0,
+        fail_system_times: Arc::new(Mutex::new(1)),
+        quality_fail: false,
+    });
+    let text = crate::observability::test_support::capture_jsonl(|| {
+        crate::server::run_in_background(f.state.clone(), "p".into(), "t".into(), engine);
+    });
+    let lines: Vec<&str> = text.lines().collect();
+    let err_at = lines
+        .iter()
+        .position(|l| l.contains("run.attempt_failed") && l.contains("\"attempt\":1"))
+        .unwrap_or_else(|| panic!("第 1 次失败应落一条 ERROR 条目：{text}"));
+    let restart_at = lines
+        .iter()
+        .position(|l| l.contains("自动重启 run"))
+        .unwrap_or_else(|| panic!("基础设施故障应触发自动重启：{text}"));
+    assert!(
+        err_at < restart_at,
+        "错误条目必须先于「自动重启 run」落盘（先记错误、再决定重启）：{text}"
+    );
+    let err_line = lines[err_at];
+    assert!(err_line.contains("\"level\":\"ERROR\""), "非质量类失败落 ERROR：{err_line}");
+    assert!(err_line.contains("\"component\":\"run-retry\""), "{err_line}");
+    let restart_line = lines[restart_at];
+    assert!(restart_line.contains("\"level\":\"WARN\""), "{restart_line}");
+    assert!(
+        restart_line.contains("\"attempt\":2"),
+        "重启的是第 2 次尝试：{restart_line}"
+    );
 }
 
 #[tokio::test]
