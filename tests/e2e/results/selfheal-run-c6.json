@@ -1,0 +1,53 @@
+{
+  "script": "selfheal-run-c6",
+  "checks": [
+    {
+      "name": "PUT manifest == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "项目创建（目标仓=devforge 自身）",
+      "ok": true,
+      "detail": "status=201, body={'name': 'devforge-self', 'local_path': '/home/trtyr/code-work/devforge', 'created_at_ms': 1792630953381}"
+    },
+    {
+      "name": "任务 c6（sop=change）创建",
+      "ok": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "start change == 202",
+      "ok": true,
+      "detail": "status=202"
+    },
+    {
+      "name": "应答回填 ui-1",
+      "ok": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "应答回填 ui-2",
+      "ok": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "应答回填 ui-3",
+      "ok": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "应答回填 ui-4",
+      "ok": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "run 终态（Failed）",
+      "ok": false,
+      "detail": ""
+    }
+  ],
+  "issues": [],
+  "passed": 8,
+  "failed": 1
+}
