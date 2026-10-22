@@ -37,11 +37,42 @@ impl BoundaryVerdict {
     }
 }
 
-/// 解析 `<route>...</route>`。
+/// 解析 `<route>...</route>`：**只认尾部协议位**。
+///
+/// 口径（D026 · Q1/Q5）：route 块独占一行，其后只允许 `<issues>` / `<impact-gap>` 协议块与空白；
+/// 块之前允许任意散文。散文里**提及** `<route>` 不算（c5 场的死亡真因：模型正文里的
+/// 「未触发 `<route>coding</route>`」被当成了回退指令 → 空 issues → 占位文案 → Quality）。
 pub fn parse_route(text: &str) -> Option<String> {
-    let start = text.find("<route>")? + "<route>".len();
-    let end = text[start..].find("</route>")? + start;
-    Some(text[start..end].trim().to_string())
+    let mut rest = text.trim_end();
+    // 剥掉尾部的协议块（`<issues>` / `<impact-gap>`，可多个）——route 块之后只允许它们
+    loop {
+        let mut stripped = false;
+        for (open, close) in [("<issues>", "</issues>"), ("<impact-gap>", "</impact-gap>")] {
+            let Some(end) = rest.rfind(close) else {
+                continue;
+            };
+            if !rest[end + close.len()..].trim().is_empty() {
+                continue; // 协议块之后还有别的 → 不是尾部协议位
+            }
+            let Some(start) = rest[..end].rfind(open) else {
+                continue;
+            };
+            rest = rest[..start].trim_end();
+            stripped = true;
+            break;
+        }
+        if !stripped {
+            break;
+        }
+    }
+    // 尾部必须是一行独立的 route 块（块内只有路由值）
+    let line = rest.rsplit('\n').next()?.trim();
+    let inner = line.strip_prefix("<route>")?.strip_suffix("</route>")?;
+    let value = inner.trim();
+    if value.is_empty() || value.contains(['<', '>']) {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 /// 解析 `<impact-gap>` 块（每条形如 `- 文件：x` / `- 为什么必须改：y` / `- 证据：z:12`）。
@@ -265,5 +296,57 @@ mod tests {
     fn route_parse_is_tolerant_of_whitespace() {
         assert_eq!(parse_route("<route> plan </route>").as_deref(), Some("plan"));
         assert_eq!(parse_route("没有路由块"), None);
+    }
+
+    // ---------------- 尾部协议位（验收 18-21） ----------------
+
+    #[test]
+    fn route_is_only_recognized_at_the_tail() {
+        // 错实现形态：散文里提一句 <route> 就当回退指令（c5 场的死亡真因）→ 本用例必须变红
+        assert_eq!(
+            parse_route("先跑既有全套 → exit 0，15 例全绿，未触发 `<route>coding</route>`。\n<stage-complete>1</stage-complete>")
+                .as_deref(),
+            None,
+            "散文提及 + 末尾标记 → 不是回退"
+        );
+        assert_eq!(
+            parse_route("已声明\n<route>coding</route>").as_deref(),
+            Some("coding"),
+            "尾部独立行 → 是回退"
+        );
+        assert_eq!(
+            parse_route("已声明\n<route>coding</route>\n<issues>\n- tests/a_test.rs:10 断言失败\n</issues>")
+                .as_deref(),
+            Some("coding"),
+            "尾部 route + issues 块 → 是回退"
+        );
+        assert_eq!(
+            parse_route("已声明\n<route>plan</route>\n<impact-gap>\n- 文件：src/extra.rs\n</impact-gap>")
+                .as_deref(),
+            Some("plan"),
+            "尾部 route + impact-gap 块 → 是回退"
+        );
+    }
+
+    #[test]
+    fn prose_after_the_protocol_block_is_not_a_tail_position() {
+        // 错实现形态：协议块后面还有散文也算尾部协议位 → 本用例必须变红
+        assert_eq!(
+            parse_route("<route>coding</route>\n<issues>\n- x\n</issues>\n补充说明一句")
+                .as_deref(),
+            None,
+            "协议块之后有散文 → 不是尾部协议位"
+        );
+    }
+
+    #[test]
+    fn route_block_must_stand_alone_on_its_line() {
+        // 错实现形态：行内提及也算 route 块 → 本用例必须变红
+        assert_eq!(
+            parse_route("前缀<route>coding</route>").as_deref(),
+            None,
+            "行内提及 → 不是 route 块"
+        );
+        assert_eq!(parse_route("<route></route>").as_deref(), None, "空路由值无效");
     }
 }
