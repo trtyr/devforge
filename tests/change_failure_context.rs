@@ -767,7 +767,7 @@ fn a13_empty_issues_route_is_rejected_without_a_placeholder() {
     let ctx = ctx_in(tmp.path());
 
     // 真 session 侧：test agent 只回路由、不给 issues（每次都一样 → 连续拒收到判死）
-    let reply = "<route>coding</route>\n<stage-complete>1</stage-complete>".to_string();
+    let reply = "<route>coding</route>".to_string();
     let mut prod = ProdChangeSession {
         plan_agent: Box::new(FixedAgent::new("<stage-complete>1</stage-complete>".into())),
         plan_review: Box::new(NoReview),
@@ -905,7 +905,7 @@ fn a15_the_three_old_wording_places_are_rewritten() {
 
     for (name, text, line_no) in [
         ("agents-change.md", &agents_text, 172usize),
-        ("agents-change.md", &agents_text, 211),
+        ("agents-change.md", &agents_text, 213),
         ("vs-mvp.md", &vs_mvp_text, 24),
     ] {
         let line = text
