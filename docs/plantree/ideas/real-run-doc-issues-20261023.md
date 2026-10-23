@@ -100,6 +100,18 @@
 | 10-23 | doc | L3 | ✅ relaunch run 2d9fb677：首单元 unit-app-01 全环真实走通——**3 轮审查 / 2 次打回 / ~87 分钟**（写 16min → 审FAIL → 修复 → 审FAIL → 修复 → 审PASS → unit_done 1/25），58+ 真文档落盘 docs/contexts/，全程纯 API 观测（events/详情端点自证）；期间 agent.stall 两次假阳性（长流式回合）暴露 DR-3 事件粒度缺陷 → 4501f99 修（流式 delta 即活性）+ 二次重建重部署闭环 |
 | 10-23 | doc | L3（二次部署） | ✅ 审计驳回后重建重部署（新二进制 18:28，含 053dac2+4501f99）：resumed=true 认账；**DR-3 活体签名实测**——长写作回合中 agent_age 31.7s→3s→11s 持续被流式 delta 压低（旧二进制下单调爬升假告警），修复在车上验证 |
 
+### DR-8 候选（10-23 晚新立，待排）：空模型响应被归为「agent 不配合」而非基础设施故障
+
+- 二次部署后首跑（run a6a35d00）死于连续 4 次空模型响应：newapi/MiniMax-M3.1-Flash 连吐
+  `output: 0 tokens, content: []`，引擎按「连续 4 次未输出 <doc-complete>」质量失败（retryable:false）收场。
+- 双重问题：①空响应（0 token）是 provider 侧故障信号，应分类 infra 可重试，而非 agent 质量失败；
+  ②失败后无任何守夜机制，run 停在 Failed 无人管。
+- 临时处置（10-23 晚二段）：①doc-agent/doc-review/doc-fix 换模 —— MiniMax/deepseek-flash 先后空响应，
+  逐模型捅测后锁定存活渠道 **deepseek-ai/DeepSeek-V4-Flash**（入池 + 三角色切装 + 重渲染）；
+  ②操作员侧夜间哨兵（Failed 自动 resume 重启，上限 3 次）。
+- 换模后验证：run e0f33987 Running、agent_age 3.3s（流式活性实时刷新）、会话 218KB 真流式。
+- 正式修法（下批）：空响应/零 token → infra 分类 + 有界重试；连续多 provider 空响应才升级人工。
+
 ### 观察（非 DR，另案候选）：resume 证据口径与 mark_done 口径不一致
 
 - 二次部署后 resume 把 unit-app-01 判「证据失效」重跑：mark_done 的门槛是审查 PASS，
