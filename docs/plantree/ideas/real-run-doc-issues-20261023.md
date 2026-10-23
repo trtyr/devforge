@@ -97,7 +97,16 @@
 | 10-23 | change | L2 | 587 全绿（含三守卫套件 + f6 44） |
 | 10-23 | change | L3 | c7b 十二续跑 Settled（本日实战即记录） |
 | 10-23 | asking/planning | L3 | c7b resume6e/6f 计划轮问询中继全程活跃（SSE ui.request → 应答回填） |
-| 10-23 | doc | L3 | ✅ relaunch run 2d9fb677：首单元 unit-app-01 全环真实走通（写 16min → 审 FAIL → 修复重写 17min → 审 PASS → unit_done 1/25），58 个真文档落盘 docs/contexts/，全程纯 API 观测（events/详情端点自证） |
+| 10-23 | doc | L3 | ✅ relaunch run 2d9fb677：首单元 unit-app-01 全环真实走通——**3 轮审查 / 2 次打回 / ~87 分钟**（写 16min → 审FAIL → 修复 → 审FAIL → 修复 → 审PASS → unit_done 1/25），58+ 真文档落盘 docs/contexts/，全程纯 API 观测（events/详情端点自证）；期间 agent.stall 两次假阳性（长流式回合）暴露 DR-3 事件粒度缺陷 → 4501f99 修（流式 delta 即活性）+ 二次重建重部署闭环 |
+| 10-23 | doc | L3（二次部署） | ✅ 审计驳回后重建重部署（新二进制 18:28，含 053dac2+4501f99）：resumed=true 认账；**DR-3 活体签名实测**——长写作回合中 agent_age 31.7s→3s→11s 持续被流式 delta 压低（旧二进制下单调爬升假告警），修复在车上验证 |
+
+### 观察（非 DR，另案候选）：resume 证据口径与 mark_done 口径不一致
+
+- 二次部署后 resume 把 unit-app-01 判「证据失效」重跑：mark_done 的门槛是审查 PASS，
+  resume 的证据复核是「文件在 + lint 绿」——审查过了但 lint 不绿的单元每次续跑都会被重做。
+- 本次代价：unit 1 的 ~87 分钟修复环成果被重跑覆盖（done 标记被摘）。
+- 待观察：重跑后的 unit 1 若 lint 仍不绿，则说明审查官与 lint 的判据存在系统性分歧，应立案
+  （审查提示词带 lint 结果注入 D012 是否足够？还是 lint 应作为单元完成的硬门？）。
 
 **规则入档**：引擎层动刀后，L1 全 profile + 被改 SOP 的 L3，缺一不发版。
 
