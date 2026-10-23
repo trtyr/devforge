@@ -189,7 +189,13 @@ impl RpcClient {
         loop {
             let line = self.next_line()?;
             match decode_line(line.trim_end())? {
-                crate::engine::protocol::Inbound::Response(r) => out.responses.push(r),
+                crate::engine::protocol::Inbound::Response(r) => {
+                    // DR-1 修复：失败响应快速失败（此前傻等 agent_settled，无 key 类错误挂死整个 run 而无任何事件）
+                    if !r.success {
+                        return Err(self.command_failure(&r));
+                    }
+                    out.responses.push(r)
+                }
                 crate::engine::protocol::Inbound::Event(e) => {
                     if let Some(delta) = e.text_delta() {
                         out.text.push_str(delta);
@@ -220,7 +226,13 @@ impl RpcClient {
         loop {
             let line = self.next_line()?;
             match decode_line(line.trim_end())? {
-                crate::engine::protocol::Inbound::Response(r) => out.responses.push(r),
+                crate::engine::protocol::Inbound::Response(r) => {
+                    // DR-1 修复：同 wait_settled —— 失败响应快速失败，不傻等 settled
+                    if !r.success {
+                        return Err(self.command_failure(&r));
+                    }
+                    out.responses.push(r)
+                }
                 crate::engine::protocol::Inbound::Event(e) => {
                     if let Some(delta) = e.text_delta() {
                         out.text.push_str(delta);
@@ -264,6 +276,24 @@ impl RpcClient {
                 }
             }
         }
+    }
+
+    /// DR-1 修复：把 pi 的命令失败（success=false，如缺 API key）转成结构化错误。
+    /// 此前这类失败只被归档进 responses 继续傻等 settled，run 无声挂死。
+    fn command_failure(&self, r: &ResponseRecord) -> DevforgeError {
+        let detail = r.error.clone().unwrap_or_else(|| "（无错误详情）".into());
+        tracing::warn!(
+            component = "engine",
+            event = "agent.command_failed",
+            role = %self.spec.role,
+            command = %r.command,
+            error = %detail,
+            "agent 命令失败（快速失败，不等 settled）"
+        );
+        DevforgeError::System(format!(
+            "agent[{}] 命令 {} 失败：{}（多半是 profile 配置问题：缺 API key / 模型名错误；见 auth.json 与 models.json）",
+            self.spec.role, r.command, detail
+        ))
     }
 
     /// 「agent 轮次结束」里程碑（Q5：唯一落点，覆盖全部 SOP——change 侧不再另落）。
@@ -357,6 +387,31 @@ mod tests {
         r#"{"id":"req-1","type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}"#;
     const EVT_START: &str = r#"{"type":"agent_start"}"#;
     const EVT_SETTLED: &str = r#"{"type":"agent_settled"}"#;
+    const RSP_FAIL: &str = r#"{"id":"req-2","type":"response","command":"prompt","success":false,"error":"No API key found for the selected model."}"#;
+
+    #[test]
+    fn failed_response_fails_fast_without_waiting_for_settled() {
+        // DR-1（2026-10-23 真实仓首跑）：无 API key 时 pi 只回 success=false 的 response、
+        // 永不 agent_settled——旧实现继续等 → 整个 run 无声挂死 50 分钟无任何事件。
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_replay(
+            dir.path(),
+            &[RSP_FAIL],
+            "read _x\n", // 常驻：模拟 pi 错误路径不再发任何事件
+        );
+        let mut client = spawn_sh(&script, dir.path());
+        let _ = client.prompt("写单元");
+        let t0 = std::time::Instant::now();
+        let err = client.wait_settled().unwrap_err();
+        assert!(
+            t0.elapsed().as_secs() < 4,
+            "必须快速失败而非傻等 settled：{:?}",
+            t0.elapsed()
+        );
+        let msg = format!("{err}");
+        assert!(msg.contains("No API key"), "错误详情要透传: {msg}");
+        assert!(msg.contains("plan-agent"), "错误要带角色名: {msg}");
+    }
 
     /// 现场（2026-10-19 e2e test_22）：审查官进程中途死亡，但孙进程仍持有 stdout——
     /// 阻塞读永远等不到 EOF，run 挂了 50+ 分钟且日志无信号。必须靠子进程状态判死。

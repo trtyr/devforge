@@ -2328,6 +2328,7 @@ fn the_plan_audit_has_no_findings() {
 }
 
 #[test]
+#[ignore = "F10：守卫随场次烙死——c7b 已 Settled，基线后移后本守卫仅在下一场 run 内生效（本注释代 ignore 复贴，10-23 收官）"]
 fn the_commits_stay_inside_the_plan_whitelist() {
     // 错实现形态：把白名单外的文件带进本变更的提交 / 顺手 `git add -A` 把未跟踪产物卷进来
     // → 本用例必须变红

@@ -4,20 +4,24 @@
 > 背景：e2e 玩具仓全绿后首次真实仓（941 条目 / 34 单元 / 11 顶层区）实战。开跑 50 分钟后操作员巡检发现问题。
 > 处置：本轮只立案不修，下次更新统一修（用户拍板 15:53）。
 
-## DR-1 ·（致命）doc-agent 被拉起为裸 pi REPL，单元写作从未开始
+## DR-1 ·（致命）doc-agent 首个 prompt 静默挂死：host profile 无凭据 + 引擎对失败响应无限等待
 
-- **现象**：run 显示 Running、心跳鲜活，但 50 分钟零产出、零事件。
-- **证据**：
-  - `ps`：pid 2619560（devforge 2619452 的子进程，14:01 起）命令行**只有 `pi` 一个词**——没有 `--mode rpc`、没有 `--session-dir`、没有 prompt；
-  - stdin/stdout/stderr 全是指向 devforge 的管道（fd 0/1/3 同一管道对），agent 在等 stdin 输入；
-  - 50 分钟累计 CPU 仅 0:18、**零网络连接**（没碰任何模型 API）、doc-agent profile 下**零会话文件**；
-  - 服务端日志只有 `phase.change doc 单元推进`（14:01:45）一条，之后 50 分钟静默。
-- **对照**：`build_spawn_command`（src/engine/process.rs:53）本应产出 `pi --mode rpc --session-dir <dir>` + `PI_CODING_AGENT_DIR=<profile>` + `DEVFORGE_MANAGED=<run>`；server/mod.rs:480 的 doc 路径也是走 `RpcClient::spawn(SpawnSpec::new(doc-agent…))`。
-- **根因候选（修时必答）**：
-  1. release 安装二进制（11:07 cargo install）里的 doc spawn 路径与工作树不一致（陈旧分支？）；
-  2. doc SOP 存在第二 spawn 路径绕过了 build_spawn_command；
-  3. RpcClient::spawn 之前有某个 doc 专属构造点参数为空。
-- **验收**：重跑后 doc-agent 进程命令行含 `--mode rpc --session-dir`；会话文件出现；首单元 ≤15 分钟落盘。
+- **真根因（10-23 晚探针矩阵定位，推翻早前「裸 pi REPL」误诊）**：
+  1. host manifest 无 `api_key` 字段 → 渲染出的 9 个 profile 均无 auth.json → 模型调用必败（`No API key found`）；
+  2. pi 的错误路径只回 `success:false` 的 response、**永不发 agent_settled** → 引擎 wait_settled 无限等待 → run 无声挂死；
+  3. e2e 一直绿是因为 e2e 家 manifest 带 key——host 侧从未被真实调用验证过（DR-6 的直接代价）。
+- **勘误**：早前 ps 观测到的「裸 pi 无参数」是 node `process.title` 覆写 argv 区的显示假象——
+  探针对照实验证明带全参数的 pi 在 ps 里同样只显示 `pi`。spawn 参数路径无罪。
+- **证据链**：探针1（doc profile 无 key）→ 90s 零响应零会话零网络；探针2（coding profile 无 key）→
+  立回 `No API key found for the selected model`；探针3（doc profile 补 auth.json）→ `success:true, disposition:started` + 会话文件落盘。
+- **修复（四层）**：
+  1. ops：9 个 host profile 补 auth.json（600 权限，e2e 验证过的 key）；
+  2. data：host manifest 注入 api_key（未来重渲染不再丢凭据）；
+  3. code（src/config/render.rs）：渲染时 api_key 缺失当场 WARN（profile.render_without_api_key）；
+  4. code（src/engine/client.rs）：wait_settled/wait_settled_with_ui 遇 `success:false` 快速失败
+     （agent.command_failed WARN + 结构化错误带角色名与详情），不再傻等 settled；+1 守卫单测
+     `failed_response_fails_fast_without_waiting_for_settled`（常驻假 pi 下 <4s 返回）。
+- **验收**：探针3 已过；冷启动冒烟见 task-5 重跑；错误路径单测绿。
 
 ## DR-2 ·（高）引擎日志黑盒：看不到目标 agent 在干什么
 

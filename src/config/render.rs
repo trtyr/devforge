@@ -142,6 +142,16 @@ impl<'a> Renderer<'a> {
                     .to_string(),
             )
             .ctx(format!("写 {} 的 auth.json", agent.name))?;
+        } else {
+            // DR-1（2026-10-23 真实仓首跑）：无 key 的 profile 模型调用必败（No API key），
+            // 此前无任何提示。渲染期当场喊出来。
+            tracing::warn!(
+                component = "config",
+                event = "profile.render_without_api_key",
+                agent = %agent.name,
+                provider = %provider.name,
+                "manifest 未带 api_key：该 profile 无凭据，模型调用将失败（No API key found）"
+            );
         }
 
         // mcp.json（P005 T003：pi 原生 schema，<agent-dir>/mcp.json 全项目可用；
