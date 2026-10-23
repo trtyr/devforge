@@ -664,13 +664,31 @@ impl BuiltinRpcEngine {
             self.idle_ms,
             vec![self.session_root.join("doc"), self.session_root.join("doc-reviews")],
             || {
-                let mut sop_loop = DocSopLoop::new(agent, factory, store)
-                    .with_audit(audit)
-                    .with_resume_note(resume_note);
-                if let Some(unit) = only {
-                    sop_loop = sop_loop.with_only(unit);
-                }
-                let report = sop_loop.run(&mut user, &workspace, &run_units, "complete")?;
+                let pipeline = std::env::var("DEVFORGE_DOC_PIPELINE").as_deref() == Ok("on");
+                let report = if pipeline {
+                    // DR-14：流水线并行——审查(N) 与 写作(N+1) 重叠；工厂经 Arc<Mutex> 共享给审查线程。
+                    // 注：`only` 单元重派仅在串行模式生效（流水线的 to_run 已由续跑计划过滤）。
+                    let factory = std::sync::Arc::new(std::sync::Mutex::new(factory));
+                    crate::sop::doc_from_zero::run_pipeline(
+                        agent,
+                        factory,
+                        store,
+                        &mut user,
+                        &workspace,
+                        &run_units,
+                        "complete",
+                        resume_note,
+                        Some(audit),
+                    )?
+                } else {
+                    let mut sop_loop = DocSopLoop::new(agent, factory, store)
+                        .with_audit(audit)
+                        .with_resume_note(resume_note);
+                    if let Some(unit) = only {
+                        sop_loop = sop_loop.with_only(unit);
+                    }
+                    sop_loop.run(&mut user, &workspace, &run_units, "complete")?
+                };
 
                 // ---- 终审（跨模块 / 汇编引用 / 全量 lint 与覆盖）----
                 let docs = final_ws.join(DOCS_DIR);

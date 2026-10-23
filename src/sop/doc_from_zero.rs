@@ -559,6 +559,329 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
     }
 }
 
+/// DR-14：审查 worker——独立线程上开全新审查会话，空响应/异常有界重试（C19-R1 口径），
+/// 结果（含错误）经 channel 回主循环。
+fn spawn_review_worker<F>(
+    factory: &std::sync::Arc<std::sync::Mutex<F>>,
+    unit: &str,
+    round: u32,
+    instruction: &str,
+    tx: std::sync::mpsc::Sender<(String, u32, Result<String, DevforgeError>)>,
+) where
+    F: ReviewSessionFactory + Send + 'static,
+{
+    let factory = factory.clone();
+    let unit = unit.to_string();
+    let instruction = instruction.to_string();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<String> {
+            let mut retries = 0usize;
+            loop {
+                let mut session = {
+                    let mut f = factory.lock().expect("审查工厂锁");
+                    f.open()?
+                };
+                match session.review(&instruction) {
+                    Ok(t) if !t.trim().is_empty() => return Ok(t),
+                    Ok(_) => {
+                        retries += 1;
+                        if retries > MAX_DOC_REVIEW_RETRIES {
+                            return Err(DevforgeError::System(format!(
+                                "审查会话连续 {retries} 次空回复"
+                            )));
+                        }
+                    }
+                    Err(e) => {
+                        retries += 1;
+                        if retries > MAX_DOC_REVIEW_RETRIES {
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+        })();
+        let _ = tx.send((unit, round, result));
+    });
+}
+
+/// DR-14 流水线 runner：审查(N) 与 写作(N+1) 重叠（lead=1，在途审查槽 = 1），
+/// 断路器 = 连续 2 FAIL（andon），fix 队列优先于新单元。事件与串行版同套。
+/// 工厂经 Arc<Mutex<F>> 共享给审查线程；被审 Agent 仍为单会话顺序推进。
+pub fn run_pipeline<P, F>(
+    mut agent: P,
+    factory: std::sync::Arc<std::sync::Mutex<F>>,
+    store: StateStore,
+    ui: &mut dyn UserLink,
+    repo: &Path,
+    units: &[String],
+    doc_level: &str,
+    resume_note: String,
+    audit: Option<AuditProvider>,
+) -> Result<DocReport>
+where
+    P: PlanAgentSession,
+    F: ReviewSessionFactory + Send + 'static,
+{
+    let docs_root = repo.join(DOCS_DIR);
+    let mut state = match store.load() {
+        crate::runstate::Loaded::Found(s) => s,
+        crate::runstate::Loaded::Missing => store.fresh_state(),
+        crate::runstate::Loaded::Unusable(reason) => {
+            tracing::warn!(component = "doc-sop", %reason, "断点不可用，按冷启动");
+            store.fresh_state()
+        }
+    };
+    // DR-5：总单元数入断点 + 立即落盘
+    data_obj(&mut state)
+        .entry("units_total".to_string())
+        .or_insert_with(|| serde_json::json!(units.len()));
+    store.save(&mut state)?;
+
+    let mut pending: Option<(String, u32, std::sync::mpsc::Receiver<(String, u32, Result<String, DevforgeError>)>)> = None;
+    let mut fix_queue: std::collections::VecDeque<(String, String, Vec<String>)> = Default::default();
+    let mut consecutive_fails = 0u32;
+    let mut frontier = 0usize;
+    let mut active = String::new();
+    let mut active_is_fix = false;
+    let mut unit_before = None;
+    let mut resume_note = resume_note;
+    let mut first_kickoff_sent = false;
+    let mut nudges = 0usize;
+    let mut nudged_for = String::new();
+    let mut stage: Option<(&'static str, std::time::Instant)> = None;
+    let mut protocol_violations = 0u32;
+
+    enum Next {
+        Fix(String, String, Vec<String>),
+        Write(String),
+        Done,
+    }
+
+    // 裁决处理：Pass → mark_done；Fail → fix 队列 + 断路器
+    macro_rules! process_verdict {
+        ($unit:expr, $report:expr) => {{
+            let report = $report;
+            match report.verdict {
+                DocVerdict::Pass => {
+                    let files = produced_files(
+                        &docs_root,
+                        unit_before.as_ref().expect("写前快照应在"),
+                    );
+                    mark_done(&mut state, &$unit, &files);
+                    store.save(&mut state)?;
+                    consecutive_fails = 0;
+                    tracing::info!(
+                        component = "doc-sop",
+                        event = "doc.unit_done",
+                        unit = %$unit,
+                        done = done_units(&state).len(),
+                        "单元完成（流水线）"
+                    );
+                }
+                DocVerdict::Fail => {
+                    add_issues(&mut state, report.issues.len());
+                    fix_queue.push_back((
+                        $unit.clone(),
+                        report.route.as_str().to_string(),
+                        report.issues.clone(),
+                    ));
+                    consecutive_fails += 1;
+                    if consecutive_fails >= 2 {
+                        return Err(DevforgeError::Quality(format!(
+                            "断路器：连续 {} 轮审查 FAIL（最近单元 `{}`），停发新单元——修复队列 {} 项（resume 可续）",
+                            consecutive_fails,
+                            $unit,
+                            fix_queue.len()
+                        )));
+                    }
+                }
+            }
+        }};
+    }
+
+    loop {
+        // ── A. 非阻塞清账：在途裁决到了就处理 ──
+        if let Some((unit, round, rx)) = pending.take() {
+            match rx.try_recv() {
+                Ok((u, round, text)) => {
+                    let text = text.map_err(|e| DevforgeError::System(format!("审查重试耗尽：{e}")))?;
+                    let report = parse_doc_review(&text)?;
+                    process_verdict!(u, report);
+                    let _ = round;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    pending = Some((unit, round, rx));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return Err(DevforgeError::System("审查线程失联".into()));
+                }
+            }
+        }
+
+        // ── B. 决定下一步 ──
+        let next = if let Some((u, route, issues)) = fix_queue.pop_front() {
+            Next::Fix(u, route, issues)
+        } else if frontier < units.len() {
+            if pending.is_some() {
+                // lead=1：在途审查占据槽位 → 阻塞等它落地（可能回填 fix 队列），再重新决定
+                let (u, round, text) = pending
+                    .take()
+                    .expect("pending 已判存在")
+                    .2
+                    .recv()
+                    .map_err(|_| DevforgeError::System("审查线程失联".into()))?;
+                let text = text.map_err(|e| DevforgeError::System(format!("审查重试耗尽：{e}")))?;
+                let report = parse_doc_review(&text)?;
+                process_verdict!(u, report);
+                if let Some((u, route, issues)) = fix_queue.pop_front() {
+                    Next::Fix(u, route, issues)
+                } else if frontier < units.len() {
+                    let u = units[frontier].clone();
+                    frontier += 1;
+                    Next::Write(u)
+                } else {
+                    break;
+                }
+            } else {
+                let u = units[frontier].clone();
+                frontier += 1;
+                Next::Write(u)
+            }
+        } else if let Some((unit, round, rx)) = pending.take() {
+            // 无新活但审查在途 → 等它（可能产生 fix）
+            let (vunit, vround, vtext) = rx
+                .recv()
+                .map_err(|_| DevforgeError::System("审查线程失联".into()))?;
+            let vtext = vtext.map_err(|e| DevforgeError::System(format!("审查重试耗尽：{e}")))?;
+            let report = parse_doc_review(&vtext)?;
+            process_verdict!(vunit, report);
+            let _ = vround;
+            if let Some((u, route, issues)) = fix_queue.pop_front() {
+                Next::Fix(u, route, issues)
+            } else {
+                break;
+            }
+        } else {
+            break;
+        };
+
+        // ── C. 组消息 + 交回合 ──
+        let (unit, mut message, is_fix) = match next {
+            Next::Done => break,
+            Next::Fix(u, route, issues) => {
+                active = u.clone();
+                active_is_fix = true;
+                tracing::info!(
+                    component = "doc-sop",
+                    event = "fix.start",
+                    unit = %u,
+                    "单元重写开始（流水线）"
+                );
+                let mut msg = format!("{DOC_REMEDIATION_PREFIX}\n<route>{route}</route>\n");
+                for i in &issues {
+                    msg.push_str(&format!("- {i}\n"));
+                }
+                (u, msg, true)
+            }
+            Next::Write(u) => {
+                active = u.clone();
+                active_is_fix = false;
+                unit_before = Some(snapshot_files(&docs_root));
+                tracing::info!(
+                    component = "doc-sop",
+                    event = "doc.unit_start",
+                    unit = %u,
+                    index = frontier,
+                    total = units.len(),
+                    "单元开始（流水线）"
+                );
+                let mut msg = doc_kickoff(repo, &u, doc_level);
+                if !first_kickoff_sent && !resume_note.is_empty() {
+                    msg.push_str("\n\n");
+                    msg.push_str(&resume_note);
+                    resume_note.clear();
+                }
+                first_kickoff_sent = true;
+                (u, msg, false)
+            }
+        };
+
+        // ── D. 交回合（空响应守卫同串行）──
+        let mut empty_replies = 0usize;
+        let text = loop {
+            let t = agent.converse(&message, ui)?;
+            if !t.trim().is_empty() {
+                break t;
+            }
+            empty_replies += 1;
+            if empty_replies > MAX_DOC_EMPTY_REPLIES {
+                return Err(DevforgeError::System(format!(
+                    "单元 `{unit}` 连续 {empty_replies} 次返回空内容（0 tokens，provider 侧失败），判定为基础设施故障，可重试"
+                )));
+            }
+            tracing::warn!(
+                component = "doc-sop",
+                event = "agent.empty_reply",
+                unit = %unit,
+                count = empty_replies,
+                "空回复（provider 失败信号），重新提示"
+            );
+        };
+
+        // ── E. 标记守卫（nudge 同串行，按 active 单元计）──
+        if nudged_for != active {
+            nudges = 0;
+            nudged_for = active.clone();
+        }
+        let Some(done_unit) = parse_doc_complete(&text) else {
+            nudges += 1;
+            if nudges > MAX_DOC_CONTINUE_NUDGES {
+                return Err(DevforgeError::Quality(format!(
+                    "单元 `{active}` 连续 {nudges} 次未输出 <doc-complete>，判定为质量失败（agent 不配合，重启也无意义）"
+                )));
+            }
+            message = format!(
+                "连续 {nudges} 次未输出完成标记。请补交：<doc-complete>{active}</doc-complete>（单独一行）。"
+            );
+            continue;
+        };
+        if done_unit != active {
+            message = format!(
+                "你输出的是 `{done_unit}`，但当前单元是 `{active}`。请确认编号（不得自行改号）并重新输出 <doc-complete>{active}</doc-complete>。"
+            );
+            continue;
+        }
+
+        // ── F. 交卷 → 派审查（占 pending 槽）──
+        let round = bump_review(&mut state) as u32;
+        tracing::info!(
+            component = "doc-sop",
+            event = "review.open",
+            role = "doc-review",
+            round,
+            "审查开庭（流水线）"
+        );
+        let mut instruction = doc_review_instruction(&active, round as usize);
+        if let Some(audit_fn) = &audit {
+            instruction.push_str("\n\n## 引擎审计（确定性，勿质疑）\n\n");
+            instruction.push_str(&audit_fn(&active));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_review_worker(&factory, &active, round, &instruction, tx);
+        pending = Some((active.clone(), round, rx));
+        let _ = active_is_fix;
+
+        // 回到循环头：非阻塞清账 → 决定下一个（fix 优先 / 新单元 kickoff）
+        // lead=1：pending 占位期间不开新审查；写手与审查的时间重叠由此产生。
+    }
+
+    Ok(DocReport {
+        units_done: done_units(&state),
+        review_rounds: review_rounds(&state),
+        issues_total: issues_total(&state),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,6 +889,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     struct NoUser;
     impl UserLink for NoUser {
@@ -793,6 +1117,182 @@ mod tests {
             log.contains("review_to_next_unit"),
             "裁决→下单元的间隙要被计时: {log}"
         );
+    }
+
+    // ── DR-14 流水线并行测试（Send 版 mock）──
+
+    #[derive(Clone)]
+    struct PipeAgent {
+        replies: Arc<Mutex<VecDeque<String>>>,
+        received: Arc<Mutex<Vec<String>>>,
+    }
+    impl PipeAgent {
+        fn new(replies: &[&str]) -> (Self, Arc<Mutex<Vec<String>>>) {
+            let received = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    replies: Arc::new(Mutex::new(
+                        replies.iter().map(|s| s.to_string()).collect(),
+                    )),
+                    received: received.clone(),
+                },
+                received,
+            )
+        }
+    }
+    impl PlanAgentSession for PipeAgent {
+        fn converse(&mut self, message: &str, _: &mut dyn UserLink) -> Result<String> {
+            self.received.lock().unwrap().push(message.into());
+            let popped = self
+                .replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_default();
+            Ok(popped)
+        }
+    }
+
+    #[derive(Clone)]
+    struct PipeReviewFactory {
+        replies: Arc<Mutex<VecDeque<String>>>,
+        instructions: Arc<Mutex<Vec<String>>>,
+    }
+    impl ReviewSessionFactory for PipeReviewFactory {
+        fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
+            Ok(Box::new(PipeReviewSession {
+                replies: self.replies.clone(),
+                instructions: self.instructions.clone(),
+            }))
+        }
+    }
+    struct PipeReviewSession {
+        replies: Arc<Mutex<VecDeque<String>>>,
+        instructions: Arc<Mutex<Vec<String>>>,
+    }
+    impl ReviewSession for PipeReviewSession {
+        fn review(&mut self, instruction: &str) -> Result<String> {
+            self.instructions.lock().unwrap().push(instruction.into());
+            Ok(self
+                .replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_default())
+        }
+    }
+
+    #[test]
+    fn pipeline_runs_units_with_overlapped_reviews() {
+        // DR-14：两单元全过——units_done 顺序完整、审查开庭×2
+        let tmp = tempfile::tempdir().unwrap();
+        let (agent, received) = PipeAgent::new(&[
+            "A\n<doc-complete>unit-a-01</doc-complete>",
+            "B\n<doc-complete>unit-b-02</doc-complete>",
+        ]);
+        let factory = PipeReviewFactory {
+            replies: Arc::new(Mutex::new(
+                [
+                    "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
+                    "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            )),
+            instructions: Arc::new(Mutex::new(Vec::new())),
+        };
+        let report = run_pipeline(
+            agent,
+            Arc::new(Mutex::new(factory)),
+            state_path(&tmp),
+            &mut NoUser,
+            tmp.path(),
+            &["unit-a-01".to_string(), "unit-b-02".to_string()],
+            "complete",
+            String::new(),
+            None,
+        )
+        .unwrap();
+        let got = received.lock().unwrap().join("|||");
+        assert!(got.contains("unit-a-01"), "收到的消息: {got}");
+        assert_eq!(report.units_done, vec!["unit-a-01", "unit-b-02"]);
+    }
+
+    #[test]
+    fn pipeline_fix_round_requeues_failed_unit() {
+        // DR-14：unit 1 审查 FAIL → fix 队列优先于新单元 → 修复提示 → 复审 PASS → 继续 unit 2
+        let tmp = tempfile::tempdir().unwrap();
+        let (agent, received) = PipeAgent::new(&[
+            "W1\n<doc-complete>unit-a-01</doc-complete>",
+            "FIX1\n<doc-complete>unit-a-01</doc-complete>",
+            "W2\n<doc-complete>unit-b-02</doc-complete>",
+        ]);
+        let factory = PipeReviewFactory {
+            replies: Arc::new(Mutex::new(VecDeque::from(vec![
+                "<doc-verdict>FAIL</doc-verdict>\n<route>finish</route>\n<issues>\n- 描述与行为不符\n</issues>"
+                    .to_string(),
+                "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>".to_string(),
+                "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>".to_string(),
+            ]))),
+            instructions: Arc::new(Mutex::new(Vec::new())),
+        };
+        let report = run_pipeline(
+            agent,
+            Arc::new(Mutex::new(factory)),
+            state_path(&tmp),
+            &mut NoUser,
+            tmp.path(),
+            &["unit-a-01".to_string(), "unit-b-02".to_string()],
+            "complete",
+            String::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            report.units_done,
+            vec!["unit-a-01", "unit-b-02"],
+            "修复后的 unit 1 与 unit 2 都应过审"
+        );
+        let msgs = received.lock().unwrap();
+        assert!(
+            msgs[1].contains(DOC_REMEDIATION_PREFIX),
+            "第 2 条消息应是 unit 1 的整改提示（fix 优先于新单元 kickoff）: {msgs:?}"
+        );
+        assert!(msgs[2].contains("unit-b-02"), "fix 之后再开新单元: {msgs:?}");
+    }
+
+    #[test]
+    fn pipeline_breaker_stops_after_two_consecutive_fails() {
+        // DR-14 断路器：连续 2 FAIL → andon 熔断（Quality），不再无限重跑
+        let tmp = tempfile::tempdir().unwrap();
+        let (agent, _) = PipeAgent::new(&[
+            "W1\n<doc-complete>unit-a-01</doc-complete>",
+            "FIX1\n<doc-complete>unit-a-01</doc-complete>",
+        ]);
+        let factory = PipeReviewFactory {
+            replies: Arc::new(Mutex::new(VecDeque::from(vec![
+                "<doc-verdict>FAIL</doc-verdict>\n<route>finish</route>\n<issues>\n- 问题一\n</issues>"
+                    .to_string(),
+                "<doc-verdict>FAIL</doc-verdict>\n<route>finish</route>\n<issues>\n- 问题依旧\n</issues>"
+                    .to_string(),
+            ]))),
+            instructions: Arc::new(Mutex::new(Vec::new())),
+        };
+        let err = run_pipeline(
+            agent,
+            Arc::new(Mutex::new(factory)),
+            state_path(&tmp),
+            &mut NoUser,
+            tmp.path(),
+            &["unit-a-01".to_string()],
+            "complete",
+            String::new(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.is_quality_failure(), "断路器应判质量失败: {err}");
+        assert!(format!("{err}").contains("断路器"), "{err}");
     }
 
     #[test]

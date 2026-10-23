@@ -92,12 +92,12 @@ impl ReviewSession for RpcReviewSession {
 
 /// Review 会话工厂：每轮用新 spec spawn 全新 pi 进程。
 pub struct RpcReviewFactory {
-    make_spec: Box<dyn FnMut() -> SpawnSpec>,
+    make_spec: Box<dyn FnMut() -> SpawnSpec + Send>,
 }
 
 impl RpcReviewFactory {
     /// 每轮调用一次 spec 生成器（session dir / run 细分由生成器决定）。
-    pub fn new(make_spec: impl FnMut() -> SpawnSpec + 'static) -> Self {
+    pub fn new(make_spec: impl FnMut() -> SpawnSpec + Send + 'static) -> Self {
         Self {
             make_spec: Box::new(make_spec),
         }
@@ -105,10 +105,9 @@ impl RpcReviewFactory {
 
     /// 便捷构造：同一 profile，每轮递增序号的 session 子目录（planning 沿用：cwd=服务器 cwd）。
     pub fn per_round(profile_dir: std::path::PathBuf, session_root: std::path::PathBuf) -> Self {
-        let counter = std::cell::Cell::new(0u32);
+        let counter = std::sync::atomic::AtomicU32::new(0u32);
         Self::new(move || {
-            let n = counter.get();
-            counter.set(n + 1);
+            let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             SpawnSpec::new(
                 profile_dir.clone(),
                 "plan-review",
@@ -125,11 +124,10 @@ impl RpcReviewFactory {
         session_root: std::path::PathBuf,
         working_dir: std::path::PathBuf,
     ) -> Self {
-        let counter = std::cell::Cell::new(0u32);
+        let counter = std::sync::atomic::AtomicU32::new(0u32);
         let role = role.into();
         Self::new(move || {
-            let n = counter.get();
-            counter.set(n + 1);
+            let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             SpawnSpec::new(
                 profile_dir.clone(),
                 role.clone(),
