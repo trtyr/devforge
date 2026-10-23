@@ -206,14 +206,33 @@ fn evidence_exit_code(path: &Path) -> Option<i32> {
     parse_baseline_log(&text).ok().map(|ev| ev.exit_code)
 }
 
-fn require_marker(stage: &str, reply: &str) -> Result<()> {
-    if parse_stage_complete(reply).is_none() {
-        return Err(DevforgeError::Quality(format!(
-            "{stage} 未输出 <stage-complete>N（最近一次回复尾巴：{}）",
-            crate::sop::coding::tail(reply)
-        )));
+/// 标记追补上限：拒收 + 追补 ×3，与 c6 空箱拒收/重审裁决同口径。
+const MAX_MARKER_NUDGES: usize = 3;
+
+/// 标记追补话术：不重复已完成的工作，只补收尾标记。
+const MARKER_NUDGE: &str = "你的上一条回复没有输出阶段完成标记。请补完当前阶段收尾，然后在回复末尾单独一行输出 <stage-complete>N（N 为阶段号）；不要重复已完成的工作。";
+
+/// 阶段完成标记验收：无标记先追补（同会话再问一轮），连续 MAX_MARKER_NUDGES 次
+/// 仍无标记才 Quality。标记由模型生成，长回合忘交是闪模型的结构性失误（F17：
+/// resume6b coding 轮 / resume6c test 轮连续两死），不能一枪毙命。
+fn require_marker_nudged(
+    stage: &str,
+    first_reply: String,
+    mut redeliver: impl FnMut(&str) -> Result<String>,
+) -> Result<String> {
+    let mut reply = first_reply;
+    let mut nudges = 0usize;
+    while parse_stage_complete(&reply).is_none() {
+        nudges += 1;
+        if nudges > MAX_MARKER_NUDGES {
+            return Err(DevforgeError::Quality(format!(
+                "{stage} 连续 {nudges} 次未输出 <stage-complete>N（已追补 {MAX_MARKER_NUDGES} 次），判定为质量失败（不自动重启）；最近一次回复尾巴：{}",
+                crate::sop::coding::tail(&reply)
+            )));
+        }
+        reply = redeliver(MARKER_NUDGE)?;
     }
-    Ok(())
+    Ok(reply)
 }
 
 fn issues_of(reply: &str) -> Vec<String> {
@@ -271,8 +290,10 @@ fn review_once(
 impl ProdChangeSession {
     /// plan / amend 共用：发指令 → 等标记 → 审计计划 → 审查。
     fn run_plan_with(&mut self, ui: &mut dyn UserLink, message: &str) -> Result<PlanTurn> {
-        let reply = self.plan_agent.converse(message, ui)?;
-        require_marker("change-plan-agent", &reply)?;
+        let first = self.plan_agent.converse(message, ui)?;
+        let reply = require_marker_nudged("change-plan-agent", first, |m| {
+            self.plan_agent.converse(m, ui)
+        })?;
         // 计划文在目标仓，审查子进程 cwd 是黑板：必须把路径与全文一起给审查官
         let plan_path = self.ctx.plan_path();
         let plan_text = std::fs::read_to_string(&plan_path).map_err(|e| {
@@ -359,7 +380,10 @@ impl ChangeSession for ProdChangeSession {
     ) -> Result<CodingTurn> {
         // ① 基线轮：先让 agent 只跑既有测试写证据（此时还没允许改代码）
         let baseline_reply = self.coding_agent.converse(&baseline_kickoff(&self.ctx), ui)?;
-        require_marker("change-coding-agent（基线轮）", &baseline_reply)?;
+        let baseline_reply =
+            require_marker_nudged("change-coding-agent（基线轮）", baseline_reply, |m| {
+                self.coding_agent.converse(m, ui)
+            })?;
         // 引擎不自己跑测试，只验证据：红/缺失就在这里拦住（coding 子进程不会再被叫去改代码）
         // 「基线门」里程碑：绿/红都落一条（红时**按字段**带出退出码）
         let baseline = check_baseline_log(&self.ctx.blackboard);
@@ -385,7 +409,7 @@ impl ChangeSession for ProdChangeSession {
         baseline?;
 
         // ② coding 轮：真实改代码；越界申报按 D008 只发 <route>plan</route> + <impact-gap>，不打标记
-        let reply = self
+        let mut reply = self
             .coding_agent
             .converse(&coding_kickoff(&self.ctx, last_failure), ui)?;
         if parse_route(&reply).as_deref() == Some("plan") {
@@ -396,7 +420,9 @@ impl ChangeSession for ProdChangeSession {
                 reviews: 0,
             });
         }
-        require_marker("change-coding-agent", &reply)?;
+        reply = require_marker_nudged("change-coding-agent", reply, |m| {
+            self.coding_agent.converse(m, ui)
+        })?;
         // 先证后报：自证证据缺失或红 → Quality（不进审查）
         // 「自证门」里程碑：绿/红都落一条
         let self_check = check_self_check(&self.ctx.blackboard);
@@ -497,7 +523,9 @@ impl ChangeSession for ProdChangeSession {
                 _ => TestingTurn::RoutePlan { failures },
             });
         }
-        require_marker("change-test-agent", &reply)?;
+        let reply = require_marker_nudged("change-test-agent", reply, |m| {
+            self.test_agent.converse(m, ui)
+        })?;
         // 声称通过 → 回归日志必须是绿的
         check_regression_log(&self.ctx.blackboard, true)?;
         // 验收对账表由 agent 落盘，引擎逐条读
@@ -625,6 +653,32 @@ mod tests {
 
     const PLAN_PASS: &str = "<stage-verdict>PASS</stage-verdict>\n<next>advance</next>";
     const PLAN_FAIL: &str = "<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>\n<issues>\n- 影响面漏了调用方\n</issues>";
+
+    #[test]
+    fn marker_nudge_redelivers_once_then_accepts() {
+        let mut calls = 0usize;
+        let reply = require_marker_nudged("x", "干了一半没交卷".into(), |m| {
+            calls += 1;
+            assert!(m.contains("<stage-complete>N"), "追补话术要带标记样板：{m}");
+            Ok("补交\n<stage-complete>3</stage-complete>".to_string())
+        })
+        .unwrap();
+        assert_eq!(calls, 1, "第一次追补就该收到");
+        assert!(reply.contains("<stage-complete>3"));
+    }
+
+    #[test]
+    fn marker_nudge_gives_up_after_three_redeliveries() {
+        let mut calls = 0usize;
+        let err = require_marker_nudged("x", "还是没有".into(), |_| {
+            calls += 1;
+            Ok("还是没有".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(calls, 3, "追补恰好三次");
+        assert!(err.to_string().contains("连续 4 次"), "{err}");
+        assert!(err.to_string().contains("已追补 3 次"), "{err}");
+    }
 
     fn plan_text() -> String {
         "# 变更计划\n\n\
@@ -777,9 +831,15 @@ mod tests {
 
     #[test]
     fn plan_without_marker_is_quality_failure() {
+        // F17 追补口径：无标记先追补 ×3（每次都发追补话术），第四次仍无标记才 Quality
         let f = fixture(false);
         let mut session = ProdChangeSession {
-            plan_agent: Box::new(Agent::new(&["就是不发标记"])),
+            plan_agent: Box::new(Agent::new(&[
+                "就是不发标记",
+                "还是不发",
+                "仍然不发",
+                "追补三次后依旧不发",
+            ])),
             plan_review: Box::new(ReviewFactory::new(&[])),
             coding_agent: Box::new(Agent::new(&[])),
             coding_review: Box::new(ReviewFactory::new(&[])),
@@ -790,6 +850,7 @@ mod tests {
         };
         let err = session.run_plan(&mut NoUser, 0).unwrap_err();
         assert!(err.to_string().contains("stage-complete"), "{err}");
+        assert!(err.to_string().contains("已追补 3 次"), "{err}");
     }
 
     /// 把计划文件里的歧义条目换成给定内容（其余块不动）。
