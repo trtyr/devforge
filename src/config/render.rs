@@ -155,8 +155,15 @@ impl<'a> Renderer<'a> {
         }
 
         // mcp.json（P005 T003：pi 原生 schema，<agent-dir>/mcp.json 全项目可用；
-        // 空 = 不生成该文件，规划双 Agent 不受影响）
-        if !agent.mcp.is_empty() {
+        // 空 = 不生成该文件，规划双 Agent 不受影响；但若旧渲染留过文件（如 DR-12：
+        // doc-review 从挂码图到清空的迁移），必须清掉，否则「空」语义形同虚设）
+        if agent.mcp.is_empty() {
+            let mcp_path = dir.join("mcp.json");
+            if mcp_path.exists() {
+                fs::remove_file(&mcp_path)
+                    .ctx(format!("清 {} 的旧 mcp.json（清单已置空）", agent.name))?;
+            }
+        } else {
             let mut servers = serde_json::Map::new();
             for m in &agent.mcp {
                 let mut entry = serde_json::Map::new();
@@ -348,6 +355,29 @@ mod tests {
         let skill_body = fs::read_to_string(profile.join("skills/plan-tree/SKILL.md")).unwrap();
         assert!(skill_body.starts_with("---"));
         assert!(skill_body.contains("目录约定"));
+    }
+
+    #[test]
+    fn render_empty_mcp_removes_stale_mcp_json() {
+        // DR-12 迁移路径：清单把某 agent 的 mcp 清空后重渲染，旧 mcp.json 必须被清掉，
+        // 否则「空 = 无 MCP」的语义对已存在的 profile 永远不生效
+        let manifest = ConfigManifest::builtin();
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("doc-review");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(
+            profile.join("mcp.json"),
+            r#"{"mcpServers":{"codegraph":{"command":"codegraph"}}}"#,
+        )
+        .unwrap();
+
+        renderer(&manifest)
+            .render_agent(root.path(), "doc-review")
+            .unwrap();
+        assert!(
+            !profile.join("mcp.json").exists(),
+            "mcp 清空后旧 mcp.json 必须被移除"
+        );
     }
 
     #[test]
