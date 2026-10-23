@@ -1,18 +1,20 @@
 //! `doc-from-zero` 的续跑接入（plan 010 · T004/T007）：声明本 SOP 的 done 证据与恢复语。
 //!
-//! 证据口径（010 D003）：一个单元算「真做完」= 它当初产出的文件都还在 + `doc-lint` 仍为 0 违规。
-//! 只做机械可判定的事——文档写得好不好归审查，不归这里。
+//! 证据口径（010 D003 + DR-16 单元级归因）：一个单元算「真做完」= 它当初产出的文件都还在
+//! + 落在它自己文件里的 lint 违规只剩 Link 类（穿插/枢纽后写模式下，指向未来单元的死链
+//! 在树未完整时不可避免，由 run 末尾的全量 lint 兕底）。只做机械可判定的事。
 
 use std::path::{Path, PathBuf};
 
+use crate::docgen::lint::{Check, Violation};
 use crate::runstate::resume::{Resumable, done_units};
 use crate::runstate::RunState;
 
 /// 本 SOP 的注册名（同时是状态目录名）。
 pub const DOC_SOP: &str = "doc-from-zero";
 
-/// `doc-lint` 门卫：返回是否仍绿（真实现用 lint_docs_with_entities，测试注入假实现）。
-pub type LintGate = Box<dyn Fn(&Path) -> bool + Send + Sync>;
+/// `doc-lint` 门卫：跑一次全树 lint，返回违规清单；`None` = lint 本身挂了（保守全重做）。
+pub type LintGate = Box<dyn Fn(&RunState) -> Option<Vec<Violation>> + Send + Sync>;
 
 /// 文档 SOP 的续跑适配器。
 pub struct DocResume {
@@ -30,7 +32,7 @@ impl DocResume {
         }
     }
 
-    pub fn with_lint(mut self, f: impl Fn(&Path) -> bool + Send + Sync + 'static) -> Self {
+    pub fn with_lint(mut self, f: impl Fn(&RunState) -> Option<Vec<Violation>> + Send + Sync + 'static) -> Self {
         self.lint = Some(Box::new(f));
         self
     }
@@ -73,12 +75,34 @@ impl Resumable for DocResume {
         if !redo.is_empty() {
             return redo;
         }
-        // 2) 全局门：doc-lint 变红 → 所有 done 单元保守重做（lint 报的是全库问题，
-        //    无法机械归因到单元；宁重做，不假绿）
-        if let Some(lint) = &self.lint
-            && !lint(&self.docs_root)
-        {
-            redo = done;
+        // 2) 单元级归因（DR-16）：全树 lint 一次，只有落在**本单元自己文件里**的非 Link 违规
+        //    才算证据失效。Link 类容忍——穿插/枢纽后写模式下，早期单元引用后期单元的枢纽文件
+        //    在树未完整时必死链；真正的坏链接 run 末尾的全量 lint 兑底。
+        if let Some(lint) = &self.lint {
+            match lint(state) {
+                Some(violations) => {
+                    for u in &done {
+                        let files = Self::files_of(state, u);
+                        let bad = violations.iter().any(|v| {
+                            if v.check == Check::Link {
+                                return false;
+                            }
+                            let rel = v
+                                .file
+                                .strip_prefix(&self.docs_root)
+                                .unwrap_or(v.file.as_path());
+                            files
+                                .iter()
+                                .any(|f| Path::new(f) == rel)
+                        });
+                        if bad {
+                            redo.push(u.clone());
+                        }
+                    }
+                }
+                // lint 本身挂了 → 无法机械归因，保守全重做（旧口径）
+                None => redo = done,
+            }
         }
         redo
     }
@@ -142,16 +166,55 @@ mod tests {
 
     #[test]
     fn red_lint_invalidates_every_done_unit() {
+        // lint 本身挂了（None）→ 保守全重做（旧口径保留）
         let tmp = tempfile::tempdir().unwrap();
         touch(tmp.path(), "a/x.md");
         let st = state_with(
             &["unit-a", "unit-b"],
             json!({ "unit-a": ["a/x.md"], "unit-b": ["a/x.md"] }),
         );
-        let resume = DocResume::new(tmp.path()).with_lint(|_| false);
+        let resume = DocResume::new(tmp.path()).with_lint(|_| None);
         let mut redo = resume.verify_done(&st);
         redo.sort();
         assert_eq!(redo, vec!["unit-a".to_string(), "unit-b".to_string()]);
+    }
+
+    fn violation(file: &str, check: Check) -> Violation {
+        Violation {
+            file: file.into(),
+            line: 1,
+            check,
+            severity: crate::docgen::lint::Severity::Fail,
+            message: "测试违规".into(),
+        }
+    }
+
+    #[test]
+    fn link_violation_in_own_file_is_tolerated() {
+        // DR-16：指向未来单元枢纽的死链在树未完整时不可避免——Link 类不算证据失效
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "a/x.md");
+        let st = state_with(&["unit-a"], json!({ "unit-a": ["a/x.md"] }));
+        let resume = DocResume::new(tmp.path()).with_lint(|_| {
+            Some(vec![violation("a/x.md", Check::Link)])
+        });
+        assert!(resume.verify_done(&st).is_empty(), "Link 违规应被容忍");
+    }
+
+    #[test]
+    fn entity_violation_in_own_file_invalidates_that_unit_only() {
+        // DR-16：单元级归因——违规落谁头上谁重做，别的单元不牵连
+        let tmp = tempfile::tempdir().unwrap();
+        touch(tmp.path(), "a/x.md");
+        touch(tmp.path(), "b/y.md");
+        let st = state_with(
+            &["unit-a", "unit-b"],
+            json!({ "unit-a": ["a/x.md"], "unit-b": ["b/y.md"] }),
+        );
+        let resume = DocResume::new(tmp.path()).with_lint(|_| {
+            Some(vec![violation("a/x.md", Check::Entity)])
+        });
+        assert_eq!(resume.verify_done(&st), vec!["unit-a".to_string()]);
     }
 
     #[test]

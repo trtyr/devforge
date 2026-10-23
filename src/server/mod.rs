@@ -501,12 +501,16 @@ impl BuiltinRpcEngine {
         let audit_ws = workspace.clone();
         let audit_index = crate::docgen::lint::EntityIndex::build(&workspace, Some(&inv))?;
 
-        // 断点与续跑（plan 010）：状态住黑板（不进产物目录）；done 证据 = 产出文件在 + lint 绿。
+        // 断点与续跑（plan 010）：状态住黑板（不进产物目录）；done 证据 = 产出文件在
+        // + 本单元文件内无非 Link 违规（DR-16 单元级归因；Link 死链由末尾全量 lint 兑底）。
         let resume_index = audit_index.clone();
-        let resume = crate::sop::doc_resume::DocResume::new(workspace.join(DOCS_DIR)).with_lint(
-            move |docs| match crate::docgen::lint::lint_docs_with_entities(docs, &resume_index) {
-                Ok(r) => r.violations().is_empty(),
-                Err(_) => false,
+        let resume_docs = workspace.join(DOCS_DIR);
+        let resume = crate::sop::doc_resume::DocResume::new(resume_docs.clone()).with_lint(
+            move |state: &crate::runstate::RunState| {
+                match crate::docgen::lint::lint_docs_with_entities(&resume_docs, &resume_index) {
+                    Ok(r) => Some(r.violations().to_vec()),
+                    Err(_) => None,
+                }
             },
         );
         let store = crate::runstate::StateStore::new(
