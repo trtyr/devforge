@@ -733,6 +733,16 @@ mod tests {
     }
 
     #[test]
+    fn kickoff_carries_interleave_and_batch_rules() {
+        // DR-11/DR-10④：kickoff 必须带穿插节奏与批量写预算护栏（合同 §七 同款）
+        let k = doc_kickoff(Path::new("/repo"), "unit-x", "complete");
+        assert!(k.contains("穿插推进"), "要带穿插节奏条款: {k}");
+        assert!(k.contains("批量写出"), "要带同回合批量写: {k}");
+        assert!(k.contains("30K tokens"), "要带输出预算护栏: {k}");
+        assert!(k.contains("压轴最后写"), "枢纽压轴规则要在: {k}");
+    }
+
+    #[test]
     fn review_instruction_puts_verdict_first() {
         // DR-13：裁决块前置——防思考型输出把协议块挤到截断线外；DR-12：不读码条款
         let ins = doc_review_instruction("unit-x", 1);
