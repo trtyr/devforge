@@ -381,6 +381,8 @@ pub const DOC_REVIEW_PROMPT: &str = r#"# Doc Review Agent（文档审查 Agent�
 
 你是 devforge 系统的文档审查 Agent。无状态、用完即弃：只审文档、只出报告，不改文档，不与用户交互。
 
+**不读代码（DR-12）**：你没有代码访问权限，也不需要——事实核查由引擎确定性审计（coverage/lint/spec 行为锚）在 kickoff 消息里注入，直接采信；你的职责是文字质量、结构、一致性与可读性。
+
 ## 审查输入
 
 kickoff 消息告知：黑板路径、代码工作区路径、本轮 doc-fix 的 findings 清单（testing/findings/）。通读修订后的文档（coding/docs/）、plan tree、findings 各文件。
@@ -393,14 +395,15 @@ kickoff 消息告知：黑板路径、代码工作区路径、本轮 doc-fix 的
 4. **Runbook 七件套契约**：环境要求/依赖安装（逐条可执行）/配置项（必填+默认值+示例）/启停命令+预期输出+健康检查/种子数据/测试运行方式（含测试依赖获取与隔离方式）/公开接口清单（端点·参数·响应·错误码）——缺一件即 FAIL。
 5. **第三方可测标准**：第三方能否完全基于文档写测试。
 
-## 输出协议（强制，逐字遵守）
+## 输出协议（强制，逐字遵守；裁决前置防截断）
 
-先写报告到 testing/reports/doc-review-<轮次>.md（轮次号在 kickoff 消息里给出），然后回复末尾输出协议块：
+回复的**第一行**先输出完整协议块（裁决先行——探索叙述放后面，协议块被截断 = 本轮作废）：
 
 <stage-verdict>PASS或FAIL</stage-verdict>
 
 - FAIL 时：协议块后另起 <issues> 逐条列问题（回注 doc-fix 修订）。
 - PASS 时：可另起 <notes> 列非阻塞建议。
+- 报告正文写到 testing/reports/doc-review-<轮次>.md（轮次号在 kickoff 消息里给出），回复里给要点摘要即可。
 - 保守规则：协议块缺失或语义不明 → 按 FAIL 处理。
 - 没有协议块的审查视为无效，必须重写回复补上。
 "#;
@@ -906,8 +909,10 @@ impl ConfigManifest {
                     extra_packages: vec![],
                     model: "grok-4.7".into(),
                     skills: vec!["doc-contract".into()],
-                    // D012/D018：查实体存在性必须有图；不给 context7（不查外部库文档）
-                    mcp: vec![codegraph_mcp()],
+                    // DR-12（10-23 用户拍板，推翻 D012/D018）：审查官不读码——事实核查由引擎
+                    // 确定性面（coverage/lint/spec 锚）兑底，职责收敛到文字质量；实测有图时
+                    // 审查官人肉重推导（61 次调用/14.5min）且读码探索失控触发协议违例双轮。
+                    mcp: vec![],
                     thinking_level: Some("medium".into()),
                 },
                 // P009：变更 SOP 规划双 Agent。与 MVP 的 plan 双 Agent 平行：
@@ -1187,9 +1192,9 @@ mod tests {
         // P008 T000a：doc-review 也拿 doc-contract（它是审查用规则书，不是写作技能）
         assert!(dr.extra_packages.is_empty());
         assert_eq!(dr.skills, vec!["doc-contract".to_string()]);
-        // P008 D012/D018：审文档必须有图（查实体），但不给 context7
-        assert_eq!(dr.mcp.len(), 1);
-        assert_eq!(dr.mcp[0].name, "codegraph");
+        // DR-12（10-23 用户拍板，推翻 D012/D018）：审查官不读码——事实由引擎确定性面兑底；
+        // 实测有图时审查官人肉重推导（61 次调用/14.5min）且读码探索失控触发协议违例双轮
+        assert!(dr.mcp.is_empty(), "doc-review 不得持有读码权限: {:?}", dr.mcp);
         assert_eq!(dr.model, "grok-4.7");
 
         // P009：变更 SOP 规划双 Agent（D009/D012/D016）

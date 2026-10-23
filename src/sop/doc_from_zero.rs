@@ -174,6 +174,7 @@ pub fn doc_kickoff(repo: &Path, unit: &str, doc_level: &str) -> String {
         "你是文档 Agent：本单元 `{unit}`（档位 `{doc_level}`）。\
 \n目标仓库（只读，除了产出目录）：{}\n产出目录：{DOCS_DIR}/（本单元的所有文档写这里；元数据写 {META_DIR}/）\
 \n清单：{META_DIR}/inventory.json（先读它，本单元包含哪些文件/符号/入口）\
+\n节奏（DR-11 穿插推进，强制）：按源文件粒度边读边写——读完一个源文件，立即在同回合批量写出它的全部文档（多个写调用并行、路径不相交），再进入下一个源文件；本单元的 index/runbook/overview 等枢纽文档压轴最后写（依赖全部叶子）；单回合写入总量 ≤30K tokens 超限拆回合。禁止全部看完再动笔。\
 \n纪律：只写 {DOCS_DIR}/ 下；codegraph-first；勘察只记事实、解释标 🟢/🟡/🔴；按 doc-contract 写、不适用写 N/A。\
 \n交审前自检后用 <doc-complete>{unit}</doc-complete> 收尾。",
         repo.display()
@@ -186,6 +187,7 @@ pub fn doc_review_instruction(unit: &str, round: usize) -> String {
         "你是文档审查 Agent（第 {round} 轮，审单元 `{unit}`）。\
 \n审查面：覆盖（清单条目 ↔ 文档，按档位集合）、完整性（必填节 / N-A 规则）、真实性（实体存在）、置信度诚实性（标 🟢 必须给得出 path:line）、可跑（**照 Runbook 从零 boot 一遍**：装依赖→配置→启动→健康检查→种子数据，跑不起来 = FAIL）。\
 \n引擎审计是确定性事实（覆盖/lint/Runbook 命令块），直接采信并逐条验收，不要重算。\
+\n**不读代码（DR-12）**：你的输入只有单元文档与引擎审计文本——事实以审计为准，不需要也不应该打开源码；文字质量/结构/一致性才是你的职责。\
 \n**输出协议（强制，裁决前置）**：回复的**第一行**就是完整协议块——\
 \n<doc-verdict>PASS|FAIL</doc-verdict> 换行 <route>...</route> 换行 <issues>每行一条</issues>——\
 \n先把裁决交了，再写审查报告正文并落盘 {META_DIR}/../_meta/reviews/review-{round}.md。\
@@ -732,12 +734,13 @@ mod tests {
 
     #[test]
     fn review_instruction_puts_verdict_first() {
-        // DR-13：裁决块前置——防思考型输出把协议块挤到截断线外
+        // DR-13：裁决块前置——防思考型输出把协议块挤到截断线外；DR-12：不读码条款
         let ins = doc_review_instruction("unit-x", 1);
         assert!(ins.contains("第一行"), "要强制裁决块前置: {ins}");
         assert!(ins.contains("<doc-verdict>"), "要带协议块格式: {ins}");
         assert!(ins.contains("4000 字"), "要带叙述预算: {ins}");
         assert!(ins.contains("本轮作废"), "要写明截断后果: {ins}");
+        assert!(ins.contains("不读代码"), "DR-12 不读码条款要在: {ins}");
     }
 
     #[test]
