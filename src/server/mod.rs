@@ -1305,7 +1305,18 @@ pub fn build_router(state: SharedState) -> Router {
             post(handlers::cancel_task),
         )
         // 产物管理 + 可观测
-        .route("/projects/{name}/tasks/{task}/runs", get(handlers::list_runs))
+        .route(
+        "/projects/{name}/tasks/{task}/runs",
+        get(handlers::list_runs),
+    )
+    .route(
+        "/projects/{name}/tasks/{task}/runs/{run}",
+        get(handlers::get_run_detail),
+    )
+    .route(
+        "/projects/{name}/tasks/{task}/runs/{run}/events",
+        get(handlers::run_events),
+    )
         .route("/projects/{name}/tasks/{task}/graph", get(handlers::task_graph))
         // 交互中继
         .route("/ui/{id}/answer", post(handlers::answer_ui))
@@ -1533,6 +1544,9 @@ fn run_with_watchdog<T>(
     let done = std::sync::Arc::new(AtomicBool::new(false));
     let done_wd = done.clone();
     let done_main = done.clone();
+    // DR-3：停滞告警每回合只发一次（恢复后重置）
+    let stall_warned = std::sync::Arc::new(AtomicBool::new(false));
+    let stall_wd = stall_warned.clone();
     let run_id_final = run_id.clone();
     std::thread::scope(|scope| {
         scope.spawn(move || {
@@ -1545,6 +1559,24 @@ fn run_with_watchdog<T>(
                 // 心跳低频兜底刷新（节流在 observability 内）：run 停在同一阶段、长时间无事件时，
                 // 时间戳仍向前走 → 能区分「卡死」与「已死」（六个 SOP 全经过本线程）。
                 crate::observability::touch_run(&run_id);
+                // DR-3：agent 停滞告警——心跳只证本线程活，agent 活性看最近 agent 事件。
+                // 从未有 agent 事件（DR-1 型「根本没开轮」）按开跑时刻起算。
+                if let Some(age) = crate::observability::stall_check(&run_id)
+                    && age > crate::observability::stall_warn_ms()
+                {
+                    if !stall_wd.swap(true, Ordering::Relaxed) {
+                        tracing::warn!(
+                            component = "server",
+                            event = "agent.stall",
+                            run_id = %run_id,
+                            age_ms = age,
+                            threshold_ms = crate::observability::stall_warn_ms(),
+                            "agent 停滞告警：超阈值无任何 agent 事件（turn_start/turn_end/失败）——run 可能假活"
+                        );
+                    }
+                } else {
+                    stall_wd.store(false, Ordering::Relaxed);
+                }
                 let now = crate::domain::now_ms();
                 if control.is_cancelled() || control.timed_out(now) {
                     let killed = crate::engine::ledger::scan_and_kill_run(&run_id);

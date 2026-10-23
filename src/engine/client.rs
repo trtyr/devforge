@@ -179,6 +179,15 @@ impl RpcClient {
             .write_all(line.as_bytes())
             .ctx(format!("发送 prompt (id={id})"))?;
         stdin.flush().ctx("flush prompt")?;
+        // DR-2/DR-3：轮次开始即记 agent 事件——停滞告警与活性聚合的锚点
+        crate::observability::note_agent_event();
+        tracing::info!(
+            component = "engine",
+            event = "agent.turn_start",
+            role = %self.spec.role,
+            chars = message.len(),
+            "agent 轮次开始（prompt 已发）"
+        );
         Ok(id)
     }
 
@@ -281,6 +290,7 @@ impl RpcClient {
     /// DR-1 修复：把 pi 的命令失败（success=false，如缺 API key）转成结构化错误。
     /// 此前这类失败只被归档进 responses 继续傻等 settled，run 无声挂死。
     fn command_failure(&self, r: &ResponseRecord) -> DevforgeError {
+        crate::observability::note_agent_event();
         let detail = r.error.clone().unwrap_or_else(|| "（无错误详情）".into());
         tracing::warn!(
             component = "engine",
@@ -301,6 +311,7 @@ impl RpcClient {
     /// 字段：角色名（`spec.role`）、本轮耗时（毫秒）、本轮产出字符数。
     /// 作用：交卷 → 下一次开庭之间的空洞由此可算（此前那 15 分钟无任何记录）。
     fn log_turn_end(&self, started_at_ms: u64, out: &WaitOutcome) {
+        crate::observability::note_agent_event();
         tracing::info!(
             component = "engine",
             event = "agent.turn_end",

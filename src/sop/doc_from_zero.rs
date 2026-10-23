@@ -52,6 +52,15 @@ pub fn done_units(state: &RunState) -> Vec<String> {
     crate::runstate::resume::done_units(state)
 }
 
+/// 计划总单元数（DR-5：进度聚合端点用；未写入 = None）。
+pub fn units_total(state: &RunState) -> Option<usize> {
+    state
+        .data
+        .get("units_total")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+}
+
 /// 是否已完成。
 pub fn is_done(state: &RunState, unit: &str) -> bool {
     done_units(state).iter().any(|u| u == unit)
@@ -268,7 +277,11 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
         // 阶段推进记录：上一个单元（首个单元的前驱 = "start"）
         let mut last_unit: Option<String> = None;
 
-        for unit in units {
+        // DR-5：总单元数入断点（进度聚合端点读它算 x/y；已存不覆盖——resume 以现状为准）
+        data_obj(&mut state)
+            .entry("units_total".to_string())
+            .or_insert_with(|| serde_json::json!(units.len()));
+        for (idx, unit) in units.iter().enumerate() {
             if let Some(only) = &self.only
                 && only != unit
             {
@@ -292,6 +305,15 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                 "doc 单元推进"
             );
             last_unit = Some(unit.clone());
+            // DR-2：单元进度事件（带 index/total，聚合端点与日志检索直接可读）
+            tracing::info!(
+                component = "doc-sop",
+                event = "doc.unit_start",
+                unit = unit.as_str(),
+                index = idx + 1,
+                total = units.len(),
+                "单元开始"
+            );
 
             let mut message = doc_kickoff(repo, unit, doc_level);
             if !self.resume_note.is_empty() {
@@ -412,6 +434,16 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                         let files = produced_files(&docs_root, &before);
                         mark_done(&mut state, unit, &files);
                         self.store.save(&mut state)?;
+                        // DR-2：单元完成事件（done = 含本单元的累计完成数）
+                        tracing::info!(
+                            component = "doc-sop",
+                            event = "doc.unit_done",
+                            unit = unit.as_str(),
+                            index = idx + 1,
+                            total = units.len(),
+                            done = done_units(&state).len(),
+                            "单元完成"
+                        );
                         tracing::info!(
                             component = "doc-sop",
                             unit,

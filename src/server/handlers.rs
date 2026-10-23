@@ -1,6 +1,6 @@
 //! API 端点处理器（P003 五能力域）。
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response, Sse};
@@ -304,6 +304,169 @@ pub async fn task_graph(
         "status": t.status,
         "sop": t.sop,
         "nodes": nodes,
+    })))
+}
+
+// ---------- DR-2/DR-7：API-first 可观测 ----------
+
+/// 结构化日志路径（与 logging::init 同根同约定：`<root>/logs/devforge.log.jsonl`）。
+fn log_file_path() -> std::path::PathBuf {
+    crate::observability::root()
+        .join("logs")
+        .join("devforge.log.jsonl")
+}
+
+/// 读 JSONL 日志并按事件名子串过滤、分页。返回（命中总数，本页事件）。
+/// 文件缺失/坏行跳过——可观测端点绝不因日志问题 5xx。
+pub fn read_log_events(
+    path: &std::path::Path,
+    event_filter: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> (usize, Vec<serde_json::Value>) {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return (0, Vec::new());
+    };
+    let matched: Vec<serde_json::Value> = content
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .filter(|v: &serde_json::Value| match event_filter {
+            Some(f) => v
+                .get("fields")
+                .and_then(|fs| fs.get("event"))
+                .and_then(|e| e.as_str())
+                .is_some_and(|e| e.contains(f)),
+            None => true,
+        })
+        .collect();
+    let total = matched.len();
+    let page = matched.into_iter().skip(offset).take(limit).collect();
+    (total, page)
+}
+
+/// 日志里最近一条 agent.* 事件（DR-3：agent 活性的历史侧证据；无文件/无事件 = None）。
+pub fn last_agent_event_from_log(path: &std::path::Path) -> Option<serde_json::Value> {
+    let content = std::fs::read_to_string(path).ok()?;
+    content.lines().rev().find_map(|l| {
+        let v: serde_json::Value = serde_json::from_str(l).ok()?;
+        let ev = v.get("fields")?.get("event")?.as_str()?;
+        ev.starts_with("agent.").then(|| v.clone())
+    })
+}
+
+/// DR-7：run 详情聚合——不登机器、纯 API 回答「在干嘛 / 干到哪 / 卡没卡」。
+pub async fn get_run_detail(
+    State(st): State<SharedState>,
+    Path((project, task, run_id)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let now = crate::domain::now_ms();
+    let (run, sop) = {
+        let store = st.store.lock().expect("store 锁");
+        let t = store
+            .get_task(&project, &task)
+            .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
+        let run = t
+            .runs
+            .iter()
+            .find(|id| id.0 == run_id)
+            .and_then(|id| store.get_run(id))
+            .ok_or_else(|| ApiError::not_found(format!("run `{run_id}` 不存在")))?;
+        (
+            json!({
+                "id": run.id.0,
+                "status": run.status,
+                "started_at_ms": run.started_at_ms,
+                "ended_at_ms": run.ended_at_ms,
+            }),
+            t.sop.clone(),
+        )
+    };
+    // doc 进度（x/y）：断点里的 done + units_total（DR-5）
+    let progress = if sop == "doc-from-zero" {
+        let s = crate::runstate::StateStore::new(
+            st.plans_root.clone(),
+            crate::runstate::StateKey::new(
+                &project,
+                &task,
+                crate::sop::doc_resume::DOC_SOP,
+            ),
+        );
+        match s.load().state() {
+            Some(state) => {
+                let done = crate::sop::doc_from_zero::done_units(state);
+                json!({
+                    "done": done.len(),
+                    "total": crate::sop::doc_from_zero::units_total(state),
+                    "units_done": done,
+                })
+            }
+            None => json!(null),
+        }
+    } else {
+        serde_json::Value::Null
+    };
+    // 心跳（run 活性）
+    let hb = crate::observability::heartbeat::read(&crate::observability::root(), &run_id).ok();
+    let heartbeat = match &hb {
+        Some(h) => json!({
+            "phase": h.phase,
+            "step": h.step,
+            "attempt": h.attempt,
+            "age_ms": now.saturating_sub(h.timestamp_ms),
+        }),
+        None => serde_json::Value::Null,
+    };
+    // agent 活性：历史侧（日志尾扫）+ 进程侧（本进程内最近 agent 事件）
+    let log_path = log_file_path();
+    let agent = json!({
+        "last_event": last_agent_event_from_log(&log_path),
+        "last_event_age_ms": crate::observability::last_agent_event_age_ms(),
+        "stall_warn_ms": crate::observability::stall_warn_ms(),
+    });
+    Ok(Json(json!({
+        "project": project,
+        "task": task,
+        "sop": sop,
+        "run": run,
+        "heartbeat": heartbeat,
+        "agent": agent,
+        "progress": progress,
+        "log_file": log_path,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct EventsQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+    /// 事件名子串过滤（如 `agent.`、`doc.unit`）。
+    pub event: Option<String>,
+}
+
+/// DR-7：run 的历史事件流水（数据源 = 结构化 JSONL 日志；文件只是实现细节，API 是主入口）。
+pub async fn run_events(
+    State(st): State<SharedState>,
+    Path((project, task, run_id)): Path<(String, String, String)>,
+    Query(q): Query<EventsQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    {
+        let store = st.store.lock().expect("store 锁");
+        let t = store
+            .get_task(&project, &task)
+            .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
+        if !t.runs.iter().any(|id| id.0 == run_id) {
+            return Err(ApiError::not_found(format!("run `{run_id}` 不存在")));
+        }
+    }
+    let limit = q.limit.unwrap_or(200).min(2000);
+    let offset = q.offset.unwrap_or(0);
+    let (total, events) = read_log_events(&log_file_path(), q.event.as_deref(), offset, limit);
+    Ok(Json(json!({
+        "run": run_id,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "events": events,
     })))
 }
 

@@ -74,6 +74,7 @@ mod tests {
             phase: phase.into(),
             step: step.into(),
             attempt: 1,
+            started_at_ms: crate::domain::now_ms(),
         }
     }
 

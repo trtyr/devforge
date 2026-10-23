@@ -20,8 +20,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::AtomicU64;
 
 use crate::error::DevforgeError;
+
+/// 最近一次 agent 事件（turn_start / turn_end / 命令失败）的进程级时间戳（ms；0 = 从未）。
+/// DR-2/DR-3：心跳只证服务端线程活着，不证 agent 活着——本时间戳补上 agent 活性。
+static LAST_AGENT_EVENT_MS: AtomicU64 = AtomicU64::new(0);
 
 /// 一次 run 的当前观测状态（心跳与墓碑的「当时是谁、在哪个阶段」）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -34,6 +39,8 @@ pub struct RunSnapshot {
     pub step: String,
     /// 当前尝试次数（run 级重试的 attempt；1 = 首次尝试）。
     pub attempt: u32,
+    /// 开跑时刻（ms；DR-3 停滞告警用：agent 从未开轮时按此刻起算）。
+    pub started_at_ms: u64,
 }
 
 /// 进程级的 run 快照表（run id → 快照）。
@@ -106,6 +113,7 @@ fn begin_run_in_ctx(root: PathBuf, run_id: &str, phase: &str) {
         phase: phase.to_string(),
         step: String::new(),
         attempt: 1,
+        started_at_ms: crate::domain::now_ms(),
     };
     runs().lock().expect("observability 快照表锁").insert(run_id.to_string(), snap);
     roots()
@@ -208,6 +216,44 @@ pub fn attempt() -> u32 {
 pub fn current() -> Option<RunSnapshot> {
     let id = LOCAL.with(|l| l.borrow().run_id.clone())?;
     runs().lock().expect("observability 快照表锁").get(&id).cloned()
+}
+
+/// DR-2/DR-3：记录一次 agent 事件（turn_start / turn_end / 命令失败），供活性与停滞告警判定。
+/// 进程级时间戳——watchdog 线程与 API 层跨线程可读。
+pub fn note_agent_event() {
+    LAST_AGENT_EVENT_MS.store(crate::domain::now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 距最近一次 agent 事件的毫秒数；本进程从未有过 agent 事件 = `None`。
+pub fn last_agent_event_age_ms() -> Option<u64> {
+    let t = LAST_AGENT_EVENT_MS.load(std::sync::atomic::Ordering::Relaxed);
+    (t != 0).then(|| crate::domain::now_ms().saturating_sub(t))
+}
+
+/// DR-3：停滞判定——返回「距最近 agent 事件的毫秒数」（超阈值与否由调用方比）。
+/// 从未有 agent 事件时按 run 开跑时刻起算（DR-1 型「根本没开轮」也要能报警）。
+pub fn stall_check(run_id: &str) -> Option<u64> {
+    match last_agent_event_age_ms() {
+        Some(age) => Some(age),
+        None => run_started_at(run_id).map(|t0| crate::domain::now_ms().saturating_sub(t0)),
+    }
+}
+
+/// run 的开跑时刻（进程级快照表；watchdog 线程用）。
+pub fn run_started_at(run_id: &str) -> Option<u64> {
+    runs()
+        .lock()
+        .expect("observability 快照表锁")
+        .get(run_id)
+        .map(|s| s.started_at_ms)
+}
+
+/// 停滞告警阈值（ms）；`DEVFORGE_STALL_WARN_MS` 可覆盖（测试用小值），默认 15 分钟。
+pub fn stall_warn_ms() -> u64 {
+    std::env::var("DEVFORGE_STALL_WARN_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(900_000)
 }
 
 /// 角色内审查轮次（1-based）：同一角色在本次 run 内第几次开庭。

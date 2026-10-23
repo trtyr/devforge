@@ -1441,3 +1441,86 @@ async fn dialog_pending_cancel_unwinds_sop() {
     let result = handle.join().unwrap();
     assert!(result.is_err(), "dialog 挂起被 abort 后 SOP 应解阻收场（execute 层映射为 Failed）");
 }
+
+#[tokio::test]
+async fn run_detail_aggregates_observability() {
+    // DR-7：纯 API 回答「在干嘛/干到哪/卡没卡」——详情端点聚合 run/心跳/agent 活性/进度
+    let f = fixture();
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks", Some(json!({"id": "t", "sop": "planning"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    let mut run_id = String::new();
+    for _ in 0..100 {
+        let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
+        let body = body_json(resp).await;
+        if let Some(id) = body["runs"].as_array().and_then(|a| a.first()).and_then(|r| r["id"].as_str()) {
+            run_id = id.to_string();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(!run_id.is_empty(), "应有 run");
+
+    let resp = send(&f.router, "GET", &format!("/api/v1/projects/p/tasks/t/runs/{run_id}"), None).await;
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert_eq!(body["run"]["id"], run_id.as_str(), "run id 要回显: {body}");
+    assert!(
+        body["heartbeat"].is_object() || body["heartbeat"].is_null(),
+        "心跳聚合位要在: {body}"
+    );
+    assert!(
+        body["agent"]["stall_warn_ms"].as_u64().unwrap_or(0) > 0,
+        "agent 活性聚合位要在: {body}"
+    );
+    assert!(body["progress"].is_null(), "planning sop 无进度段: {body}");
+    // 未知 run → 404
+    let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs/nope", None).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn run_events_endpoint_returns_paged_log() {
+    // DR-7：历史事件流水端点——文件只是实现细节，API 是主入口；日志缺席也不得 5xx
+    let f = fixture();
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks", Some(json!({"id": "t", "sop": "planning"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs/nope/events", None).await;
+    assert_eq!(resp.status(), 404, "未知 run 必须归属校验");
+    let mut run_id = String::new();
+    for _ in 0..100 {
+        let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
+        let body = body_json(resp).await;
+        if let Some(id) = body["runs"].as_array().and_then(|a| a.first()).and_then(|r| r["id"].as_str()) {
+            run_id = id.to_string();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let resp = send(
+        &f.router,
+        "GET",
+        &format!("/api/v1/projects/p/tasks/t/runs/{run_id}/events?limit=10"),
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert_eq!(body["limit"], 10, "limit 回显: {body}");
+    assert!(body["total"].as_u64().is_some(), "total 要在: {body}");
+    assert!(body["events"].is_array(), "events 数组要在: {body}");
+}
+
+#[test]
+fn stall_check_returns_age_even_without_agent_events() {
+    // DR-3：从未有 agent 事件（DR-1 型假活）也要能给出年龄——按开跑时刻起算，不返回 None
+    let dir = tempfile::tempdir().unwrap();
+    crate::observability::begin_run_in(dir.path().to_path_buf(), "stall-probe", "doc");
+    let age = crate::observability::stall_check("stall-probe");
+    assert!(
+        age.is_some(),
+        "无 agent 事件时必须按开跑时刻起算，不得 None"
+    );
+    crate::observability::end_run("stall-probe");
+}
