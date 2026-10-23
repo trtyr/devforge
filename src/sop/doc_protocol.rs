@@ -16,6 +16,10 @@ pub const MAX_DOC_PROTOCOL_VIOLATIONS: usize = 3;
 /// 不能像旧口径那样零上限空转。
 pub const MAX_DOC_CONTINUE_NUDGES: usize = 3;
 
+/// DR-8（10-23）：空响应（0 字符）重试上限——空响应是 provider 侧失败信号（非 agent 不配合），
+/// 超限后升级为基础设施故障（System → 重试层自动重启），不计入 doc-complete nudges。
+pub const MAX_DOC_EMPTY_REPLIES: usize = 3;
+
 /// 审查空回复 / 进程异常的重试上限（2026-10-20 实测：doc-review 静默死亡）。
 pub const MAX_DOC_REVIEW_RETRIES: usize = 3;
 

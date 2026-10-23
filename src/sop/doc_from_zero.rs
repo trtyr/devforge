@@ -16,8 +16,8 @@ use std::path::Path;
 use crate::error::{DevforgeError, Result};
 use crate::runstate::{RunState, StateStore};
 use crate::sop::doc_protocol::{
-    MAX_DOC_CONTINUE_NUDGES, MAX_DOC_PROTOCOL_VIOLATIONS, MAX_DOC_REVIEW_RETRIES, DocVerdict,
-    parse_doc_complete, parse_doc_review,
+    MAX_DOC_CONTINUE_NUDGES, MAX_DOC_EMPTY_REPLIES, MAX_DOC_PROTOCOL_VIOLATIONS,
+    MAX_DOC_REVIEW_RETRIES, DocVerdict, parse_doc_complete, parse_doc_review,
 };
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
 
@@ -185,8 +185,11 @@ pub fn doc_review_instruction(unit: &str, round: usize) -> String {
     format!(
         "你是文档审查 Agent（第 {round} 轮，审单元 `{unit}`）。\
 \n审查面：覆盖（清单条目 ↔ 文档，按档位集合）、完整性（必填节 / N-A 规则）、真实性（实体存在）、置信度诚实性（标 🟢 必须给得出 path:line）、可跑（**照 Runbook 从零 boot 一遍**：装依赖→配置→启动→健康检查→种子数据，跑不起来 = FAIL）。\
-\n先写 {META_DIR}/../_meta/reviews/review-{round}.md（或 kickoff 指定处），再输出协议块：<doc-verdict>PASS|FAIL</doc-verdict> + <route>...</route> + <issues>...</issues>。\
-\n引擎审计是确定性事实（覆盖/lint/Runbook 命令块），直接采信并逐条验收，不要重算。"
+\n引擎审计是确定性事实（覆盖/lint/Runbook 命令块），直接采信并逐条验收，不要重算。\
+\n**输出协议（强制，裁决前置）**：回复的**第一行**就是完整协议块——\
+\n<doc-verdict>PASS|FAIL</doc-verdict> 换行 <route>...</route> 换行 <issues>每行一条</issues>——\
+\n先把裁决交了，再写审查报告正文并落盘 {META_DIR}/../_meta/reviews/review-{round}.md。\
+\n叙述从简：探索过程不复述，报告正文控制在 4000 字内；协议块被截断 = 本轮作废。"
     )
 }
 
@@ -351,6 +354,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                 self.resume_note.clear(); // 只对本单元生效
             }
             let mut nudges = 0usize;
+            // DR-8：空响应计数（连满升级 infra，收到非空即清零）
+            let mut empty_replies = 0usize;
             // 被打回后待收尾的修复轮（回注在下一轮 agent 回合才发生 → fix.end 落在那一回合返回处）
             let mut pending_fix: Option<u32> = None;
             loop {
@@ -368,7 +373,26 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                         "首单元逾期：开跑超阈值仍无任何单元完成——agent 可能假活或单元过重"
                     );
                 }
-                let text = self.agent.converse(&message, ui)?;;
+                let text = self.agent.converse(&message, ui)?;
+                // DR-8：空响应（0 字符）= provider 侧失败信号，非 agent 不配合——
+                // 有界重试后升级为基础设施故障（System → 重试层自动重启），不计入 nudges
+                if text.trim().is_empty() {
+                    empty_replies += 1;
+                    if empty_replies > MAX_DOC_EMPTY_REPLIES {
+                        return Err(DevforgeError::System(format!(
+                            "单元 `{unit}` 连续 {empty_replies} 次返回空内容（0 tokens，provider 侧失败），判定为基础设施故障，可重试"
+                        )));
+                    }
+                    tracing::warn!(
+                        component = "doc-sop",
+                        event = "agent.empty_reply",
+                        unit = unit.as_str(),
+                        count = empty_replies,
+                        "空回复（provider 失败信号），重新提示"
+                    );
+                    continue;
+                }
+                empty_replies = 0;
                 // 上一轮单元审查判负后的回注已随本回合交卷 → 修复轮收尾
                 if let Some(round) = pending_fix.take() {
                     tracing::info!(
@@ -704,6 +728,29 @@ mod tests {
             1,
             "只告警一次，不刷屏: {log}"
         );
+    }
+
+    #[test]
+    fn review_instruction_puts_verdict_first() {
+        // DR-13：裁决块前置——防思考型输出把协议块挤到截断线外
+        let ins = doc_review_instruction("unit-x", 1);
+        assert!(ins.contains("第一行"), "要强制裁决块前置: {ins}");
+        assert!(ins.contains("<doc-verdict>"), "要带协议块格式: {ins}");
+        assert!(ins.contains("4000 字"), "要带叙述预算: {ins}");
+        assert!(ins.contains("本轮作废"), "要写明截断后果: {ins}");
+    }
+
+    #[test]
+    fn empty_reply_is_infra_not_quality() {
+        // DR-8：空响应 = provider 侧失败 → System（可重试），非 Quality；不计入 doc-complete nudges
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = MockAgent::new(&["", "", "", ""]);
+        let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>"]);
+        let err = DocSopLoop::new(agent, f, state_path(&tmp))
+            .run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
+            .unwrap_err();
+        assert!(!err.is_quality_failure(), "空响应不得判质量失败: {err}");
+        assert!(format!("{err}").contains("基础设施故障"), "{err}");
     }
 
     #[test]
