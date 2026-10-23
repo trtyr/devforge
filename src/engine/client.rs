@@ -208,6 +208,8 @@ impl RpcClient {
                 crate::engine::protocol::Inbound::Event(e) => {
                     if let Some(delta) = e.text_delta() {
                         out.text.push_str(delta);
+                        // DR-3 精化：流式 delta 也是活性——长流式回合不得误触停滞告警
+                        crate::observability::note_agent_event();
                     }
                     let settled = e.is_agent_settled();
                     out.events.push(e);
@@ -245,6 +247,8 @@ impl RpcClient {
                 crate::engine::protocol::Inbound::Event(e) => {
                     if let Some(delta) = e.text_delta() {
                         out.text.push_str(delta);
+                        // DR-3 精化：同 wait_settled —— 流式即活性
+                        crate::observability::note_agent_event();
                     }
                     if e.r#type == "extension_ui_request" {
                         // P8-ISSUE-07 修复：按 method 分流——dialog 才走应答链路
