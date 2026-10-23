@@ -56,21 +56,38 @@ fn parse_evidence_log(text: &str, file: &str, label: &str) -> Result<BaselineEvi
             continue;
         }
         let candidates = [
-            ("exit_code:", 10),
-            ("exit code:", 10),
-            ("exit:", 5),
-            ("退出码:", 4),
-            ("退出码：", 4),
+            "exit_code:",
+            "exit code:",
+            "exit:",
+            "退出码:",
+            "退出码：",
         ];
-        for (prefix, cut) in candidates {
+        let mut found = false;
+        for prefix in candidates {
             let l = if prefix.starts_with("exit") { lower.as_str() } else { t };
-            if let Some(rest) = l.strip_prefix(prefix)
-                && let Ok(n) = rest.trim().parse::<i32>()
-            {
-                exit_code = Some(n);
-                let _ = cut;
-                break;
+            if let Some(rest) = l.strip_prefix(prefix) {
+                // F16b：值容差——`**0**`（粗体包裹）与 `0` 同义；尾随散文（`**0**（44 passed…）`）
+                // 取前导整数。10-23 c7b 场：测试 agent 以列表项+粗体写回归日志，解析器判死。
+                // 剥掉粗体后取前导（可选负号+）数字；无数字 = 模板/散文行，跳过继续扫。
+                let v = rest.trim().trim_start_matches('*').trim_start();
+                let mut ds = String::new();
+                let mut cs = v.chars();
+                if cs.clone().next() == Some('-') {
+                    ds.push('-');
+                    cs.next();
+                }
+                ds.extend(cs.take_while(|c| c.is_ascii_digit()));
+                if let Ok(n) = ds.parse::<i32>() {
+                    exit_code = Some(n);
+                    found = true;
+                    break;
+                }
             }
+        }
+        if found {
+            // 首中即停：主回归的退出码在文件最前（§1）；后面的 exit_code 行是
+            // 反向验证的「能失败」证据（故意 101），不能覆盖主结果。
+            break;
         }
     }
     let exit_code = exit_code.ok_or_else(|| {
@@ -503,6 +520,35 @@ mod tests {
             panic!("应是质量失败：{err}");
         };
         assert!(msg.contains("缺退出码"), "{msg}");
+    }
+
+    #[test]
+    fn parse_accepts_bold_list_item_exit_code() {
+        // F16b：`- exit_code: **0**`（列表项+粗体）与 `exit_code: 0` 同义
+        // （10-23 c7b 场：测试 agent 以列表项+粗体写回归日志，粗体未剥被判「缺退出码」）
+        let ev = parse_baseline_log(
+            "- command: `env -u X cargo test --offline`\n- exit_code: **0**\n- 摘要：578 passed\n",
+        )
+        .unwrap();
+        assert_eq!(ev.exit_code, 0);
+    }
+
+    #[test]
+    fn parse_bold_exit_code_with_prose_tail_takes_leading_int() {
+        // 粗体后带散文：取前导整数
+        let ev = parse_baseline_log("- exit_code: **0**（44 passed / 0 failed）\n").unwrap();
+        assert_eq!(ev.exit_code, 0);
+    }
+
+    #[test]
+    fn parse_first_exit_code_wins_over_later_reverse_validation() {
+        // 首中即停：主回归在最前；后面的 exit_code 行是反向验证「能失败」的
+        // 故意 101，不得覆盖主结果（否则永不绿）
+        let ev = parse_baseline_log(
+            "command: cargo test\nexit_code: 0\n\n## 反向验证\n- exit_code: **101**（故意破坏后必红）\n",
+        )
+        .unwrap();
+        assert_eq!(ev.exit_code, 0);
     }
 
     #[test]
