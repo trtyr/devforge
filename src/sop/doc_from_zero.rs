@@ -637,19 +637,23 @@ where
         .or_insert_with(|| serde_json::json!(units.len()));
     store.save(&mut state)?;
 
-    let mut pending: Option<(String, u32, std::sync::mpsc::Receiver<(String, u32, Result<String, DevforgeError>)>)> = None;
+    let mut pending: Option<(usize, String, u32, std::sync::mpsc::Receiver<(String, u32, Result<String, DevforgeError>)>)> = None;
+    // lead=1 写超前：审查槽被占时交卷的单元先排队，槽空出时补派
+    let mut written_unreviewed: std::collections::VecDeque<(usize, String, u32)> = Default::default();
     let mut fix_queue: std::collections::VecDeque<(String, String, Vec<String>)> = Default::default();
     let mut consecutive_fails = 0u32;
     let mut frontier = 0usize;
     let mut active = String::new();
+    let mut active_idx = 0usize;
     let mut active_is_fix = false;
     let mut unit_before = None;
     let mut resume_note = resume_note;
     let mut first_kickoff_sent = false;
     let mut nudges = 0usize;
     let mut nudged_for = String::new();
-    let mut stage: Option<(&'static str, std::time::Instant)> = None;
-    let mut protocol_violations = 0u32;
+    // TODO(DR-10③)：流水线路径的 glue 计时（stage）与协议违例计数尚未接线，先用串行路径的口径
+    let mut _stage: Option<(&'static str, std::time::Instant)> = None;
+    let mut _protocol_violations = 0u32;
 
     enum Next {
         Fix(String, String, Vec<String>),
@@ -699,18 +703,37 @@ where
         }};
     }
 
+    // 审查槽空出时，把排队中的已交卷单元补派审查（与 F 的首次派发同一口径）
+    macro_rules! spawn_queued_review {
+        () => {{
+            if pending.is_none() {
+                if let Some((qidx, qu, qround)) = written_unreviewed.pop_front() {
+                    let mut instruction = doc_review_instruction(&qu, qround as usize);
+                    if let Some(audit_fn) = &audit {
+                        instruction.push_str("\n\n## 引擎审计（确定性，勿质疑）\n\n");
+                        instruction.push_str(&audit_fn(&qu));
+                    }
+                    let (qtx, qrx) = std::sync::mpsc::channel();
+                    spawn_review_worker(&factory, &qu, qround, &instruction, qtx);
+                    pending = Some((qidx, qu, qround, qrx));
+                }
+            }
+        }};
+    }
+
     loop {
         // ── A. 非阻塞清账：在途裁决到了就处理 ──
-        if let Some((unit, round, rx)) = pending.take() {
+        if let Some((idx, unit, round, rx)) = pending.take() {
             match rx.try_recv() {
                 Ok((u, round, text)) => {
                     let text = text.map_err(|e| DevforgeError::System(format!("审查重试耗尽：{e}")))?;
                     let report = parse_doc_review(&text)?;
                     process_verdict!(u, report);
-                    let _ = round;
+                    let _ = (idx, round);
+                    spawn_queued_review!();
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    pending = Some((unit, round, rx));
+                    pending = Some((idx, unit, round, rx));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     return Err(DevforgeError::System("审查线程失联".into()));
@@ -722,45 +745,42 @@ where
         let next = if let Some((u, route, issues)) = fix_queue.pop_front() {
             Next::Fix(u, route, issues)
         } else if frontier < units.len() {
-            if pending.is_some() {
-                // lead=1：在途审查占据槽位 → 阻塞等它落地（可能回填 fix 队列），再重新决定
-                let (u, round, text) = pending
-                    .take()
-                    .expect("pending 已判存在")
-                    .2
-                    .recv()
-                    .map_err(|_| DevforgeError::System("审查线程失联".into()))?;
-                let text = text.map_err(|e| DevforgeError::System(format!("审查重试耗尽：{e}")))?;
-                let report = parse_doc_review(&text)?;
-                process_verdict!(u, report);
-                if let Some((u, route, issues)) = fix_queue.pop_front() {
-                    Next::Fix(u, route, issues)
-                } else if frontier < units.len() {
-                    let u = units[frontier].clone();
-                    frontier += 1;
-                    Next::Write(u)
-                } else {
-                    break;
-                }
-            } else {
+            // lead=1（用户拍板 10-23）：审查 N 在途期间允许写 N+1（写超前 1）；
+            // 要写 N+2（写超前将到 2）才必须先等 N 的裁决落地。
+            let allowed = match &pending {
+                None => true,
+                Some((pidx, _, _, _)) => frontier <= *pidx + 1,
+            };
+            if allowed {
                 let u = units[frontier].clone();
+                active_idx = frontier;
                 frontier += 1;
                 Next::Write(u)
+            } else {
+                // 写超前已满 → 等在途裁决落地（可能回填 fix 队列），回循环头重新决定
+                let (_, _, _, rx) = pending.take().expect("pending 已判存在");
+                let (vu, vround, vtext) = rx
+                    .recv()
+                    .map_err(|_| DevforgeError::System("审查线程失联".into()))?;
+                let vtext = vtext.map_err(|e| DevforgeError::System(format!("审查重试耗尽：{e}")))?;
+                let report = parse_doc_review(&vtext)?;
+                process_verdict!(vu, report);
+                let _ = vround;
+                spawn_queued_review!();
+                continue;
             }
-        } else if let Some((unit, round, rx)) = pending.take() {
-            // 无新活但审查在途 → 等它（可能产生 fix）
+        } else if let Some((idx, unit, round, rx)) = pending.take() {
+            // 无新活但审查在途 → 等它（可能产生 fix 或补派排队审查）；
+            // 终止由循环头收敛：裁决清完 + 队列空 + fix 空 → else break
             let (vunit, vround, vtext) = rx
                 .recv()
                 .map_err(|_| DevforgeError::System("审查线程失联".into()))?;
             let vtext = vtext.map_err(|e| DevforgeError::System(format!("审查重试耗尽：{e}")))?;
             let report = parse_doc_review(&vtext)?;
             process_verdict!(vunit, report);
-            let _ = vround;
-            if let Some((u, route, issues)) = fix_queue.pop_front() {
-                Next::Fix(u, route, issues)
-            } else {
-                break;
-            }
+            let _ = (idx, vround);
+            spawn_queued_review!();
+            continue;
         } else {
             break;
         };
@@ -770,6 +790,7 @@ where
             Next::Done => break,
             Next::Fix(u, route, issues) => {
                 active = u.clone();
+                active_idx = units.iter().position(|x| *x == u).unwrap_or(active_idx);
                 active_is_fix = true;
                 tracing::info!(
                     component = "doc-sop",
@@ -852,7 +873,7 @@ where
             continue;
         }
 
-        // ── F. 交卷 → 派审查（占 pending 槽）──
+        // ── F. 交卷 → 派审查（占 pending 槽；槽被占则排队，空出时补派）──
         let round = bump_review(&mut state) as u32;
         tracing::info!(
             component = "doc-sop",
@@ -861,14 +882,18 @@ where
             round,
             "审查开庭（流水线）"
         );
-        let mut instruction = doc_review_instruction(&active, round as usize);
-        if let Some(audit_fn) = &audit {
-            instruction.push_str("\n\n## 引擎审计（确定性，勿质疑）\n\n");
-            instruction.push_str(&audit_fn(&active));
+        if pending.is_some() {
+            written_unreviewed.push_back((active_idx, active.clone(), round));
+        } else {
+            let mut instruction = doc_review_instruction(&active, round as usize);
+            if let Some(audit_fn) = &audit {
+                instruction.push_str("\n\n## 引擎审计（确定性，勿质疑）\n\n");
+                instruction.push_str(&audit_fn(&active));
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            spawn_review_worker(&factory, &active, round, &instruction, tx);
+            pending = Some((active_idx, active.clone(), round, rx));
         }
-        let (tx, rx) = std::sync::mpsc::channel();
-        spawn_review_worker(&factory, &active, round, &instruction, tx);
-        pending = Some((active.clone(), round, rx));
         let _ = active_is_fix;
 
         // 回到循环头：非阻塞清账 → 决定下一个（fix 优先 / 新单元 kickoff）
@@ -1157,22 +1182,29 @@ mod tests {
     struct PipeReviewFactory {
         replies: Arc<Mutex<VecDeque<String>>>,
         instructions: Arc<Mutex<Vec<String>>>,
+        // 闸门：每个审查会话开庭后等放行再出裁决（模拟真实审查耗时，测试才能确定性断言重叠）
+        gates: Arc<Mutex<VecDeque<std::sync::mpsc::Receiver<()>>>>,
     }
     impl ReviewSessionFactory for PipeReviewFactory {
         fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
             Ok(Box::new(PipeReviewSession {
                 replies: self.replies.clone(),
                 instructions: self.instructions.clone(),
+                gate: self.gates.clone(),
             }))
         }
     }
     struct PipeReviewSession {
         replies: Arc<Mutex<VecDeque<String>>>,
         instructions: Arc<Mutex<Vec<String>>>,
+        gate: Arc<Mutex<VecDeque<std::sync::mpsc::Receiver<()>>>>,
     }
     impl ReviewSession for PipeReviewSession {
         fn review(&mut self, instruction: &str) -> Result<String> {
             self.instructions.lock().unwrap().push(instruction.into());
+            if let Some(rx) = self.gate.lock().unwrap().pop_front() {
+                let _ = rx.recv();
+            }
             Ok(self
                 .replies
                 .lock()
@@ -1182,14 +1214,45 @@ mod tests {
         }
     }
 
+    /// 事件驱动放行：每个闸门等 watch 闭包达标后放行；10s 死线强制全放（防测试悬挂）
+    fn drive_gates(
+        watch: Vec<(Box<dyn Fn() -> usize + Send>, usize)>,
+        gate_txs: Vec<std::sync::mpsc::Sender<()>>,
+    ) {
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            for (tx, (count_fn, threshold)) in gate_txs.into_iter().zip(watch) {
+                while std::time::Instant::now() < deadline && count_fn() < threshold {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                let _ = tx.send(());
+            }
+        });
+    }
+
+    fn gate_pair() -> (
+        std::sync::mpsc::Sender<()>,
+        std::sync::mpsc::Receiver<()>,
+    ) {
+        std::sync::mpsc::channel()
+    }
+
+    fn no_gates() -> Arc<Mutex<VecDeque<std::sync::mpsc::Receiver<()>>>> {
+        Arc::new(Mutex::new(Default::default()))
+    }
+
     #[test]
     fn pipeline_runs_units_with_overlapped_reviews() {
-        // DR-14：两单元全过——units_done 顺序完整、审查开庭×2
+        // DR-14 lead=1：审查 a 在途期间，b 的 kickoff 必须先行（写审重叠）；
+        // 串行退化 = 闸门死等 10s 后强放 + 时长断言失败
         let tmp = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
         let (agent, received) = PipeAgent::new(&[
             "A\n<doc-complete>unit-a-01</doc-complete>",
             "B\n<doc-complete>unit-b-02</doc-complete>",
         ]);
+        let (tx1, rx1) = gate_pair();
+        let received_w = received.clone();
         let factory = PipeReviewFactory {
             replies: Arc::new(Mutex::new(
                 [
@@ -1201,7 +1264,15 @@ mod tests {
                 .collect(),
             )),
             instructions: Arc::new(Mutex::new(Vec::new())),
+            gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1]))),
         };
+        drive_gates(
+            vec![(
+                Box::new(move || received_w.lock().unwrap().len()) as Box<dyn Fn() -> usize + Send>,
+                2,
+            )],
+            vec![tx1],
+        );
         let report = run_pipeline(
             agent,
             Arc::new(Mutex::new(factory)),
@@ -1214,6 +1285,11 @@ mod tests {
             None,
         )
         .unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "写审应重叠（串行退化会死等闸门到死线）：{:?}",
+            started.elapsed()
+        );
         let got = received.lock().unwrap().join("|||");
         assert!(got.contains("unit-a-01"), "收到的消息: {got}");
         assert_eq!(report.units_done, vec!["unit-a-01", "unit-b-02"]);
@@ -1221,13 +1297,20 @@ mod tests {
 
     #[test]
     fn pipeline_fix_round_requeues_failed_unit() {
-        // DR-14：unit 1 审查 FAIL → fix 队列优先于新单元 → 修复提示 → 复审 PASS → 继续 unit 2
+        // DR-14 lead=1 语义：a 写完即开审（在途），b 立刻 kickoff（写超前 1）；
+        // a 的 FAIL 裁决在下一个空闲点（b 交卷后）以 fix 优先送达——fix 不打断在写单元
         let tmp = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
         let (agent, received) = PipeAgent::new(&[
             "W1\n<doc-complete>unit-a-01</doc-complete>",
-            "FIX1\n<doc-complete>unit-a-01</doc-complete>",
             "W2\n<doc-complete>unit-b-02</doc-complete>",
+            "FIX1\n<doc-complete>unit-a-01</doc-complete>",
         ]);
+        let (tx1, rx1) = gate_pair();
+        let (tx2, rx2) = gate_pair();
+        let (tx3, rx3) = gate_pair();
+        let instructions = Arc::new(Mutex::new(Vec::new()));
+        let (received_w, instr_w2, instr_w3) = (received.clone(), instructions.clone(), instructions.clone());
         let factory = PipeReviewFactory {
             replies: Arc::new(Mutex::new(VecDeque::from(vec![
                 "<doc-verdict>FAIL</doc-verdict>\n<route>finish</route>\n<issues>\n- 描述与行为不符\n</issues>"
@@ -1235,8 +1318,26 @@ mod tests {
                 "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>".to_string(),
                 "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>".to_string(),
             ]))),
-            instructions: Arc::new(Mutex::new(Vec::new())),
+            instructions: instructions.clone(),
+            gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1, rx2, rx3]))),
         };
+        drive_gates(
+            vec![
+                (
+                    Box::new(move || received_w.lock().unwrap().len()) as Box<dyn Fn() -> usize + Send>,
+                    2,
+                ),
+                (
+                    Box::new(move || instr_w2.lock().unwrap().len()) as Box<dyn Fn() -> usize + Send>,
+                    2,
+                ),
+                (
+                    Box::new(move || instr_w3.lock().unwrap().len()) as Box<dyn Fn() -> usize + Send>,
+                    3,
+                ),
+            ],
+            vec![tx1, tx2, tx3],
+        );
         let report = run_pipeline(
             agent,
             Arc::new(Mutex::new(factory)),
@@ -1249,17 +1350,28 @@ mod tests {
             None,
         )
         .unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "写审应重叠：{:?}",
+            started.elapsed()
+        );
+        let mut done = report.units_done.clone();
+        done.sort();
         assert_eq!(
-            report.units_done,
+            done,
             vec!["unit-a-01", "unit-b-02"],
-            "修复后的 unit 1 与 unit 2 都应过审"
+            "修复后的 unit 1 与 unit 2 都应过审（过审标记顺序随裁决到达序）"
         );
         let msgs = received.lock().unwrap();
+        assert_eq!(msgs.len(), 3, "消息序应为 [kickoff a, kickoff b, fix a]: {msgs:?}");
         assert!(
-            msgs[1].contains(DOC_REMEDIATION_PREFIX),
-            "第 2 条消息应是 unit 1 的整改提示（fix 优先于新单元 kickoff）: {msgs:?}"
+            msgs[1].contains("unit-b-02"),
+            "第 2 条应是 unit 2 的 kickoff（审 a 期间写 b）: {msgs:?}"
         );
-        assert!(msgs[2].contains("unit-b-02"), "fix 之后再开新单元: {msgs:?}");
+        assert!(
+            msgs[2].contains(DOC_REMEDIATION_PREFIX),
+            "FAIL 裁决在 b 交卷后的空闲点送达 fix: {msgs:?}"
+        );
     }
 
     #[test]
@@ -1278,6 +1390,7 @@ mod tests {
                     .to_string(),
             ]))),
             instructions: Arc::new(Mutex::new(Vec::new())),
+            gates: no_gates(),
         };
         let err = run_pipeline(
             agent,
