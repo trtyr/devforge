@@ -97,7 +97,7 @@
 | 10-23 | change | L2 | 587 全绿（含三守卫套件 + f6 44） |
 | 10-23 | change | L3 | c7b 十二续跑 Settled（本日实战即记录） |
 | 10-23 | asking/planning | L3 | c7b resume6e/6f 计划轮问询中继全程活跃（SSE ui.request → 应答回填） |
-| 10-23 | doc | L3 | cloudwalker d1 relaunch（task-5 执行后回填） |
+| 10-23 | doc | L3 | ✅ relaunch run 2d9fb677：首单元 unit-app-01 全环真实走通（写 16min → 审 FAIL → 修复重写 17min → 审 PASS → unit_done 1/25），58 个真文档落盘 docs/contexts/，全程纯 API 观测（events/详情端点自证） |
 
 **规则入档**：引擎层动刀后，L1 全 profile + 被改 SOP 的 L3，缺一不发版。
 
