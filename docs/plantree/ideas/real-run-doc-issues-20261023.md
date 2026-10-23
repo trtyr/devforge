@@ -3,6 +3,17 @@
 > 场次：cloudwalker-agent · d1 · doc-from-zero（run 31eee16d，14:01 开跑）
 > 背景：e2e 玩具仓全绿后首次真实仓（941 条目 / 34 单元 / 11 顶层区）实战。开跑 50 分钟后操作员巡检发现问题。
 > 处置：本轮只立案不修，下次更新统一修（用户拍板 15:53）。
+> **修复状态（10-23 晚全批落地，目标 mvkoojcq）**：
+>
+> | 案 | 状态 | 修复提交 | 证据 |
+> |---|---|---|---|
+> | DR-1 | ✅ | 468174e + 053dac2 | 探针矩阵（无 key 挂死→有 key started+会话落盘）+ 守卫单测 |
+> | DR-2 | ✅ | 275fa55 | agent.turn_start / doc.unit_start/done 事件实测入库 |
+> | DR-3 | ✅ | 275fa55 | stall_check 单测 + watchdog agent.stall 告警接线 |
+> | DR-4 | ✅ | 37344f3 | first_unit_overdue 单测（恰告警一次） |
+> | DR-5 | ✅ | 275fa55 + 053dac2 | units_total 入断点 + progress 端点 x/y |
+> | DR-6 | ✅ | 9ecb83b | probe-agent.sh + 三级冒烟制 + 执行记录表 |
+> | DR-7 | ✅ | 275fa55 | events/详情端点；本次 relaunch 全程纯 API 观测自证 |
 
 ## DR-1 ·（致命）doc-agent 首个 prompt 静默挂死：host profile 无凭据 + 引擎对失败响应无限等待
 
