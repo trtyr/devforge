@@ -197,6 +197,44 @@
   ②审查输出 token 预算 + 叙述上限；③与 DR-12 协同（不读码即无长篇叙述）。
 - **验收**：连续 N 单元零协议违例；若仍违例，第一轮时长显著下降（裁决前置生效）。
 
+### DR-14 ·（高，用户拍板 10-23 21:22）审查与写作流水线并行：lead=1 的无损投机
+
+- **用户拍板**：背压 lead=1；单独立案。
+- **理论依据**：单元间生成决策弱耦合（kickoff 由 gate 0 预分配，N+1 写什么不依赖 N 的裁决）→ 满足
+  投机前提。对号 Speculative Actions（arXiv 2510.04371，无损加速）+ Commit Boundary
+  （可逆提前工作 + 明确提交边界 + 反馈永不丢）：写 N+1 = 押注「N 过审」的投机；提交边界 = N 的裁决；
+  文档可修补无不可逆副作用；FAIL 反馈入修复队列永不丢 → 无损条件全部满足。
+- **业界坐标**：主流 generator-critic 反思环全是阻塞式，那是对的——前提是下一步生成依赖上一步裁决；
+  本案是对该前提不成立场景的非阻塞变体。
+
+**组件三件**：
+1. ReviewWorker（每单元一线程 + 独立 RpcClient）：现行审查逻辑原样搬入（C19-R1 新实例口径、空响应重试、
+   协议违例检测，DR-13 防御一并生效），裁决发 channel；
+2. 裁决通道 mpsc<ReviewVerdict{unit, round, verdict, issues}>；
+3. 主循环状态机：每单元 Written → Reviewing → Passed | FailQueued(→Fixing→Passed)。
+
+**主循环规则四条**：
+- 交卷(N) 即分叉：spawn 审查线程(N) + 按背压决定 kickoff(N+1)；
+- 背压 lead=1：在途待裁决 ≤1，投机风险敞口硬性封顶一个单元；
+- fix 优先：doc agent 每次交卷 settle 后，fix 队列非空先修后开新（绝不 mid-turn 打断）；
+- 断路器：连续 2 FAIL → 停发新 kickoff（andon），修复队列清完才恢复。
+
+**失败语义**（全部沿用已验证机制）：审查线程超时/空响应→线程内换实例重试；zombie→idle_ms 收割
+按 run_id 全杀（审查 pi 也在 ledger）；全链 Failed→夜间哨兵 resume。
+
+**观测**：新事件 review.pass/review.fail（带 unit/round/耗时）、pipeline.lead、fix.queued；
+写与审的重叠在时间线肉眼可见（DR-9 验收覆盖）。
+
+**开关**：DEVFORGE_DOC_PIPELINE=on，默认 **off**——off 时行为与现串行逐字节等价，回退零成本，上线先 A/B。
+
+**实现规模与落点**：doc_from_zero.rs 主循环改状态机（~150 行）+ 审查线程函数（~80 行）+ channel/状态表
+（~40 行）；server/mod.rs 零改动（watchdog/收割不变）；单测：乱序裁决/断路器/fix 队列优先级/双线程时序。
+约一天半。
+
+**与其余案关系**：与 DR-11（穿插）、DR-12（审查不读码）正交可独立先行；DR-12 落地后审查变短，
+与写作时间更匹配，并行收益更干净。**验收**：事件流可见写与审时间线重叠；单元周期 = max(写，审)+glue；
+lint/审查通过率不回退；off 模式与现行为等价。
+
 ### 观察（非 DR，另案候选）：resume 证据口径与 mark_done 口径不一致
 
 - 二次部署后 resume 把 unit-app-01 判「证据失效」重跑：mark_done 的门槛是审查 PASS，
