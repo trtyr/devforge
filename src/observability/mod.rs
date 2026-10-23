@@ -82,6 +82,25 @@ pub fn begin_run(run_id: &str, phase: &str) {
 /// 服务端按 run 注入（单测把落点钉在自己的临时目录 → 不落用户 HOME，R13）；
 /// 进程级注入（[`set_root`]）只是**默认**来源。
 pub fn begin_run_in(root: PathBuf, run_id: &str, phase: &str) {
+    begin_run_in_ctx(root, run_id, phase);
+    write_heartbeat(run_id);
+}
+
+/// [`begin_run_in`] 的延迟盘写变体：只做内存置位（快照表 / 根表 / 线程本地），
+/// **不写盘**——心跳首刷由 watchdog 周期 tick（≤300ms）承担，终态由
+/// `run_with_watchdog` 收尾刷盘定格。
+///
+/// F18（10-23 resume6f 实测）：心跳首写在 run 线程上同步落盘、甚至后台线程写盘，
+/// 都落在「开跑→执行→释放串行槽」关键路径上，拉长第一个 run 的占槽窗口 →
+/// 并发 start 的第二个请求间歇吃 409（既有用例 14 连跑红 2 / spawn 变体 20 连跑红 3；
+/// 基线 worktree 120 连跑 0 红）。纯内存置位 + 周期刷新：取证语义无损
+/// （死亡现场的心跳由阶段转换事件与 watchdog 持续刷新，墓碑归属不走盘写）。
+pub fn begin_run_in_deferred(root: PathBuf, run_id: &str, phase: &str) {
+    begin_run_in_ctx(root, run_id, phase);
+}
+
+/// 内存置位（快照表 / 根表 / 线程本地），不落盘。
+fn begin_run_in_ctx(root: PathBuf, run_id: &str, phase: &str) {
     let snap = RunSnapshot {
         run_id: run_id.to_string(),
         phase: phase.to_string(),
@@ -99,7 +118,6 @@ pub fn begin_run_in(root: PathBuf, run_id: &str, phase: &str) {
         l.attempt = 1;
         l.review_rounds.clear();
     });
-    write_heartbeat(run_id);
 }
 
 /// 各 run 的观测根（run 开始时捕获；键 = run id）。
@@ -116,6 +134,9 @@ fn run_root(run_id: &str) -> Option<PathBuf> {
 
 /// 清位 run 上下文（run 结束）：**心跳文件保留**最后一次状态（不删——那是死亡现场的证据）。
 pub fn end_run(run_id: &str) {
+    // F18：终态心跳先落盘再摘快照（摘完 write_heartbeat 就找不到 run 了）；
+    // 尾部写不触发开跑竞态（resume6f 实验已证）→ 短 run 也有心跳在案
+    write_heartbeat(run_id);
     runs().lock().expect("observability 快照表锁").remove(run_id);
     roots().lock().expect("observability 根表锁").remove(run_id);
     LOCAL.with(|l| {

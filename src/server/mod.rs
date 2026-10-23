@@ -1364,7 +1364,8 @@ pub fn run_in_background(
     let run_phase = run_phase_for_sop(task_snapshot.sop.as_str());
     // 观测根：实例覆盖（单测）优先，否则用进程级解析结果；**每个 run 捕获一次** → 落点固定
     let obs_root = state.obs_root.clone().unwrap_or_else(crate::observability::root);
-    crate::observability::begin_run_in(obs_root, &run.id.0, run_phase);
+    // F18：心跳首写不落关键路径（deferred 变体，盘写后台线程）
+    crate::observability::begin_run_in_deferred(obs_root, &run.id.0, run_phase);
     tracing::info!(
         component = "run",
         event = "phase.change",
@@ -1532,6 +1533,7 @@ fn run_with_watchdog<T>(
     let done = std::sync::Arc::new(AtomicBool::new(false));
     let done_wd = done.clone();
     let done_main = done.clone();
+    let run_id_final = run_id.clone();
     std::thread::scope(|scope| {
         scope.spawn(move || {
             let mut last_fp = session_fingerprint(&watch_dirs);
@@ -1588,6 +1590,9 @@ fn run_with_watchdog<T>(
         // 修复点：f 返回后立刻置位（在 scope 闭包内），watchdog 才能退出、join 才能返回；
         // 若在 scope 返回后才置位则不可达，正常完成必死锁（verdict 后挂起真因）
         done_main.store(true, Ordering::SeqCst);
+        // F18：收尾终态刷盘——run 的最后一次心跳（阶段/步骤定格在终态）。
+        // 在 f() 之后（尾部），不占「开跑→首让」竞态窗口（agent 实验证尾部写不触发）。
+        crate::observability::touch_run(&run_id_final);
         out
     })
 }
@@ -1611,6 +1616,23 @@ mod watchdog_tests {
             start.elapsed() < Duration::from_secs(5),
             "scope join 死锁：elapsed={:?}",
             start.elapsed()
+        );
+    }
+
+    #[test]
+    fn the_deferred_begin_does_not_write_the_heartbeat_on_the_critical_path() {
+        // F18：延迟盘写 = 纯内存置位，调用线程不落盘（首刷由 watchdog tick，
+        // 终态由 run_with_watchdog 收尾定格）——盘 I/O 彻底离开开始关键路径
+        let dir = tempfile::tempdir().unwrap();
+        crate::observability::begin_run_in_deferred(
+            dir.path().to_path_buf(),
+            "deferred-heartbeat",
+            "plan",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            crate::observability::heartbeat::read(dir.path(), "deferred-heartbeat").is_err(),
+            "延迟盘写变体不应在调用线程同步落心跳"
         );
     }
 
