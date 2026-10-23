@@ -30,13 +30,12 @@ use devforge::sop::planning::{PlanAgentSession, ReviewSession, ReviewSessionFact
 
 /// 本变更的基线提交（计划 §1.1）。
 /// 10-22 运维：与 change_ask_ring 保持同值（a16 互检）；两场之间守卫 ignore（F10/F13）。
-/// 口径：**本场基线**（`docs/plantree/changes/<change-id>/baseline.txt`）= `18ff755…`
-/// ——操作员把本变更重新锚定到「上一轮 14 个 coding 步提交落地之后」的 HEAD
+/// 口径：**本场基线**（`docs/plantree/changes/<change-id>/baseline.txt`）= `a36f6b7…`
 /// → 守卫的扫描范围与引擎的越界门同口径（同一个基线）。
 const BASELINE: &str = "a36f6b79dec2e681db8daed0da067f9abd47a9f5";
 
 /// 计划 §4 的白名单去掉唯一的测试阶段文件 `tests/f6_observability.rs`
-/// = **coding 步的 22 个文件**。
+/// = **coding 步的 23 个文件**。
 const WHITELIST: &[&str] = &[
     "src/observability/mod.rs",
     "src/observability/heartbeat.rs",
@@ -1061,7 +1060,7 @@ fn a17_the_change_commits_stay_inside_the_whitelist() {
             }
         }
     }
-    // 白名单里的 22 个文件都要真的被本场改到（不是「少改了」也算过）
+    // 白名单里的 23 个文件都要真的被本场改到（不是「少改了」也算过）
     for f in WHITELIST {
         assert!(
             coding_files.iter().any(|x| x == f),
