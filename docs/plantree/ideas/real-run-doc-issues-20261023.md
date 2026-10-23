@@ -65,6 +65,31 @@
 - **修法方向**：把「SOP 冒烟」做成发版前固定动作（每个 sop 一条最小路径用例），或至少在每次引擎层提交后手动过一遍 doc 冷启动。
 - **验收**：下次引擎动刀后，doc/asking/change 三侧各有一次冒烟记录在案。
 
+### DR-6 修复（10-23 晚落地，37344f3 + 本节）：冒烟三级制
+
+**L1 · spawn/凭据探针（秒级，引擎无关，可重复）**：`scripts/probe-agent.sh <profile目录>`
+——发真 prompt，60s 内见 `success=true` = 模型调用已发起；`success=false`（如 No API key）或超时 = DR-1 型故障。
+引擎层动刀 / 换 profile / 换凭据后：**9 个 profile 全跑一遍**。
+
+**L2 · 单元回归（分钟级，可重复）**：`env -u DEVFORGE_MANAGED cargo test --offline`
+（587 lib + 三守卫套件 + f6 44 + doctest）。
+
+**L3 · 冷启动管线冒烟（真跑）**：被改的 SOP 各一次最小真实跑，盯三件事：
+`agent.turn_start` 事件出现 / 心跳推进 / 首个产物落盘。云端仓即 cloudwalker relaunch（task-5）。
+
+**执行记录**：
+
+| 日期 | 侧 | 层 | 结果 |
+|---|---|---|---|
+| 10-23 | doc（doc-agent profile） | L1 | PASS（探针3 + probe-agent.sh 双验） |
+| 10-23 | doc（对照：无 key 场景） | L1 | FAIL→定位→修复（probe1/2 矩阵，即 DR-1 破案过程） |
+| 10-23 | change | L2 | 587 全绿（含三守卫套件 + f6 44） |
+| 10-23 | change | L3 | c7b 十二续跑 Settled（本日实战即记录） |
+| 10-23 | asking/planning | L3 | c7b resume6e/6f 计划轮问询中继全程活跃（SSE ui.request → 应答回填） |
+| 10-23 | doc | L3 | cloudwalker d1 relaunch（task-5 执行后回填） |
+
+**规则入档**：引擎层动刀后，L1 全 profile + 被改 SOP 的 L3，缺一不发版。
+
 ## DR-7 ·（高，用户拍板）可观测主入口必须是 API，不是登机器翻文件
 
 - **用户原话（10-23 15:58）**：希望通过 API 接口看到 agent 到底在干什么，而不是本地查看文档；
