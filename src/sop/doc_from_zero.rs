@@ -290,6 +290,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
         data_obj(&mut state)
             .entry("units_total".to_string())
             .or_insert_with(|| serde_json::json!(units.len()));
+        // 立即落盘：首单元写作期间（可达 10 分钟）进度端点就能看到 x/total，而不是 None
+        self.store.save(&mut state)?;
         // DR-4：首单元逾期守卫——开跑超阈值仍无任何单元完成 → 告警一次（假活/单元过重）
         let run_started = std::time::Instant::now();
         let first_unit_deadline = self
