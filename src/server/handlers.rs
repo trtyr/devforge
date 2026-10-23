@@ -390,32 +390,142 @@ pub async fn put_manifest(
     st.render_gate.begin_render();
     let st2 = st.clone();
     std::thread::spawn(move || {
-        // 渲染线程异常也要释放闸门（否则 start 会一直等）——故把渲染包在 catch_unwind 里
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let m = st2.manifest.lock().expect("manifest 锁").clone();
-            let renderer = crate::config::Renderer {
-                manifest: &m,
-                installer: st2.installer.as_ref(),
-                skills_source: None,
-            };
-            renderer.render_all(&st2.profiles_root)
-        }));
-        match outcome {
-            Ok(Ok(rendered)) => {
-                st2.emit(json!({"type": "config.rendered", "rendered": rendered.len()}));
-            }
-            Ok(Err(e)) => {
-                st2.emit(json!({"type": "config.render_failed", "error": e.to_string()}));
-            }
-            Err(_) => {
-                st2.emit(json!({"type": "config.render_failed", "error": "渲染线程异常终止"}));
-            }
-        }
-        // 渲染结束（成功/失败都算）→ 广播，等着的 start 请求不再等
-        st2.render_gate.end_render();
+        let st3 = st2.clone();
+        render_body(st2, move |v| st3.emit(v));
     });
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({"ok": true, "async": true, "agents": agents})),
     ))
+}
+
+/// 渲染在途的 drop 守卫：在途计数的归零由 `Drop` 保证——渲染线程体**结束**或
+/// **因 panic 展开**时都必归零（010 F6 靶 · R-3）。
+///
+/// 改前是线程体末尾手工调 `end_render()`：而发完成通知（`emit`）在 `catch_unwind` **之外**，
+/// 通知发出时抛异常 → 那一行永远不执行 → 计数**永久大于 0** → 之后的 `start` 永远在闸门上等。
+struct RenderInFlightGuard {
+    st: SharedState,
+}
+
+impl Drop for RenderInFlightGuard {
+    fn drop(&mut self) {
+        // 渲染结束（成功/失败/异常都算）→ 广播，等着的 start 请求不再等
+        self.st.render_gate.end_render();
+    }
+}
+
+/// 渲染线程体：渲染 → 发完成通知（成功 / 失败 / 异常三种结果都发一条）。
+///
+/// `emit` 是参数而不是直接调 `st.emit`：为了让「发完成通知时抛异常」这条路径**可测**
+/// （R-3 的验收判据）——生产调用点传 `|v| st.emit(v)`。
+fn render_body(st: SharedState, emit: impl FnOnce(serde_json::Value)) {
+    // 在途守卫：线程体结束**或 panic 展开**都归零（不再依赖线程体末尾的显式调用）
+    let _guard = RenderInFlightGuard { st: st.clone() };
+    // 渲染本身异常也要发通知（故把渲染包在 catch_unwind 里）
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let m = st.manifest.lock().expect("manifest 锁").clone();
+        let renderer = crate::config::Renderer {
+            manifest: &m,
+            installer: st.installer.as_ref(),
+            skills_source: None,
+        };
+        renderer.render_all(&st.profiles_root)
+    }));
+    match outcome {
+        Ok(Ok(rendered)) => {
+            emit(json!({"type": "config.rendered", "rendered": rendered.len()}));
+        }
+        Ok(Err(e)) => {
+            emit(json!({"type": "config.render_failed", "error": e.to_string()}));
+        }
+        Err(_) => {
+            emit(json!({"type": "config.render_failed", "error": "渲染线程异常终止"}));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::config::installer::FakeInstaller;
+    use crate::domain::run::Run;
+    use crate::domain::runner::{RunControl, RunEngine, RunOutcome};
+    use crate::domain::sop::SopRegistry;
+    use crate::domain::store::Store;
+    use crate::domain::task::Task;
+    use crate::server::{EventBus, ServerState, UiRelay};
+
+    /// 最小引擎：渲染闸门的用例不需要引擎行为。
+    struct NoopEngine;
+
+    impl RunEngine for NoopEngine {
+        fn execute(
+            &mut self,
+            _task: &Task,
+            _run: &Run,
+            _control: &RunControl,
+        ) -> crate::error::Result<RunOutcome> {
+            Ok(RunOutcome::Completed)
+        }
+    }
+
+    fn test_state(dir: &std::path::Path) -> SharedState {
+        let bus = std::sync::Arc::new(EventBus::new());
+        let ui = std::sync::Arc::new(UiRelay::new(bus.clone()));
+        ServerState::new(
+            Store::new(),
+            SopRegistry::builtin(),
+            ConfigManifest::builtin(),
+            Box::new(|| Box::new(NoopEngine) as Box<dyn RunEngine + Send>),
+            bus,
+            ui,
+            std::sync::Arc::new(FakeInstaller),
+            dir.join("profiles"),
+            dir.join("plans"),
+            dir.join("sessions"),
+        )
+    }
+
+    #[test]
+    fn the_in_flight_count_goes_back_to_zero_when_the_render_body_panics() {
+        // 错实现形态：守卫缺失（在途计数只在线程体末尾手工递减）→ 发完成通知时 panic 展开
+        //   → 计数永久大于 0 → 之后的 start 永远在闸门上等 → 本用例必须变红
+        let dir = tempfile::tempdir().unwrap();
+        let st = test_state(dir.path());
+        st.render_gate.begin_render();
+        assert!(st.render_gate.is_in_flight(), "登记后应有渲染在途");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            render_body(st.clone(), |_| panic!("发完成通知时炸了"));
+        }));
+        assert!(result.is_err(), "发完成通知抛异常时线程体应展开");
+        assert!(
+            !st.render_gate.is_in_flight(),
+            "在途计数必须归零（否则之后的 start 永远在等）"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_render_leaves_no_in_flight_count_behind() {
+        // 错实现形态：渲染结束后计数不归零（守卫没接上 / 归零那一行被删）→ 之后的 start 永远在等
+        //   → 本用例必须变红
+        let dir = tempfile::tempdir().unwrap();
+        let st = test_state(dir.path());
+        let resp = match put_manifest(State(st.clone()), Json(ConfigManifest::builtin())).await {
+            Ok(r) => r,
+            Err(_) => panic!("内置清单应通过校验（不该 400）"),
+        };
+        assert_eq!(resp.0, StatusCode::ACCEPTED, "PUT 清单应立即 202（渲染在后台）");
+        for _ in 0..200 {
+            if !st.render_gate.is_in_flight() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            !st.render_gate.is_in_flight(),
+            "渲染结束后在途计数必须归零（R-27）"
+        );
+    }
 }
