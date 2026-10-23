@@ -225,6 +225,8 @@ pub struct DocSopLoop<P: PlanAgentSession, F: ReviewSessionFactory> {
     pub audit: Option<AuditProvider>,
     /// 续跑恢复语（只拼进本次第一个单元的 kickoff，plan 010 D005）。
     pub resume_note: String,
+    /// DR-4：首单元逾期告警阈值（ms）；None = 默认 stall_warn_ms×2（production）。
+    pub first_unit_deadline_ms: Option<u64>,
 }
 
 impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
@@ -236,7 +238,14 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
             only: None,
             audit: None,
             resume_note: String::new(),
+            first_unit_deadline_ms: None,
         }
+    }
+
+    /// 注入首单元逾期阈值（DR-4 测试注入小值用；生产走默认）。
+    pub fn with_first_unit_deadline(mut self, ms: Option<u64>) -> Self {
+        self.first_unit_deadline_ms = ms;
+        self
     }
 
     /// 注入续跑恢复语（重做了哪些单元、为什么）。
@@ -281,6 +290,12 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
         data_obj(&mut state)
             .entry("units_total".to_string())
             .or_insert_with(|| serde_json::json!(units.len()));
+        // DR-4：首单元逾期守卫——开跑超阈值仍无任何单元完成 → 告警一次（假活/单元过重）
+        let run_started = std::time::Instant::now();
+        let first_unit_deadline = self
+            .first_unit_deadline_ms
+            .unwrap_or(crate::observability::stall_warn_ms() * 2);
+        let mut first_unit_warned = false;
         for (idx, unit) in units.iter().enumerate() {
             if let Some(only) = &self.only
                 && only != unit
@@ -325,7 +340,21 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
             // 被打回后待收尾的修复轮（回注在下一轮 agent 回合才发生 → fix.end 落在那一回合返回处）
             let mut pending_fix: Option<u32> = None;
             loop {
-                let text = self.agent.converse(&message, ui)?;
+                // DR-4：首单元逾期检查（每回合前查一次；只告警一次）。deadline=0（测试注入）即首回合即告警
+                if !first_unit_warned
+                    && done_units(&state).is_empty()
+                    && run_started.elapsed().as_millis() as u64 >= first_unit_deadline
+                {
+                    first_unit_warned = true;
+                    tracing::warn!(
+                        component = "doc-sop",
+                        event = "doc.first_unit_overdue",
+                        deadline_ms = first_unit_deadline,
+                        elapsed_ms = run_started.elapsed().as_millis() as u64,
+                        "首单元逾期：开跑超阈值仍无任何单元完成——agent 可能假活或单元过重"
+                    );
+                }
+                let text = self.agent.converse(&message, ui)?;;
                 // 上一轮单元审查判负后的回注已随本回合交卷 → 修复轮收尾
                 if let Some(round) = pending_fix.take() {
                     tracing::info!(
@@ -637,6 +666,28 @@ mod tests {
             .run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
             .unwrap_err();
         assert!(format!("{err}").contains("doc-complete"), "{err}");
+    }
+
+    #[test]
+    fn first_unit_overdue_warns_exactly_once() {
+        // DR-4：开跑超阈值仍无任何单元完成 → doc.first_unit_overdue 告警一次
+        // （模拟假活：deadline 注入 0；agent 永不交卷）
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = MockAgent::new(&["想想", "再想想", "还在想", "就是不写"]);
+        let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>"]);
+        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp)).with_first_unit_deadline(Some(0));
+        let log = crate::observability::test_support::capture_jsonl(|| {
+            // mock 回合微秒级完成：不给时钟前进的机会就永远到不了 deadline
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let err = lp.run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete");
+            assert!(err.is_err(), "agent 永不交卷应报错收场");
+        });
+        assert!(log.contains("doc.first_unit_overdue"), "应告警: {log}");
+        assert_eq!(
+            log.matches("doc.first_unit_overdue").count(),
+            1,
+            "只告警一次，不刷屏: {log}"
+        );
     }
 
     #[test]
