@@ -1317,6 +1317,10 @@ pub fn build_router(state: SharedState) -> Router {
         "/projects/{name}/tasks/{task}/runs/{run}/events",
         get(handlers::run_events),
     )
+    .route(
+        "/projects/{name}/tasks/{task}/runs/{run}/transcript",
+        get(handlers::run_transcript),
+    )
         .route("/projects/{name}/tasks/{task}/graph", get(handlers::task_graph))
         // 交互中继
         .route("/ui/{id}/answer", post(handlers::answer_ui))

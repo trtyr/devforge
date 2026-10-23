@@ -226,10 +226,18 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let addr = std::env::var("DEVFORGE_ADDR")
+    let addr: std::net::SocketAddr = std::env::var("DEVFORGE_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:7888".into())
         .parse()
         .context("解析 DEVFORGE_ADDR")?;
+    // DR-9 L5：远程可视的安全闸——绑非回环地址（暴露给局域网/tailnet，供 Win10 等外部机器
+    // 查看全部行为）必须配 token，否则拒绝启动：无鉴权的全行为可视端点不能裸奔。
+    if !addr.ip().is_loopback() && state.token.is_none() {
+        anyhow::bail!(
+            "DEVFORGE_ADDR 绑定非回环地址 {addr} 但未配置 token：远程可视必须带鉴权
+            （--token <值> 或 DEVFORGE_TOKEN 环境变量），拒绝裸奔启动"
+        );
+    }
     devforge::server::serve(state, addr)
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;

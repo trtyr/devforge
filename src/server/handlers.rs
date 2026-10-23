@@ -309,16 +309,31 @@ pub async fn task_graph(
 
 // ---------- DR-2/DR-7：API-first 可观测 ----------
 
+/// 实例级观测根（fixture 隔离用 obs_root 优先，生产回退进程解析）。
+fn obs_root_of(st: &SharedState) -> std::path::PathBuf {
+    st.obs_root
+        .clone()
+        .unwrap_or_else(crate::observability::root)
+}
+
 /// 结构化日志路径（与 logging::init 同根同约定：`<root>/logs/devforge.log.jsonl`）。
-fn log_file_path() -> std::path::PathBuf {
-    crate::observability::root()
-        .join("logs")
-        .join("devforge.log.jsonl")
+fn log_file_path(st: &SharedState) -> std::path::PathBuf {
+    obs_root_of(st).join("logs").join("devforge.log.jsonl")
 }
 
 /// 读 JSONL 日志并按事件名子串过滤、分页。返回（命中总数，本页事件）。
 /// 文件缺失/坏行跳过——可观测端点绝不因日志问题 5xx。
 pub fn read_log_events(
+    st: &SharedState,
+    event_filter: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> (usize, Vec<serde_json::Value>) {
+    read_log_events_at(&log_file_path(st), event_filter, offset, limit)
+}
+
+/// 同上，但读指定路径（单测直接喂临时文件用）。
+pub fn read_log_events_at(
     path: &std::path::Path,
     event_filter: Option<&str>,
     offset: usize,
@@ -406,7 +421,7 @@ pub async fn get_run_detail(
         serde_json::Value::Null
     };
     // 心跳（run 活性）
-    let hb = crate::observability::heartbeat::read(&crate::observability::root(), &run_id).ok();
+    let hb = crate::observability::heartbeat::read(&obs_root_of(&st), &run_id).ok();
     let heartbeat = match &hb {
         Some(h) => json!({
             "phase": h.phase,
@@ -417,7 +432,7 @@ pub async fn get_run_detail(
         None => serde_json::Value::Null,
     };
     // agent 活性：历史侧（日志尾扫）+ 进程侧（本进程内最近 agent 事件）
-    let log_path = log_file_path();
+    let log_path = log_file_path(&st);
     let agent = json!({
         "last_event": last_agent_event_from_log(&log_path),
         "last_event_age_ms": crate::observability::last_agent_event_age_ms(),
@@ -460,13 +475,82 @@ pub async fn run_events(
     }
     let limit = q.limit.unwrap_or(200).min(2000);
     let offset = q.offset.unwrap_or(0);
-    let (total, events) = read_log_events(&log_file_path(), q.event.as_deref(), offset, limit);
+    let (total, events) = read_log_events(&st, q.event.as_deref(), offset, limit);
     Ok(Json(json!({
         "run": run_id,
         "total": total,
         "offset": offset,
         "limit": limit,
         "events": events,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct TranscriptQuery {
+    pub from: Option<usize>,
+    pub limit: Option<usize>,
+    /// 只看某个角色的会话目录（如 doc / doc-reviews / coding）。
+    pub role: Option<String>,
+}
+
+/// DR-9 L4：run 的完整会话转录（pi 侧对话+工具往返）。文件是存储，API 是唯一入口——
+/// 不登机器即可回答「它刚才读了什么写了什么说了什么」。
+pub async fn run_transcript(
+    State(st): State<SharedState>,
+    Path((project, task, run_id)): Path<(String, String, String)>,
+    Query(q): Query<TranscriptQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    {
+        let store = st.store.lock().expect("store 锁");
+        let t = store
+            .get_task(&project, &task)
+            .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
+        if !t.runs.iter().any(|id| id.0 == run_id) {
+            return Err(ApiError::not_found(format!("run `{run_id}` 不存在")));
+        }
+    }
+    // 收集本 run 的会话文件：<sessions_root>/<role>/<ts>_<run_id>.jsonl
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&st.sessions_root) {
+        for role_dir in rd.filter_map(|e| e.ok()) {
+            let role_name = role_dir.file_name().to_string_lossy().to_string();
+            if let Some(want) = &q.role
+                && role_name != *want
+            {
+                continue;
+            }
+            if let Ok(files_rd) = std::fs::read_dir(role_dir.path()) {
+                for f in files_rd.filter_map(|e| e.ok()) {
+                    let name = f.file_name().to_string_lossy().to_string();
+                    if name.ends_with(".jsonl") && name.contains(&run_id) {
+                        files.push(f.path());
+                    }
+                }
+            }
+        }
+    }
+    files.sort();
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    for f in &files {
+        if let Ok(content) = std::fs::read_to_string(f) {
+            for line in content.lines() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                    entries.push(v);
+                }
+            }
+        }
+    }
+    let total = entries.len();
+    let from = q.from.unwrap_or(0);
+    let limit = q.limit.unwrap_or(200).min(2000);
+    let page: Vec<serde_json::Value> = entries.into_iter().skip(from).take(limit).collect();
+    Ok(Json(json!({
+        "run": run_id,
+        "files": files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "total": total,
+        "from": from,
+        "limit": limit,
+        "entries": page,
     })))
 }
 

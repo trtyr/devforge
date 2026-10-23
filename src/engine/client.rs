@@ -22,6 +22,8 @@ pub struct WaitOutcome {
     pub text: String,
     /// 期间收到的事件（可观测数据层原料）。
     pub events: Vec<EventRecord>,
+    /// DR-9 L2：最近一次 usage（input, output）tokens——上下文大小的直接观测。
+    pub last_usage: Option<(u64, u64)>,
 }
 
 /// extension_ui_request 是否为 dialog 类（阻塞等应答）。
@@ -195,6 +197,7 @@ impl RpcClient {
     pub fn wait_settled(&mut self) -> Result<WaitOutcome> {
         let started_at_ms = now_ms();
         let mut out = WaitOutcome::default();
+        let mut tool_starts = std::collections::HashMap::new();
         loop {
             let line = self.next_line()?;
             match decode_line(line.trim_end())? {
@@ -211,6 +214,7 @@ impl RpcClient {
                         // DR-3 精化：流式 delta 也是活性——长流式回合不得误触停滞告警
                         crate::observability::note_agent_event();
                     }
+                    self.note_step_telemetry(&e, &mut tool_starts, &mut out);
                     let settled = e.is_agent_settled();
                     out.events.push(e);
                     if settled {
@@ -234,6 +238,7 @@ impl RpcClient {
     ) -> Result<WaitOutcome> {
         let started_at_ms = now_ms();
         let mut out = WaitOutcome::default();
+        let mut tool_starts = std::collections::HashMap::new();
         loop {
             let line = self.next_line()?;
             match decode_line(line.trim_end())? {
@@ -250,6 +255,7 @@ impl RpcClient {
                         // DR-3 精化：同 wait_settled —— 流式即活性
                         crate::observability::note_agent_event();
                     }
+                    self.note_step_telemetry(&e, &mut tool_starts, &mut out);
                     if e.r#type == "extension_ui_request" {
                         // P8-ISSUE-07 修复：按 method 分流——dialog 才走应答链路
                         if !is_dialog_method(&e.extra) {
@@ -310,6 +316,70 @@ impl RpcClient {
         ))
     }
 
+    /// DR-9 L2：步进遥测——工具调用起止 + usage 采集（probe4 实证事件形态：
+    /// tool_execution_start/end 带 toolName+toolCallId；message_update 带 usage）。
+    fn note_step_telemetry(
+        &self,
+        e: &EventRecord,
+        tool_starts: &mut std::collections::HashMap<String, std::time::Instant>,
+        out: &mut WaitOutcome,
+    ) {
+        match e.r#type.as_str() {
+            "tool_execution_start" => {
+                let tool = e
+                    .extra
+                    .get("toolName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string();
+                if let Some(id) = e.extra.get("toolCallId").and_then(|v| v.as_str()) {
+                    tool_starts.insert(id.to_string(), std::time::Instant::now());
+                }
+                crate::observability::note_agent_event();
+                tracing::info!(
+                    component = "engine",
+                    event = "agent.step",
+                    role = %self.spec.role,
+                    tool = %tool,
+                    phase = "start",
+                    "工具调用开始"
+                );
+            }
+            "tool_execution_end" => {
+                let tool = e
+                    .extra
+                    .get("toolName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_string();
+                let ms = e
+                    .extra
+                    .get("toolCallId")
+                    .and_then(|v| v.as_str())
+                    .and_then(|id| tool_starts.remove(id))
+                    .map(|t| t.elapsed().as_millis() as u64);
+                crate::observability::note_agent_event();
+                tracing::info!(
+                    component = "engine",
+                    event = "agent.step",
+                    role = %self.spec.role,
+                    tool = %tool,
+                    phase = "end",
+                    ms = ms,
+                    "工具调用结束"
+                );
+            }
+            _ => {}
+        }
+        if let Some(u) = e.extra.get("usage") {
+            let inp = u.get("input").and_then(|v| v.as_u64()).unwrap_or(0);
+            let outp = u.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
+            if inp > 0 || outp > 0 {
+                out.last_usage = Some((inp, outp));
+            }
+        }
+    }
+
     /// 「agent 轮次结束」里程碑（Q5：唯一落点，覆盖全部 SOP——change 侧不再另落）。
     ///
     /// 字段：角色名（`spec.role`）、本轮耗时（毫秒）、本轮产出字符数。
@@ -322,6 +392,8 @@ impl RpcClient {
             role = %self.spec.role,
             turn_ms = now_ms().saturating_sub(started_at_ms),
             chars = out.text.chars().count(),
+            tokens_in = out.last_usage.map(|u| u.0),
+            tokens_out = out.last_usage.map(|u| u.1),
             "agent 轮次结束"
         );
     }
@@ -405,8 +477,7 @@ mod tests {
     const RSP_FAIL: &str = r#"{"id":"req-2","type":"response","command":"prompt","success":false,"error":"No API key found for the selected model."}"#;
 
     #[test]
-    fn failed_response_fails_fast_without_waiting_for_settled() {
-        // DR-1（2026-10-23 真实仓首跑）：无 API key 时 pi 只回 success=false 的 response、
+    fn failed_response_fails_fast_without_waiting_for_settled() {        // DR-1（2026-10-23 真实仓首跑）：无 API key 时 pi 只回 success=false 的 response、
         // 永不 agent_settled——旧实现继续等 → 整个 run 无声挂死 50 分钟无任何事件。
         let dir = tempfile::tempdir().unwrap();
         let script = write_replay(
@@ -426,6 +497,33 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("No API key"), "错误详情要透传: {msg}");
         assert!(msg.contains("plan-agent"), "错误要带角色名: {msg}");
+    }
+
+    #[test]
+    fn step_telemetry_logs_tool_calls_and_captures_usage() {
+        // DR-9 L2：工具调用起止 → agent.step 事件；usage → last_usage（probe4 实证形态）
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_replay(
+            dir.path(),
+            &[
+                RSP_OK,
+                r#"{"type":"tool_execution_start","toolCallId":"t1","toolName":"bash","args":{"command":"ls"}}"#,
+                r#"{"type":"tool_execution_end","toolCallId":"t1","toolName":"bash","result":{"content":[]}}"#,
+                r#"{"type":"message_update","usage":{"input":12000,"output":300},"assistantMessageEvent":{"type":"text_delta","delta":"x"}}"#,
+                EVT_SETTLED,
+            ],
+            "read _x\n",
+        );
+        let mut client = spawn_sh(&script, dir.path());
+        let _ = client.prompt("干活");
+        let usage = std::cell::RefCell::new(None);
+        let log = crate::observability::test_support::capture_jsonl(|| {
+            let outcome = client.wait_settled().unwrap();
+            *usage.borrow_mut() = outcome.last_usage;
+        });
+        assert!(log.contains("agent.step"), "应有步进事件: {log}");
+        assert!(log.contains("\"tool\":\"bash\""), "步进事件要带工具名: {log}");
+        assert_eq!(usage.into_inner(), Some((12000, 300)), "usage 要被采集");
     }
 
     /// 现场（2026-10-19 e2e test_22）：审查官进程中途死亡，但孙进程仍持有 stdout——

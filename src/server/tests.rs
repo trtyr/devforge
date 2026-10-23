@@ -1512,6 +1512,40 @@ async fn run_events_endpoint_returns_paged_log() {
     assert!(body["events"].is_array(), "events 数组要在: {body}");
 }
 
+#[tokio::test]
+async fn run_transcript_endpoint_returns_paged_entries() {
+    // DR-9 L4：会话转录纯 API 可查——文件是存储，API 是唯一入口；无文件也 200 空列表
+    let f = fixture();
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks", Some(json!({"id": "t", "sop": "planning"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs/nope/transcript", None).await;
+    assert_eq!(resp.status(), 404, "未知 run 必须归属校验");
+    let mut run_id = String::new();
+    for _ in 0..100 {
+        let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
+        let body = body_json(resp).await;
+        if let Some(id) = body["runs"].as_array().and_then(|a| a.first()).and_then(|r| r["id"].as_str()) {
+            run_id = id.to_string();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let resp = send(
+        &f.router,
+        "GET",
+        &format!("/api/v1/projects/p/tasks/t/runs/{run_id}/transcript?limit=5"),
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert_eq!(body["limit"], 5, "limit 回显: {body}");
+    assert!(body["total"].as_u64().is_some(), "total 要在: {body}");
+    assert!(body["entries"].is_array(), "entries 数组要在: {body}");
+    assert!(body["files"].is_array(), "files 数组要在: {body}");
+}
+
 #[test]
 fn stall_check_returns_age_even_without_agent_events() {
     // DR-3：从未有 agent 事件（DR-1 型假活）也要能给出年龄——按开跑时刻起算，不返回 None

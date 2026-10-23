@@ -298,6 +298,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
             .first_unit_deadline_ms
             .unwrap_or(crate::observability::stall_warn_ms() * 2);
         let mut first_unit_warned = false;
+        // DR-9 L3：回合间隙计时——上个阶段终点，供 glue 事件计「交卷→开庭」「裁决→下单元」
+        let mut stage: Option<(&'static str, std::time::Instant)> = None;
         for (idx, unit) in units.iter().enumerate() {
             if let Some(only) = &self.only
                 && only != unit
@@ -322,6 +324,16 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                 "doc 单元推进"
             );
             last_unit = Some(unit.clone());
+            // DR-9 L3：间隙计时——上阶段终点→本单元发起
+            if let Some((name, t0)) = &stage {
+                tracing::info!(
+                    component = "doc-sop",
+                    event = "engine.glue",
+                    stage = format!("{}_to_next_unit", name),
+                    gap_ms = t0.elapsed().as_millis() as u64,
+                    "阶段间隙计时"
+                );
+            }
             // DR-2：单元进度事件（带 index/total，聚合端点与日志检索直接可读）
             tracing::info!(
                 component = "doc-sop",
@@ -366,6 +378,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                         "单元重写结束"
                     );
                 }
+                stage = Some(("write", std::time::Instant::now()));
                 let Some(done_unit) = parse_doc_complete(&text) else {
                     nudges += 1;
                     if nudges > MAX_DOC_CONTINUE_NUDGES {
@@ -458,6 +471,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
                         "文档审查协议违例，重跑本轮审查（不回注被审 Agent）"
                     );
                 };
+                // DR-9 L3：裁决在手 = 审查阶段终点
+                stage = Some(("review", std::time::Instant::now()));
 
                 match report.verdict {
                     DocVerdict::Pass => {
@@ -671,8 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn first_unit_overdue_warns_exactly_once() {
-        // DR-4：开跑超阈值仍无任何单元完成 → doc.first_unit_overdue 告警一次
+    fn first_unit_overdue_warns_exactly_once() {        // DR-4：开跑超阈值仍无任何单元完成 → doc.first_unit_overdue 告警一次
         // （模拟假活：deadline 注入 0；agent 永不交卷）
         let tmp = tempfile::tempdir().unwrap();
         let agent = MockAgent::new(&["想想", "再想想", "还在想", "就是不写"]);
@@ -689,6 +703,35 @@ mod tests {
             log.matches("doc.first_unit_overdue").count(),
             1,
             "只告警一次，不刷屏: {log}"
+        );
+    }
+
+    #[test]
+    fn unit_lifecycle_emits_glue_timing() {
+        // DR-9 L3：交卷→开庭、裁决→下单元的间隙计时事件（首个单元无前驱无 glue）
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = MockAgent::new(&[
+            "A\n<doc-complete>unit-a-01</doc-complete>",
+            "B\n<doc-complete>unit-b-02</doc-complete>",
+        ]);
+        let (f, _) = factory(&[
+            "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
+            "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
+        ]);
+        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
+        let log = crate::observability::test_support::capture_jsonl(|| {
+            lp.run(
+                &mut NoUser,
+                tmp.path(),
+                &["unit-a-01".to_string(), "unit-b-02".to_string()],
+                "complete",
+            )
+            .unwrap();
+        });
+        assert!(log.contains("engine.glue"), "应有间隙计时事件: {log}");
+        assert!(
+            log.contains("review_to_next_unit"),
+            "裁决→下单元的间隙要被计时: {log}"
         );
     }
 
