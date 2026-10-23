@@ -714,13 +714,22 @@ async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
     wait_settled(&f, "p", "d").await;
 
     // 3) fresh → 回冷启动且断点被清；另一个 SOP 的断点不受影响
-    let resp = send(
-        &f.router,
-        "POST",
-        "/api/v1/projects/p/tasks/d/start",
-        Some(json!({"fresh": true})),
-    )
-    .await;
+    // F18：status=Settled 与串行槽真正释放之间有收尾窗口（end_run 终态写等），
+    // 偶发 409 会淹没断言本体 → 409 有界重试，其余状态照常断言
+    let mut resp;
+    loop {
+        resp = send(
+            &f.router,
+            "POST",
+            "/api/v1/projects/p/tasks/d/start",
+            Some(json!({"fresh": true})),
+        )
+        .await;
+        if resp.status() != 409 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert_eq!(resp.status(), 202);
     let body = body_json(resp).await;
     assert_eq!(body["resumed"], false, "fresh 必须冷启动：{body}");
