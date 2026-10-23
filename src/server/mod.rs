@@ -2198,6 +2198,50 @@ mod coding_engine_tests {
     }
 
     #[test]
+    fn the_quality_warning_of_a_later_attempt_carries_that_attempts_number() {
+        // 错实现形态：attempt 写在**失败分支**里 → 第 2 次尝试期间上下文还是第 1 次的值
+        //   → 这条质量 WARN 带 attempt=1（陈旧）→ 本用例必须变红
+        let dir = tempfile::tempdir().unwrap();
+        let engine = f1_engine(dir.path().join("profiles"), PathBuf::from("/tmp"));
+        let control = RunControl::new();
+        let text = crate::observability::test_support::capture_jsonl(|| {
+            // 第 1 次：基础设施故障（会被自动重启）；第 2 次：质量失败（走生产链路的落点 ②）
+            let (result, attempts) = crate::engine::retry::run_with_retry(
+                &crate::engine::retry::RetryPolicy::fast(),
+                &control,
+                |n| {
+                    if n == 1 {
+                        Err(crate::error::DevforgeError::System(
+                            "模拟上游 500（测试注入）".into(),
+                        ))
+                    } else {
+                        engine.map_intervention(
+                            &control,
+                            "change-engine",
+                            crate::error::DevforgeError::Quality("终审未通过".into()),
+                        )
+                    }
+                },
+            );
+            assert_eq!(attempts, 2, "第 1 次基础设施故障后应重启到第 2 次");
+            assert!(
+                matches!(result, Ok(RunOutcome::Failed { .. })),
+                "质量失败仍是明确的 Failed（不重启）"
+            );
+        });
+        let quality: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("run.attempt_failed") && l.contains("\"level\":\"WARN\""))
+            .collect();
+        assert_eq!(quality.len(), 1, "质量失败应落一条 WARN 条目：{text}");
+        assert!(
+            quality[0].contains("\"attempt\":2"),
+            "第 2 次尝试的质量 WARN 必须带**本次**尝试号（不是上一次的 1）：{}",
+            quality[0]
+        );
+    }
+
+    #[test]
     fn testing_watch_dirs_cover_handoff_sessions() {
         // D011：testing run 的活性监视覆盖移交会话（doc-fix/doc-reviews 同 run 活性整体）
         let engine = f1_engine(PathBuf::from("/tmp/profiles"), PathBuf::from("/tmp"));

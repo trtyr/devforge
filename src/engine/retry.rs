@@ -76,6 +76,10 @@ where
     let mut attempt = 1u32;
     let mut log: Vec<String> = Vec::new();
     loop {
+        // attempt 在**每次尝试开始时**写进 run 上下文（010 F6 靶 · R-1）：第 2 次及以后的尝试期间
+        // 若失败被 `map_intervention` 收成质量失败，那条 WARN 读到的必须是**本次**尝试号，
+        // 而不是上一次失败时留下的陈旧值。
+        crate::observability::set_attempt(attempt);
         let result = execute(attempt);
         if let Err(e) = &result {
             log.push(format!("第{attempt}次: {e}"));
@@ -84,7 +88,6 @@ where
         // 原始错误全量可见（010 F6 靶 · 需求 1）：每次尝试失败先落一条**分级**条目——
         // 质量类失败落 WARN，其余落 ERROR；落盘点在**决定重试之前**（先记错误、再决定重启）。
         if let Err(e) = &result {
-            crate::observability::set_attempt(attempt);
             log_attempt_failed(attempt, e, retryable);
         }
         if !retryable || attempt >= policy.max_attempts {
@@ -257,6 +260,25 @@ mod tests {
             Err(DevforgeError::Store("任务不存在".into()));
         assert!(!is_infra_failure(&other));
         assert!(is_infra_failure(&infra()));
+    }
+
+    #[test]
+    fn the_run_context_carries_the_current_attempt_while_the_attempt_runs() {
+        // 错实现形态：attempt 只在**失败分支**里写 → 第 2 次尝试期间上下文仍是上一次的值
+        //   → `map_intervention` 的质量 WARN 会带陈旧的 attempt → 本用例必须变红
+        crate::observability::set_attempt(0); // 起点归零：别让别的用例留下的残值影响判读
+        let mut seen: Vec<u32> = Vec::new();
+        let (result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), |n| {
+            seen.push(crate::observability::attempt());
+            if n < 3 { infra() } else { Ok(RunOutcome::Completed) }
+        });
+        assert!(matches!(result, Ok(RunOutcome::Completed)));
+        assert_eq!(attempts, 3);
+        assert_eq!(
+            seen,
+            vec![1, 2, 3],
+            "每次尝试**开始时** run 上下文就应是本次尝试号（R-1）"
+        );
     }
 }
 
