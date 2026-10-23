@@ -115,10 +115,21 @@ fn location_text(info: &PanicHookInfo<'_>) -> String {
 mod tests {
     use super::*;
 
+    /// 三个 hook 用例都要替换**进程级全局** panic hook（R6 风险成真）：
+    /// 并行测试线程互相踩（resume6h 基线取证：20 连跑红 4——panic 逃出
+    /// catch_unwind / 读到兄弟用例墓碑 / 链回 flag 被换）→ 互斥串行化，
+    /// 调度不再影响断言。
+    static HOOK_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn hook_guard() -> std::sync::MutexGuard<'static, ()> {
+        HOOK_TESTS.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// 装 hook → 触发一次 panic → 还原 hook → 查墓碑文件。
     /// （hook 是进程级全局，故本组用例合并在一个 #[test] 里，避免与其它用例并发互扰。）
     #[test]
     fn tombstone_records_panic_text_and_location_and_chains_the_previous_hook() {
+        let _guard = hook_guard();
         use std::sync::atomic::{AtomicBool, Ordering};
         let dir = tempfile::tempdir().unwrap();
         // 先装一个「上一个 hook」：它的副作用（置位）必须仍然发生 → 证链回语义
@@ -168,6 +179,7 @@ mod tests {
 
     #[test]
     fn tombstone_is_skipped_when_the_root_cannot_be_written() {
+        let _guard = hook_guard();
         // 错实现形态：写不进去时在 hook 里 panic（= abort，连 stderr 链回都丢）→ 本用例必须变红
         let dir = tempfile::tempdir().unwrap();
         let unwritable = dir.path().join("not-a-dir");
@@ -189,6 +201,7 @@ mod tests {
 
     #[test]
     fn tombstone_uses_a_placeholder_run_id_when_no_run_is_active() {
+        let _guard = hook_guard();
         // 错实现形态：无活动 run 时不写墓碑（证据丢失）→ 本用例必须变红
         let dir = tempfile::tempdir().unwrap();
         // 本线程没有活动 run（线程级归属）→ 墓碑用占位 run id

@@ -238,6 +238,25 @@ async fn start_sop_override_switches_task_for_cross_sop_chain() {
     .await;
     assert_eq!(body["tasks"][0]["sop"], "coding");
 
+    // F18：等第一个 run 落定再继续——后续断言管的是 sop 切换语义，不是串行槽竞态
+    // （mock 引擎完成与下一个 start 是纯时序竞态，偶发 409 会淹没断言本体；
+    // resume6h 基线取证：本用例在 20 连跑里仍复发 1 次）
+    let mut settled = false;
+    for _ in 0..200 {
+        let body = body_json(
+            send(&f.router, "GET", "/api/v1/projects/p/tasks/t1/runs", None).await,
+        )
+        .await;
+        if body["runs"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
+            && body["runs"][0]["status"] == "Settled"
+        {
+            settled = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(settled, "第一个 run 应在超时前 Settled");
+
     // 未知 sop → 400（注册表校验，先于任何 run 状态检查——无竞态）
     let resp = send(
         &f.router,

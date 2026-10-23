@@ -48,7 +48,13 @@ pub fn write(root: &Path, snap: &RunSnapshot) -> std::io::Result<()> {
     };
     let body = serde_json::to_vec_pretty(&hb)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&path, body)
+    // F18b：原子写（临时文件 + rename）——覆盖写在多写者并发（watchdog tick /
+    // 阶段转换 / run 收尾终态刷）下会被读者撞见半截/空文件，resume6g 测试阶段
+    // 实测 serde「EOF while parsing a value」。rename 同目录内原子替换，读者要么
+    // 看旧整文件、要么看新整文件。
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, &path)
 }
 
 /// 读心跳（取证/测试用）。
