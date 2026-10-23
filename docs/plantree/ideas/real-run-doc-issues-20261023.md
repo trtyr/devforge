@@ -14,6 +14,24 @@
 > | DR-5 | ✅ | 275fa55 + 053dac2 | units_total 入断点 + progress 端点 x/y |
 > | DR-6 | ✅ | 9ecb83b | probe-agent.sh + 三级冒烟制 + 执行记录表 |
 > | DR-7 | ✅ | 275fa55 | events/详情端点；本次 relaunch 全程纯 API 观测自证 |
+>
+> **第二批修复状态（10-23 深夜落地，目标 mvl0eq2s；验收场 = devforge 自身自举跑 acc2）**：
+>
+> | 案 | 状态 | 修复提交 | 证据 |
+> |---|---|---|---|
+> | DR-8 | ✅ | c46a583 | 空响应→agent.empty_reply WARN 不耗 nudges，>3 次升级 System 可重试 + 单测 |
+> | DR-9 | ✅ | d9dd036 | L2 agent.step + L3 engine.glue + L4 transcript 端点 + L5 非回环 token 闸 + 3 测 |
+> | DR-10① | ✅ | 9e6effa | 流水线并行即 DR-14，见下 |
+> | DR-10② | ✅ | 20c8e85 | 审查瘦身不读码即 DR-12，见下 |
+> | DR-10③ | ✅ | d9dd036 | L3 engine.glue 间隙计时事件（write_to_review / review_to_next_unit）实测入库 |
+> | DR-10④ | ✅ | 20c8e85 + 094ba33 | 分组批量写三条款入合同/kickoff + 钉守测试；步数 209→≤60 待 acc2 实测复核 |
+> | DR-11 | ✅ | 20c8e85 | doc-contract §七 穿插节奏 + kickoff 条款 + 钉守测试 |
+> | DR-12 | ✅ | 20c8e85 | doc-review mcp 清空（推翻 D012/D018，理由注记在位）+ 不读码条款 + 钉守测试 |
+> | DR-13 | ✅ | c46a583 | 裁决块前置第一行 + 4000 字叙述预算 + 截断作废 + 单测 |
+> | DR-14 | ✅ | 9e6effa | run_pipeline 状态机（lead=1 / fix 队列优先 / 断路器 2 FAIL）+ 3 状态机测试 |
+> | resume 口径 | ✅ | 851e0b4 | LintGate 拿 RunState 违规清单单元级归因，Link 死链容忍由末尾全量 lint 兜底 + 3 测 |
+>
+> 验收留痕：acc2 run（DEVFORGE_DOC_PIPELINE=on）经纯 API 采集步进事件/写审重叠/零读码审查证据，回填于本文件末尾。
 
 ## DR-1 ·（致命）doc-agent 首个 prompt 静默挂死：host profile 无凭据 + 引擎对失败响应无限等待
 
