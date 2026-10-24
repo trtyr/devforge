@@ -27,15 +27,7 @@
 **验收**：change 任务全生命周期在 worktree 内完成；kill -9 server 后重启能清孤儿；
 候选冻结 commit 可 diff 归因。
 
-## M2 · 沙箱化 spawn（2 天）⛔ 作废（2026-10-24 用户裁决：沙箱整个不做，隔离由 pi 插件方案取代——path-guard 工具级路径权限 + worktree；本段仅留档）。pathguard 配置渲染已落地：64f3bcf（AgentManifest.pathPermissions → .pi/pathguard.json，提权防护内置）
-
-- ☐ T2.1 `AgentManifest.sandbox: Option<SandboxSpec>`（kind: docker，image、mounts、env 白名单）
-- ☐ T2.2 `engine/process.rs` build_spawn_command 支持 sandbox 分支：`docker run --rm`
-  + worktree 只读外全部写落在 worktree 内 + 凭证以 env 白名单传入 + 网络默认桥接（模型 API 需出网）
-- ☐ T2.3 镜像固化 `Dockerfile.pi`（node24 + pi + git + ripgrep + rust 工具链按需分层）
-- ☐ T2.4 首选 doc-review 沙箱化试点（无 bash 依赖后风险最小），再推 doc-agent / change-coding
-
-**验收**：沙箱内 pi 完成一次完整 change 任务；沙箱内触碰宿主 HOME/其他仓路径被拒。
+## M2 · 沙箱化 spawn ⛔ 已作废并删除（2026-10-24 用户裁决：沙箱整个不做；隔离 = path-guard 工具级路径权限插件（已落地，4faaa47+d8d85aa）+ worktree + 契约终校验。原 topic 05 已删。）
 
 ## M3 · 集成事务（3 天）✅ 2026-10-24 cc5a3ed+64f3bcf（src/integration/ 串行消费者：checkout→merge→注入式验证→CAS 三参，重排/修复产物结构化 + merge queue API；pathguard 渲染接线 64f3bcf）
 
@@ -69,5 +61,4 @@ CAS 拒绝过期写入。
 
 ## 里程碑依赖
 
-M0 → M1 → M3 → M4 → M5（M2 沙箱化 spawn 作废——隔离由 pi 插件 path-guard 取代，2026-10-24 用户裁决）。
-M0 的契约字段是所有后续的地基；M2 与 M3 无相互依赖可交错。
+M0 → M1 → M3 → M4 → M5（M2 沙箱化 spawn 已作废删除——隔离 = path-guard 插件 + worktree + 契约终校验，2026-10-24 用户裁决）。

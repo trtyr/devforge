@@ -45,8 +45,9 @@
 
 ## 隔离三原则
 
-1. **worktree ≠ 沙箱**：隔离了文件不隔离权限——change agent 有 bash，能摸宿主凭证与网络。
-   执行隔离必须容器化（M2）。
+1. **worktree ≠ 沙箱**：隔离了文件不隔离权限——bash 面的执行隔离不由 worktree 提供，
+   由工具级路径权限（path-guard 插件，topic 07/08）拦截 read/write/edit +
+   契约终校验（M0）兑底；容器化路线已作废（2026-10-24 用户裁决）。
 2. **pin base**：worker 实现期不得追逐移动目标（毁灭可复现性）；目标移动由集成阶段处理。
 3. **清理是工作流**：孤儿 worktree/进程/secrets 的清理所有权在 worker 崩溃时转移给平台。
 
@@ -56,7 +57,7 @@
 | --- | --- | --- |
 | 两 worker 拥有同一 schema | 客户端与迁移分叉 | 契约单一 owner + 版本化发布 |
 | worker 共享目录 | 改动丢失/不可归因 | 每 work item 唯一 worktree/index/branch |
-| worktree 当沙箱用 | 仓代码摸到宿主凭证 | 容器/microVM + 能力收敛（M2） |
+| worktree 当沙箱用 | 仓代码摸到宿主凭证 | path-guard 工具级路径权限 + 契约终校验兑底 |
 | 候选测试过在过期 base 上 | 目标移动后假信心 | 集成阶段 reapply + 受影响验证重跑 |
 | 文本 merge 成功、不变量崩 | 语义冲突 | 组合契约/属性/集成检查 |
 | merge queue 饱和 | 分支老化反复重试 | 准入控制 + queue-age 策略 |
@@ -68,4 +69,4 @@
 **已有（复用）**：runstate 断点、事件流 + SSE、断路器、失活收割、doc-lint/coverage/测试
 （组合验证工具箱）、plantree 依赖聚类（首批 DAG 输入）。
 **缺失（本计划补）**：work-item 契约、worktree 生命周期、所有权模型、merge queue + CAS、
-准入控制、沙箱 spawn。
+准入控制（沙箱 spawn 已作废，由 path-guard 插件取代）。
