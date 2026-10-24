@@ -158,6 +158,11 @@ pub async fn get_project(
 
 // ---------- 编排控制：任务 ----------
 
+/// M5 · T5.1：调度态只读快照（不登机器纯 API 回答在飞/卡在哪/队列/冲突）。
+pub async fn scheduler_status(State(st): State<SharedState>) -> Json<serde_json::Value> {
+    Json(crate::server::scheduler::status(&st))
+}
+
 #[derive(Deserialize)]
 pub struct CreateTaskReq {
     pub id: String,

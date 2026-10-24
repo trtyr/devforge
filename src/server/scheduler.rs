@@ -314,3 +314,122 @@ pub async fn scheduler_loop(st: SharedState, cfg: SchedulerConfig) {
         }
     }
 }
+
+/// M5 · T5.1：调度态只读快照（GET /scheduler/status）——
+/// 不登机器纯 API 回答「现在几个 worktree 在飞、各自卡在哪、队列多长、冲突了没有」。
+/// 判定逻辑与 tick 同款但零副作用（不置状态不派工）。
+pub fn status(st: &SharedState) -> serde_json::Value {
+    let store = st.store.lock().expect("store 锁");
+
+    // 在飞：Running runs + 墙钟
+    let running: Vec<serde_json::Value> = store
+        .runs
+        .iter()
+        .filter(|r| r.status == RunStatus::Running)
+        .map(|r| {
+            serde_json::json!({
+                "project": r.task_project,
+                "task": r.task_id,
+                "run_id": r.id.0,
+                "elapsed_ms": now_ms().saturating_sub(r.started_at_ms),
+            })
+        })
+        .collect();
+    let exclusive_running = store
+        .tasks
+        .iter()
+        .any(|t| t.status == TaskStatus::Running && t.exclusive);
+    let capacity_full = store.running_run_count() >= store.max_concurrent_runs.max(1);
+
+    let mut runnable: Vec<String> = Vec::new();
+    let mut blocked: Vec<serde_json::Value> = Vec::new();
+    for t in &store.tasks {
+        let key = format!("{}/{}", t.project, t.id);
+        match t.status {
+            TaskStatus::Blocked => {
+                // 理由只读重算（与 tick 同款判定序）
+                let reason = if deps_failed(&store, t) {
+                    "dependency_failed"
+                } else if exclusive_running {
+                    "exclusive_window"
+                } else if capacity_full {
+                    "capacity"
+                } else {
+                    "recovering" // Blocked 但条件已解——下轮 tick 恢复
+                };
+                blocked.push(serde_json::json!({"task": key, "reason": reason}));
+            }
+            TaskStatus::Pending => {
+                if deps_failed(&store, t) {
+                    blocked.push(serde_json::json!({
+                        "task": key,
+                        "reason": "dependency_failed",
+                    }));
+                } else if deps_ready(&store, t) {
+                    if exclusive_running {
+                        blocked.push(serde_json::json!({
+                            "task": key,
+                            "reason": "exclusive_window",
+                        }));
+                    } else if capacity_full {
+                        blocked.push(serde_json::json!({"task": key, "reason": "capacity"}));
+                    } else {
+                        runnable.push(key);
+                    }
+                }
+                // 依赖未就绪且未失败：等待中——不入 blocked（与 tick 的静默等待一致）
+            }
+            _ => {}
+        }
+    }
+
+    // 集成队列：每项目的 Pending/Integrated/NeedsRebase/NeedsRepair 计数（NeedsRepair = 冲突面）
+    let queue: Vec<serde_json::Value> = store
+        .projects
+        .iter()
+        .filter_map(|p| {
+            let q = MergeQueue::load(&st.plans_root, &p.name).ok()?;
+            let count = |f: &dyn Fn(&CandidateStatus) -> bool| {
+                q.candidates.iter().filter(|c| f(&c.status)).count()
+            };
+            Some(serde_json::json!({
+                "project": p.name,
+                "total": q.candidates.len(),
+                "pending": count(&|s| matches!(s, CandidateStatus::Pending)),
+                "integrated": count(&|s| matches!(s, CandidateStatus::Integrated { .. })),
+                "needs_rebase": count(&|s| matches!(s, CandidateStatus::NeedsRebase { .. })),
+                "needs_repair": count(&|s| matches!(s, CandidateStatus::NeedsRepair { .. })),
+            }))
+        })
+        .collect();
+
+    serde_json::json!({
+        "running": running,
+        "runnable": runnable,
+        "blocked": blocked,
+        "queue": queue,
+        "max_concurrent_runs": store.max_concurrent_runs,
+    })
+}
+
+fn deps_failed(store: &crate::domain::store::Store, t: &crate::domain::task::Task) -> bool {
+    t.depends_on.iter().any(|d| {
+        store
+            .tasks
+            .iter()
+            .find(|x| x.project == t.project && x.id == *d)
+            .map(|x| x.status == TaskStatus::Failed)
+            .unwrap_or(false)
+    })
+}
+
+fn deps_ready(store: &crate::domain::store::Store, t: &crate::domain::task::Task) -> bool {
+    t.depends_on.iter().all(|d| {
+        store
+            .tasks
+            .iter()
+            .find(|x| x.project == t.project && x.id == *d)
+            .map(|x| x.status == TaskStatus::Completed)
+            .unwrap_or(false)
+    })
+}

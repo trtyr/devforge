@@ -1,6 +1,6 @@
 //! 调度器单测（P012 M4）：就绪派工 / 依赖失败阻塞 / 容量拒绝 / 预算熔断 / 自动入队 / 独占窗口。
 
-use super::{fixture, http::*, start::*};
+use super::{body_json, fixture, send, start::*};
 use crate::domain::store::FinishOutcome;
 use crate::domain::task::{TaskDeps, TaskStatus};
 use crate::domain::{now_ms, SopRegistry};
@@ -247,4 +247,53 @@ async fn scheduler_tick_survives_empty_store() {
     let f = fixture();
     let report = tick(&f.state, &SchedulerConfig::default());
     assert_eq!(report, crate::server::scheduler::TickReport::default());
+}
+
+#[tokio::test]
+async fn scheduler_status_endpoint_reports_snapshot() {
+    // M5 · T5.1：纯 API 回答「在飞/卡在哪/队列多长」——status 快照零副作用
+    let f = fixture();
+    make_task(&f, "devforge", "flying", TaskDeps::default());
+    make_task(
+        &f,
+        "devforge",
+        "stuck",
+        TaskDeps { depends_on: vec!["flying".into()], exclusive: false },
+    );
+    {
+        let mut store = f.state.store.lock().unwrap();
+        store.begin_run("devforge", "flying").unwrap(); // flying 在飞；stuck 依赖未就绪（静默等待）
+    }
+    let resp = send(&f.router, "GET", "/api/v1/scheduler/status", None).await;
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert_eq!(body["running"][0]["task"], "flying");
+    assert!(
+        body["running"][0]["elapsed_ms"].is_u64(),
+        "在飞应带墙钟：{body}"
+    );
+    // stuck 依赖未完成 → 既不 runnable 也不 blocked（静默等待）；队列空仓 0
+    assert_eq!(body["runnable"].as_array().unwrap().len(), 0);
+    assert_eq!(body["queue"][0]["project"], "devforge");
+    assert_eq!(body["queue"][0]["total"], 0);
+
+    // 队列有货场景：入队一个候选 → queue 计数可见
+    {
+        let mut q =
+            crate::integration::MergeQueue::load(&f.state.plans_root, "devforge").unwrap();
+        q.enqueue(crate::integration::Candidate {
+            task_id: "flying".into(),
+            frozen_sha: "beef".into(),
+            base_rev: "dead".into(),
+            owned_paths: vec![],
+            status: crate::integration::CandidateStatus::Pending,
+            evidence_paths: vec![],
+        });
+        q.save().unwrap();
+    }
+    let resp = send(&f.router, "GET", "/api/v1/scheduler/status", None).await;
+    let body = body_json(resp).await;
+    assert_eq!(body["queue"][0]["total"], 1);
+    assert_eq!(body["queue"][0]["pending"], 1);
+    assert_eq!(body["queue"][0]["needs_repair"], 0, "无冲突时冲突面为 0");
 }
