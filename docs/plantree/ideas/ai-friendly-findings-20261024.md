@@ -3,7 +3,10 @@
 > 场景：acc2 自举验收跑通后（写审重叠实证、~7min/单元）的系统自省。
 > 方法：对照「引擎缩小世界、agent 只见单元」的哲学，逐面检查信息流向。
 > 结论：缩小世界做到了，**把引擎已知事实直供给 agent 没做**——agent 在大量重复发现引擎早已知道的东西。
-> 五条按杠杆排序；AF-1 已拍板立案，AF-2..5 待逐条讨论。
+> 五条按杠杆排序；AF-1 已拍板定稿 v2，AF-3 已拍板待派工 devforge，其余待逐条讨论。
+>
+> **分工纪律（2026-10-24 用户明示）**：devforge 已能开发之后，操作员不再亲自编码——
+> AF 系列的实现全部派给 devforge 自己（自举）；操作员只负责 devforge 做不了的或它出 bug 时的修复。
 
 ## AF-1 ·（已拍板 2026-10-24，形态 v2：指针 + 作业本）kickoff 瘦身成指针，引擎事实落盘成单元作业本
 
@@ -36,12 +39,20 @@
 - 解法：不再单独注入——覆盖清单就是单元作业本（AF-1 v2）的组成部分，写手与审查官同源同文件。
   本条作为独立案关闭，实现归 AF-1。
 
-## AF-3 ·（待议）工具权限靠剥夺不靠劝阻
+## AF-3 ·（已拍板 2026-10-24，待派工 devforge）工具权限靠剥夺不靠劝阻
 
 - 实证：2026-10-24 acc2 实测 doc-review 用 bash 干了 78 次调用（cat/grep/ls 照样探索源码）。
   DR-12 摘了 codegraph 但 bash 还在手里。
-- 原则：让它做错不了 > 告诉它别做错。审查官工具面应收紧到 read（限 docs 目录）+ 报告 write + verdict。
-- 依赖：pi profile 的工具白名单能力（mcp 之外的原生工具管控）。
+- 原则：让它做错不了 > 告诉它别做错。定位修正（用户拍板）：审查官 = 读者 + 判官，不是探索者；
+  实际 boot 验证不在其职责内（以引擎审计为准）。
+- **定稿方案**：审查官工具面只剩 read + write。pi 原生支持 settings.json `defaultTools` 白名单
+  （`--tools`/`-xt` 旗子亦可），无需改 spawn。
+- 落点：① `AgentManifest` 加 `tools: Option<Vec<String>>`；② render 写 settings `defaultTools`；
+  ③ builtin doc-review 声明 `[read, write]` + host manifest 同步（API PUT）；
+  ④ 两处审查提示词摘「照 Runbook boot 一遍」措辞（定位修正）。
+- **执行方 = devforge（change SOP 派工），操作员不再亲自编码**（分工纪律 2026-10-24 用户明示：
+  有了开发系统后，操作员只负责 devforge 做不了的或出 bug 的修复）。
+- 状态：用户拍板后操作员曾误上手编码，已全量回滚（HEAD cd0e036，599 测试绿），待派工。
 
 ## AF-4 ·（待议）常量纪律上移 AGENTS.md，kickoff 只留变量
 
