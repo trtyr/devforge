@@ -49,11 +49,17 @@ run_doc_from_zero 的编排接线（env 分支/重试映射/store workaround）�
 （server/mod.rs 850 行引擎区），sop/ 只有循环体——sop↔server 契约模糊。domain/ 层形同虚设
 （15K），领域逻辑实际散在 server 与 sop。今晚 lead=1 bug 即发生在边界语义上。
 
-### ARC-5 · 双 runner 影子路径
+### ARC-5 · 双 runner 影子路径【已修复：ARC-R1，commit b1a88da，2026-10-24】
 
 doc_from_zero.rs 内串行 runner 与 pipeline runner 并存；DEVFORGE_DOC_PIPELINE 默认 off
 但生产全走 pipeline——串行路径永不执行却必须同步维护（每特性双份落地）。违反家规
 「不留兼容旧路径」，也是控制耦合的实体。
+
+> **已修（ARC-R1）**：DocSopLoop 339 行删除，env 开关与 DEVFORGE_DOC_ONLY 一并退役，
+> pipeline 唯一 runner；串行行为等价收编（DR-4 首单元逾期告警、审查协议违例重跑下沉
+> spawn_review_worker）；顺修两处 lead=1 移植缺陷（nudge 话术被 C 段重建覆盖 / nudge
+> continue 回主循环命中 B 段 break——改为 D 段内层原地重试）。全量 707 测试绿，
+> 真实 run 验证写审重叠同秒复现。
 
 ## Meta 讽刺（本文件的立论）
 
@@ -64,7 +70,7 @@ devforge 教 doc-agent 的纪律——4K 片段、先读清单、codegraph-first
 
 | 序 | 活 | 主治特征 |
 | --- | --- | --- |
-| R1 | pipeline 定唯一 runner，删串行路径与 env 开关 | 边界完整性 + 控制耦合退役 |
+| R1 | pipeline 定唯一 runner，删串行路径与 env 开关【✅ 2026-10-24 b1a88da，操作员亲自执行（底座手术期 devforge 不自举）】 | 边界完整性 + 控制耦合退役 |
 | R2 | server/mod.rs 拆解：events.rs / engine/builtin.rs（接线闭包迁 sop/）/ http.rs；watchdog 归 observability；目标 ≤500 行/文件 | 爆炸半径 + 可导航性 |
 | R3 | 按五阶段剧本垂直切片：sop/doc/（runner+协议+提示词+测试同居）、sop/change/ 等 | 局部性 |
 | R4 | 提示词外置 assets/prompts/*.md（include_str! 保单二进制） | 局部性（规则单点） |
@@ -72,7 +78,7 @@ devforge 教 doc-agent 的纪律——4K 片段、先读清单、codegraph-first
 
 ## 优先级与派工
 
-- R1 最先（最小改动立刻止损双维护）→ R2（最大手术，趁 30K 行未到 50K）→ R3 → R4 → R5。
+- R1 最先（最小改动立刻止损双维护）【已完成】→ R2（最大手术，趁 30K 行未到 50K）→ R3 → R4 → R5。
 - 与 AF 系列（ai-friendly-findings-20261024.md）关系：AF 管协议/提示词面对 agent 的友好度，
   本文件管代码结构面对 coding agent 的友好度；AF-1/3/4 与 R2/R3 动同一批文件，
   派工时合并规划、分批验收。

@@ -268,7 +268,7 @@
 **观测**：新事件 review.pass/review.fail（带 unit/round/耗时）、pipeline.lead、fix.queued；
 写与审的重叠在时间线肉眼可见（DR-9 验收覆盖）。
 
-**开关**：DEVFORGE_DOC_PIPELINE=on，默认 **off**——off 时行为与现串行逐字节等价，回退零成本，上线先 A/B。
+**开关**：~~DEVFORGE_DOC_PIPELINE=on，默认 **off**~~【已退役：ARC-R1（b1a88da，2026-10-24）删串行 runner，pipeline 成为唯一路径，env 开关不复存在】
 
 **实现规模与落点**：doc_from_zero.rs 主循环改状态机（~150 行）+ 审查线程函数（~80 行）+ channel/状态表
 （~40 行）；server/mod.rs 零改动（watchdog/收割不变）；单测：乱序裁决/断路器/fix 队列优先级/双线程时序。
