@@ -4,10 +4,10 @@
 
 ## Q1 · 沙箱起点选型
 
-Plain Docker（简单、依赖只有 docker）先上，还是直接上 Docker Sandboxes/OpenShell（凭证代理、
-策略化网络）？
-**倾向**：Plain Docker 先行——底座先跑通生命周期，凭证代理二期。风险：容器内持模型 key，
-泄露面 = 容器逃逸（概率低但存在）。
+~~Plain Docker vs 直接上凭证代理形态~~ **已评估定论（2026-10-24）：主体 = pi 原生 Plain Docker，
+srt (Anthropic sandbox-runtime) 仅作二期可选的网络白名单嵌套层，不引外部插件当主体。**
+评估详见 topics/05 选型评估节（核心：srt 只包 bash 进程树漏内置工具、Gondolin 自认不是凭证边界、
+Docker 一层罩文件/凭证/资源三面且 spawn 协议零改动）。
 
 ## Q2 · 集成节奏
 
