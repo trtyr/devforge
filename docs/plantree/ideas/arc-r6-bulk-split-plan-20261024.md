@@ -59,3 +59,27 @@
 - 不动 800-1000 档三件（另立后案）；不动 AF 批 A / P012；
 - 纯移动：不改任何函数体、不改断言语义（target 字面量除外——机械更新）；
 - 批次间不回头重拆已关账文件。
+
+## R6 收官回写（2026-10-24，状态 Done，操作员执行）
+
+| commit | 内容 |
+| --- | --- |
+| b43adc4 | task-1：本方案落档（用户确认门通过后开工） |
+| ed97564 / f9383b7 | 批 1：session 589 + session_tests 三件 / orchestrator 395 + tests 790 |
+| 636ebec / 0ce4fd9 | 批 2：inventory 七件最大430 / lint 五件最大563（pub use 层保外部路径） |
+| a9bcd2c | 批 3+终验：f6 八件 / server-tests 六mod / review_protocol 四件 / failure_context 四件 + 牵连面全适配 |
+
+终态：8 件全 ≤800（最大 orchestrator_tests 790）；全量 7 靶 exit 0、707 测试数持平；
+clippy 与批 1 前基线 worktree 逐条 diff 零差异；验收 pid 3222514 探活 200、acc2 resume
+后 doc-agent 活跃（accept-r6.log 11:11 时段）。
+
+### 批 3 教训入账
+
+1. **mod 声明截断事故**：main.rs 尾部悬空 doc 清理脚本用硬编码行号截断，把已追加的
+   mod 声明一并切掉 → target 0 测试静默通过（cargo test 不报错）——**测试数对账**
+   （707 vs 707）是唯一的暴露面。教训：行号截断类脚本禁止用于追加过内容的文件；
+   每批验收必须做测试总数对账。
+2. **glob 互引 unused 清理**：clippy 驱动删行脚本的路径解析 bug 错删到不相干文件 →
+   统一重写 use 头（标准互引块 + `#[allow(unused_imports)]`）一次收敛。
+3. **守卫测试自指**：源码守卫读自身/兄弟文件解析常量——目录化后指针跟随常量所在文件；
+   doc_comment_above 加可见性前缀兼容（pub(super) 声明同命中）。

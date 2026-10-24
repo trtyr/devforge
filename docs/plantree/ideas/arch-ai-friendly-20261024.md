@@ -75,10 +75,12 @@ devforge 教 doc-agent 的纪律——4K 片段、先读清单、codegraph-first
 | R3 | 按五阶段剧本垂直切片：sop/doc/（runner+协议+提示词+测试同居）、sop/change/ 等【✅ 2026-10-24 da3f84f+9e2b4f2+830c076+f067256，操作员亲自执行；doc 域落地 sop/doc/ 十三文件（protocol/resume/incremental/fix/state/evidence/prompts/runner/mocks/runner_tests/resume_tests/wiring/mod）全 ≤500，doc_from_zero 模块名消亡路径收正 sop::doc::*，doc_wiring 中转站落位；sop/change/ 等其余域未动，见 ideas/arc-r3-slice-plan-20261024.md 边界 4】 | 局部性 |
 | R4 | 提示词外置 assets/prompts/*.md（include_str! 保单二进制）【✅ 2026-10-24 f10fe07+c60641a，操作员亲自执行；13 常量（实测非 9）全外置 assets/prompts/*.md，include_str! 内联，13/13 零字节差验证（含非 raw 转义续行解码），manifest.rs 1504→1159，锦点单测零改动全过；方案与验证方法见 ideas/arc-r4-prompt-externalization-plan-20261024.md】 | 局部性（规则单点） |
 | R5 | 横切策略（重试/干预/事件）收敛单点模块【✅ 2026-10-24 158b64f+0dad282+5f21fdf+184abb8，操作员亲自执行；retry.rs→policy.rs 运行级横切策略单点（重试/干预映射/事件形状同居），map_intervention 方法→自由函数六处调用面收正，run.attempt_failed 字段形状单点化（两处同构手写合一），重启记账 bookkeeping 抽取（emit 回调注入避免反向依赖）；方案见 ideas/arc-r5-policy-convergence-plan-20261024.md】 | 横切耦合 |
+| R6 | 大文件一揽子拆解【✅ 2026-10-24 ed97564..a9bcd2c 四批七 commit，操作员亲自执行；8 个 >1000 行文件全拆 ≤800（session 589/orchestrator 395/inventory 目录最大430/lint 目录最大563/f6 八件/server-tests 六mod/review_protocol 四件/failure_context 四件）；707 测试数持平，clippy worktree 逐条 diff 零差异；方案见 ideas/arc-r6-bulk-split-plan-20261024.md】 | 文件粒度 |
 
-> **还债路线 R1..R5 全部 Done（2026-10-24，操作员底座手术期收官）**：R1 唯一 runner →
-> R2 上帝文件拆解 → R3 doc 域垂直同居 → R4 提示词出仓 → R5 横切策略单点。
-> 五期后的结构：server 只剩组装与 HTTP 面、engine 按域垂直同居（sop/doc/ 策划中）、
+> **还债路线 R1..R6 全部 Done（2026-10-24，操作员底座手术期收官）**：R1 唯一 runner →
+> R2 上帝文件拆解 → R3 doc 域垂直同居 → R4 提示词出仓 → R5 横切策略单点 →
+> R6 大文件一揽子拆解。
+> 六期后的结构：server 只剩组装与 HTTP 面、engine 按域垂直同居（sop/doc/ 策划中）、
 > 横切策略单点 engine/policy.rs、提示词单点 assets/prompts/。下一期候选：sop/change 等
 > 其余域垂直切片、AF 批 A（工作簿+摘 bash+纪律入 AGENTS.md）派工 devforge、
 > P012 并行开发底座（operator plan 已落档待实施）。
