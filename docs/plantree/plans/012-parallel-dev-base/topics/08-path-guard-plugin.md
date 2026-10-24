@@ -152,3 +152,22 @@ tool_call(toolName, input):
   agent 级静态边界——多任务并发共享 profile，动态覆盖会串）。
 - 不做 TUI 配置面板（配置唯一真源 = devforge manifest 渲染）。
 - 网络面不在本期（原 srt 二期网络白名单随 M2 一并作废；模型 API 出网是刚需）。
+
+## 五、影响面分析（审查 Q&A，2026-10-24）
+
+| 影响对象 | 判定 |
+| --- | --- |
+| pi 内置工具（bash 等） | 零接触：handler 只对 read/write/edit 判定，其余返回 undefined 放行 |
+| MCP 工具 | 工具名不在面内，天然不碰（devforge 渲染的 mcp.json 受控） |
+| 未启用 profile | path_permissions None → 不分发插件不生成配置，零痕迹（已有测试钉住） |
+| codemode/嵌套调用 | 走同一 tool_call 拦截无旁路——脚本读越界文件同样被堵（正向特性） |
+| devforge 客户端 | 被拦调用是 agent 层工具失败（模型自调整），不进 SOP 基础设施故障重试分类，无重启风暴 |
+
+两个真实风险点与缓解：
+
+1. **handler 顺序与短路**：多扩展同挂 tool_call 时按加载序串行，block 短路后续 handler。
+   安全组件应在**链尾最后裁决**（让改 input 的扩展先跑，path-guard 看最终形态防绕过）。
+   当前 profile 内它是唯一扩展；分发实现固定排在 extensions 目录排序末位。
+2. **自身加载失败 = fail-open**：TS 加载失败 pi 报 extension error 继续跑（主进程无恙），
+   但边界失守。缓解：渲染分发时对插件源码过语法校验 + 验收启动探针（故意越界 write
+   必须见到 `[path-guard]` 拦截，已列实现计划第 4 步）。
