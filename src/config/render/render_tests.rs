@@ -324,7 +324,7 @@ fn models_json_carries_provider_and_budget() {
     assert_eq!(newapi["api"], "openai-completions");
     assert_eq!(newapi["baseUrl"], "https://newapi.trtyr.top/v1");
     let list = newapi["models"].as_array().unwrap();
-    assert_eq!(list.len(), 3, "池内同 provider 的模型全量分发");
+    assert_eq!(list.len(), 4, "池内同 provider 的模型全量分发（含 person-deepseek-flash）");
     assert!(
         list.iter()
             .any(|m| m["id"] == "MiniMax-M3.1-Flash" && m["contextWindow"] == 1_000_000),

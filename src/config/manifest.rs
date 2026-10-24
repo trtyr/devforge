@@ -267,6 +267,13 @@ impl ConfigManifest {
                     context_window: 1_000_000,
                     max_tokens: 65_536,
                 },
+                ModelEntry {
+                    id: "person-deepseek-flash".into(),
+                    provider: "newapi".into(),
+                    model_id: "person/deepseek-flash".into(), // person 渠道（mokeywork 渠道 10-25 实测 403）
+                    context_window: 1_000_000,
+                    max_tokens: 65_536,
+                },
             ],
             agents: vec![
                 AgentManifest {
@@ -474,7 +481,7 @@ impl ConfigManifest {
                     name: "code-review".into(),
                     role_prompt: CODE_REVIEW_AGENT_PROMPT.into(),
                     extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
-                    model: "MiniMax-M3.1-Flash".into(), // deepseek-flash 上游 403（10-25 实测）；用户 10-20 先例换 MiniMax
+                    model: "person-deepseek-flash".into(), // person 渠道 deepseek-flash（mokeywork 渠道 403，用户 10-25 拍板）
                     skills: vec!["rust-best-practices".into(), "python-best-practices".into(), "ts-js-best-practices".into(), "go-best-practices".into()],
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
