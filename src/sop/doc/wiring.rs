@@ -1,7 +1,7 @@
-//! doc-from-zero SOP 的引擎接线（ARC-R2 自 server/mod.rs 迁入）。
+//! doc-from-zero SOP 的引擎接线（ARC-R2 自 server/mod.rs 迁入；ARC-R3 落位 sop/doc/ 与 runner 同居）。
 //!
 //! 门 0（清单 + 闭包 + 单元）→ run_pipeline 流水线滚动 → 终审 → 运行账单。
-//! **R3 中转站**：本文件在垂直切片时整体迁 `sop/doc/`（与 runner/协议/测试同居）。
+//! impl 块目标是 `engine::builtin::BuiltinRpcEngine`（跨模块 impl，同 R2 时的 change_engine 先例）。
 
 use crate::domain::run::Run;
 use crate::domain::runner::{RunControl, RunOutcome};
@@ -13,9 +13,10 @@ use crate::engine::process::SpawnSpec;
 use crate::error::{Context as _, Result};
 use crate::observability::watchdog::run_with_watchdog;
 use crate::server::RelayUserLink;
-use crate::sop::doc::{DOCS_DIR, META_DIR};
 use crate::sop::planning::ReviewSessionFactory;
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
+
+use super::{DOCS_DIR, META_DIR};
 
 impl BuiltinRpcEngine {
     /// doc-from-zero SOP（P008）：门 0（清单 + 闭包 + 单元）→ run_pipeline 流水线滚动（ARC-R1 后唯一 runner）。

@@ -7,6 +7,7 @@
 //! - [`prompts`]：产出目录约定 + 三段提示词（R4 外置 assets 前的居所）
 //! - [`state`] / [`evidence`]：断点状态与产出证据（plan 010）
 //! - [`runner`]：run_pipeline 流水线（ARC-R1 后唯一 runner；里程碑 target 锚定本模块）
+//! - [`wiring`]：引擎接线（impl BuiltinRpcEngine::run_doc_from_zero，门 0 → pipeline → 终审）
 
 pub mod evidence;
 pub mod fix;
@@ -16,6 +17,7 @@ pub mod protocol;
 pub mod resume;
 pub mod runner;
 pub mod state;
+pub mod wiring;
 
 #[cfg(test)]
 pub(crate) mod mocks;

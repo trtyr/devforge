@@ -1891,7 +1891,7 @@ fn the_heartbeat_is_refreshed_by_the_watchdog_for_every_sop_including_change() {
     // 兜底刷新要覆盖**六个 SOP**（change 也不例外）
     let server = std::fs::read_to_string(repo_root().join("src/engine/builtin.rs")).expect("读 server");
     let doc_wiring =
-        std::fs::read_to_string(repo_root().join("src/engine/doc_wiring.rs")).expect("读接线");
+        std::fs::read_to_string(repo_root().join("src/sop/doc/wiring.rs")).expect("读接线");
     let change =
         std::fs::read_to_string(repo_root().join("src/server/change_engine.rs")).expect("读引擎");
     for (name, text) in [

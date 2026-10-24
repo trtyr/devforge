@@ -7,7 +7,6 @@
 
 pub mod client;
 pub mod builtin;
-pub mod doc_wiring;
 pub mod ledger;
 pub mod process;
 pub mod protocol;

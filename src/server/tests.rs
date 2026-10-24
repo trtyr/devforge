@@ -827,8 +827,8 @@ fn quality_failure_sites_do_not_use_system_error() {
         let near = &gate[at..(at + 200).min(gate.len())];
         assert!(near.contains(needle), "{why}：{near}");
     }
-    // ARC-R2：终审文案随 run_doc_from_zero 迁入 engine/doc_wiring.rs，守卫扫描面跟迁移走
-    let doc_wiring = include_str!("../engine/doc_wiring.rs");
+    // ARC-R2/R3：终审文案随 run_doc_from_zero 迁入 sop/doc/wiring.rs，守卫扫描面跟迁移走
+    let doc_wiring = include_str!("../sop/doc/wiring.rs");
     for anchor in ["终审未通过", "终审输出协议违例"] {
         let at = doc_wiring
             .find(anchor)
