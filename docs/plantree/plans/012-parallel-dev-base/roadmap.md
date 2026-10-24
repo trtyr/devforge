@@ -27,7 +27,7 @@
 **验收**：change 任务全生命周期在 worktree 内完成；kill -9 server 后重启能清孤儿；
 候选冻结 commit 可 diff 归因。
 
-## M2 · 沙箱化 spawn（2 天）⛔ 作废（2026-10-24 用户裁决：沙箱整个不做，隔离由 pi 插件方案取代——path-guard 工具级路径权限 + worktree；本段仅留档）
+## M2 · 沙箱化 spawn（2 天）⛔ 作废（2026-10-24 用户裁决：沙箱整个不做，隔离由 pi 插件方案取代——path-guard 工具级路径权限 + worktree；本段仅留档）。pathguard 配置渲染已落地：64f3bcf（AgentManifest.pathPermissions → .pi/pathguard.json，提权防护内置）
 
 - ☐ T2.1 `AgentManifest.sandbox: Option<SandboxSpec>`（kind: docker，image、mounts、env 白名单）
 - ☐ T2.2 `engine/process.rs` build_spawn_command 支持 sandbox 分支：`docker run --rm`
@@ -37,13 +37,13 @@
 
 **验收**：沙箱内 pi 完成一次完整 change 任务；沙箱内触碰宿主 HOME/其他仓路径被拒。
 
-## M3 · 集成事务（3 天）
+## M3 · 集成事务（3 天）✅ 2026-10-24 cc5a3ed+64f3bcf（src/integration/ 串行消费者：checkout→merge→注入式验证→CAS 三参，重排/修复产物结构化 + merge queue API；pathguard 渲染接线 64f3bcf）
 
-- ☐ T3.1 集成工作树（integration worktree，保护目标 + 候选的推测合并）
-- ☐ T3.2 组合验证管线：cargo test 全量 + doc-lint + （文档任务）coverage 对账——证据 bundle 落 runstate
-- ☐ T3.3 CAS 原子更新：目标 ref 以 `update-ref` 期望旧值实现 compare-and-swap；迟到集成者重排
-- ☐ T3.4 冲突产物结构化：base/target/candidate/hunks/所有权 落盘，冲突修复 = 新候选带新证据
-- ☐ T3.5 merge queue API：`POST .../queue {candidate}` / 队列状态查询 / 优先级
+- ✅ T3.1 集成工作树（integration worktree，保护目标 + 候选的推测合并）
+- ✅ T3.2 组合验证管线：cargo test 全量 + doc-lint + （文档任务）coverage 对账——证据 bundle 落 runstate
+- ✅ T3.3 CAS 原子更新：目标 ref 以 `update-ref` 期望旧值实现 compare-and-swap；迟到集成者重排
+- ✅ T3.4 冲突产物结构化：base/target/candidate/hunks/所有权 落盘，冲突修复 = 新候选带新证据
+- ✅ T3.5 merge queue API：`POST .../queue {candidate}` / 队列状态查询 / 优先级
 
 **验收**：两候选并发就绪时，串行集成且第二者经历「目标已动 → rebase → 重验」路径；
 CAS 拒绝过期写入。
