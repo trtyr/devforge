@@ -40,6 +40,32 @@ N 个 agent 各持 bash 无人值守跑通宵，爆炸半径相乘，一个失�
 （AF-3 后仅 read/write）无任意命令执行面，容器化对它的意义只剩文件面收敛；doc-agent
 若 AF-5 交卷工具化落地且无 bash 正当用途，可顺势摘 bash、退出沙箱名单。
 
+## 本地执行摩擦与解法（2026-10-24 实测盘点，用户问：本地跑代码用 Docker 影响吗）
+
+**本机条件（实测）**：docker 是 WSL2 内原生 dockerd（Ubuntu 26.04，overlayfs）非 Docker Desktop——
+项目在 WSL2 ext4（/home/trtyr/code-work），bind mount 是同文件系统绑定，**无 9p 共享的灾难性能**；
+容器内出站可达 tailnet（实测 100.64.0.1:8008 通，bridge 出站经宿主路由进 tailnet）。
+性能预期：cargo test 宿主 3.7s → 容器 5-8s，agent 验证回路秒级差异，可接受。
+
+**四条真实摩擦与解法**：
+
+1. **工具链进镜像**：agent 要 cargo test，镜像必须预装 rust/node+pi/git。按项目类型分层预建
+   （base=node+pi+git → rust 层 → python 层…）。**离线机坑**：本机有过离线 profile 渲染卡死前科，
+   镜像必须提前在线构建缓存，不指望容器内现装；pi 升级 = 重建 base 镜像（自动化进 setup）。
+2. **依赖缓存不重下**：cargo registry / npm cache 挂 named volume（容器销毁缓存留）；
+   cargo target/ 在 worktree 里天然保留。
+3. **git worktree 路径一致性（最阴）**：worktree 的 .git 是指回宿主主仓的绝对路径指针文件，
+   容器挂到 /workspace 会断链。解法：**容器内外同绝对路径挂载**
+   （`-v /home/trtyr/code-work/devforge:/home/trtyr/code-work/devforge`），指针继续有效。
+4. **模型/MCP 网络**：已实测容器内可达 tailnet；模型 API（new-api 内网/公网）与 engram MCP
+   （公网域名）均无障碍。宿主 localhost 服务若 agent 需要访问，用 host-gateway 别名。
+
+**降摩擦的分级沙箱策略**：只有持 bash 的 agent 进容器（真正需要任意命令隔离的，即 change
+coding agent）；无 bash 的 agent（doc-review 已摘；doc-agent AF-5 后可摘）工具面剥夺已封死
+任意命令执行，文件面靠「引擎只给 worktree 路径 + manifest 工具白名单」，**不进容器**。
+摩擦面从「所有 agent」缩到「每项目少数 coding agent」。SandboxSpec None（宿主直跑）
+保留为退化模式，逐步推面。
+
 ## pi 容器化能力（已查证 containerization.md）
 
 | 方案 | 隔离面 | 凭证 | 评估 |
