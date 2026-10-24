@@ -7,13 +7,14 @@
 
 pub mod client;
 pub mod builtin;
-#[cfg(test)]
-mod builtin_tests;
 pub mod doc_wiring;
 pub mod ledger;
 pub mod process;
 pub mod protocol;
 pub mod retry;
+
+#[cfg(test)]
+mod builtin_tests;
 
 pub use client::{RpcClient, WaitOutcome};
 pub use ledger::{Reconciliation, SpawnLedger, LedgerEntry};
