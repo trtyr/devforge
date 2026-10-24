@@ -71,7 +71,7 @@ impl<'a> Renderer<'a> {
         if let Some(pp) = &agent.path_permissions {
             let mut guard = pp.clone();
             let profile_deny = format!("{}/**", dir.to_string_lossy());
-            if !guard.deny_write.iter().any(|d| *d == profile_deny) {
+            if !guard.deny_write.contains(&profile_deny) {
                 guard.deny_write.push(profile_deny);
             }
             let pg_dir = dir.join(".pi");
