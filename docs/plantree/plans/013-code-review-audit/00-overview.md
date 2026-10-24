@@ -80,8 +80,38 @@ path 核验、双粒度分层。缺的是**组织形态**——没有一条流�
 - **复用微调**：plan_audit 的 path 校验抽成可独立调用的核验函数
 - **不碰**：change/testing/doc 各 SOP（它们照常跑）
 
-## 五、非目标
+## 六、研究对照与机制升级（2026-10-25 深潜：arxiv/ICML/ACL/Google）
+
+七篇原文已 ingest wiki（RepoAudit ICML'25 / RepoReviewer / Magistrate ACL ARR'26 /
+CodeRabbit 三篇 / Google 审查标准）。设计升级点：
+
+| 论文机制 | 对我们设计的升级 |
+|---|---|
+| **RepoAudit**：需求驱动（demand-driven）逐函数探索 + **agent memory 缓存**
+（分析过的 (函数，值) 记忆化，省 3-4 倍成本） | M1 切片审查不只能是静态批次——审查官发现
+跨单元关联时可申报扩展探索（申报制，非自由游荡）；黑板记忆化已审事实防重复 |
+| **RepoAudit validator 双验证**：控制流顺序解析式验证（零 LLM）+
+跨函数路径条件矛盾检测（LLM），消幻觉降误报（无 validator FP +245%） | M2 核验过滤升级：
+path 存在性之外，加「行号顺序合法性」解析验证（发现引用的 s2 在 s1 之后类矛盾） |
+| **RepoAudit 实证**：direct prompting 大仓无效（幻觉遍布）；一次一个单元 +
+LLM 隐式抽象（程序抽象/指针处理/可行路径三步提示）才有效 | 审查提示词要带**三步法**
+结构化提示（抽象→关键事实→可行判断），不要开放式「审这个」 |
+| **Magistrate**：Delegator 语义连贯批次切分（非纯目录边界）+ IssueDetector
+静态分析（ast-grep）与 LLM 语义并行 | T0.3 切片器切「语义连贯批次」（依赖邻居聚合）；
+确定性分析器与 LLM 审查并行双路（静态面与语义面分头交发现） |
+| **Google 标准**：发现分级带 Nit 层（可选打磨，非阻塞）；技术事实压倒偏好 | T2.3 分级
+加 Nit 级（critical/major/minor/nit）；发现必须带事实证据（path:line），无证据不入报告 |
+| **RepoReviewer**：单 pass 坍塌（相关性降/重复升/优先级弱）→ 五阶段分解
+（acquisition→context synthesis→file-level analysis→prioritization→summary） | 与本设计
+五阶段同构 ✓——分阶段是共识而非偏好 |
+
+**设计定稿影响**：M0 切片器加「语义连贯聚合」策略；M1 提示词带三步法结构 + 关联扩展申报制；
+M2 核验加顺序合法性验证 + 分级加 nit；报告发现零证据不入。
+
+## 七、非目标
 
 - 不做自动修复（审计只报告；修复走既有 change SOP）
 - 不做 PR/diff 审查（那是 change SOP 的领地）
 - 不做沙箱执行验证（作废裁决维持；可静态证实的才机器证实，其余留给证据标注）
+- 不做路径敏感数据流审计引擎（RepoAudit 那种逐函数探索器是专项工具，超出本 SOP 范围；
+  它的「需求驱动+记忆化+双验证」思想以轻量形式吸收）
