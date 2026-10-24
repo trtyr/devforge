@@ -171,3 +171,26 @@ tool_call(toolName, input):
 2. **自身加载失败 = fail-open**：TS 加载失败 pi 报 extension error 继续跑（主进程无恙），
    但边界失守。缓解：渲染分发时对插件源码过语法校验 + 验收启动探针（故意越界 write
    必须见到 `[path-guard]` 拦截，已列实现计划第 4 步）。
+
+
+## 六、产品化：非源码部署下的可用性（2026-10-24 审查）
+
+产品化 = 用户拿到的是编译好的单二进制，没有 devforge 源码仓。逐项盘点资产链路：
+
+| 资产 | 非源码部署状态 | 机制 |
+| --- | --- | --- |
+| 提示词 13 件 | ✅ 已就绪 | R4：include_str! 编译期内联，二进制单文件 |
+| skills 内容 | ✅ 已就绪 | skill_assets.rs 43 处 include_str! 内嵌（P2-ISSUE-05），生产渲染 skills_source=None 走内置资产 |
+| manifest/模型池/契约 | ✅ 已就绪 | ConfigManifest::builtin() 内嵌 |
+| **path-guard 插件本体** | 设计即内嵌 | 实现 Discipline：assets 里的 TS 用 include_str! 内嵌，渲染时从内存字符串写出 `.ts` 文本——pi 侧 jiti 免编译，拿到文本即可执行 |
+
+结论：**可用**。插件分发模式从「复制仓库目录」改为「编译期内嵌 + 渲染时写出」——
+这是 devforge 已验证两次的成熟模式（R4 prompts / skills P2-ISSUE-05），非新发明。
+实现纪律：`assets/extensions/path-guard/*.ts` 全部经 include_str! 进二进制；
+渲染单测断言「skills_source=None 时 extensions/ 照常分发」（防回退到目录复制）。
+
+真正的非源码部署遗留（另案，不阻塞本期）：
+
+- **pi 本体的 npm 安装**：profile 渲染时装包走网络/npm 源——产品化部署需预装镜像或
+  离线 npm 源（部署工程，与插件机制无关）；
+- codegraph 外部二进制（preflight 可选依赖，缺索引自动跳过）。
