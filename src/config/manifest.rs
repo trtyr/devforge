@@ -474,7 +474,7 @@ impl ConfigManifest {
                     name: "code-review".into(),
                     role_prompt: CODE_REVIEW_AGENT_PROMPT.into(),
                     extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
-                    model: "deepseek-flash".into(),
+                    model: "MiniMax-M3.1-Flash".into(), // deepseek-flash 上游 403（10-25 实测）；用户 10-20 先例换 MiniMax
                     skills: vec!["rust-best-practices".into(), "python-best-practices".into(), "ts-js-best-practices".into(), "go-best-practices".into()],
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
