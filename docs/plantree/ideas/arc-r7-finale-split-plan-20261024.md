@@ -37,3 +37,14 @@
 - clippy 与当前基线 worktree 逐条 diff 零差异；
 - 7889 新 binary 重启 + acc2 resume 推进证据；
 - 台账：本文件收官段 + arch-ai-friendly 台账加 R7 行（Done）。
+
+## R7 收官回写（2026-10-24，状态 Done，操作员执行）
+
+| commit | 内容 |
+| --- | --- |
+| cd4bc90 | task-1：本方案落档（用户确认门通过后开工） |
+| 85d92b3 / b48815c / e596eaa | 批 1：三件 tests 外迁（E0583 子目录路径教训：非 mod.rs 文件的子 mod 找 <stem>/ 子目录——R6 session 同款） |
+
+终态：全仓 wc -l 复扫零 >800（R1..R7 七期拆解收官）；全量 7 靶 exit 0、707 测试数持平；
+clippy 与批 1 前基线 worktree 逐条 diff 零差异；验收 pid 3239830 探活 200、acc2 resume 后
+doc-agent 活跃（accept-r7.log 11:28 时段）。
