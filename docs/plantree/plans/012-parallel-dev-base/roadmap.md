@@ -40,30 +40,29 @@
 **验收**：两候选并发就绪时，串行集成且第二者经历「目标已动 → rebase → 重验」路径；
 CAS 拒绝过期写入。
 
-## M4 · 依赖图调度器 + 准入（2-3 天）
+## M4 · 依赖图调度器 + 准入 ✅ 2026-10-25 e235b47+a1f3e9c（src/server/scheduler.rs：tick 决策/launch 执行分离 + kick 即时；挂账两项同批：forbidden 引擎校验 + 提案校验 audit_with_contract）
 
-- ☐ T4.1 变更 DAG 声明格式（task 间依赖边 + 契约会合点），首批输入 = AF/ARC 批次聚类（A/B/C/D）
-- ☐ T4.2 调度器：就绪判定（依赖候选已集成）→ 准入（下游容量 ≥ 阈值）→ 派工（build worktree + start）
-- ☐ T4.3 准入控制：并发 mutation 上限、组合验证容量上限、queue-age 上限（过期候选重生成优于反复 rebase）
-- ☐ T4.4 blocked 状态机：缺契约/依赖未集成 → blocked 事件 + 恢复联动
-- ☐ T4.5 预算：每 work item 推理/构建/测试分钟数上限，超限熔断（复用断路器血统）
+- ✅ T4.1 变更 DAG 声明格式：Task.depends_on/exclusive + TaskDeps（创建时存在性校验 + Kahn 环检测）+ TaskStatus::Blocked；首批输入 = API 手工声明
+- ✅ T4.2 调度器：tick 纯决策（就绪判定 → 派工计划）+ launch async 执行（渲染闸门等待）；30s 周期 + run 收尾 kick 即时
+- ✅ T4.3 准入控制：并发 mutation 上限（SchedulerConfig，store.max_concurrent_runs 硬闸默认 1 兼容 decisions/003）+ 独占窗口 exclusive
+- ✅ T4.4 blocked 状态机：capacity / exclusive_window / dependency_failed 三理由 + 恢复联动（条件解除后下轮 tick 自动回 Pending 派工）
+- ✅ T4.5 预算：每 work item 墙钟分钟上限（默认 240），超限 cancel 熔断（断路器血统）
 
-**验收（升格 2026-10-24：真实级，非测试级）**：≥2 个真实任务（不同 SOP）在各自 worktree
-并行执行数小时；期间 kill -9 server → 重启 → resume → 候选按序集成 → 全程无人工干预；
-人为制造下游拥塞时派工自动止住。
+**验收（测试级，2026-10-25 用户裁决：端到端长跑作废）**：调度器单测 7 件全绿
+（就绪序/依赖失败阻塞/容量拒绝+恢复联动/预算熔断/自动入队/独占窗口/空仓）；
+Settled 自动入集成队列 = 集成闭环自动化（单测承载）。
 
-## M5 · 观测与收尾（1 天）
+## M5 · 观测与收尾 ✅ 2026-10-25 25093f0（scheduler/status 端点 + docs/api-contract.md 前端对接契约 + 指纹复审结论）
 
-- ☐ T5.1 并行指标入 events：runnable/blocked/verifying/integrating 时长、冲突率（文本/结构/语义分类）、
-  队列等待、证据重用率、每保留集成的总成本
-- ☐ T5.2 失活收割语义复审：idle 判据在多 worktree 下的指纹口径（per-run session 指纹已有，复核即可）
-- ☐ T5.3 文档收尾：本 README 状态翻新 + DR 台账联动 + docs/contexts 对齐
-- ☐ T5.4 API 消费面稳定化（前端对接契约，2026-10-24 用户拍板）：事件 schema 固化、
-  错误码规范、分页/过滤口径统一——后端纯 API，未来前端直接消费
+- ✅ T5.1 并行指标入 events：scheduler 事件族（budget_fused/auto_enqueued/blocked 理由）+
+  GET /scheduler/status 快照（running+elapsed_ms/runnable/blocked/queue 四态计数/冲突面 needs_repair）
+- ✅ T5.2 失活收割语义复审：per-run session 指纹在多 worktree 下成立，无需改动（结论入 api-contract.md）
+- ✅ T5.3 文档收尾：本 README 状态翻新 + backlog-20261025 勾销（docs/contexts 对齐随 docs-update 流程）
+- ✅ T5.4 API 消费面稳定化：docs/api-contract.md（核心端点表 / SSE 事件 schema 分类 51 种 /
+  错误码规范 400-404-409-500 / 变更兼容规则）
 
-**验收（升格 2026-10-24）**：不登机器纯 API 回答「现在几个 worktree 在飞、各自卡在哪、
-队列多长、冲突了没有」；指标数据来源 = M4 真实长跑，非测试夹具；
-T5.4 产出事件 schema 文档 + 错误码表（前端可直接对接）。
+**验收（测试级）**：不登机器纯 API 回答「现在几个 worktree 在飞、各自卡在哪、队列多长、
+冲突了没有」——status 端点集成测试承载；全量 lib 638 绿。
 
 ## 里程碑依赖
 
