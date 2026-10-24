@@ -408,8 +408,6 @@ fn quality_failure_in_map_intervention_is_logged_as_warn_with_the_retry_layer_fi
 fn the_quality_warning_of_a_later_attempt_carries_that_attempts_number() {
     // 错实现形态：attempt 写在**失败分支**里 → 第 2 次尝试期间上下文还是第 1 次的值
     //   → 这条质量 WARN 带 attempt=1（陈旧）→ 本用例必须变红
-    let dir = tempfile::tempdir().unwrap();
-    let engine = f1_engine(dir.path().join("profiles"), PathBuf::from("/tmp"));
     let control = RunControl::new();
     let text = crate::observability::test_support::capture_jsonl(|| {
         // 第 1 次：基础设施故障（会被自动重启）；第 2 次：质量失败（走生产链路的落点 ②）
