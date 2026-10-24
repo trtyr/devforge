@@ -14,6 +14,11 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Context as _, Result};
 
+pub mod finding;
+pub mod pipeline;
+pub mod runner;
+pub mod verify;
+
 /// 一个审查单元：语义连贯的文件组（≤`MAX_UNIT_FILES`），一次批次审查的消费单位。
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct AuditUnit {

@@ -72,10 +72,21 @@ impl RunEngine for BuiltinRpcEngine {
             "doc-fix" => self.run_doc_fix(task, run, control),
             "doc-from-zero" => self.run_doc_from_zero(task, run, control),
         "change" => self.run_change(task, run, control),
-        "code-review" => crate::audit::run_skeleton(
-            task,
-            &self.plans_root,
-        ),
+        "code-review" => {
+            // P013 M1：四阶段审计（盘点切片→规划→批次审查→跨单元→核验→报告）。
+            // 会话桥：RpcReviewFactory（code-review profile，会话落 session_root/code-review）。
+            let mut factory = crate::sop::rpc_bridge::RpcReviewFactory::per_round_in(
+                self.profile_root.join("code-review"),
+                "code-review",
+                self.session_root.join("code-review"),
+                self.plans_root.join(&task.project).join(&task.id),
+            );
+            crate::audit::runner::run_audit(
+                task,
+                &self.plans_root,
+                &mut crate::audit::pipeline::AuditSessionFactoryBridge(factory),
+            )
+        }
             other => Err(crate::error::DevforgeError::System(format!(
                 "SOP `{other}` 未接线编排器（注册表与引擎必须同步）"
             ))),
