@@ -165,6 +165,12 @@ pub struct CreateTaskReq {
     /// 工作项契约（P012 M0）：可选——无契约 = 不做边界终校验（向后兼容）。
     #[serde(default)]
     pub contract: Option<crate::domain::contract::WorkItemContract>,
+    /// 依赖图（P012 T4.1）：依赖任务全部 Completed 后才可被调度。
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// 独占窗口（P012 M4）：运行期间冻结其他派工。
+    #[serde(default)]
+    pub exclusive: bool,
 }
 
 pub async fn create_task(
@@ -175,7 +181,18 @@ pub async fn create_task(
     let created = {
         let mut store = st.store.lock().expect("store 锁");
         let registry = st.registry.clone();
-        store.create_task(&registry, &project, req.id, req.sop, req.contract).cloned()?
+        store.create_task(
+            &registry,
+            &project,
+            req.id,
+            req.sop,
+            req.contract,
+            crate::domain::task::TaskDeps {
+                depends_on: req.depends_on,
+                exclusive: req.exclusive,
+            },
+        )
+        .cloned()?
     };
     st.emit(json!({"type": "task.created", "project": project, "task": created.id}));
     Ok((StatusCode::CREATED, Json(created)))
@@ -248,10 +265,11 @@ pub async fn start_task(
         let t = store
             .get_task(&project, &task)
             .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
-        if store.has_running_run() {
-            return Err(ApiError::conflict(
-                "已有运行中的任务（MVP 串行执行，一次一个）",
-            ));
+        if store.running_run_count() >= store.max_concurrent_runs {
+            return Err(ApiError::conflict(format!(
+                "已达并发上限 {}（P012 M4：worktree 隔离下多 run 并行）",
+                store.max_concurrent_runs
+            )));
         }
         t.sop.clone()
     };

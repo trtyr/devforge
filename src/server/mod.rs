@@ -9,6 +9,7 @@ pub mod change_engine;
 pub mod gate;
 pub mod handlers;
 pub mod http;
+pub mod scheduler;
 
 #[cfg(test)]
 mod tests;
@@ -301,6 +302,8 @@ pub fn run_in_background(
     }));
     // 观测上下文清位：心跳文件**保留**最后一次状态（死亡现场的证据，不删）
     crate::observability::end_run(&run.id.0);
+    // P012 M4：run 收尾踢调度器——依赖本任务的后继立即就绪判定 + Settled 自动入队
+    crate::server::scheduler::kick();
 }
 
 /// P012 M0 · T0.2：契约边界终校验（引擎层，SOP 无关）。

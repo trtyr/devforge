@@ -212,4 +212,5 @@ mod crud;
 mod http;
 mod observe;
 mod retry;
+mod scheduler;
 mod start;

@@ -169,7 +169,7 @@ mod tests {
             .create_project(Project::new("devforge", PathBuf::from("/d"), 1))
             .unwrap();
         store
-            .create_task(&SopRegistry::builtin(), "devforge", "mvp", "planning", None)
+            .create_task(&SopRegistry::builtin(), "devforge", "mvp", "planning", None, Default::default())
             .unwrap();
         let runner = Runner::new(MockEngine {
             result: Ok(RunOutcome::Completed),

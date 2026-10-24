@@ -82,6 +82,11 @@ pub fn build_router(state: SharedState) -> Router {
 pub async fn serve(state: SharedState, addr: std::net::SocketAddr) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(component = "server", %addr, "devforge API 就绪");
+    // P012 M4：调度循环常驻（30s 周期 + run 收尾 kick 即时）。
+    tokio::spawn(crate::server::scheduler::scheduler_loop(
+        state.clone(),
+        crate::server::scheduler::SchedulerConfig::default(),
+    ));
     axum::serve(listener, build_router(state)).await
 }
 

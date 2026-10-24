@@ -15,11 +15,29 @@ use crate::domain::task::{Task, TaskStatus};
 use crate::domain::{now_ms, Project};
 use crate::error::{Context as _, DevforgeError, Result};
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Store {
     pub projects: Vec<Project>,
     pub tasks: Vec<Task>,
     pub runs: Vec<Run>,
+    /// 并发 run 上限（P012 M4）：默认 1 = decisions/003 串行兼容；调度器/worktree 模式下调高。
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent_runs: usize,
+}
+
+fn default_max_concurrent() -> usize {
+    1
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Self {
+            projects: Vec::new(),
+            tasks: Vec::new(),
+            runs: Vec::new(),
+            max_concurrent_runs: default_max_concurrent(),
+        }
+    }
 }
 
 /// run 结束的结果（runner 驱动 store 收尾用）。
@@ -64,6 +82,7 @@ impl Store {
 
     /// 创建任务：项目须存在、任务 id 项目内唯一、SOP 须已内置注册。
     /// 契约（P012 M0）创建时提交不可变；None = 无契约（不做边界终校验）。
+    /// 依赖图（P012 T4.1）：依赖须本项目内存在且无环（含自依赖）。
     pub fn create_task(
         &mut self,
         registry: &SopRegistry,
@@ -71,6 +90,7 @@ impl Store {
         id: impl Into<String>,
         sop: impl Into<String>,
         contract: Option<crate::domain::contract::WorkItemContract>,
+        deps: crate::domain::task::TaskDeps,
     ) -> Result<&Task> {
         let sop = sop.into();
         registry.validate(&sop)?;
@@ -87,8 +107,28 @@ impl Store {
                 "任务 `{id}` 在项目 `{project}` 下已存在"
             )));
         }
+        // 依赖校验（T4.1）：存在性 + 无环（把待建节点也放进图一起检）。
+        for dep in &deps.depends_on {
+            if dep == &id {
+                return Err(DevforgeError::Store(format!(
+                    "任务 `{id}` 不能依赖自身"
+                )));
+            }
+            if !self
+                .tasks
+                .iter()
+                .any(|t| t.project == project && &t.id == dep)
+            {
+                return Err(DevforgeError::Store(format!(
+                    "依赖任务 `{dep}` 在项目 `{project}` 下不存在"
+                )));
+            }
+        }
+        Self::assert_acyclic(self, project, &id, &deps.depends_on)?;
         let mut task = Task::new(id, project, sop, now_ms());
         task.contract = contract;
+        task.depends_on = deps.depends_on;
+        task.exclusive = deps.exclusive;
         // P005 decisions/001：任务快照项目登记的代码工作区（编码 SOP 用；黑板由引擎建）
         task.workspace = self
             .get_project(project)
@@ -103,6 +143,57 @@ impl Store {
             .expect("刚 push"))
     }
 
+    /// 环检测（T4.1）：假设 `new_id` 带 `depends_on` 建入后，项目图不得有环。
+    /// DFS 三色标记；待建节点以虚拟边参与。
+    fn assert_acyclic(
+        &self,
+        project: &str,
+        new_id: &str,
+        new_deps: &[String],
+    ) -> Result<()> {
+        use std::collections::{HashMap, VecDeque};
+        let mut edges: HashMap<&str, Vec<&str>> = HashMap::new();
+        for t in self.tasks.iter().filter(|t| t.project == project) {
+            edges.entry(&t.id).or_default().extend(
+                t.depends_on.iter().map(|s| s.as_str()),
+            );
+        }
+        edges.entry(new_id).or_default().extend(
+            new_deps.iter().map(|s| s.as_str()),
+        );
+        // Kahn：入度归零计数 = 无环；残图非空 = 有环
+        let mut indegree: HashMap<&str, usize> = edges.keys().map(|k| (*k, 0)).collect();
+        for outs in edges.values() {
+            for d in outs {
+                *indegree.entry(d).or_insert(0) += 1;
+            }
+        }
+        let mut queue: VecDeque<&str> = indegree
+            .iter()
+            .filter(|(_, d)| **d == 0)
+            .map(|(k, _)| *k)
+            .collect();
+        let mut visited = 0usize;
+        while let Some(n) = queue.pop_front() {
+            visited += 1;
+            if let Some(outs) = edges.get(n) {
+                for d in outs {
+                    let e = indegree.get_mut(d).expect("边端点必在图内");
+                    *e -= 1;
+                    if *e == 0 {
+                        queue.push_back(d);
+                    }
+                }
+            }
+        }
+        if visited != edges.len() {
+            return Err(DevforgeError::Store(format!(
+                "依赖图存在环：加入 `{new_id}` 后项目 `{project}` 的 DAG 无拓扑序"
+            )));
+        }
+        Ok(())
+    }
+
     pub fn get_task(&self, project: &str, id: &str) -> Option<&Task> {
         self.tasks
             .iter()
@@ -114,6 +205,17 @@ impl Store {
             .iter_mut()
             .find(|t| t.project == project && t.id == id)
             .ok_or_else(|| DevforgeError::Store(format!("任务 `{project}/{id}` 不存在")))
+    }
+
+    /// 置任务状态（P012 M4 调度器专用：Blocked ⇄ Pending 恢复联动；其他调用方勿用）。
+    pub fn set_task_status(
+        &mut self,
+        project: &str,
+        id: &str,
+        status: TaskStatus,
+    ) -> Result<()> {
+        self.get_task_mut(project, id)?.status = status;
+        Ok(())
     }
 
     pub fn list_tasks(&self, project: &str) -> Vec<&Task> {
@@ -146,15 +248,25 @@ impl Store {
 
     /// 系统级串行守卫（decisions/003 实现口径）：任一时刻最多一个 Running run。
     pub fn has_running_run(&self) -> bool {
-        self.runs.iter().any(|r| r.status == RunStatus::Running)
+        self.running_run_count() > 0
     }
 
-    /// 发起 run：守卫（全局串行 + 任务状态机）通过后创建新 run 并挂到任务上。
+    /// 当前 Running run 数（P012 M4 并发调度用）。
+    pub fn running_run_count(&self) -> usize {
+        self.runs
+            .iter()
+            .filter(|r| r.status == RunStatus::Running)
+            .count()
+    }
+
+    /// 发起 run：守卫（并发上限 + 任务状态机）通过后创建新 run 并挂到任务上。
+    /// 并发上限：`max_concurrent_runs`（默认 1 = decisions/003 串行兼容；M4 调度器调高）。
     pub fn begin_run(&mut self, project: &str, task_id: &str) -> Result<Run> {
-        if self.has_running_run() {
-            return Err(DevforgeError::Store(
-                "已有运行中的任务（MVP 串行执行，一次一个）".into(),
-            ));
+        if self.running_run_count() >= self.max_concurrent_runs {
+            return Err(DevforgeError::Store(format!(
+                "已达并发上限 {}（P012 M4：worktree 隔离下允许多 run）",
+                self.max_concurrent_runs
+            )));
         }
         let task = self.get_task_mut(project, task_id)?;
         if !task.can_begin_run() {
@@ -252,7 +364,7 @@ mod tests {
             1,
         ))
         .unwrap();
-        s.create_task(&SopRegistry::builtin(), "devforge", "mvp", PLANNING_SOP.id, None)
+        s.create_task(&SopRegistry::builtin(), "devforge", "mvp", PLANNING_SOP.id, None, Default::default())
             .unwrap();
         s
     }
@@ -272,19 +384,19 @@ mod tests {
         s.create_project(Project::new("p", std::path::PathBuf::from("/p"), 1))
             .unwrap();
         let err = s
-            .create_task(&SopRegistry::builtin(), "ghost", "t1", "planning", None)
+            .create_task(&SopRegistry::builtin(), "ghost", "t1", "planning", None, Default::default())
             .unwrap_err();
         assert!(err.to_string().contains("不存在"));
 
         // P005：coding 已入注册表（不再是未知 SOP），且任务快照工作区
         let t = s
-            .create_task(&SopRegistry::builtin(), "p", "t1", "coding", None)
+            .create_task(&SopRegistry::builtin(), "p", "t1", "coding", None, Default::default())
             .unwrap();
         assert_eq!(t.sop, "coding");
         assert_eq!(t.workspace, std::path::PathBuf::from("/p"), "快照项目 local_path");
 
         let err = s
-            .create_task(&SopRegistry::builtin(), "p", "t2", "ghost", None)
+            .create_task(&SopRegistry::builtin(), "p", "t2", "ghost", None, Default::default())
             .unwrap_err();
         assert!(err.to_string().contains("未知 SOP"));
 
@@ -301,9 +413,9 @@ mod tests {
     fn system_level_serial_guard() {
         let mut s = setup();
         let r1 = s.begin_run("devforge", "mvp").unwrap();
-        // 全局已有一个 Running run → 拒绝第二个（哪怕不同任务）
+        // 全局已有一个 Running run → 拒绝第二个（decisions/003 上限化：默认 max=1 兼容串行）
         let err = s.begin_run("devforge", "mvp").unwrap_err();
-        assert!(err.to_string().contains("串行"));
+        assert!(err.to_string().contains("并发上限"), "{err}");
         s.finish_run(&r1.id, FinishOutcome::Completed).unwrap();
         assert!(!s.has_running_run());
     }
@@ -347,5 +459,79 @@ mod tests {
         s.save(&path).unwrap();
         let loaded = Store::load(&path).unwrap();
         assert_eq!(s, loaded);
+    }
+
+    // ---------- 变更 DAG（P012 T4.1） ----------
+
+    use crate::domain::task::TaskDeps;
+
+    #[test]
+    fn dag_rejects_missing_dependency() {
+        let mut s = setup();
+        let err = s
+            .create_task(
+                &SopRegistry::builtin(),
+                "devforge",
+                "c",
+                "planning",
+                None,
+                TaskDeps { depends_on: vec!["ghost".into()], exclusive: false },
+            )
+            .unwrap_err();
+        assert!(format!("{err}").contains("不存在"), "应报依赖不存在：{err}");
+    }
+
+    #[test]
+    fn dag_rejects_self_dependency() {
+        let mut s = setup();
+        let err = s
+            .create_task(
+                &SopRegistry::builtin(),
+                "devforge",
+                "mvp2",
+                "planning",
+                None,
+                TaskDeps { depends_on: vec!["mvp2".into()], exclusive: false },
+            )
+            .unwrap_err();
+        assert!(format!("{err}").contains("自身"), "应报自依赖：{err}");
+    }
+
+    #[test]
+    fn dag_chain_creates_with_edges() {
+        let mut s = setup();
+        // a（无依赖）→ b 依赖 a → c 依赖 b：链式落库 + 字段回读
+        s.create_task(
+            &SopRegistry::builtin(),
+            "devforge",
+            "dag-a",
+            "planning",
+            None,
+            TaskDeps::default(),
+        )
+        .unwrap();
+        s.create_task(
+            &SopRegistry::builtin(),
+            "devforge",
+            "dag-b",
+            "planning",
+            None,
+            TaskDeps { depends_on: vec!["dag-a".into()], exclusive: true },
+        )
+        .unwrap();
+        s.create_task(
+            &SopRegistry::builtin(),
+            "devforge",
+            "dag-c",
+            "planning",
+            None,
+            TaskDeps { depends_on: vec!["dag-b".into()], exclusive: false },
+        )
+        .unwrap();
+        let b = s.get_task("devforge", "dag-b").unwrap();
+        assert_eq!(b.depends_on, vec!["dag-a".to_string()]);
+        assert!(b.exclusive, "独占标记应落库");
+        let c = s.get_task("devforge", "dag-c").unwrap();
+        assert_eq!(c.depends_on, vec!["dag-b".to_string()]);
     }
 }
