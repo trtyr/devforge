@@ -1,4 +1,4 @@
-//! 运行级重试（plan 010 · T005/T006）：把「基础设施故障」与「质量失败」分开处理。
+//! 运行级横切策略单点（ARC-R5）：重试 / 干预映射 / 事件字段形状，同模块同居。
 //!
 //! 口径（010 D004）：
 //! - **基础设施故障**（`DevforgeError::System`：上游 5xx、审查空回复、子进程瞬时死）→
@@ -88,7 +88,12 @@ where
         // 原始错误全量可见（010 F6 靶 · 需求 1）：每次尝试失败先落一条**分级**条目——
         // 质量类失败落 WARN，其余落 ERROR；落盘点在**决定重试之前**（先记错误、再决定重启）。
         if let Err(e) = &result {
-            log_attempt_failed(attempt, e, retryable);
+            let message = if e.is_quality_failure() {
+                "run 尝试失败（质量类，不重启）"
+            } else {
+                "run 尝试失败"
+            };
+            log_attempt_failed_shape("run-retry", message, e.is_quality_failure(), attempt, e, retryable);
         }
         if !retryable || attempt >= policy.max_attempts {
             // 多次尝试后仍失败：错误串必须带每次尝试的末段，否则事后无法定位是哪一次怎么挂的
@@ -124,27 +129,37 @@ where
 /// 分级：质量类失败（`DevforgeError::Quality`）落 **WARN**，其余一切失败落 **ERROR**。
 /// 字段与 `map_intervention` 的质量分支**同构**（`component` / `event` / `attempt` /
 /// `error` / `error_chain` / `retryable`）——两处字段名一致，事后按字段过滤才对得上。
-fn log_attempt_failed(attempt: u32, e: &DevforgeError, retryable: bool) {
+/// `run.attempt_failed` 条目的**形状单点**（010 F6 靶）：字段集（component / event / attempt /
+/// error / error_chain / retryable）只在这里构造一次；两条落点（重试层 / SOP 层
+/// [`map_intervention`] 的质量分支）传值——改一处漏一处的漂移从机制上不可能。
+pub(crate) fn log_attempt_failed_shape(
+    component: &str,
+    message: &'static str,
+    as_warn: bool,
+    attempt: u32,
+    e: &DevforgeError,
+    retryable: bool,
+) {
     let error_chain = crate::observability::error_chain(e);
-    if e.is_quality_failure() {
+    if as_warn {
         tracing::warn!(
-            component = "run-retry",
+            component,
             event = "run.attempt_failed",
             attempt,
             error = %e,
             error_chain = %error_chain,
             retryable,
-            "run 尝试失败（质量类，不重启）"
+            "{message}"
         );
     } else {
         tracing::error!(
-            component = "run-retry",
+            component,
             event = "run.attempt_failed",
             attempt,
             error = %e,
             error_chain = %error_chain,
             retryable,
-            "run 尝试失败"
+            "{message}"
         );
     }
 }
@@ -170,6 +185,49 @@ fn log_attempt_exhausted(attempt: u32, e: &DevforgeError) {
             error_chain = %error_chain,
             "run 尝试耗尽"
         );
+    }
+}
+
+/// 干预性死亡映射为明确的 Failed 原因（而非底层 RPC EOF 噪音）。横切策略单点
+/// （ARC-R5 自 BuiltinRpcEngine 平移，方法 → 自由函数：它不读引擎状态，与具体 SOP 无关）。
+/// 六处 SOP 接线（planning/coding/testing/doc-fix/doc/change）统一调这里。
+pub fn map_intervention(
+    control: &RunControl,
+    component: &str,
+    e: DevforgeError,
+) -> crate::error::Result<RunOutcome> {
+    if control.is_cancelled() {
+        Ok(RunOutcome::Failed {
+            reason: "已取消（cancel 端点）".into(),
+        })
+    } else if control.is_stalled() {
+        Ok(RunOutcome::Failed {
+            reason: "已失活（会话无进展超过闲置阈值，被 watchdog 终止）".into(),
+        })
+    } else if control.timed_out(crate::domain::now_ms()) {
+        Ok(RunOutcome::Failed {
+            reason: "已超时（run 超时，被 watchdog 终止）".into(),
+        })
+    } else if let DevforgeError::Quality(msg) = &e {
+        // 质量失败（审查打回/协议违例达上限/越界申报）：明确的 Failed，**不进自动重启**（010 D004）
+        tracing::warn!(component, reason = %msg, "SOP 质量失败（不重试）");
+        // 原始错误全量可见（010 F6 靶 · 需求 1）：质量类失败在生产链路上到不了重试层
+        // （这里被转成 `Ok(Failed)`），不在这儿落就永远看不见——形状经 log_attempt_failed_shape
+        // 单点构造（ARC-R5：与重试层同一份字段集，不再两处手写）。
+        log_attempt_failed_shape(
+            component,
+            "SOP 质量失败（原始错误已落盘，不重启）",
+            true,
+            crate::observability::attempt(),
+            &e,
+            false,
+        );
+        Ok(RunOutcome::Failed {
+            reason: msg.clone(),
+        })
+    } else {
+        tracing::warn!(component, error = %e, "SOP 非干预性失败");
+        Err(e)
     }
 }
 

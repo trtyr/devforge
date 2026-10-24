@@ -351,7 +351,7 @@ fn profile_gate_failure_is_a_config_error_not_an_infrastructure_failure() {
         "profile 未就绪应是配置错误（不是基础设施故障）：{err:?}"
     );
     assert!(
-        !crate::engine::retry::is_infra_failure(&Err(err)),
+        !crate::engine::policy::is_infra_failure(&Err(err)),
         "配置错误不得被判为基础设施故障（否则会盲重启）"
     );
 }
@@ -377,15 +377,13 @@ fn quality_failure_in_map_intervention_is_logged_as_warn_with_the_retry_layer_fi
     // 错实现形态：①质量失败落 ERROR（应 WARN）②缺 `error_chain` / `attempt` / `retryable`
     // ③只留既有那条无字段的 WARN → 本用例必须变红
     let dir = tempfile::tempdir().unwrap();
-    let engine = f1_engine(dir.path().join("profiles"), PathBuf::from("/tmp"));
     let text = crate::observability::test_support::capture_jsonl(|| {
-        let outcome = engine
-            .map_intervention(
-                &RunControl::new(),
-                "change-engine",
-                crate::error::DevforgeError::Quality("越界改动未申报".into()),
-            )
-            .unwrap();
+        let outcome = crate::engine::policy::map_intervention(
+            &RunControl::new(),
+            "change-engine",
+            crate::error::DevforgeError::Quality("越界改动未申报".into()),
+        )
+        .unwrap();
         assert!(
             matches!(outcome, RunOutcome::Failed { .. }),
             "质量失败仍是明确的 Failed（不重启）"
@@ -415,8 +413,8 @@ fn the_quality_warning_of_a_later_attempt_carries_that_attempts_number() {
     let control = RunControl::new();
     let text = crate::observability::test_support::capture_jsonl(|| {
         // 第 1 次：基础设施故障（会被自动重启）；第 2 次：质量失败（走生产链路的落点 ②）
-        let (result, attempts) = crate::engine::retry::run_with_retry(
-            &crate::engine::retry::RetryPolicy::fast(),
+        let (result, attempts) = crate::engine::policy::run_with_retry(
+            &crate::engine::policy::RetryPolicy::fast(),
             &control,
             |n| {
                 if n == 1 {
@@ -424,7 +422,7 @@ fn the_quality_warning_of_a_later_attempt_carries_that_attempts_number() {
                         "模拟上游 500（测试注入）".into(),
                     ))
                 } else {
-                    engine.map_intervention(
+                    crate::engine::policy::map_intervention(
                         &control,
                         "change-engine",
                         crate::error::DevforgeError::Quality("终审未通过".into()),

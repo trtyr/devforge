@@ -170,7 +170,7 @@ impl BuiltinRpcEngine {
                 );
                 Ok(RunOutcome::Completed)
             }
-            Err(e) => self.map_intervention(control, "planning-engine", e),
+            Err(e) => crate::engine::policy::map_intervention(control, "planning-engine", e),
         }
     }
 
@@ -245,7 +245,7 @@ impl BuiltinRpcEngine {
                 );
                 Ok(RunOutcome::Completed)
             }
-            Err(e) => self.map_intervention(control, "coding-engine", e),
+            Err(e) => crate::engine::policy::map_intervention(control, "coding-engine", e),
         }
     }
 
@@ -384,7 +384,7 @@ impl BuiltinRpcEngine {
                 );
                 Ok(RunOutcome::Completed)
             }
-            Err(e) => self.map_intervention(control, "testing-engine", e),
+            Err(e) => crate::engine::policy::map_intervention(control, "testing-engine", e),
         }
     }
 
@@ -451,46 +451,9 @@ impl BuiltinRpcEngine {
                 );
                 Ok(RunOutcome::Completed)
             }
-            Err(e) => self.map_intervention(control, "docfix-engine", e),
+            Err(e) => crate::engine::policy::map_intervention(control, "docfix-engine", e),
         }
     }
 
-    /// 干预性死亡映射为明确的 Failed 原因（而非底层 RPC EOF 噪音）。
-    pub(crate) fn map_intervention(&self, control: &RunControl, component: &str, e: crate::error::DevforgeError) -> Result<RunOutcome> {
-        if control.is_cancelled() {
-            Ok(RunOutcome::Failed {
-                reason: "已取消（cancel 端点）".into(),
-            })
-        } else if control.is_stalled() {
-            Ok(RunOutcome::Failed {
-                reason: "已失活（会话无进展超过闲置阈值，被 watchdog 终止）".into(),
-            })
-        } else if control.timed_out(crate::domain::now_ms()) {
-            Ok(RunOutcome::Failed {
-                reason: "已超时（run 超时，被 watchdog 终止）".into(),
-            })
-        } else if let crate::error::DevforgeError::Quality(msg) = &e {
-            // 质量失败（审查打回/协议违例达上限/越界申报）：明确的 Failed，**不进自动重启**（010 D004）
-            tracing::warn!(component, reason = %msg, "SOP 质量失败（不重试）");
-            // 原始错误全量可见（010 F6 靶 · 需求 1）：质量类失败落 **WARN**，
-            // 字段与重试层那条**同构**（`event` / `attempt` / `error` / `error_chain` / `retryable`）——
-            // 质量失败在生产链路上到不了重试层（这里被转成 `Ok(Failed)`），不在这儿落就永远看不见。
-            let error_chain = crate::observability::error_chain(&e);
-            tracing::warn!(
-                component,
-                event = "run.attempt_failed",
-                attempt = crate::observability::attempt(),
-                error = %e,
-                error_chain = %error_chain,
-                retryable = false,
-                "SOP 质量失败（原始错误已落盘，不重启）"
-            );
-            Ok(RunOutcome::Failed {
-                reason: msg.clone(),
-            })
-        } else {
-            tracing::warn!(component, error = %e, "SOP 非干预性失败");
-            Err(e)
-        }
-    }
+// 干预性死亡映射（map_intervention）已收敛至 engine/policy.rs（ARC-R5 横切策略单点化）
 }

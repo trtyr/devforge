@@ -26,7 +26,7 @@ use devforge::domain::store::Store;
 use devforge::domain::task::Task;
 use devforge::engine::client::RpcClient;
 use devforge::engine::process::SpawnSpec;
-use devforge::engine::retry::{RetryPolicy, run_with_retry};
+use devforge::engine::policy::{RetryPolicy, run_with_retry};
 use devforge::error::{Context as _, DevforgeError, Result};
 use devforge::observability as obs;
 use devforge::runstate::{StateKey, StateStore};
@@ -713,7 +713,7 @@ fn a_missing_profile_is_a_config_error_and_is_not_an_infrastructure_failure() {
         "profile 未就绪应是配置错误：{err:?}"
     );
     assert!(
-        !devforge::engine::retry::is_infra_failure(&Err(err)),
+        !devforge::engine::policy::is_infra_failure(&Err(err)),
         "配置错误不得被判为基础设施故障（否则会盲重启）"
     );
 }

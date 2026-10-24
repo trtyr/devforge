@@ -142,7 +142,7 @@ pub struct ServerState {
     pub plans_root: PathBuf,
     pub sessions_root: PathBuf,
     /// 运行级重试策略（plan 010 T005）：生产默认 10/30/90s；测试注入 fast。
-    pub retry_policy: crate::engine::retry::RetryPolicy,
+    pub retry_policy: crate::engine::policy::RetryPolicy,
     /// 渲染闸门（用户裁决 A）：`PUT /config/manifest` 在途时，`start` 端点等所需 profile 就绪。
     pub render_gate: RenderGate,
     /// 观测根覆盖（Some = 本实例的 run 把心跳写在这里；None = 用进程级解析结果）。
@@ -179,7 +179,7 @@ impl ServerState {
             profiles_root,
             plans_root,
             sessions_root,
-            retry_policy: crate::engine::retry::RetryPolicy::default(),
+            retry_policy: crate::engine::policy::RetryPolicy::default(),
             render_gate: RenderGate::new(),
             obs_root: None,
         })
@@ -253,7 +253,7 @@ pub fn run_in_background(
     let state_for_retry = state.clone();
     let (project_for_retry, task_for_retry, run_id_for_retry) =
         (project.clone(), task_id.clone(), run.id.0.clone());
-    let (outcome, attempts) = crate::engine::retry::run_with_retry(&policy, &control, |attempt| {
+    let (outcome, attempts) = crate::engine::policy::run_with_retry(&policy, &control, |attempt| {
         if attempt > 1 {
             // attempt 递增落盘（审计用；断点本体由各 SOP 自己维护）
             let store = crate::runstate::StateStore::new(

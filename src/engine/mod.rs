@@ -10,7 +10,7 @@ pub mod builtin;
 pub mod ledger;
 pub mod process;
 pub mod protocol;
-pub mod retry;
+pub mod policy;
 
 #[cfg(test)]
 mod builtin_tests;

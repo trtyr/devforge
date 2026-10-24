@@ -237,7 +237,7 @@ impl BuiltinRpcEngine {
                 );
                 Ok(RunOutcome::Completed)
             }
-            Err(e) => self.map_intervention(control, "change-engine", e),
+            Err(e) => crate::engine::policy::map_intervention(control, "change-engine", e),
         }
     }
 }

@@ -137,7 +137,7 @@ fn fixture_full(
     // 单测不真睡：重试退避归零
     Arc::get_mut(&mut state)
         .expect("路由未构建前应独占")
-        .retry_policy = crate::engine::retry::RetryPolicy::fast();
+        .retry_policy = crate::engine::policy::RetryPolicy::fast();
     // 观测根钉在本夹具的临时目录（路由构建前注入，Arc 共享后不可再改）
     Arc::get_mut(&mut state)
         .expect("路由未构建前应独占")
@@ -844,35 +844,27 @@ fn quality_failure_sites_do_not_use_system_error() {
 #[test]
 fn quality_error_becomes_failed_and_is_not_retried() {
     // plan 010 T006/D004：质量失败→明确的 Failed（不进重启分支）；System 仍向上抛（可重启）
-    let engine = crate::engine::builtin::BuiltinRpcEngine {
-        profile_root: std::path::PathBuf::from("/tmp"),
-        session_root: std::path::PathBuf::from("/tmp"),
-        plans_root: std::path::PathBuf::from("/tmp"),
-        ui: std::sync::Arc::new(UiRelay::new(std::sync::Arc::new(crate::server::EventBus::new()))),
-        codegraph_bin: std::path::PathBuf::from("codegraph"),
-        idle_ms: None,
-    };
+    // ARC-R5：map_intervention 是横切策略自由函数（engine/policy.rs），不再挂在引擎上
     let control = RunControl::new();
-    let outcome = engine
-        .map_intervention(
-            &control,
-            "doc-engine",
-            crate::error::DevforgeError::Quality("审查连续 4 轮输出协议违例".into()),
-        )
-        .expect("质量失败不得作为错误上抛");
+    let outcome = crate::engine::policy::map_intervention(
+        &control,
+        "doc-engine",
+        crate::error::DevforgeError::Quality("审查连续 4 轮输出协议违例".into()),
+    )
+    .expect("质量失败不得作为错误上抛");
     match outcome {
         RunOutcome::Failed { reason } => assert!(reason.contains("违例"), "{reason}"),
         other => panic!("应为 Failed，实际 {other:?}"),
     }
 
-    let infra = engine.map_intervention(
+    let infra = crate::engine::policy::map_intervention(
         &control,
         "doc-engine",
         crate::error::DevforgeError::System("上游 500".into()),
     );
     assert!(infra.is_err(), "系统错误必须上抛给重试层");
     assert!(
-        crate::engine::retry::is_infra_failure(&infra),
+        crate::engine::policy::is_infra_failure(&infra),
         "System 才是可重启故障"
     );
 }
