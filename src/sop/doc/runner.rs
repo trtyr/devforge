@@ -17,7 +17,7 @@ use crate::error::{DevforgeError, Result};
 use crate::runstate::StateStore;
 use crate::sop::doc::evidence::{produced_files, snapshot_files};
 use crate::sop::doc::prompts::{
-    DOC_REMEDIATION_PREFIX, doc_final_instruction, doc_kickoff, doc_review_instruction,
+    DOC_REMEDIATION_PREFIX, doc_kickoff, doc_review_instruction,
 };
 use crate::sop::doc::state::{
     add_issues, bump_review, data_obj, done_units, issues_total, mark_done, review_rounds,

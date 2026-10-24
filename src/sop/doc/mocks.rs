@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::{DevforgeError, Result};
 use crate::runstate::StateStore;
-use crate::sop::doc::runner::run_pipeline;
 use crate::sop::doc::state::{bump_review, mark_done};
 use crate::sop::planning::{PlanAgentSession, ReviewSession, ReviewSessionFactory, UserLink};
 

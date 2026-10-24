@@ -19,12 +19,12 @@ pub mod runner;
 pub mod state;
 pub mod wiring;
 
+pub use prompts::{DOC_REMEDIATION_PREFIX, DOCS_DIR, META_DIR};
+pub use runner::{AuditProvider, DocReport, run_pipeline};
+
 #[cfg(test)]
 pub(crate) mod mocks;
 #[cfg(test)]
 mod resume_tests;
 #[cfg(test)]
 mod runner_tests;
-
-pub use prompts::{DOC_REMEDIATION_PREFIX, DOCS_DIR, META_DIR};
-pub use runner::{AuditProvider, DocReport, run_pipeline};

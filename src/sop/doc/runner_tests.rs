@@ -11,7 +11,6 @@ use crate::sop::doc::mocks::{
 use crate::sop::doc::prompts::{doc_kickoff, doc_review_instruction};
 use crate::sop::doc::runner::run_pipeline;
 use crate::sop::doc::state::done_units;
-use crate::sop::planning::UserLink;
 
 /// 行为类测试的 pipeline 调用（闸门/注入类用例用全参数 run_pipeline）
 macro_rules! run_pipe {

@@ -27,6 +27,60 @@ pub fn resolve_startup_token(cli: Option<String>, env: Option<String>) -> Option
     cli.and_then(non_empty).or_else(|| env.and_then(non_empty))
 }
 
+pub fn build_router(state: SharedState) -> Router {
+    let api = Router::new()
+        // 编排控制
+        .route("/projects", post(handlers::create_project).get(handlers::list_projects))
+        .route("/projects/{name}", get(handlers::get_project))
+        .route(
+            "/projects/{name}/tasks",
+            post(handlers::create_task).get(handlers::list_tasks),
+        )
+        .route("/projects/{name}/tasks/{task}/start", post(handlers::start_task))
+        .route(
+            "/projects/{name}/tasks/{task}/cancel",
+            post(handlers::cancel_task),
+        )
+        // 产物管理 + 可观测
+        .route(
+        "/projects/{name}/tasks/{task}/runs",
+        get(handlers::list_runs),
+    )
+    .route(
+        "/projects/{name}/tasks/{task}/runs/{run}",
+        get(handlers::get_run_detail),
+    )
+    .route(
+        "/projects/{name}/tasks/{task}/runs/{run}/events",
+        get(handlers::run_events),
+    )
+    .route(
+        "/projects/{name}/tasks/{task}/runs/{run}/transcript",
+        get(handlers::run_transcript),
+    )
+        .route("/projects/{name}/tasks/{task}/graph", get(handlers::task_graph))
+        // 交互中继
+        .route("/ui/{id}/answer", post(handlers::answer_ui))
+        .route("/events", get(handlers::events))
+        // 配置管理
+        .route(
+            "/config/manifest",
+            get(handlers::get_manifest).put(handlers::put_manifest),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            handlers::auth_middleware,
+        ));
+    Router::new().nest("/api/v1", api).with_state(state)
+}
+
+/// 生产引导：绑定地址并常驻服务（main 调用）。
+pub async fn serve(state: SharedState, addr: std::net::SocketAddr) -> std::io::Result<()> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(component = "server", %addr, "devforge API 就绪");
+    axum::serve(listener, build_router(state)).await
+}
+
 #[cfg(test)]
 mod startup_token_tests {
     use super::*;
@@ -80,58 +134,4 @@ mod startup_token_tests {
         assert_eq!(resolve_startup_token(None, Some("".into())), None);
         assert_eq!(resolve_startup_token(None, None), None);
     }
-}
-
-pub fn build_router(state: SharedState) -> Router {
-    let api = Router::new()
-        // 编排控制
-        .route("/projects", post(handlers::create_project).get(handlers::list_projects))
-        .route("/projects/{name}", get(handlers::get_project))
-        .route(
-            "/projects/{name}/tasks",
-            post(handlers::create_task).get(handlers::list_tasks),
-        )
-        .route("/projects/{name}/tasks/{task}/start", post(handlers::start_task))
-        .route(
-            "/projects/{name}/tasks/{task}/cancel",
-            post(handlers::cancel_task),
-        )
-        // 产物管理 + 可观测
-        .route(
-        "/projects/{name}/tasks/{task}/runs",
-        get(handlers::list_runs),
-    )
-    .route(
-        "/projects/{name}/tasks/{task}/runs/{run}",
-        get(handlers::get_run_detail),
-    )
-    .route(
-        "/projects/{name}/tasks/{task}/runs/{run}/events",
-        get(handlers::run_events),
-    )
-    .route(
-        "/projects/{name}/tasks/{task}/runs/{run}/transcript",
-        get(handlers::run_transcript),
-    )
-        .route("/projects/{name}/tasks/{task}/graph", get(handlers::task_graph))
-        // 交互中继
-        .route("/ui/{id}/answer", post(handlers::answer_ui))
-        .route("/events", get(handlers::events))
-        // 配置管理
-        .route(
-            "/config/manifest",
-            get(handlers::get_manifest).put(handlers::put_manifest),
-        )
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            handlers::auth_middleware,
-        ));
-    Router::new().nest("/api/v1", api).with_state(state)
-}
-
-/// 生产引导：绑定地址并常驻服务（main 调用）。
-pub async fn serve(state: SharedState, addr: std::net::SocketAddr) -> std::io::Result<()> {
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(component = "server", %addr, "devforge API 就绪");
-    axum::serve(listener, build_router(state)).await
 }
