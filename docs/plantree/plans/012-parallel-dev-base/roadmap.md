@@ -27,7 +27,7 @@
 **验收**：change 任务全生命周期在 worktree 内完成；kill -9 server 后重启能清孤儿；
 候选冻结 commit 可 diff 归因。
 
-## M2 · 沙箱化 spawn（2 天）
+## M2 · 沙箱化 spawn（2 天）⛔ 作废（2026-10-24 用户裁决：沙箱整个不做，隔离由 pi 插件方案取代——path-guard 工具级路径权限 + worktree；本段仅留档）
 
 - ☐ T2.1 `AgentManifest.sandbox: Option<SandboxSpec>`（kind: docker，image、mounts、env 白名单）
 - ☐ T2.2 `engine/process.rs` build_spawn_command 支持 sandbox 分支：`docker run --rm`
@@ -69,5 +69,5 @@ CAS 拒绝过期写入。
 
 ## 里程碑依赖
 
-M0 → M1 → M2（可与 M3 并行）→ M3 → M4 → M5。
+M0 → M1 → M3 → M4 → M5（M2 沙箱化 spawn 作废——隔离由 pi 插件 path-guard 取代，2026-10-24 用户裁决）。
 M0 的契约字段是所有后续的地基；M2 与 M3 无相互依赖可交错。

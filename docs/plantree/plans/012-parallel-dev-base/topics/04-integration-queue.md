@@ -41,3 +41,23 @@
 - 两候选并发就绪：串行集成、第二者经历 rebase-重验、最终双双 Integrated
 - 人为构造过期 CAS：被拒且候选回 needs_repair
 - 组合验证失败：候选可归因到具体验证层与输出（evidence bundle）
+
+## 实施落点（2026-10-24，M3 开工前设计速记）
+
+新模块 `src/integration/`，复用 M0/M1 已有件（workspace / contract / boundary）：
+
+- **候选**：`IntegrationCandidate { task_id, frozen_sha, base_rev, owned_paths, evidence_paths }`
+  —— frozen_sha 来自 worktree freeze（M1 已落黑板 frozen-commit.txt）；owned_paths 来自契约。
+- **集成工作树**：目标仓专用 worktree（同 M1 路径约定，`{repo}-worktrees/_integration`）——
+  checkout 目标 ref 最新 → 逐候选 `git merge --no-ff`（或 cherry-pick）→ 组合验证。
+- **CAS**：`git update-ref refs/<target> <new> <expect>` 三参形态；expect 不符 → 迟到者
+  重排（rebase 到新目标重验），不覆盖。
+- **组合验证**：cargo test 全量 + doc-lint + owned_paths ⊆ diff 复核（boundary::classify 复用）；
+  证据 bundle 落 runstate。
+- **冲突产物**：`{plans_root}/integrations/{id}/conflict.json`（base/target/candidate/hunks/
+  所有权）——冲突修复 = 新候选走完整流程，不让模型从控制台文本猜。
+- **merge queue API**：`POST /projects/{p}/tasks/{t}/queue`（入队 = 候选冻结件登记）、
+  `GET .../queue`（队列状态）；集成由后台 worker 串行消费（M4 调度器接入前的手动/内联消费）。
+
+M3 验收（本 topic「验收」段）→ 集成测试承载：两候选并发就绪串行集成 + CAS 过期拒绝 + 组合
+验证失败归因（evidence bundle）。
