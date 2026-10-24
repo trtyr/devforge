@@ -66,6 +66,7 @@
 | 0dad282 | 批 1 守卫适配：c7-1 计划 56 处路径指针 + 三副本 + 归一化表加条目 |
 | 5f21fdf | 批 2：run_attempt_bookkeeping 抽取（emit 回调注入避免反向依赖） |
 | 184abb8 | 批 2 卫生：测试废绑清除（clippy 基线回归一致） |
+| 452e911 | 审计驳回补正：quality_failure 测试残留废绑 dir 清除；基线验证升级为 worktree 逐条 diff（复现审计员方法） |
 
 终态：横切策略单点 engine/policy.rs（468 行：RetryPolicy/run_with_retry/is_infra_failure/
 log_attempt_failed_shape/map_intervention/run_attempt_bookkeeping）；grep 验证三类策略
