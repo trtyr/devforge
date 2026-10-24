@@ -108,7 +108,7 @@ impl BuiltinRpcEngine {
         // + 本单元文件内无非 Link 违规（DR-16 单元级归因；Link 死链由末尾全量 lint 兑底）。
         let resume_index = audit_index.clone();
         let resume_docs = workspace.join(DOCS_DIR);
-        let resume = crate::sop::doc_resume::DocResume::new(resume_docs.clone()).with_lint(
+        let resume = crate::sop::doc::resume::DocResume::new(resume_docs.clone()).with_lint(
             move |state: &crate::runstate::RunState| {
                 match crate::docgen::lint::lint_docs_with_entities(&resume_docs, &resume_index) {
                     Ok(r) => Some(r.violations().to_vec()),
@@ -118,23 +118,23 @@ impl BuiltinRpcEngine {
         );
         let store = crate::runstate::StateStore::new(
             self.plans_root.clone(),
-            crate::runstate::StateKey::new(&task.project, &task.id, crate::sop::doc_resume::DOC_SOP),
+            crate::runstate::StateKey::new(&task.project, &task.id, crate::sop::doc::resume::DOC_SOP),
         );
         let loaded = store.load();
         // 供闭包之后推进基线用（store 会被 run_pipeline 吃掉）
         let store_final = crate::runstate::StateStore::new(
             self.plans_root.clone(),
-            crate::runstate::StateKey::new(&task.project, &task.id, crate::sop::doc_resume::DOC_SOP),
+            crate::runstate::StateKey::new(&task.project, &task.id, crate::sop::doc::resume::DOC_SOP),
         );
-        let head_now = crate::sop::doc_incremental::head_sha(&workspace);
-        let (inc_on, req_base) = crate::sop::doc_incremental::enabled_from_env();
-        let mode = crate::sop::doc_incremental::decide_mode(
+        let head_now = crate::sop::doc::incremental::head_sha(&workspace);
+        let (inc_on, req_base) = crate::sop::doc::incremental::enabled_from_env();
+        let mode = crate::sop::doc::incremental::decide_mode(
             loaded.state(),
             head_now.as_deref(),
             req_base.as_deref(),
             inc_on,
         );
-        if inc_on && let crate::sop::doc_incremental::Mode::Full { reason } = &mode {
+        if inc_on && let crate::sop::doc::incremental::Mode::Full { reason } = &mode {
             tracing::warn!(component = "doc-engine", %reason, "增量不可用，本轮按全量跑");
         }
         let mut plan = crate::runstate::resume::plan(
@@ -165,7 +165,7 @@ impl BuiltinRpcEngine {
         let mut run_units = plan.to_run.clone();
         // T009：报告要记录尝试次数（run_with_retry 在重启前把 rs.attempt 落盘；首次为 1）
         let attempt_now = loaded.state().map(|s| s.attempt).unwrap_or(0).max(1);
-        if let crate::sop::doc_incremental::Mode::Incremental { base } = &mode {
+        if let crate::sop::doc::incremental::Mode::Incremental { base } = &mode {
             match crate::docgen::impact::changed_since(&workspace, base) {
                 Ok(changes) if changes.is_empty() => {
                     run_units = Vec::new();
@@ -180,7 +180,7 @@ impl BuiltinRpcEngine {
                     ) {
                         Ok(impact) => {
                             if let Some(mut st) = loaded.state().cloned() {
-                                run_units = crate::sop::doc_incremental::merge_plan(
+                                run_units = crate::sop::doc::incremental::merge_plan(
                                     &mut plan, &mut st, &impact, &units,
                                 );
                                 if let Err(e) = store.save(&mut st) {
@@ -330,7 +330,7 @@ impl BuiltinRpcEngine {
 
                 // 一致性校验（增量 T024）：汇编页引用是否还解析得动、词表/清单还在不在。
                 let consistency =
-                    crate::sop::doc_incremental::consistency_notes(&docs, &final_ws);
+                    crate::sop::doc::incremental::consistency_notes(&docs, &final_ws);
                 if !consistency.is_empty() {
                     full.push_str("\n一致性校验（引擎机械检查，陈旧引用要问审查官是否 FAIL）：\n");
                     for c in &consistency {
@@ -343,7 +343,7 @@ impl BuiltinRpcEngine {
                 let mut session = final_factory.open()?;
                 let final_text = session.review(&crate::sop::doc_from_zero::doc_final_instruction(&full))?;
                 drop(session);
-                let verdict = crate::sop::doc_protocol::parse_doc_review(&final_text)?;
+                let verdict = crate::sop::doc::protocol::parse_doc_review(&final_text)?;
 
                 // 运行账单（T021 验收）：墙钟 / 单元数 / 模块数 / 审查轮次 / token 与花费
                 // token 不从 Agent 自述拿，而是扫写方与审方会话（pi 自己写的原始账）。
@@ -383,8 +383,8 @@ impl BuiltinRpcEngine {
                     )));
                 }
                 match verdict.verdict {
-                    crate::sop::doc_protocol::DocVerdict::Pass => Ok(report),
-                    crate::sop::doc_protocol::DocVerdict::Fail => {
+                    crate::sop::doc::protocol::DocVerdict::Pass => Ok(report),
+                    crate::sop::doc::protocol::DocVerdict::Fail => {
                         Err(crate::error::DevforgeError::Quality(format!(
                             "终审未通过（route={}）：{}",
                             verdict.route.as_str(),
@@ -398,9 +398,9 @@ impl BuiltinRpcEngine {
         match sop_result {
             Ok(report) => {
                 // 基线只在成功后推进（D021）：失败保留旧值，下次仍按同一批变更重算
-                let head = crate::sop::doc_incremental::head_sha(&workspace);
+                let head = crate::sop::doc::incremental::head_sha(&workspace);
                 if let crate::runstate::Loaded::Found(mut st) = store_final.load()
-                    && crate::sop::doc_incremental::advance_base(&mut st, head.as_deref(), true)
+                    && crate::sop::doc::incremental::advance_base(&mut st, head.as_deref(), true)
                 {
                     if let Err(e) = store_final.save(&mut st) {
                         tracing::warn!(component = "doc-engine", error = %e, "基线推进落盘失败");

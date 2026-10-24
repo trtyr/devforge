@@ -802,7 +802,7 @@ fn quality_failure_sites_do_not_use_system_error() {
             "{name} 的协议违例上限仍走 System，会被自动重启"
         );
     }
-    let doc_fix = include_str!("../sop/doc_fix.rs");
+    let doc_fix = include_str!("../sop/doc/fix.rs");
     let at = doc_fix
         .find("缺 stage-verdict），判定为")
         .expect("doc_fix 协议违例消息应存在");

@@ -306,7 +306,7 @@ mod tests {
         assert!(opens[0].contains("\"round\":1"), "首审轮次 = 1：{}", opens[0]);
         assert!(opens[1].contains("\"round\":2"), "次审轮次 = 2：{}", opens[1]);
         assert!(
-            opens[0].contains("\"target\":\"devforge::sop::doc_fix\""),
+            opens[0].contains("\"target\":\"devforge::sop::doc::fix\""),
             "里程碑的 target 必须是发出它的模块：{}",
             opens[0]
         );

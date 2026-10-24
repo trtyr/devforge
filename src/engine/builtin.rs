@@ -15,7 +15,7 @@ use crate::error::{Context as _, Result};
 use crate::observability::watchdog::run_with_watchdog;
 use crate::server::{RelayUserLink, UiRelay};
 use crate::sop::coding::CodingSopLoop;
-use crate::sop::doc_fix::DocFixSopLoop;
+use crate::sop::doc::fix::DocFixSopLoop;
 use crate::sop::planning::PlanningLoop;
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
 use crate::sop::testing::{TestingOutcome, TestingSopLoop};

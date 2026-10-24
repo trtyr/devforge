@@ -22,6 +22,23 @@ pub const PLAN_BLOCKS: [&str; 6] = [
 /// 不可观测的验收措辞（出现且没有 `→` 即判不可判）。
 const VAGUE_ACCEPTANCE: [&str; 4] = ["功能正常", "正常工作", "体验良好", "没问题"];
 
+/// 仓库手术的文件迁移登记（ARC 系列，单点事实源）：仓库手术会迁移文件（如 ARC-R3 把
+/// `sop/doc_fix.rs` 迁 `sop/doc/fix.rs`），历史步提交是**事实**不可改，而白名单登记**现状**——
+/// 两侧对账（a16 步提交扫描等）在比对前先经 [`normalize_path`] 归一化。
+pub const PATH_MIGRATIONS: &[(&str, &str)] = &[
+    ("src/sop/doc_fix.rs", "src/sop/doc/fix.rs"),
+];
+
+/// 把历史路径归一化到现状路径（不在迁移表中的路径原样返回）。
+pub fn normalize_path(path: &str) -> &str {
+    for (old, new) in PATH_MIGRATIONS {
+        if path == *old {
+            return new;
+        }
+    }
+    path
+}
+
 // ---------------- 问询环的结构契约（提示词与机械门共用同一批字面量） ----------------
 //
 // 分工同 D012：门只判**结构与留痕**（确定性），「该不该问」这种语义判断交审查官。

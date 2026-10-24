@@ -403,7 +403,7 @@ pub async fn get_run_detail(
             crate::runstate::StateKey::new(
                 &project,
                 &task,
-                crate::sop::doc_resume::DOC_SOP,
+                crate::sop::doc::resume::DOC_SOP,
             ),
         );
         match s.load().state() {

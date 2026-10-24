@@ -15,7 +15,7 @@ use std::path::Path;
 
 use crate::error::{DevforgeError, Result};
 use crate::runstate::{RunState, StateStore};
-use crate::sop::doc_protocol::{
+use crate::sop::doc::protocol::{
     MAX_DOC_CONTINUE_NUDGES, MAX_DOC_EMPTY_REPLIES, MAX_DOC_PROTOCOL_VIOLATIONS,
     MAX_DOC_REVIEW_RETRIES, DocVerdict, parse_doc_complete, parse_doc_review,
 };
@@ -715,7 +715,7 @@ mod tests {
     fn state_path(tmp: &tempfile::TempDir) -> StateStore {
         StateStore::new(
             tmp.path().join("plans"),
-            crate::runstate::StateKey::new("p", "t", crate::sop::doc_resume::DOC_SOP),
+            crate::runstate::StateKey::new("p", "t", crate::sop::doc::resume::DOC_SOP),
         )
     }
 
@@ -1273,7 +1273,7 @@ mod tests {
         store.save(&mut state).unwrap();
 
         let all = vec!["unit-a-01".to_string(), "unit-b-02".to_string()];
-        let resume = crate::sop::doc_resume::DocResume::new(&docs);
+        let resume = crate::sop::doc::resume::DocResume::new(&docs);
         let plan = crate::runstate::resume::plan(
             &tmp.path().join("plans"),
             "p",
@@ -1376,7 +1376,7 @@ mod tests {
         let store = state_path(&tmp);
         seed_done(&store, &["unit-a-01"]); // 未登记任何产出文件
 
-        let resume = crate::sop::doc_resume::DocResume::new(tmp.path().join(DOCS_DIR));
+        let resume = crate::sop::doc::resume::DocResume::new(tmp.path().join(DOCS_DIR));
         let units = vec!["unit-a-01".to_string(), "unit-b-02".to_string()];
         let plan = crate::runstate::resume::plan(
             &tmp.path().join("plans"),
@@ -1445,7 +1445,7 @@ mod tests {
         mark_done(&mut state, "unit-a-01", &["a/x.md".to_string()]);
         store.save(&mut state).unwrap();
 
-        let resume = crate::sop::doc_resume::DocResume::new(&docs);
+        let resume = crate::sop::doc::resume::DocResume::new(&docs);
         let units = vec!["unit-a-01".to_string(), "unit-b-02".to_string()];
         let plan = crate::runstate::resume::plan(
             &tmp.path().join("plans"),

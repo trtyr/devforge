@@ -1105,7 +1105,7 @@ fn each_mvp_and_doc_loop_logs_its_own_fix_pair() {
         let cap = Capture::new();
         let agent = ScriptedAgent::new(&["写好了", "改好了"]);
         let mut factory = ScriptedFactory::new(&[STAGE_REVIEW_FAIL, STAGE_REVIEW_PASS_FINISH]);
-        devforge::sop::doc_fix::DocFixSopLoop::new(agent, &mut factory)
+        devforge::sop::doc::fix::DocFixSopLoop::new(agent, &mut factory)
             .run(&mut NoUser, Path::new("/w"), "p", "t")
             .expect("doc-fix 循环应通过");
         let text = cap.lines();
@@ -1232,7 +1232,7 @@ fn the_doc_fix_review_open_round_equals_the_review_rounds_counter() {
     let cap = Capture::new();
     let agent = ScriptedAgent::new(&["写好了", "改好了"]);
     let mut factory = ScriptedFactory::new(&[STAGE_REVIEW_FAIL, STAGE_REVIEW_PASS_FINISH]);
-    devforge::sop::doc_fix::DocFixSopLoop::new(agent, &mut factory)
+    devforge::sop::doc::fix::DocFixSopLoop::new(agent, &mut factory)
         .run(&mut NoUser, Path::new("/w"), "p", "t")
         .expect("doc-fix 循环应通过");
     let text = cap.lines();
@@ -1242,7 +1242,7 @@ fn the_doc_fix_review_open_round_equals_the_review_rounds_counter() {
     assert!(opens[0].contains("\"round\":1"), "首审 = 1：{opens:?}");
     assert!(opens[1].contains("\"round\":2"), "次审 = 2：{opens:?}");
     assert!(
-        opens[0].contains("\"target\":\"devforge::sop::doc_fix\""),
+        opens[0].contains("\"target\":\"devforge::sop::doc::fix\""),
         "target 必须是发出它的模块：{opens:?}"
     );
 }

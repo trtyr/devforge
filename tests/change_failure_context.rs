@@ -53,7 +53,7 @@ const WHITELIST: &[&str] = &[
     "src/sop/coding.rs",
     "src/sop/testing.rs",
     "src/sop/doc_from_zero.rs",
-    "src/sop/doc_fix.rs",
+    "src/sop/doc/fix.rs",
     "tests/change_ask_ring.rs",
     "tests/change_failure_context.rs",
     "tests/change_review_protocol.rs",
@@ -993,6 +993,9 @@ fn a16_the_whitelist_constants_match_this_change() {
             .filter(|l| !l.trim().is_empty())
         {
             let f = f.trim();
+            // ARC 迁移归一化：历史步提交的旧路径经 plan_audit 的迁移表映射后再比对
+            // （ARC-R3 起仓库手术会迁移文件；历史提交是事实，白名单登记现状）
+            let f = devforge::change::plan_audit::normalize_path(f);
             assert!(
                 WHITELIST.contains(&f),
                 "coding 步提交越界（白名单外）：{f}（提交 {subject}）"
