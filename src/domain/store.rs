@@ -63,12 +63,14 @@ impl Store {
     // ---------- 任务层 ----------
 
     /// 创建任务：项目须存在、任务 id 项目内唯一、SOP 须已内置注册。
+    /// 契约（P012 M0）创建时提交不可变；None = 无契约（不做边界终校验）。
     pub fn create_task(
         &mut self,
         registry: &SopRegistry,
         project: &str,
         id: impl Into<String>,
         sop: impl Into<String>,
+        contract: Option<crate::domain::contract::WorkItemContract>,
     ) -> Result<&Task> {
         let sop = sop.into();
         registry.validate(&sop)?;
@@ -86,6 +88,7 @@ impl Store {
             )));
         }
         let mut task = Task::new(id, project, sop, now_ms());
+        task.contract = contract;
         // P005 decisions/001：任务快照项目登记的代码工作区（编码 SOP 用；黑板由引擎建）
         task.workspace = self
             .get_project(project)
@@ -249,7 +252,7 @@ mod tests {
             1,
         ))
         .unwrap();
-        s.create_task(&SopRegistry::builtin(), "devforge", "mvp", PLANNING_SOP.id)
+        s.create_task(&SopRegistry::builtin(), "devforge", "mvp", PLANNING_SOP.id, None)
             .unwrap();
         s
     }
@@ -269,19 +272,19 @@ mod tests {
         s.create_project(Project::new("p", std::path::PathBuf::from("/p"), 1))
             .unwrap();
         let err = s
-            .create_task(&SopRegistry::builtin(), "ghost", "t1", "planning")
+            .create_task(&SopRegistry::builtin(), "ghost", "t1", "planning", None)
             .unwrap_err();
         assert!(err.to_string().contains("不存在"));
 
         // P005：coding 已入注册表（不再是未知 SOP），且任务快照工作区
         let t = s
-            .create_task(&SopRegistry::builtin(), "p", "t1", "coding")
+            .create_task(&SopRegistry::builtin(), "p", "t1", "coding", None)
             .unwrap();
         assert_eq!(t.sop, "coding");
         assert_eq!(t.workspace, std::path::PathBuf::from("/p"), "快照项目 local_path");
 
         let err = s
-            .create_task(&SopRegistry::builtin(), "p", "t2", "ghost")
+            .create_task(&SopRegistry::builtin(), "p", "t2", "ghost", None)
             .unwrap_err();
         assert!(err.to_string().contains("未知 SOP"));
 

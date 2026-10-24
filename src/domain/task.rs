@@ -35,6 +35,9 @@ pub struct Task {
     pub current_run: Option<crate::domain::run::RunId>,
     /// 全部 run 历史——重跑留档（Q004）。
     pub runs: Vec<crate::domain::run::RunId>,
+    /// 工作项契约（P012 M0）：创建时提交不可变；老数据缺省 None（无契约 = 不做边界终校验）。
+    #[serde(default)]
+    pub contract: Option<crate::domain::contract::WorkItemContract>,
 }
 
 impl Task {
@@ -53,6 +56,7 @@ impl Task {
             created_at_ms,
             current_run: None,
             runs: Vec::new(),
+            contract: None,
         }
     }
 

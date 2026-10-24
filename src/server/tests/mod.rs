@@ -207,6 +207,7 @@ async fn body_json(resp: axum::response::Response) -> Value {
 }
 
 
+mod contract;
 mod crud;
 mod http;
 mod observe;

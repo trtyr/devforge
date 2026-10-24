@@ -275,6 +275,9 @@ pub fn run_in_background(
         .expect("runs_control 锁")
         .remove(&format!("{project}/{task_id}"));
 
+    // P012 M0 · T0.2：契约终校验——run 成功后实际改动 ⊆ 契约 owned_paths，越界改判 Failed
+    let outcome = contract_boundary_check(&state, &project, &task_id, outcome);
+
     let finish = match &outcome {
         Ok(RunOutcome::Completed) => crate::domain::store::FinishOutcome::Completed,
         Ok(RunOutcome::Failed { reason }) => crate::domain::store::FinishOutcome::Failed {
@@ -298,6 +301,88 @@ pub fn run_in_background(
     }));
     // 观测上下文清位：心跳文件**保留**最后一次状态（死亡现场的证据，不删）
     crate::observability::end_run(&run.id.0);
+}
+
+/// P012 M0 · T0.2：契约边界终校验（引擎层，SOP 无关）。
+///
+/// run 成功且任务带契约时：`git diff --name-only {base_rev}..HEAD` 的实际改动集
+/// 必须 ⊆ 契约 owned_paths，越界 = 改判 Failed（boundary.violation 事件）。
+/// 无契约 / run 未成功 / 契约无 base_rev（M0：无基准无法机械 diff）→ 原样放行。
+fn contract_boundary_check(
+    state: &ServerState,
+    project: &str,
+    task_id: &str,
+    outcome: Result<RunOutcome>,
+) -> Result<RunOutcome> {
+    let outcome = outcome?;
+    if !matches!(outcome, RunOutcome::Completed) {
+        return Ok(outcome);
+    }
+    let task = {
+        let store = state.store.lock().expect("store 锁");
+        store.get_task(project, task_id).cloned()
+    };
+    let Some(task) = task else {
+        return Ok(outcome);
+    };
+    let Some(contract) = task.contract else {
+        return Ok(outcome);
+    };
+    let Some(base) = contract.base_rev.as_deref() else {
+        return Ok(outcome);
+    };
+    let out = std::process::Command::new("git")
+        .args([
+            "-C",
+            &task.workspace.to_string_lossy(),
+            "diff",
+            "--name-only",
+            &format!("{base}..HEAD"),
+        ])
+        .output();
+    let changed: Vec<String> = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.trim().to_string())
+            .collect(),
+        Ok(o) => {
+            tracing::warn!(
+                component = "boundary",
+                error = %String::from_utf8_lossy(&o.stderr),
+                "契约终校验的 git diff 失败，放行"
+            );
+            return Ok(outcome);
+        }
+        Err(e) => {
+            tracing::warn!(component = "boundary", error = %e, "契约终校验的 git 调用失败，放行");
+            return Ok(outcome);
+        }
+    };
+    let violations: Vec<&String> = changed.iter().filter(|f| !contract.covers(f)).collect();
+    if violations.is_empty() {
+        state.emit(json!({
+            "type": "boundary.ok",
+            "project": project,
+            "task": task_id,
+            "files": changed.len(),
+        }));
+        return Ok(outcome);
+    }
+    let reason = format!(
+        "越界改动：{} 个文件超出契约 owned_paths（base {base}）：{}",
+        violations.len(),
+        violations.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+    );
+    tracing::warn!(component = "boundary", event = "boundary.violation", "{reason}");
+    state.emit(json!({
+        "type": "boundary.violation",
+        "project": project,
+        "task": task_id,
+        "base_rev": base,
+        "violations": violations,
+    }));
+    Ok(RunOutcome::Failed { reason })
 }
 
 /// 每个 SOP 的阶段词汇（心跳的阶段字段 = 阶段名；R24：与里程碑同一套值）。

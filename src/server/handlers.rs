@@ -138,6 +138,9 @@ pub async fn get_project(
 pub struct CreateTaskReq {
     pub id: String,
     pub sop: String,
+    /// 工作项契约（P012 M0）：可选——无契约 = 不做边界终校验（向后兼容）。
+    #[serde(default)]
+    pub contract: Option<crate::domain::contract::WorkItemContract>,
 }
 
 pub async fn create_task(
@@ -148,7 +151,7 @@ pub async fn create_task(
     let created = {
         let mut store = st.store.lock().expect("store 锁");
         let registry = st.registry.clone();
-        store.create_task(&registry, &project, req.id, req.sop).cloned()?
+        store.create_task(&registry, &project, req.id, req.sop, req.contract).cloned()?
     };
     st.emit(json!({"type": "task.created", "project": project, "task": created.id}));
     Ok((StatusCode::CREATED, Json(created)))
@@ -447,6 +450,8 @@ pub async fn get_run_detail(
         "agent": agent,
         "progress": progress,
         "log_file": log_path,
+        // P012 M0 · T0.3：阶段转换历史（串行分数四段的边界戳，相邻 at_ms 差值即段耗时）
+        "phases": crate::observability::phase_log(&run_id),
     })))
 }
 

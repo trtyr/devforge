@@ -5,6 +5,7 @@
 
 pub mod project;
 pub mod run;
+pub mod contract;
 pub mod runner;
 pub mod sop;
 pub mod store;

@@ -17,6 +17,7 @@
 //!   （change 侧的编排层与会话层；MVP/doc 循环拿不到 run id → 它们只落里程碑，不动心跳）。
 
 use std::cell::RefCell;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -116,6 +117,7 @@ fn begin_run_in_ctx(root: PathBuf, run_id: &str, phase: &str) {
         started_at_ms: crate::domain::now_ms(),
     };
     runs().lock().expect("observability 快照表锁").insert(run_id.to_string(), snap);
+    phase_logs().lock().expect("phase 历史表锁").insert(run_id.to_string(), Vec::new());
     roots()
         .lock()
         .expect("observability 根表锁")
@@ -126,6 +128,34 @@ fn begin_run_in_ctx(root: PathBuf, run_id: &str, phase: &str) {
         l.attempt = 1;
         l.review_rounds.clear();
     });
+}
+
+/// 各 run 的阶段转换历史（P012 M0 · T0.3 串行分数测量）：begin 时清空，set_phase 时追加。
+/// 独立于快照表：end_run 不摘除（run 结束后仍可查四段边界戳；下个同 id run 开始时重置）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PhaseSpan {
+    /// 转换发生时间（ms）。
+    pub at_ms: u64,
+    /// 来源阶段（首个 span 的 from = run 的初始阶段）。
+    pub from: String,
+    /// 目标阶段。
+    pub to: String,
+}
+
+static PHASE_LOGS: OnceLock<Mutex<HashMap<String, Vec<PhaseSpan>>>> = OnceLock::new();
+
+fn phase_logs() -> &'static Mutex<HashMap<String, Vec<PhaseSpan>>> {
+    PHASE_LOGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 某 run 的阶段转换历史（无记录 = 空；串行分数 = 相邻 span 的 at_ms 差值）。
+pub fn phase_log(run_id: &str) -> Vec<PhaseSpan> {
+    phase_logs()
+        .lock()
+        .expect("phase 历史表锁")
+        .get(run_id)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// 各 run 的观测根（run 开始时捕获；键 = run id）。
@@ -168,7 +198,18 @@ pub fn set_phase(phase: &str) {
         let Some(snap) = table.get_mut(&run_id) else {
             return;
         };
+        let from = snap.phase.clone();
         snap.phase = phase.to_string();
+        phase_logs()
+            .lock()
+            .expect("phase 历史表锁")
+            .entry(run_id.clone())
+            .or_default()
+            .push(PhaseSpan {
+                at_ms: crate::domain::now_ms(),
+                from,
+                to: phase.to_string(),
+            });
     }
     write_heartbeat(&run_id);
 }
