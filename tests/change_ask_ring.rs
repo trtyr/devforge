@@ -103,6 +103,7 @@ fn fixture(plan: &str) -> Fixture {
         baseline: String::new(),
         requirement: "把 a 改成 b".into(),
         doc_level: DocLevel::None,
+        contract: None,
     };
     Fixture { _tmp: tmp, ctx }
 }

@@ -86,6 +86,7 @@ pub(super) fn change_fixture() -> ChangeFixture {
             baseline,
             requirement: "把 a 改成 b".into(),
             doc_level: DocLevel::None,
+            contract: None,
         },
         _dir: dir,
     }

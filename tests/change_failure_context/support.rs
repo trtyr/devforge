@@ -189,6 +189,7 @@ pub(super) fn ctx_in(tmp: &Path) -> ChangeCtx {
         baseline: "base123".into(),
         requirement: "改 a".into(),
         doc_level: DocLevel::None,
+        contract: None,
     }
 }
 

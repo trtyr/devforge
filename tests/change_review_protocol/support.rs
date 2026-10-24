@@ -232,6 +232,7 @@ pub(super) fn fixture() -> Fixture {
             baseline: baseline.clone(),
             requirement: "把 a 改成 b".into(),
             doc_level: DocLevel::None,
+            contract: None,
         },
         baseline,
     }
