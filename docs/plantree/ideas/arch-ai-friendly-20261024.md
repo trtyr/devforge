@@ -74,7 +74,14 @@ devforge 教 doc-agent 的纪律——4K 片段、先读清单、codegraph-first
 | R2 | server/mod.rs 拆解：events.rs / engine/builtin.rs（接线闭包迁 sop/）/ http.rs；watchdog 归 observability；目标 ≤500 行/文件【✅ 2026-10-24 d5a7ab3+174eb3a+64dc347+0a38dab+f8e3295，操作员亲自执行；拆出 events/watchdog/gate/http/builtin/doc_wiring/builtin_tests 七文件全 ≤500，mod.rs 342；接线闭包落 engine/doc_wiring.rs 为 R3 中转站，拆解方案与偏差记录见 ideas/arc-r2-split-plan-20261024.md】 | 爆炸半径 + 可导航性 |
 | R3 | 按五阶段剧本垂直切片：sop/doc/（runner+协议+提示词+测试同居）、sop/change/ 等【✅ 2026-10-24 da3f84f+9e2b4f2+830c076+f067256，操作员亲自执行；doc 域落地 sop/doc/ 十三文件（protocol/resume/incremental/fix/state/evidence/prompts/runner/mocks/runner_tests/resume_tests/wiring/mod）全 ≤500，doc_from_zero 模块名消亡路径收正 sop::doc::*，doc_wiring 中转站落位；sop/change/ 等其余域未动，见 ideas/arc-r3-slice-plan-20261024.md 边界 4】 | 局部性 |
 | R4 | 提示词外置 assets/prompts/*.md（include_str! 保单二进制）【✅ 2026-10-24 f10fe07+c60641a，操作员亲自执行；13 常量（实测非 9）全外置 assets/prompts/*.md，include_str! 内联，13/13 零字节差验证（含非 raw 转义续行解码），manifest.rs 1504→1159，锦点单测零改动全过；方案与验证方法见 ideas/arc-r4-prompt-externalization-plan-20261024.md】 | 局部性（规则单点） |
-| R5 | 横切策略（重试/干预/事件）收敛单点模块 | 横切耦合 |
+| R5 | 横切策略（重试/干预/事件）收敛单点模块【✅ 2026-10-24 158b64f+0dad282+5f21fdf+184abb8，操作员亲自执行；retry.rs→policy.rs 运行级横切策略单点（重试/干预映射/事件形状同居），map_intervention 方法→自由函数六处调用面收正，run.attempt_failed 字段形状单点化（两处同构手写合一），重启记账 bookkeeping 抽取（emit 回调注入避免反向依赖）；方案见 ideas/arc-r5-policy-convergence-plan-20261024.md】 | 横切耦合 |
+
+> **还债路线 R1..R5 全部 Done（2026-10-24，操作员底座手术期收官）**：R1 唯一 runner →
+> R2 上帝文件拆解 → R3 doc 域垂直同居 → R4 提示词出仓 → R5 横切策略单点。
+> 五期后的结构：server 只剩组装与 HTTP 面、engine 按域垂直同居（sop/doc/ 策划中）、
+> 横切策略单点 engine/policy.rs、提示词单点 assets/prompts/。下一期候选：sop/change 等
+> 其余域垂直切片、AF 批 A（工作簿+摘 bash+纪律入 AGENTS.md）派工 devforge、
+> P012 并行开发底座（operator plan 已落档待实施）。
 
 ## 优先级与派工
 

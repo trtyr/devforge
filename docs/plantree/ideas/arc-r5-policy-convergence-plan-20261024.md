@@ -56,3 +56,24 @@
 - grep 验证：`map_intervention` 只出现在 policy.rs（定义）+ 调用点（无第二份实现）；
   `run.attempt_failed` 字段构造只在 log_attempt_failed 一处；
 - 7889 resume 推进证据；ARC 台账 R5 Done + R1..R5 收官声明。
+
+## R5 收官回写（2026-10-24，状态 Done，操作员执行）
+
+| commit | 内容 |
+| --- | --- |
+| 566dd63 | task-1：收敛方案落档（本文件，用户确认门通过后开工） |
+| 158b64f | 批 1：retry.rs→policy.rs 单点 + map_intervention 自由函数 + 形状单点化 |
+| 0dad282 | 批 1 守卫适配：c7-1 计划 56 处路径指针 + 三副本 + 归一化表加条目 |
+| 5f21fdf | 批 2：run_attempt_bookkeeping 抽取（emit 回调注入避免反向依赖） |
+| 184abb8 | 批 2 卫生：测试废绑清除（clippy 基线回归一致） |
+
+终态：横切策略单点 engine/policy.rs（468 行：RetryPolicy/run_with_retry/is_infra_failure/
+log_attempt_failed_shape/map_intervention/run_attempt_bookkeeping）；grep 验证三类策略
+零散落副本；全量 7 靶绿 exit 0；clippy 与 R4 基线一致零新增；验收 pid 3156003 探活 200、
+acc2 resume 后 doc-agent 活跃（accept-r5.log 10:09 时段）。
+
+### 流程教训入账
+
+批 1 的验证与 commit 在同一 bg 命令里用 `;` 串联，测试未绿 commit 照进（158b64f 带
+未验证状态入历史）——修复后追加 0dad282 入账。后续批次的验证与 commit 必须分开回合，
+验证绿是 commit 的前置。
