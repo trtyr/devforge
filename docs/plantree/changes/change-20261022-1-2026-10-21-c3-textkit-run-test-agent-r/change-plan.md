@@ -65,7 +65,7 @@
 | 18 | doc 侧「实例失败 → 换新实例重试 → 耗尽后 System」的既有参照实现 | `src/sop/doc_from_zero.rs:314-360`（空回复 `:325-341`、会话异常 `:342-357`、上限常量 `src/sop/doc_protocol.rs:20`） |
 | 19 | 只有 `System` 类错误会触发 run 级自动重启（从断点继续） | `src/engine/retry.rs:63-68`、调用点 `src/server/mod.rs:1243-1270` |
 | 20 | Quality 类错误 = 明确 Failed、**不**自动重启 | `src/server/mod.rs:1002-1015`（`map_intervention`） |
-| 21 | 仓内源码守卫：「协议违例上限不得写成 System」（否则会被自动重启）——守的是三个文件的**旧文案** | `src/server/tests.rs:524-540` |
+| 21 | 仓内源码守卫：「协议违例上限不得写成 System」（否则会被自动重启）——守的是三个文件的**旧文案** | `src/server/tests/mod.rs:524-540` |
 | 22 | change 侧审查轮次计数是**硬编码 1**（`reviews: 1`），`plan_reviews()` 也恒返回 1 | `src/change/session.rs:362`、`:429`、`:438-440`；消费点 `src/change/orchestrator.rs:150`/`:182`/`:211`/`:244` |
 | 23 | test review 会话工厂（`per_round_in` → `sessions/change-test-reviews/review-N`） | `src/server/change_engine.rs:173-178`、目录清单 `:266-280` |
 | 24 | 生产者侧提示词**从未要求** test agent 用 `<issues>` 块、也**没要求**路由块放末尾 | `src/config/manifest.rs:687`（test agent 纪律条「回注只写失败现象与摘要」）、`:697`（「并把回注声明（如果失败）附上：`<route>coding|plan</route>`」）、`src/change/session.rs:167-180`（`testing_kickoff`「失败时输出 `<route>coding</route>`……并附失败摘要」）、`src/change/session.rs:142-165`（`coding_kickoff`「越界必须输出 `<route>plan</route>` + `<impact-gap>`」） |
@@ -73,11 +73,11 @@
 | 26 | 提示词 ↔ e2e 夹具的漂移守卫（改了 change 角色提示词就必须重生成夹具） | 生成器 `src/config/manifest.rs:1334-1352`、守卫 `src/config/manifest.rs:1354-1374`、孪生守卫 `tests/change_ask_ring.rs:528-546` |
 | 27 | 决策台账与 topic 文档各有守卫盯着（追加新条目不得删改既有锚点） | `src/change/plan_audit.rs:711-730`（台账 D024）、`:735-757`（agents-change.md 问询环锚点）、`src/change/coding_gate.rs:490-502`（台账 D023）、孪生 `tests/change_ask_ring.rs:556-575`、`:578-597` |
 | 28 | 上一场留下的白名单守卫用**硬编码**基线与白名单扫 `BASELINE..HEAD`，不刷新必红 | `tests/change_ask_ring.rs:31`、`:34-45`、`:604-628` |
-| 29 | 既有单测锁着「占位文案逐字送达」这条**被本靶推翻**的口径 | `tests/change_failure_context.rs:57-58`（`PLACEHOLDER_ISSUE` 常量）、`:746-800`（a13）、`src/change/session.rs:906-931`（`the_placeholder_issue_text_is_delivered_verbatim`） |
+| 29 | 既有单测锁着「占位文案逐字送达」这条**被本靶推翻**的口径 | `tests/change_failure_context/main.rs:57-58`（`PLACEHOLDER_ISSUE` 常量）、`:746-800`（a13）、`src/change/session.rs:906-931`（`the_placeholder_issue_text_is_delivered_verbatim`） |
 | 30 | 既有单测锁着「MVP plan-review 的违例回注规划 agent」这条**被本靶推翻**的口径 | `src/sop/planning.rs:315-328`（`missing_verdict_is_conservative_fail_then_remediation`）、`src/sop/output.rs:119-123`（`fail_without_issues_block_is_empty_list`）、`:125-135`（`missing_or_unknown_verdict_is_conservative_fail`） |
 | 31 | doc 与代码已不一致（先于本靶）：topic 文档写「测试 review FAIL → `<route>coding</route>`」，代码是「测试 review FAIL → Quality 终止」 | `docs/plantree/plans/009-change-sop/topics/agents-change.md:210` vs `src/change/session.rs:426-435` |
 | 32 | doc 与代码已不一致（先于本靶）：差异表写「连续 3 次无标记 → 判基础设施故障」，代码判**质量失败** | `docs/plantree/plans/009-change-sop/topics/vs-mvp.md:34` vs `src/sop/coding.rs:158-165` |
-| 33 | `ProdChangeSession` 加字段 `plan_review_instances`（`src/change/session.rs:54-64`）后，仓内**所有字面量构造点**都必须补该字段：生产装配点 `src/server/change_engine.rs:180`、仓内单测构造点（`src/change/session.rs:625` 起的一批）、仓外夹具（`tests/change_failure_context.rs:771`、`tests/change_ask_ring.rs:179`）——其中**只有** `src/server/change_engine.rs` 落在原 §4 白名单之外 | `src/server/change_engine.rs:180-189`、`src/change/session.rs:54-64` |
+| 33 | `ProdChangeSession` 加字段 `plan_review_instances`（`src/change/session.rs:54-64`）后，仓内**所有字面量构造点**都必须补该字段：生产装配点 `src/server/change_engine.rs:180`、仓内单测构造点（`src/change/session.rs:625` 起的一批）、仓外夹具（`tests/change_failure_context/main.rs:771`、`tests/change_ask_ring.rs:179`）——其中**只有** `src/server/change_engine.rs` 落在原 §4 白名单之外 | `src/server/change_engine.rs:180-189`、`src/change/session.rs:54-64` |
 
 ### 1.4 歧义
 
@@ -138,12 +138,12 @@
 - `src/config/manifest.rs:697` —— change test agent 角色提示词的回注声明：补「用 `<issues>` 块逐条列 + 放末尾」（Q13）。
 - `src/config/manifest.rs:687` —— change test agent 纪律条「回注只写失败现象与摘要，不猜文件位置」：与「逐条 `<issues>` 明细」并列（保留「不猜位置」这条既有纪律，只把载体说清）。
 - `src/config/manifest.rs:1334-1374` —— change 六件套 e2e 夹具的生成器与漂移守卫（改了角色提示词 → 夹具必须重生成）。
-- `src/server/tests.rs:524-540` —— 「协议违例上限不得走 System」的源码守卫：违例文案迁到新模块后本守卫会**空转**，必须扩到新模块并钉住新分层（违例上限→Quality、实例失败上限→System）。
+- `src/server/tests/mod.rs:524-540` —— 「协议违例上限不得走 System」的源码守卫：违例文案迁到新模块后本守卫会**空转**，必须扩到新模块并钉住新分层（违例上限→Quality、实例失败上限→System）。
 - `src/change/plan_audit.rs:711-730` / `:735-757` —— 读台账与 agents-change.md 的守卫（本靶要改这两份文档 → 追加式改动不得碰既有锚点）。
 - `src/change/coding_gate.rs:490-502` —— 读台账的守卫（追加 D026 不得删改 D023 的登记字样）。
 - `tests/change_ask_ring.rs:31` / `:34-45` / `:604-628` —— 硬编码基线与白名单的守卫：本场提交的文件一条都不在旧白名单里 → 必须刷新常量。
 - `tests/change_ask_ring.rs:528-546` —— e2e 夹具漂移守卫（改提示词 → 夹具重生成后才绿）。
-- `tests/change_failure_context.rs:57-58` / `:746-800` —— 锁着「占位文案逐字送达」的既有断言：被本靶推翻 → 按新口径改写。
+- `tests/change_failure_context/main.rs:57-58` / `:746-800` —— 锁着「占位文案逐字送达」的既有断言：被本靶推翻 → 按新口径改写。
 - `src/change/session.rs:906-931` —— `the_placeholder_issue_text_is_delivered_verbatim`：同上（就地单测）。
 - `src/sop/planning.rs:315-328` —— `missing_verdict_is_conservative_fail_then_remediation`：被 Q2「机制统一」推翻 → 按新口径改写。
 - `src/sop/output.rs:119-123` / `:125-135` —— `fail_without_issues_block_is_empty_list` / `missing_or_unknown_verdict_is_conservative_fail`：同上。
@@ -173,16 +173,16 @@
 - **「实例失败」有三种来源、三种错误种类**：空回复 → `System`（`src/sop/rpc_bridge.rs:82-88`）、子进程早退 → `System`（`src/engine/client.rs:147-153`）、prompt 失败（模型通道错误）→ `Agent`（`src/engine/client.rs:283-292`）。**`Agent` 类现在既不重启也不换实例**（`is_infra_failure` 不认它）→ 死在 run 上。共享 helper 必须把**三种都收进「实例失败」通道**（否则模型通道错误这一种仍会绕过新机制）。
 - **「违例」与「判负」在类型上原本没有区分**：MVP 侧靠 `ReviewReport.protocol_violation`（`src/sop/coding_protocol.rs:80-84`）这一个 bool 区分；change 侧只是**看到 bool 就 Quality**（`src/change/session.rs:256`/`:352`/`:420`），于是「判负」与「违例」在 change 侧被压成同一条终止路径。共享 helper 的三通道分类（判负 / 违例 / 实例失败）是**类型纪律**上的必要升级（`assets/skills/coding-discipline/SKILL.md` 第 7 条：让类型承担约束）。
 - **「FAIL 无 issues」在两个协议族里各有一份解析器**：`src/sop/coding_protocol.rs:94`（change 三角色 + MVP coding 用）与 `src/sop/output.rs:40`（MVP plan-review 用）；第三个协议族 `src/sop/testing_protocol.rs:174`（MVP test-review 用）**不判**这一条（它的 FAIL 走 `reroute` 路由，issues 为空时同样会回注一条空清单给被测 agent）——本靶按裁决 C 的范围**记遗留不修**（§6 R8）。
-- **`src/server/tests.rs:524-540` 的源码守卫会因文案迁移而空转**：它逐字比对 `src/sop/coding.rs` / `src/sop/testing.rs` / `src/sop/doc_from_zero.rs` 里的旧文案（“…判定为基础设施故障”），本靶把违例文案迁到 `src/sop/review_gate.rs` 之后，那三个文件里就不再有这段字样 → 守卫「绿但没守任何东西」。**必须把守卫扩到新模块**（钉住「违例上限→Quality、实例失败上限→System」）。
+- **`src/server/tests/mod.rs:524-540` 的源码守卫会因文案迁移而空转**：它逐字比对 `src/sop/coding.rs` / `src/sop/testing.rs` / `src/sop/doc_from_zero.rs` 里的旧文案（“…判定为基础设施故障”），本靶把违例文案迁到 `src/sop/review_gate.rs` 之后，那三个文件里就不再有这段字样 → 守卫「绿但没守任何东西」。**必须把守卫扩到新模块**（钉住「违例上限→Quality、实例失败上限→System」）。
 - **提示词 ↔ e2e 夹具的漂移守卫**：`src/config/manifest.rs:536`/`:577`/`:634`/`:664`/`:701` 五个 change 角色提示词常量 → `tests/e2e/fixtures/change_agents.json` → 漂移守卫（`src/config/manifest.rs:1354-1374`、`tests/change_ask_ring.rs:528-546`）。本靶**改其中两个**（coding / test agent）→ 夹具**必须**重生成（不重生成 = 直接红）。
 - **决策台账的号段与既有守卫**：`src/change/plan_audit.rs:711-730` 与孪生 `tests/change_ask_ring.rs:556-575` 断言「`## D024 ·`」**恰好出现一次**；`src/change/coding_gate.rs:490-502` 断言台账仍含 D023 的三个登记点字样 → 本靶新增的标题必须是 `## D026 ·`（写成 D024/D025 都会让计数变 2 直接红；D025 已被上一场占用）。
 - **topic 文档的守卫**：`src/change/plan_audit.rs:735-757` 与孪生 `tests/change_ask_ring.rs:578-597` 断言 agents-change.md 仍含问询环的答复载体 / 供给 / 审点锚点（`[必须裁决]`/`[自决]`/`用户裁决：`、「禁止|不许」、「ask-user-question」、「留痕核对」、「分类恰当性」）→ 本靶改 `agents-change.md:210` 时这些锚点一个都不能碰。
-- **两层「白名单」口径不同、不可互相替代**：引擎的越界门（`src/change/orchestrator.rs:183` → `src/change/boundary.rs:102` `classify`）拿 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188`，= **本变更全部提交文件**）比**本计划 §4 白名单**；而 `tests/change_ask_ring.rs:34-45` 的 `WHITELIST` 常量守的是**coding 步提交**（测试阶段提交走 `tests/change_ask_ring.rs:627` 的 else 分支，只要求 `tests/` 前缀）→ §4 必须覆盖整个提交集合（含新增的 `tests/change_review_protocol.rs` 与重生成的夹具），守卫常量只覆盖 coding 步文件。
+- **两层「白名单」口径不同、不可互相替代**：引擎的越界门（`src/change/orchestrator.rs:183` → `src/change/boundary.rs:102` `classify`）拿 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188`，= **本变更全部提交文件**）比**本计划 §4 白名单**；而 `tests/change_ask_ring.rs:34-45` 的 `WHITELIST` 常量守的是**coding 步提交**（测试阶段提交走 `tests/change_ask_ring.rs:627` 的 else 分支，只要求 `tests/` 前缀）→ §4 必须覆盖整个提交集合（含新增的 `tests/change_review_protocol/main.rs` 与重生成的夹具），守卫常量只覆盖 coding 步文件。
 - **plan 文本里的验收标准必须是列表行**：下游对账引擎只认 `- ` 列表行（`src/change/plan_audit.rs:280-290` 的验收标准解析），写成表格 = 对账永远对不齐（本计划 §5 已按列表行写）。
-- **未跟踪产物**：`git status` 里的 `.pi/goals/archived/*.md`、`docs/plantree/changes/`（含本计划）、`tests/e2e/results/*.json` → 不进 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188` `changed_files` → `src/change/orchestrator.rs:183` 越界门，不触发），但会被 `git add -A` 卷进提交 → 白名单外的这些路径一律不许 `git add`（上一场的 a17 就在盯这条：`tests/change_failure_context.rs:1082-1100`）。
+- **未跟踪产物**：`git status` 里的 `.pi/goals/archived/*.md`、`docs/plantree/changes/`（含本计划）、`tests/e2e/results/*.json` → 不进 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188` `changed_files` → `src/change/orchestrator.rs:183` 越界门，不触发），但会被 `git add -A` 卷进提交 → 白名单外的这些路径一律不许 `git add`（上一场的 a17 就在盯这条：`tests/change_failure_context/main.rs:1082-1100`）。
 - **日志面是这条链唯一的取证面**：review 实例的空回复 / 早退会落进 `src/engine/client.rs:88-116` 的 stderr 伴读线程（写 `pi-stderr.log`）与 `tracing::warn!`（落 `$HOME/.devforge/logs/devforge.log.jsonl`，`src/main.rs:143-146`）→ 本靶新增的三条通道各自的日志文案要能区分（「协议违例」「实例失败」「空箱拒收」三类字样互不相同），否则事后无法归因（本靶不扩到 F6 的可观测性体系，只保证**不混淆**）。
 - **`src/change/session.rs:371` 的格式残留**：`fn run_testing(&mut self, ui: &mut dyn UserLink) -> Result<TestingTurn> {        let reply = …`（签名与函数体同一行，上一场遗留）→ 本靶要动这个函数，但**不顺手格式化**（最小 diff，§6 R12）。
-- **「给结构体加字段」是编译期耦合，白名单要按「全仓构造点」清点**：Rust 的结构体字面量要求**每个**构造点都补上新字段（生产装配 `src/server/change_engine.rs:180`、仓内单测 `src/change/session.rs:625` 起的一批、`tests/change_failure_context.rs:771`、`tests/change_ask_ring.rs:179`）→ 原 §4 白名单只列了 `src/change/session.rs` 与两个测试文件，**漏了生产装配点** `src/server/change_engine.rs`。这类缺口在计划阶段**不体现为行为差异**，只在编译期爆 → 白名单清点必须沿「结构体字段变更」反查构造点（§6 R18）。
+- **「给结构体加字段」是编译期耦合，白名单要按「全仓构造点」清点**：Rust 的结构体字面量要求**每个**构造点都补上新字段（生产装配 `src/server/change_engine.rs:180`、仓内单测 `src/change/session.rs:625` 起的一批、`tests/change_failure_context/main.rs:771`、`tests/change_ask_ring.rs:179`）→ 原 §4 白名单只列了 `src/change/session.rs` 与两个测试文件，**漏了生产装配点** `src/server/change_engine.rs`。这类缺口在计划阶段**不体现为行为差异**，只在编译期爆 → 白名单清点必须沿「结构体字段变更」反查构造点（§6 R18）。
 
 ---
 
@@ -203,10 +203,10 @@
 | `src/change/boundary.rs` | `parse_route`（`:40-45`）改为**只认尾部协议位**（Q1、Q5）：route 块独占一行、其后只允许 `<issues>`/`<impact-gap>` 块与空白；散文提及不算。既有单测（`:266-267`）按新口径改写 + 新增「散文提及不触发」「尾部独立行触发」两条 | 需求 4；裁决 Q1 |
 | `src/config/manifest.rs` | ①`CHANGE_CODING_AGENT_PROMPT`（`:610-618`）：声明块写明「放在回复末尾」；②`CHANGE_TEST_AGENT_PROMPT`（`:687`/`:697`）：回注必须用 `<issues>` 块逐条列失败明细、路由块与明细放在回复末尾（保留「不猜文件位置」这条既有纪律）；③夹具生成器/漂移守卫（`:1334-1374`）**不动**（但夹具文件要重生成，见下） | 需求 2；裁决 B、Q13 |
 | `src/server/change_engine.rs` | **编译期补字段**：生产装配点的 `ProdChangeSession` 字面量（`:180-189`）必须补 `plan_review_instances: 0` —— Q12 给结构体加了字段（`src/change/session.rs:63`），Rust 要求所有字面量构造点同步补齐，否则**仓内编译不过**（coding 阶段第 1 次往返申报，证据 `src/server/change_engine.rs:180`）。**只补这一行**，不改该文件的装配逻辑与单测 | 需求 3；Q12 |
-| `src/server/tests.rs` | 源码守卫（`:524-540`）扩到新模块：钉住「协议违例上限 → `DevforgeError::Quality`」「审查实例失败上限 → `DevforgeError::System`」，并保留对旧文案的逐字比对（防止旧三处把违例上限写成 System 又回来） | 需求 3；裁决 A、Q3 |
-| `tests/change_review_protocol.rs`（**新增**） | 本靶的**验收对账测试**（黑盒口径，仿 `tests/change_failure_context.rs` 的风格：只经公开 API 观察，每条用例首行写「错实现形态」）：逐条对账 §5 验收标准 1-32 | 需求 4 |
-| `tests/change_failure_context.rs` | ①a13（`:746-800`）与 `PLACEHOLDER_ISSUE` 常量（`:57-58`）锁着**被本靶推翻**的口径（占位文案逐字送达）→ 按新口径改写（占位文案不再产生；空箱走拒收追补）；②**刷新本文件自己的 `BASELINE`（`:32`）与 `WHITELIST`（`:35`）常量**——a16（`:958-1005`）与 a17（`:1030-1100`）把**守卫文件**（`tests/change_ask_ring.rs`）的常量与本文件的常量逐字比对、并扫 `BASELINE..HEAD` 的提交内容 → 本场刷新了守卫常量，这两处常量不跟着刷新就**必红**（a16 比对失败 / a17 把本场提交判成越界）；③a17 的「白名单里的每个文件都要被本场 **coding 步**提交改到」→ 本场 coding 白名单 = §4 去掉唯一那个测试阶段文件（`tests/change_review_protocol.rs`）= **19 个**（含本回合补入的 `src/server/change_engine.rs`） | 需求 2、4；裁决 B |
-| `tests/change_ask_ring.rs` | 刷新白名单守卫的硬编码常量：`BASELINE`（`:31`）改成本场基线 sha、`WHITELIST`（`:34-45`）改成本场 **coding 步白名单**（= §4 白名单去掉唯一那个测试阶段文件 `tests/change_review_protocol.rs`，共 **19 个**：原 18 个 + 本回合补入的 `src/server/change_engine.rs`）——不刷新则 `the_change_commits_stay_inside_the_whitelist`（`:604-628`）把本场提交判成越界 → 必红；`:530` 的夹具漂移守卫与 `:558`/`:578` 的台账/文档守卫**一字不动** | 需求 4 |
+| `src/server/tests/mod.rs` | 源码守卫（`:524-540`）扩到新模块：钉住「协议违例上限 → `DevforgeError::Quality`」「审查实例失败上限 → `DevforgeError::System`」，并保留对旧文案的逐字比对（防止旧三处把违例上限写成 System 又回来） | 需求 3；裁决 A、Q3 |
+| `tests/change_review_protocol/main.rs`（**新增**） | 本靶的**验收对账测试**（黑盒口径，仿 `tests/change_failure_context/main.rs` 的风格：只经公开 API 观察，每条用例首行写「错实现形态」）：逐条对账 §5 验收标准 1-32 | 需求 4 |
+| `tests/change_failure_context/main.rs` | ①a13（`:746-800`）与 `PLACEHOLDER_ISSUE` 常量（`:57-58`）锁着**被本靶推翻**的口径（占位文案逐字送达）→ 按新口径改写（占位文案不再产生；空箱走拒收追补）；②**刷新本文件自己的 `BASELINE`（`:32`）与 `WHITELIST`（`:35`）常量**——a16（`:958-1005`）与 a17（`:1030-1100`）把**守卫文件**（`tests/change_ask_ring.rs`）的常量与本文件的常量逐字比对、并扫 `BASELINE..HEAD` 的提交内容 → 本场刷新了守卫常量，这两处常量不跟着刷新就**必红**（a16 比对失败 / a17 把本场提交判成越界）；③a17 的「白名单里的每个文件都要被本场 **coding 步**提交改到」→ 本场 coding 白名单 = §4 去掉唯一那个测试阶段文件（`tests/change_review_protocol/main.rs`）= **19 个**（含本回合补入的 `src/server/change_engine.rs`） | 需求 2、4；裁决 B |
+| `tests/change_ask_ring.rs` | 刷新白名单守卫的硬编码常量：`BASELINE`（`:31`）改成本场基线 sha、`WHITELIST`（`:34-45`）改成本场 **coding 步白名单**（= §4 白名单去掉唯一那个测试阶段文件 `tests/change_review_protocol/main.rs`，共 **19 个**：原 18 个 + 本回合补入的 `src/server/change_engine.rs`）——不刷新则 `the_change_commits_stay_inside_the_whitelist`（`:604-628`）把本场提交判成越界 → 必红；`:530` 的夹具漂移守卫与 `:558`/`:578` 的台账/文档守卫**一字不动** | 需求 4 |
 | `tests/e2e/fixtures/change_agents.json` | change 六件套 e2e 夹具：随 `src/config/manifest.rs` 两个角色提示词的改动**重生成**（生成器 `src/config/manifest.rs:1334-1352`；漂移守卫 `src/config/manifest.rs:1354-1374` + `tests/change_ask_ring.rs:528-546`） | 需求 2；Q13 |
 | `docs/plantree/plans/009-change-sop/decisions/README.md` | 追加 `## D026 ·`（Q14）：登记「审查输出协议硬化」——三条裁决（违例可重审 ≤3、空箱必拒收 + 追补 ≤3、实例失败 ≠ 判负）+ **三通道分层**（判负 / 协议违例 / 实例失败）+ **尾部协议位**路由规则 + **遗留清单**（Q10、Q15）。**只追加、不动既有条目**（`src/change/plan_audit.rs:711-730`、`:735-757`、`src/change/coding_gate.rs:490-502` 及其孪生守卫盯着） | 需求 1、2、3、4 |
 | `docs/plantree/plans/009-change-sop/topics/agents-change.md` | ①`:210` 的「测试 review FAIL → `<route>coding</route>`」= **与代码不一致的旧口径**（事实 #31）→ 改成代码的真实语义（test review 判负 → Quality 终止；**违例** → 换新实例重审）；②补本靶的新口径（空箱拒收、尾部协议位）。**问询环锚点一个都不能碰**（`src/change/plan_audit.rs:735-757`） | 需求 1、2、4 |
@@ -259,18 +259,18 @@
 | `src/change/boundary.rs:255-300` 的既有单测 | `parse_route`（`:266-267`）与 `classify`（越界二分）的既有期望值按新口径改写；**越界二分的判定**（白名单外无申报 = 范围膨胀）不得回归 |
 | `src/change/orchestrator.rs` 的既有单测（`mod tests` 起于 `:330`） | 编排层不动，但 `state.review_rounds` 的数值来源变了（Q12）→ `happy_path_plan_coding_testing_report`（`:470`，断言 `review_rounds == 2`）、`plan_reviews_are_counted_in_report`（`:915`，断言 `== 3`）、`plan_fix_loop_recovers_after_one_rejection`（`:1010`，断言 `== 4`）在**无违例**时数值不变 → 这三条是 Q12 的回归闸门 |
 | `src/change/orchestrator.rs:250-267` 的回注分支 | 空箱追补后进分支的 failures 必非空 → 失败上下文（`src/change/state.rs`）的写入内容不再可能是占位文案 |
-| `src/server/tests.rs:524-540` | 源码守卫：本靶把违例文案迁到新模块后必须**扩写**它（否则绿但没守任何东西） |
-| `src/server/change_engine.rs:180-189`（生产装配点）+ 全仓 `ProdChangeSession` 字面量 | Q12 给结构体加了 `plan_review_instances` 字段 → **每个**字面量构造点都要补（生产装配 `src/server/change_engine.rs:188`、仓内单测 `src/change/session.rs:625` 起的一批、`tests/change_failure_context.rs:779`、`tests/change_ask_ring.rs:187`）→ `cargo build` 必须通过（本靶最容易漏的一处编译期耦合）；该文件自带单测（`:280-380`：`ctx_paths_point_at_repo_plan_dir_and_sop_blackboard`（`:312`）、`finalize_writes_report_with_usage_and_wall_clock`（`:346`）、`session_dirs_cover_all_six_profiles`（`:361`））不得回归 |
-| `src/server/tests.rs` 的 `quality_failure_path_is_not_retried_end_to_end`（`:493`）/ `quality_error_becomes_failed_and_is_not_retried`（`:566`） | 违例上限 → Quality（不自动重启）、实例失败上限 → System（可重启）这条分岔是本靶的核心语义，必须端到端仍成立 |
+| `src/server/tests/mod.rs:524-540` | 源码守卫：本靶把违例文案迁到新模块后必须**扩写**它（否则绿但没守任何东西） |
+| `src/server/change_engine.rs:180-189`（生产装配点）+ 全仓 `ProdChangeSession` 字面量 | Q12 给结构体加了 `plan_review_instances` 字段 → **每个**字面量构造点都要补（生产装配 `src/server/change_engine.rs:188`、仓内单测 `src/change/session.rs:625` 起的一批、`tests/change_failure_context/main.rs:779`、`tests/change_ask_ring.rs:187`）→ `cargo build` 必须通过（本靶最容易漏的一处编译期耦合）；该文件自带单测（`:280-380`：`ctx_paths_point_at_repo_plan_dir_and_sop_blackboard`（`:312`）、`finalize_writes_report_with_usage_and_wall_clock`（`:346`）、`session_dirs_cover_all_six_profiles`（`:361`））不得回归 |
+| `src/server/tests/mod.rs` 的 `quality_failure_path_is_not_retried_end_to_end`（`:493`）/ `quality_error_becomes_failed_and_is_not_retried`（`:566`） | 违例上限 → Quality（不自动重启）、实例失败上限 → System（可重启）这条分岔是本靶的核心语义，必须端到端仍成立 |
 | `src/change/plan_audit.rs:711-730`（台账 D024）+ `:735-757`（agents-change.md 锚点） | 读本靶要改的两份文档 → 追加式改动不得碰既有锚点 |
 | `src/change/coding_gate.rs:490-502`（台账 D023） | 同上 |
 | `tests/change_ask_ring.rs:528-546`（夹具漂移）、`:556-575`（台账）、`:578-597`（文档锚点）、`:604-628`（白名单守卫） | 四条都是**读本靶要改的文件**的守卫：夹具必须重生成、台账必须追加 D026、白名单常量必须刷新 |
 | `src/config/manifest.rs:1354-1374`（夹具漂移守卫，孪生） | 同上 |
-| `tests/change_failure_context.rs`（a1-a17） | 本靶**改写** a13（占位文案那条）+ 刷新本文件的 `BASELINE`/`WHITELIST` 常量；a16（`:958-1005`）与 a17（`:1030-1100`）随之改口径（它们比对的就是守卫文件的常量）——**这两条是本靶最容易漏的红**：守卫常量刷新了而这里没刷新 = 必红。其余十六条不得回归（尤其 a16/a17 锁白名单两层口径、a14 锁台账 D025） |
-| `tests/change_review_protocol.rs`（本靶新增） | 逐条对账 §5 验收标准 1-32；每条用例首行写「错实现形态」 |
-| 仓内单测（`cargo test`） | 本靶的新增/改写单测全在白名单文件的 `#[cfg(test)]` 模块与新增的 `tests/change_review_protocol.rs` 内 |
+| `tests/change_failure_context/main.rs`（a1-a17） | 本靶**改写** a13（占位文案那条）+ 刷新本文件的 `BASELINE`/`WHITELIST` 常量；a16（`:958-1005`）与 a17（`:1030-1100`）随之改口径（它们比对的就是守卫文件的常量）——**这两条是本靶最容易漏的红**：守卫常量刷新了而这里没刷新 = 必红。其余十六条不得回归（尤其 a16/a17 锁白名单两层口径、a14 锁台账 D025） |
+| `tests/change_review_protocol/main.rs`（本靶新增） | 逐条对账 §5 验收标准 1-32；每条用例首行写「错实现形态」 |
+| 仓内单测（`cargo test`） | 本靶的新增/改写单测全在白名单文件的 `#[cfg(test)]` 模块与新增的 `tests/change_review_protocol/main.rs` 内 |
 | `tests/e2e/test_26_change_e2e.py`、`tests/e2e/test_27_change_ask_ring.py` | 真链：改了引擎（审查协议 + 路由判定）后 change run 仍要 Settled（本靶不新增 e2e 断言，但要绿） |
-| 引擎越界门（`src/change/boundary.rs:102` + `src/change/orchestrator.rs:183`） | §4 白名单必须覆盖**整个提交集合**（含新增的 `tests/change_review_protocol.rs` 与重生成的 `tests/e2e/fixtures/change_agents.json`），少写一个 = 范围膨胀 Quality |
+| 引擎越界门（`src/change/boundary.rs:102` + `src/change/orchestrator.rs:183`） | §4 白名单必须覆盖**整个提交集合**（含新增的 `tests/change_review_protocol/main.rs` 与重生成的 `tests/e2e/fixtures/change_agents.json`），少写一个 = 范围膨胀 Quality |
 | 部署侧（不在仓内） | `~/.devforge/manifest.json` 缓存与 profile 重渲染（`src/main.rs:152`）→ 仓内改完不等于用户态生效（本靶**改了** change 角色提示词 → profile 面影响面比上一场大，须重装/重渲染） |
 
 ---
@@ -288,9 +288,9 @@
 - `src/change/boundary.rs`
 - `src/config/manifest.rs`
 - `src/server/change_engine.rs`
-- `src/server/tests.rs`
-- `tests/change_review_protocol.rs`（**新增**）
-- `tests/change_failure_context.rs`
+- `src/server/tests/mod.rs`
+- `tests/change_review_protocol/main.rs`（**新增**）
+- `tests/change_failure_context/main.rs`
 - `tests/change_ask_ring.rs`
 - `tests/e2e/fixtures/change_agents.json`
 - `docs/plantree/plans/009-change-sop/decisions/README.md`
@@ -298,13 +298,13 @@
 - `docs/plantree/plans/009-change-sop/topics/vs-mvp.md`
 - `docs/plantree/plans/009-change-sop/roadmap.md`
 
-白名单共 **20 个文件** = **coding 步的 19 个** + **测试阶段的 1 个**（`tests/change_review_protocol.rs`）。三层「白名单」口径不同、**不可互相替代**：
+白名单共 **20 个文件** = **coding 步的 19 个** + **测试阶段的 1 个**（`tests/change_review_protocol/main.rs`）。三层「白名单」口径不同、**不可互相替代**：
 
 - **引擎的越界门**（`src/change/orchestrator.rs:183` → `src/change/boundary.rs:102` `classify`）拿 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188` `changed_files` = 本变更**全部**提交文件，含测试阶段）比**本节清单** → 本节必须覆盖**整个提交集合**（20 个），少写一个 = 差集非空 + 无 `<impact-gap>` 申报 = 判「越界改动未申报（范围膨胀）」直接 Quality。
-- **提交内容守卫的 `WHITELIST` 常量**（`tests/change_ask_ring.rs:34-45`，孪生 `tests/change_failure_context.rs:35`）守的是**coding 步提交**：提交信息含 ` step ` 的提交里每个文件都必须在常量内；**不含** ` step ` 的提交（测试阶段自己的提交）只许是 `tests/` 前缀的文件（`tests/change_ask_ring.rs:626-632`）→ 本场常量列 **19 个 coding 步文件**（= 本节 20 个去掉 `tests/change_review_protocol.rs`），**不加**测试阶段文件（加了就把 a17「白名单里的每个文件都要被本场 coding 步提交改到」打红）。**注意**：`tests/e2e/fixtures/change_agents.json` 随提示词在 **coding 步**重生成 → 属 coding 步文件，**要**在常量里；`src/server/change_engine.rs`（Q12 补字段）同样属 coding 步文件，**要**在常量里。
-- **上一场验收测试文件的常量也在这条链上**：`tests/change_failure_context.rs:32`/`:35` 的 `BASELINE`/`WHITELIST` 与 a16（`:958-1005`）/a17（`:1030-1100`）比对的就是守卫文件的常量 → 本场刷新守卫常量时**必须**同步刷新它（否则 a16 比对失败、a17 把本场提交判成越界）。
+- **提交内容守卫的 `WHITELIST` 常量**（`tests/change_ask_ring.rs:34-45`，孪生 `tests/change_failure_context/main.rs:35`）守的是**coding 步提交**：提交信息含 ` step ` 的提交里每个文件都必须在常量内；**不含** ` step ` 的提交（测试阶段自己的提交）只许是 `tests/` 前缀的文件（`tests/change_ask_ring.rs:626-632`）→ 本场常量列 **19 个 coding 步文件**（= 本节 20 个去掉 `tests/change_review_protocol/main.rs`），**不加**测试阶段文件（加了就把 a17「白名单里的每个文件都要被本场 coding 步提交改到」打红）。**注意**：`tests/e2e/fixtures/change_agents.json` 随提示词在 **coding 步**重生成 → 属 coding 步文件，**要**在常量里；`src/server/change_engine.rs`（Q12 补字段）同样属 coding 步文件，**要**在常量里。
+- **上一场验收测试文件的常量也在这条链上**：`tests/change_failure_context/main.rs:32`/`:35` 的 `BASELINE`/`WHITELIST` 与 a16（`:958-1005`）/a17（`:1030-1100`）比对的就是守卫文件的常量 → 本场刷新守卫常量时**必须**同步刷新它（否则 a16 比对失败、a17 把本场提交判成越界）。
 
-精确清单见上（20 个文件；其中 `tests/change_review_protocol.rs` 是**测试阶段**唯一的产出文件，其余 19 个属 coding 步）。
+精确清单见上（20 个文件；其中 `tests/change_review_protocol/main.rs` 是**测试阶段**唯一的产出文件，其余 19 个属 coding 步）。
 
 白名单之外不得有任何改动。本计划文件本身（计划阶段的交付物）与工作区里的未跟踪产物（`.pi/goals/archived/*.md`、`docs/plantree/changes/`、`tests/e2e/results/*.json`）都不属 coding 阶段的改动面，一律不许 `git add`。
 
@@ -336,14 +336,14 @@
 - 给定 `src/sop/coding_protocol.rs` 的解析器输入是 `<stage-verdict>FAIL</stage-verdict>` + `<next>fix</next>`（无 issues）→ 输出 `protocol_violation = true` 且 `issues` 非空（违例原因）。
 - 给定 `src/sop/output.rs` 的解析器输入是 `<verdict>FAIL</verdict>`（无 issues）→ 输出**违例**（不是空清单的 FAIL）。
 - 给定 `src/config/manifest.rs` 的 change coding / change test 两个角色提示词 → 都写明「路由块放在回复末尾」，且 test agent 提示词写明「回注必须用 `<issues>` 块逐条列失败明细」；给定 `tests/e2e/fixtures/change_agents.json` → 与 builtin **逐字段一致**（漂移守卫绿）。
-- 给定 `src/server/tests.rs` 的源码守卫 → 协议违例上限仍判 `DevforgeError::Quality`、审查实例失败上限判 `DevforgeError::System`（新模块的文案不得回退成「协议违例走 System」）。
+- 给定 `src/server/tests/mod.rs` 的源码守卫 → 协议违例上限仍判 `DevforgeError::Quality`、审查实例失败上限判 `DevforgeError::System`（新模块的文案不得回退成「协议违例走 System」）。
 - 给定 change 侧审查发生过一次违例重审 → 报告里的「审查轮次」**计入**这次重审（实际开过的实例数），不是恒为 1。
 - 给定 `docs/plantree/plans/009-change-sop/decisions/README.md` → 含 `## D026 ·` 一节，写明三条裁决（违例可重审 ≤3 / 空箱必拒收 + 追补 ≤3 / 实例失败 ≠ 判负）、**三通道分层**、**尾部协议位**路由规则与**遗留清单**；既有 `## D024 ·`/`## D025 ·` 条目与问询环锚点**一字不动**。
 - 给定 `docs/plantree/plans/009-change-sop/topics/agents-change.md` → `:210` 不再写「测试 review FAIL → `<route>coding</route>`」（与代码不符的旧口径），并写明本靶的新口径；给定 `docs/plantree/plans/009-change-sop/topics/vs-mvp.md` → 差异四里「判基础设施故障」改成「判质量失败」，并补「审查输出违例的重审有界（≤3）」。
-- 给定 `tests/change_ask_ring.rs` 的两个常量 → `BASELINE` 等于本场基线 sha `ad485549e0981b402bd53d64f2dc7e07c79e47b7`、`WHITELIST` 逐个列出本场 **coding 白名单的 19 个文件**（= §4 白名单去掉唯一那个测试阶段文件 `tests/change_review_protocol.rs`；含新增的 `src/sop/review_gate.rs` 与本回合补入的 `src/server/change_engine.rs`；**不**含 `tests/change_review_protocol.rs`），且 `the_change_commits_stay_inside_the_whitelist` 对 `BASELINE..HEAD` 的扫描通过。
-- 给定 `tests/change_failure_context.rs` 的两个常量 → 与 `tests/change_ask_ring.rs` 的两个常量**逐字一致**（同一基线、同一 19 个文件的清单），且该文件的 a16、a17 两条用例**绿**（a16 比对的是守卫常量，a17 扫的是本场提交内容）。
+- 给定 `tests/change_ask_ring.rs` 的两个常量 → `BASELINE` 等于本场基线 sha `ad485549e0981b402bd53d64f2dc7e07c79e47b7`、`WHITELIST` 逐个列出本场 **coding 白名单的 19 个文件**（= §4 白名单去掉唯一那个测试阶段文件 `tests/change_review_protocol/main.rs`；含新增的 `src/sop/review_gate.rs` 与本回合补入的 `src/server/change_engine.rs`；**不**含 `tests/change_review_protocol/main.rs`），且 `the_change_commits_stay_inside_the_whitelist` 对 `BASELINE..HEAD` 的扫描通过。
+- 给定 `tests/change_failure_context/main.rs` 的两个常量 → 与 `tests/change_ask_ring.rs` 的两个常量**逐字一致**（同一基线、同一 19 个文件的清单），且该文件的 a16、a17 两条用例**绿**（a16 比对的是守卫常量，a17 扫的是本场提交内容）。
 - 给定本变更的提交内容 → §4 白名单（**20 个文件**）之外无任何改动；未跟踪产物一律不 `git add`。
-- 给定 `ProdChangeSession` 新增了 `plan_review_instances` 字段 → 仓内**全部**字面量构造点（`src/server/change_engine.rs:180`/`:188`、`src/change/session.rs:625` 起的一批单测构造点、`tests/change_failure_context.rs:771`、`tests/change_ask_ring.rs:179`）**都补了该字段**，`cargo build` 编译通过（缺任一处 = 编译不过）。
+- 给定 `ProdChangeSession` 新增了 `plan_review_instances` 字段 → 仓内**全部**字面量构造点（`src/server/change_engine.rs:180`/`:188`、`src/change/session.rs:625` 起的一批单测构造点、`tests/change_failure_context/main.rs:771`、`tests/change_ask_ring.rs:179`）**都补了该字段**，`cargo build` 编译通过（缺任一处 = 编译不过）。
 
 ## 6 风险
 
@@ -353,14 +353,14 @@
 - **R4 · 审查实例失败 → System → **整 run** 自动重启** —— 裁决 Q3 的落点：实例失败耗尽后是 `System` → `src/engine/retry.rs:63-68` 认它 → 触发 run 级自动重启（`src/server/mod.rs:1243-1270`，最多 4 次尝试、退避 10s/30s/90s）→ **重跑整个 testing 段**（含回归套件，代价大）。这是「基础设施语义」的既有代价（doc 侧同款，`src/sop/doc_from_zero.rs:329-331`）。缓解：共享 helper 在**实例级**先换新实例重试 ≤3（把大多数瞬时故障挡在 run 级重启之前），只有连续失败才升级到 run 级。残留：真·持续性故障（模型渠道长期挂）仍会耗尽 4 次 run 级尝试。
 - **R5 · 共享 helper 动了三个既有循环，回归面比「只改 change 侧」大** —— MVP coding / testing 循环改用共享 helper（Q9/Q10）会碰它们已有的违例重审逻辑（`src/sop/coding.rs:146-170`、`src/sop/testing.rs:185-215`）与计数语义（`review_rounds` / `issues_total` / 跨移交累计）。既有四条违例单测（`src/sop/coding.rs:435`/`:450`、`src/sop/testing.rs:492`/`:511`）是回归闸门。缓解：helper 的「预算」对象让调用方决定计数生命周期（MVP = 整个 run 一个，保留跨阶段累计语义；change = 每次审查调用一个）。**若 review 指出 MVP 侧改动过大**，退路是：MVP 两循环只引用共享常量、保留自己的循环（机制不统一但行为零变化）——本计划按「机制统一」写（用户裁决 Q2 的精神）。
 - **R6 · `src/sop/output.rs` 的 `Verdict` 形态变了 = MVP plan-review 的公共面变了** —— `parse_verdict` 的返回类型要能表达「违例」（Q2「机制也统一」），这是 `src/sop/output.rs:19-24` 的**公开枚举**（`src/sop/mod.rs` 有 re-export）→ 仓外若有匹配者会编译不过。本仓是应用不是库（仓内匹配点：`src/sop/planning.rs:114-127` 与其单测）→ 记一笔，不阻塞。替代方案（用 `issues` 空 + 单独 bool 兼表违例）被否：那是「用空清单兼表违例」，正是本靶要消灭的形状（类型纪律）。
-- **R7 · `src/server/tests.rs:524-540` 的守卫会因文案迁移而空转** —— 违例上限的文案从三个文件迁到 `src/sop/review_gate.rs` 之后，那三个文件里不再有旧字样 → 守卫「绿但没守任何东西」。本靶**必须**把守卫扩到新模块（钉住 Quality / System 分层），否则等于撤防。
+- **R7 · `src/server/tests/mod.rs:524-540` 的守卫会因文案迁移而空转** —— 违例上限的文案从三个文件迁到 `src/sop/review_gate.rs` 之后，那三个文件里不再有旧字样 → 守卫「绿但没守任何东西」。本靶**必须**把守卫扩到新模块（钉住 Quality / System 分层），否则等于撤防。
 - **R8 · 遗留清单（本靶**明确不修**，登记在 D026）** —— ①`src/sop/testing_protocol.rs:174-250`（MVP test-review 解析器）不判「FAIL 无 issues」→ MVP testing 侧仍有同款空清单回注；②`src/sop/testing_protocol.rs:272-304`（doc 单元审查解析器，`:292` 附近）不判违例；③`src/sop/doc_protocol.rs:82-130` 已判但 doc 侧的重审上限/实例失败口径与本靶不同（两套常量 `src/sop/doc_protocol.rs:13`/`:20`）；④`<issues>`（`src/change/session.rs:197-212`）与 `<impact-gap>`（`src/change/boundary.rs:47-66`）的块定位**未**锚到尾部（散文里提到这两个块名仍会被当成真块解析）——本靶只锚 route（Q5/Q10）；⑤change 侧**无标记重推环**（R1）；⑥`src/change/session.rs:371` 的格式残留（签名与函数体同一行）本靶**不顺手格式化**（最小 diff）。
 - **R9 · 拒收计数是 session-local，run 重启后清零（Q8）** —— 追补发生在**同一次 `run_testing` 调用内**，引擎不会在追补途中死掉 → 计数天然有界；但若 run 因别的原因（基础设施重启）重启，计数清零 → 同一类空箱可被反复追补（每次 3 次）。要跨 run 累计就得动 `src/change/state.rs:40-62`（新增断点字段 + 缺键兼容面），本靶**不做**（收益为零、代价是状态面变更）。
 - **R10 · 台账撞号 + 三道守卫读着本靶要改的文档** —— 本靶新增 `## D026 ·`（D025 已被上一场占用）；`src/change/plan_audit.rs:711-730` 与孪生 `tests/change_ask_ring.rs:556-575` 断言「`## D024 ·`」**恰好出现一次** → 新标题写成 D024/D025 都会直接红；`src/change/coding_gate.rs:490-502` 断言台账仍含 D023 的三个登记点字样；`src/change/plan_audit.rs:735-757` 与孪生 `tests/change_ask_ring.rs:578-597` 断言 agents-change.md 仍含问询环锚点 → 本靶**只追加、不删改**这些字样。
 - **R11 · 提示词改动 → e2e 夹具必须重生成（否则漂移守卫直接红）** —— 本靶改 `src/config/manifest.rs:610-618`/`:687`/`:697` 两个 change 角色提示词 → `tests/e2e/fixtures/change_agents.json` 必须随生成器（`src/config/manifest.rs:1334-1352`）重生成，漂移守卫（`src/config/manifest.rs:1354-1374` + `tests/change_ask_ring.rs:528-546`）才绿。**手改夹具 = 直接红**（它是 builtin 的序列化）。
 - **R12 · 「白名单」有三个数目、三个口径** —— §4（20 个，覆盖**整个提交集合**）≠ 提交内容守卫的 `WHITELIST` 常量（19 个，守 coding 步提交）≠ 上一场验收测试文件里那份常量（19 个，被 a16 逐字比对）→ 写错任一层 = 红。逐条见 **R16**（含三层的具体行号）；验收标准 29/30/31/32 钉住两层常量的具体内容。
 - **R13 · 缓存/构建产物** —— `target/` 不入白名单；`~/.devforge/manifest.json` 缓存与 profile 重渲染（`src/main.rs:152`）→ 仓内改完不等于用户态生效；本靶**改了** change 角色提示词 → 用户态 profile 必须重渲染才带上新契约。
-- **R14 · 既有单测锁着被本靶推翻的三条口径** —— `src/change/session.rs:906-931`（占位文案逐字送达）、`tests/change_failure_context.rs:57-58`/`:746-800`（同一条口径的仓外孪生）、`src/sop/planning.rs:315-328`（违例回注规划 agent）、`src/sop/output.rs:119-135`（空清单 / 保守 FAIL）→ 必须按**新口径改写**（不是放松断言、不是删测试），并在提交信息里写清是口径变更；写成「不检查」等于撤防。
-- **R16 · 白名单守卫是**三层**耦合的（最容易漏红的一处）** —— ①引擎越界门比的是**计划 §4**（20 个，覆盖全部提交文件）；②提交内容守卫的 `WHITELIST` 常量守的是**coding 步提交**（19 个）——`tests/change_ask_ring.rs:604-628` 与孪生 `tests/change_failure_context.rs:1030-1100`（a17）；③**上一场**的验收测试文件 `tests/change_failure_context.rs:32`/`:35` 另有一份自己的 `BASELINE`/`WHITELIST` 常量，a16（`:958-1005`）拿它与**守卫文件的**常量逐字比对 → 本场刷新了守卫常量（②）却没刷新③ → a16 必红；刷新了②但把测试阶段文件也列进去 → a17 的「白名单里的每个文件都要被本场 coding 步提交改到」必红。三层数目不同（20 / 19 / 19）且口径不同，写错任一层 = 红。
+- **R14 · 既有单测锁着被本靶推翻的三条口径** —— `src/change/session.rs:906-931`（占位文案逐字送达）、`tests/change_failure_context/main.rs:57-58`/`:746-800`（同一条口径的仓外孪生）、`src/sop/planning.rs:315-328`（违例回注规划 agent）、`src/sop/output.rs:119-135`（空清单 / 保守 FAIL）→ 必须按**新口径改写**（不是放松断言、不是删测试），并在提交信息里写清是口径变更；写成「不检查」等于撤防。
+- **R16 · 白名单守卫是**三层**耦合的（最容易漏红的一处）** —— ①引擎越界门比的是**计划 §4**（20 个，覆盖全部提交文件）；②提交内容守卫的 `WHITELIST` 常量守的是**coding 步提交**（19 个）——`tests/change_ask_ring.rs:604-628` 与孪生 `tests/change_failure_context/main.rs:1030-1100`（a17）；③**上一场**的验收测试文件 `tests/change_failure_context/main.rs:32`/`:35` 另有一份自己的 `BASELINE`/`WHITELIST` 常量，a16（`:958-1005`）拿它与**守卫文件的**常量逐字比对 → 本场刷新了守卫常量（②）却没刷新③ → a16 必红；刷新了②但把测试阶段文件也列进去 → a17 的「白名单里的每个文件都要被本场 coding 步提交改到」必红。三层数目不同（20 / 19 / 19）且口径不同，写错任一层 = 红。
 - **R17 · 本靶的证据面是仓内单测，**真链不覆盖** —— 真链是否违例/是否空箱取决于模型行为 → 断言押在模型行为上 = 假红。验收标准 1-32 全部落在「解析器输出 / 实例开启次数 / 错误种类 / 错误文本 / 提示词锚点 / 文档内容 / 编译通过」这些可机械观测的面上；真链（`tests/e2e/test_26_change_e2e.py`）只作「不回归」的旁证。
-- **R18 · 计划阶段的「白名单按需求点清点」漏掉了编译期耦合点（本次往返申报的根因）** —— Q12 要给 `ProdChangeSession` 加 `plan_review_instances` 字段（`src/change/session.rs:63`），Rust 的**字面量构造**要求每个构造点同步补齐：生产装配点 `src/server/change_engine.rs:180-189`、仓内单测构造点（`src/change/session.rs:625` 起的一批）、`tests/change_failure_context.rs:771`、`tests/change_ask_ring.rs:179`。原 §4 白名单只按「需求点 → 文件」清点，**只列了 `src/change/session.rs` 与两个测试文件**，漏了生产装配点 → coding 阶段编译不过，只能按「不默默改越界文件」的规矩申报。**本回合已补**：§4 白名单 19 → **20**、coding 步常量 18 → **19**、§3.1 新增该文件、§2.1/§2.2/§2.3 补影响面（事实 #33）、验收标准新增第 32 条钉住「所有构造点都补齐且 `cargo build` 通过」。**残留**：①coding 阶段已落在工作区的那一行改动（`src/server/change_engine.rs` 的 `plan_review_instances: 0`）必须在补白名单后的**同一个 change** 里提交，否则越界门（`src/change/orchestrator.rs:183` → `src/change/boundary.rs:102` `classify`）判「越界改动未申报（范围膨胀）」Quality；②两层守卫常量（`tests/change_ask_ring.rs:34-45` 与孪生 `tests/change_failure_context.rs:35`）**必须同步加上** `src/server/change_engine.rs`，否则 a17「白名单里的每个文件都要被本场 coding 步提交改到」必红（R12/R16 的三层数目同步 20/19/19）；③更一般的教训：**凡本靶新增结构体字段 / 枚举变体，白名单必须沿「构造点」反查全仓**——这类缺口在计划阶段**没有任何行为差异可供检视**，只在编译期爆（R4/R7 类的「文档-代码不一致」检视法在这里完全无效）。
+- **R18 · 计划阶段的「白名单按需求点清点」漏掉了编译期耦合点（本次往返申报的根因）** —— Q12 要给 `ProdChangeSession` 加 `plan_review_instances` 字段（`src/change/session.rs:63`），Rust 的**字面量构造**要求每个构造点同步补齐：生产装配点 `src/server/change_engine.rs:180-189`、仓内单测构造点（`src/change/session.rs:625` 起的一批）、`tests/change_failure_context/main.rs:771`、`tests/change_ask_ring.rs:179`。原 §4 白名单只按「需求点 → 文件」清点，**只列了 `src/change/session.rs` 与两个测试文件**，漏了生产装配点 → coding 阶段编译不过，只能按「不默默改越界文件」的规矩申报。**本回合已补**：§4 白名单 19 → **20**、coding 步常量 18 → **19**、§3.1 新增该文件、§2.1/§2.2/§2.3 补影响面（事实 #33）、验收标准新增第 32 条钉住「所有构造点都补齐且 `cargo build` 通过」。**残留**：①coding 阶段已落在工作区的那一行改动（`src/server/change_engine.rs` 的 `plan_review_instances: 0`）必须在补白名单后的**同一个 change** 里提交，否则越界门（`src/change/orchestrator.rs:183` → `src/change/boundary.rs:102` `classify`）判「越界改动未申报（范围膨胀）」Quality；②两层守卫常量（`tests/change_ask_ring.rs:34-45` 与孪生 `tests/change_failure_context/main.rs:35`）**必须同步加上** `src/server/change_engine.rs`，否则 a17「白名单里的每个文件都要被本场 coding 步提交改到」必红（R12/R16 的三层数目同步 20/19/19）；③更一般的教训：**凡本靶新增结构体字段 / 枚举变体，白名单必须沿「构造点」反查全仓**——这类缺口在计划阶段**没有任何行为差异可供检视**，只在编译期爆（R4/R7 类的「文档-代码不一致」检视法在这里完全无效）。

@@ -29,6 +29,10 @@ pub const PATH_MIGRATIONS: &[(&str, &str)] = &[
     ("src/sop/doc_fix.rs", "src/sop/doc/fix.rs"),
     ("src/sop/doc_from_zero.rs", "src/sop/doc/runner.rs"),
     ("src/engine/retry.rs", "src/engine/policy.rs"),
+    ("tests/f6_observability.rs", "tests/f6_observability/main.rs"),
+    ("tests/change_review_protocol.rs", "tests/change_review_protocol/main.rs"),
+    ("tests/change_failure_context.rs", "tests/change_failure_context/main.rs"),
+    ("src/server/tests.rs", "src/server/tests/mod.rs"),
 ];
 
 /// 把历史路径归一化到现状路径（不在迁移表中的路径原样返回）。

@@ -75,7 +75,7 @@
 - [自决] **Q10 · 证明面落在哪** —— 全部落在**仓内 Rust 单测**（`src/change/state.rs` / `src/change/testing_gate.rs` / `src/change/session.rs` / `src/change/orchestrator.rs` 各自的 `#[cfg(test)]` 模块），**不新增 e2e 脚本**。理由：真链是否回注取决于模型行为，把断言押在模型行为上 = 假红；三段证明（写入 / 送达 / 清除）都能在仓内确定性复现。
 - [自决] **Q11 · 基线门在回注轮挡住 coding 轮怎么办** —— **本靶只登记不实施**（§1.2 的可达性事实 + §6 R1）。理由：需求「要修什么」四条里没有它，单靶纪律要求范围外只登记；顺带修它会把「基线轮要不要在回注轮跳过」这类口径问题带进来（又要一轮裁决），且与下一场的协议硬化场次撞车。
 - [自决] **Q12 · D025 撞号怎么处理** —— 本靶占 `## D025 ·`（用户裁决 Q2），c3 场那条未实施计划里的 D025 在其**实施时**改用 D026。理由：台账号必须唯一且递增；c3 场计划尚未实施，其号段是纸面占位，本靶先落地成事实。
-- [必须裁决] **Q13 · 本变更的测试阶段提交文件（`tests/change_failure_context.rs`）算不算「白名单」** —— 本变更的提交集合里含测试阶段产出的验收对账测试（步骤 7 的提交 `ebf5d1c`）；计划 §4 白名单原先只列 10 个 coding 步文件 → ①引擎越界门（`src/change/boundary.rs:102` `classify`）拿 `git diff --name-only <baseline>`（**含全部提交文件**）比计划白名单，差集非空且无 `<impact-gap>` 申报 → 判「越界改动未申报（范围膨胀）」直接 Quality（run 判死）；②§5 验收第 17 条按「本变更的提交」对账，白名单不覆盖该提交 → **该条验收本身不成立**。但 `tests/change_ask_ring.rs` 的 `WHITELIST` 常量（`:34-45`）守的是**coding 步提交**（测试阶段提交走 `:627` 的 else 分支，只要求 `tests/` 前缀），且 a16 逐个点名「本场白名单的 10 个文件」→ 那里加第 11 个就把 a16 打红。影响验收口径（白名单到底几个文件、哪一层的白名单覆盖哪些提交）。
+- [必须裁决] **Q13 · 本变更的测试阶段提交文件（`tests/change_failure_context/main.rs`）算不算「白名单」** —— 本变更的提交集合里含测试阶段产出的验收对账测试（步骤 7 的提交 `ebf5d1c`）；计划 §4 白名单原先只列 10 个 coding 步文件 → ①引擎越界门（`src/change/boundary.rs:102` `classify`）拿 `git diff --name-only <baseline>`（**含全部提交文件**）比计划白名单，差集非空且无 `<impact-gap>` 申报 → 判「越界改动未申报（范围膨胀）」直接 Quality（run 判死）；②§5 验收第 17 条按「本变更的提交」对账，白名单不覆盖该提交 → **该条验收本身不成立**。但 `tests/change_ask_ring.rs` 的 `WHITELIST` 常量（`:34-45`）守的是**coding 步提交**（测试阶段提交走 `:627` 的 else 分支，只要求 `tests/` 前缀），且 a16 逐个点名「本场白名单的 10 个文件」→ 那里加第 11 个就把 a16 打红。影响验收口径（白名单到底几个文件、哪一层的白名单覆盖哪些提交）。
   备选：A 测试阶段文件**不进**任何白名单（现状：越界门直接判死）／B 进 §4 计划白名单（11 个）但**不进** `tests/change_ask_ring.rs` 的 `WHITELIST` 常量（仍 10 个 coding 文件）／C 两处都进（11 个，a16 直接红）。
   用户裁决：测试阶段文件是本变更提交的一部分，计入 §4 但不计入 coding 白名单常量 —— 否则会破坏 a16「守卫的 WHITELIST 必须逐个列出本场白名单的 10 个文件」
 
@@ -118,7 +118,7 @@
 - `docs/plantree/plans/009-change-sop/topics/agents-change.md:211` —— 「回归红 → `<route>coding</route>`，**不定位、不分析原因**」= 旧口径第三落点（同块兄弟行 `:210`「测试 review FAIL → `<route>coding</route>`（默认）」说的是**路由**口径，不含定位表述，本靶不动它）。
 - `docs/plantree/plans/009-change-sop/topics/vs-mvp.md:24` —— 「**回归先行**：先跑全套既有测试，红 → 直接 `<route>coding</route>`，**不做定位**」= 旧口径的**第 8 处**落点（与 MVP 的差异对照表）。
 - `tests/change_ask_ring.rs:31` / `:34-45` / `:604` —— 上一场留下的白名单守卫：`BASELINE`（`:31`）与 `WHITELIST`（`:34-45`）是**硬编码的上一场常量**，`the_change_commits_stay_inside_the_whitelist`（`:604`）扫 `BASELINE..HEAD` → 本场提交的文件（5 个 `src/change/*.rs` + 2 个 topic 文档 + 1 个测试文件）**一条都不在旧白名单** → 本场提交一落地该用例**必红** → 必须随本场刷新常量（本靶把该文件纳入白名单，见 §3.1）。
-- `tests/change_failure_context.rs:1` —— **测试阶段产出的验收对账测试**（步骤 7 的提交 `ebf5d1c`；a1–a17 十七条用例，逐条对账 §5 验收标准 1–17）：它是**本变更提交集合的一部分** → 必须在 §4 白名单里（否则引擎越界门 `src/change/boundary.rs:102` `classify` 判「越界改动未申报（范围膨胀）」直接 Quality，见 §6 R17），但**不进** `tests/change_ask_ring.rs` 的 `WHITELIST` 常量（那里守的是 coding 步提交，a16 逐个点名 10 个文件）。
+- `tests/change_failure_context/main.rs:1` —— **测试阶段产出的验收对账测试**（步骤 7 的提交 `ebf5d1c`；a1–a17 十七条用例，逐条对账 §5 验收标准 1–17）：它是**本变更提交集合的一部分** → 必须在 §4 白名单里（否则引擎越界门 `src/change/boundary.rs:102` `classify` 判「越界改动未申报（范围膨胀）」直接 Quality，见 §6 R17），但**不进** `tests/change_ask_ring.rs` 的 `WHITELIST` 常量（那里守的是 coding 步提交，a16 逐个点名 10 个文件）。
 - `docs/plantree/plans/009-change-sop/roadmap.md:65-73` —— Phase C 段：**追加**一条本场次条目（不改既有条目与历史证据行）。
 - `src/change/coding_gate.rs:87-105` —— `check_baseline_log`（「基线不是绿的——不许在红基线上动代码」）：回注轮可达性的拦路门 —— **本靶只登记不改**（§1.2、§6 R1）。
 
@@ -171,7 +171,7 @@
 | `docs/plantree/plans/009-change-sop/topics/agents-change.md` | **两处**旧口径同步为新口径：`:172`（「与 MVP testing 的差别」表第 4 行「测试 Agent 不看代码、**不做定位**」）、`:211`（「回归红 → `<route>coding</route>`，不定位、不分析原因」）—— 改成「回注带失败明细原文（含 `path:line`），失败明细逐条送达 coding agent」；**只改这两行**：问询环的答复载体 / 供给 / 审点锚点（`[必须裁决]`/`[自决]`/`用户裁决：`、「禁止|不许」、「ask-user-question」、「留痕核对」、「分类恰当性」）一个都不能动——`src/change/plan_audit.rs:735-757` 与孪生 `tests/change_ask_ring.rs:578-597` 盯着它们 | 需求 2、3 |
 | `docs/plantree/plans/009-change-sop/topics/vs-mvp.md` | `:24`（「**回归先行**：先跑全套既有测试，红 → 直接 `<route>coding</route>`，**不做定位**」）= 与 MVP 差异对照表里的旧口径第 8 处 → 同步为「回注带失败明细原文（含 `path:line`）」 | 需求 2、3 |
 | `tests/change_ask_ring.rs` | ①刷新白名单守卫的硬编码常量：`BASELINE`（`:31`）改成本场基线 sha、`WHITELIST`（`:34-45`）改成本场白名单（逐个文件）—— 不刷新则 `the_change_commits_stay_inside_the_whitelist`（`:604`）扫 `BASELINE..HEAD` 时把本场改的文件判成越界 → **必红**；②`:294`/`:529`/`:557` 三条问询环契约断言**一字不动**；③`repo_root()`/`git()` 辅助函数不动 | 需求 4 |
-| `tests/change_failure_context.rs` | **测试阶段产出的验收对账测试**（步骤 7 的提交 `ebf5d1c`；a1–a17 十七条用例，逐条对账 §5 验收标准 1–17）：它是**本变更提交集合的一部分** → 必须进 §4 白名单，否则 `src/change/boundary.rs:102` `classify`（调用点 `src/change/orchestrator.rs:183`）拿 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188`，**含全部提交文件**）比计划白名单时差集非空 + 无申报 → 判「越界改动未申报（范围膨胀）」直接 Quality（§6 R17）。**本轮不改它的内容**（文件已定稿；coding 步提交的文件集合本轮未变——步骤 7 只改提交信息，`git diff --name-only <baseline>` 改前改后逐字相同） | 需求 4 |
+| `tests/change_failure_context/main.rs` | **测试阶段产出的验收对账测试**（步骤 7 的提交 `ebf5d1c`；a1–a17 十七条用例，逐条对账 §5 验收标准 1–17）：它是**本变更提交集合的一部分** → 必须进 §4 白名单，否则 `src/change/boundary.rs:102` `classify`（调用点 `src/change/orchestrator.rs:183`）拿 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188`，**含全部提交文件**）比计划白名单时差集非空 + 无申报 → 判「越界改动未申报（范围膨胀）」直接 Quality（§6 R17）。**本轮不改它的内容**（文件已定稿；coding 步提交的文件集合本轮未变——步骤 7 只改提交信息，`git diff --name-only <baseline>` 改前改后逐字相同） | 需求 4 |
 | `docs/plantree/plans/009-change-sop/roadmap.md` | Phase C 段（`:65-73`）**追加**一条本场次条目（送达通道 + 清除语义 + 口径翻转）；**不改**既有条目与历史证据行（改写历史 = 篡改历史） | 需求 2、3 |
 
 ### 3.2 受影响不改
@@ -221,8 +221,8 @@
 | `tests/change_ask_ring.rs:578-597` `agents_change_doc_matches_the_implemented_contract` | 与 `src/change/plan_audit.rs:735-757` 同断言的孪生（读 agents-change.md 的问询环锚点）→ 本靶改 `:172`/`:211` 时不得碰那些锚点 |
 | `tests/change_ask_ring.rs:529` `e2e_fixture_matches_builtin_and_carries_the_ask_package` | 提示词/夹具漂移守卫：本靶**不改**任何提示词常量 → 夹具不得重生成（重生成即越界） |
 | `tests/e2e/test_26_change_e2e.py`、`tests/e2e/test_27_change_ask_ring.py` | 真链：改了引擎（回注口径 + 送达面）后 change run 仍要 Settled（本靶不新增 e2e 断言，但要绿） |
-| `tests/change_failure_context.rs`（a1–a17，十七条用例） | 本变更的验收对账测试：逐条对账 §5 验收标准 1–17。a16 锁 `tests/change_ask_ring.rs` 的两个常量（`WHITELIST` 逐个列出 **coding 白名单的 10 个文件**、不多不少），a17 锁「coding 步提交 ⊆ coding 白名单 + 测试阶段提交只许 `tests/` 前缀」。**两层白名单数目不同（§4 = 11 / 守卫常量 = 10）**，改任一侧都会把另一侧的断言打红 → 本轮两侧都不动 |
-| 引擎越界门（`src/change/boundary.rs:102` `classify` + 调用点 `src/change/orchestrator.rs:183`） | 越界门拿 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188`，**含本变更全部提交文件**，含测试阶段的 `tests/change_failure_context.rs`）比**计划 §4 白名单** → §4 少写这个文件 = 差集非空 = 「越界改动未申报（范围膨胀）」Quality（§6 R17） |
+| `tests/change_failure_context/main.rs`（a1–a17，十七条用例） | 本变更的验收对账测试：逐条对账 §5 验收标准 1–17。a16 锁 `tests/change_ask_ring.rs` 的两个常量（`WHITELIST` 逐个列出 **coding 白名单的 10 个文件**、不多不少），a17 锁「coding 步提交 ⊆ coding 白名单 + 测试阶段提交只许 `tests/` 前缀」。**两层白名单数目不同（§4 = 11 / 守卫常量 = 10）**，改任一侧都会把另一侧的断言打红 → 本轮两侧都不动 |
+| 引擎越界门（`src/change/boundary.rs:102` `classify` + 调用点 `src/change/orchestrator.rs:183`） | 越界门拿 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188`，**含本变更全部提交文件**，含测试阶段的 `tests/change_failure_context/main.rs`）比**计划 §4 白名单** → §4 少写这个文件 = 差集非空 = 「越界改动未申报（范围膨胀）」Quality（§6 R17） |
 | 仓内单测（`cargo test`） | 本靶的新增/改写单测全在白名单文件的 `#[cfg(test)]` 模块内（无新增测试文件） |
 | 部署侧（不在仓内） | `~/.devforge/manifest.json` 缓存与 profile 重渲染（`src/main.rs:152`）→ 仓内改完不等于用户态生效（本靶不改提示词，缓存影响面小，但口径翻转涉及引擎二进制，须重装才生效） |
 
@@ -236,18 +236,18 @@
 - `src/change/orchestrator.rs`
 - `src/change/mod.rs`
 - `tests/change_ask_ring.rs`
-- `tests/change_failure_context.rs`
+- `tests/change_failure_context/main.rs`
 - `docs/plantree/plans/009-change-sop/decisions/README.md`
 - `docs/plantree/plans/009-change-sop/topics/agents-change.md`
 - `docs/plantree/plans/009-change-sop/topics/vs-mvp.md`
 - `docs/plantree/plans/009-change-sop/roadmap.md`
 
-白名单共 **11 个文件** = **coding 步的 10 个** + **测试阶段的 1 个**（`tests/change_failure_context.rs`，步骤 7 的提交 `ebf5d1c`）。两层「白名单」口径不同、**不可互相替代**：
+白名单共 **11 个文件** = **coding 步的 10 个** + **测试阶段的 1 个**（`tests/change_failure_context/main.rs`，步骤 7 的提交 `ebf5d1c`）。两层「白名单」口径不同、**不可互相替代**：
 
 - **引擎的越界门**（`src/change/orchestrator.rs:183` → `src/change/boundary.rs:102` `classify`）拿 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188` `changed_files` = 本变更**全部**提交文件，含测试阶段）比**本节清单** → 本节必须覆盖**整个提交集合**（11 个），少写一个 = 差集非空 + 无 `<impact-gap>` 申报 = 判「越界改动未申报（范围膨胀）」直接 Quality（§6 R17）。
 - **`tests/change_ask_ring.rs` 的 `WHITELIST` 常量**（`:34-45`）守的是**coding 步提交**（测试阶段提交走 `:627` 的 else 分支，只要求 `tests/` 前缀）→ 那里**仍列 10 个 coding 白名单文件**、**不**加测试阶段文件（加了就把 a16「守卫的 WHITELIST 必须逐个列出本场白名单的 10 个文件」打红）。
 
-证明面：coding 步的证明全落在白名单文件内既有的 `#[cfg(test)]` 模块（`src/change/state.rs` / `src/change/testing_gate.rs` / `src/change/session.rs` / `src/change/orchestrator.rs`）；测试阶段的证明落在 `tests/change_failure_context.rs`（a1–a17 十七条用例，对账 §5 验收标准 1–17）。
+证明面：coding 步的证明全落在白名单文件内既有的 `#[cfg(test)]` 模块（`src/change/state.rs` / `src/change/testing_gate.rs` / `src/change/session.rs` / `src/change/orchestrator.rs`）；测试阶段的证明落在 `tests/change_failure_context/main.rs`（a1–a17 十七条用例，对账 §5 验收标准 1–17）。
 
 白名单之外不得有任何改动（白名单共 11 个文件，上面的清单就是全部）。本计划文件本身（计划阶段的交付物）与工作区里的未跟踪产物都不属 coding 阶段的改动面，一律不许 `git add`（未跟踪产物清单与理由见 §2.3、§6 R12）。
 
@@ -270,7 +270,7 @@
 - 给定 test agent 回复 `<route>coding</route>` 且**不带** `<issues>` → 引擎仍合成占位文案「测试阶段判定失败（未给出 issues 明细）」，该占位文案作为**一条** issue 原样进入失败上下文，并被**逐字**送进 kickoff（现状保持不动，属下一场协议硬化）。
 - 给定 `docs/plantree/plans/009-change-sop/decisions/README.md` → 含 `## D025 ·` 一节，且该节写明失败上下文的字段形态、写入点、**清除语义三条规则**与续跑一致性；D018（`:123`）带「定位口径由 D025 改写」的旁注。
 - 给定 `docs/plantree/plans/009-change-sop/topics/agents-change.md` → `:172` 与 `:211` 两处不再写「不做定位 / 不定位、不分析原因」；给定 `docs/plantree/plans/009-change-sop/topics/vs-mvp.md` → `:24` 不再写「不做定位」；三处统一改为「失败明细逐条原文送达 coding agent」。
-- 给定 `tests/change_ask_ring.rs` 的两个常量 → `BASELINE` 等于本场基线 sha、`WHITELIST` 逐个列出本场 **coding 白名单的 10 个文件**（= §4 白名单去掉测试阶段文件 `tests/change_failure_context.rs`，与 §4 的 coding 部分逐字一致；**不**含测试阶段文件），且 `the_change_commits_stay_inside_the_whitelist` 对 `BASELINE..HEAD` 的扫描通过（本场 coding 步提交的每个文件都在这 10 个文件内；测试阶段提交只许是 `tests/` 下的文件）。
+- 给定 `tests/change_ask_ring.rs` 的两个常量 → `BASELINE` 等于本场基线 sha、`WHITELIST` 逐个列出本场 **coding 白名单的 10 个文件**（= §4 白名单去掉测试阶段文件 `tests/change_failure_context/main.rs`，与 §4 的 coding 部分逐字一致；**不**含测试阶段文件），且 `the_change_commits_stay_inside_the_whitelist` 对 `BASELINE..HEAD` 的扫描通过（本场 coding 步提交的每个文件都在这 10 个文件内；测试阶段提交只许是 `tests/` 下的文件）。
 - 给定本变更的提交内容 → §4 白名单（**11 个文件** = coding 步 10 个 + 测试阶段 1 个）之外无任何改动；其中 coding 步提交的文件 ⊆ 那 10 个 coding 白名单文件、测试阶段提交的文件只许是 `tests/` 下的文件；未跟踪产物一律不 `git add`。
 
 ---
@@ -293,4 +293,4 @@
 - **R14 · 「两个 3」与「两个轮次」不能混用**：`src/change/orchestrator.rs:21` `MAX_TEST_REROUTES = 3`（测试→coding 回注上限，跨 run）与 `src/change/boundary.rs` 的 plan↔coding 往返上限 3 是两个计数器；失败上下文里的「轮次」取前者（Q3）——验收标准第 2/9 条按「轮次 1 / 轮次 2」对账，别与往返次数混。
 - **R15 · 本靶不解决的相邻问题（登记不实施）**：①基线门在回注轮的可达性（R1）；②route 无 issues 的拒收/追补（下一场协议硬化，现状占位文案保持）；③MVP 侧 `src/sop/output.rs` 同款黑箱与 doc 侧排查；④生产者侧 test-agent 位置纪律（R6）。四者都不在本靶白名单内，任何「顺手改」都算越界。
 - **R16 · 上一场留下的白名单守卫会因本场提交而**必红**（本靶必须随场刷新）**：`tests/change_ask_ring.rs:604` `the_change_commits_stay_inside_the_whitelist` 用硬编码 `BASELINE`（`:31`）+ `WHITELIST`（`:34-45`）扫 `BASELINE..HEAD`，断言每个「coding 步提交」的文件都在白名单内 → 本场提交的文件（5 个 `src/change/*.rs` + 2 个 topic 文档 + 1 个测试文件）**一条都不在旧白名单** → 不刷新常量就变红；且旧 `BASELINE` 指向更早的提交（`3020873`），扫描范围横跨好几场，别的场次一旦越界也会把它点爆。本靶把该文件纳入白名单并刷新两个常量（§3.1），并列入 §3.3 必回归；刷新后它守的是「本场 coding 步提交的每个文件 ⊆ 本场白名单」，而「上一场遗留未提交改动」那两条检查（`src/change/coding_gate.rs`/`src/config/skill_assets.rs`）随 `BASELINE` 前移而变成对本场的断言（本场不改这两个文件 → 仍绿）。
-- **R17 · 计划白名单漏写测试阶段产出的文件 → 引擎越界门直接判死（本轮计划缺口，已补）**：本变更的提交集合含测试阶段产出的 `tests/change_failure_context.rs`（步骤 7 的提交 `ebf5d1c`），而计划 §4 白名单原先只列 10 个 coding 步文件 → ①**引擎越界门**（`src/change/orchestrator.rs:183` → `src/change/boundary.rs:102` `classify`）拿 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188` `changed_files`，**含全部提交文件**：coding 步 + 测试阶段）比计划白名单，差集 = `tests/change_failure_context.rs` 非空且无 `<impact-gap>` 申报 → 判「越界改动未申报（范围膨胀）」直接 Quality（run 判死）；②**§5 验收第 17 条**「白名单之外无任何改动」按「本变更的提交」对账，白名单不覆盖该提交 → **该条验收本身不成立**。**处置**：§4 补列该文件（白名单 11 个）、§3.1 补一行、§2 影响面与 §6 各记一笔、§5 第 16/17 条口径同步；**但** `tests/change_ask_ring.rs` 的 `WHITELIST` 常量（`:34-45`）**仍列 10 个 coding 文件**（它守的是 coding 步提交；测试阶段提交走 `:627` 的 else 分支，只要求 `tests/` 前缀；a16 逐个点名「本场白名单的 10 个文件」，多列一个即红）。两个口径都叫「白名单」、数目不同（11 vs 10），是本轮缺口的结构性成因 → 下一场起：白名单分两层写（coding 白名单 / 全变更白名单），别再混用。
+- **R17 · 计划白名单漏写测试阶段产出的文件 → 引擎越界门直接判死（本轮计划缺口，已补）**：本变更的提交集合含测试阶段产出的 `tests/change_failure_context/main.rs`（步骤 7 的提交 `ebf5d1c`），而计划 §4 白名单原先只列 10 个 coding 步文件 → ①**引擎越界门**（`src/change/orchestrator.rs:183` → `src/change/boundary.rs:102` `classify`）拿 `git diff --name-only <baseline>`（`src/change/coding_gate.rs:188` `changed_files`，**含全部提交文件**：coding 步 + 测试阶段）比计划白名单，差集 = `tests/change_failure_context/main.rs` 非空且无 `<impact-gap>` 申报 → 判「越界改动未申报（范围膨胀）」直接 Quality（run 判死）；②**§5 验收第 17 条**「白名单之外无任何改动」按「本变更的提交」对账，白名单不覆盖该提交 → **该条验收本身不成立**。**处置**：§4 补列该文件（白名单 11 个）、§3.1 补一行、§2 影响面与 §6 各记一笔、§5 第 16/17 条口径同步；**但** `tests/change_ask_ring.rs` 的 `WHITELIST` 常量（`:34-45`）**仍列 10 个 coding 文件**（它守的是 coding 步提交；测试阶段提交走 `:627` 的 else 分支，只要求 `tests/` 前缀；a16 逐个点名「本场白名单的 10 个文件」，多列一个即红）。两个口径都叫「白名单」、数目不同（11 vs 10），是本轮缺口的结构性成因 → 下一场起：白名单分两层写（coding 白名单 / 全变更白名单），别再混用。
