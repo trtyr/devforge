@@ -80,6 +80,27 @@ path 核验、双粒度分层。缺的是**组织形态**——没有一条流�
 - **复用微调**：plan_audit 的 path 校验抽成可独立调用的核验函数
 - **不碰**：change/testing/doc 各 SOP（它们照常跑）
 
+## 八、审查视角矩阵 v2（2026-10-25 用户五点 × Sourcegraph 七维融合）
+
+> 用户五点：①日志全覆盖可溯源 ②错误处理健全 ③架构合理且 AI-friendly
+> ④跨流程一致性（同能力多挂点对齐：A 流程弱 B 流程强的能力不对齐）⑤零 bug。
+> Sourcegraph 七维：correctness/readability/tests/performance/security/architecture/
+> **cross-cutting impact**（横切模式全库一致：logging/error handling/metrics/middleware——
+> 用户第④点的术语化；检查工具 = codebase 级搜索，我们用 codegraph）。
+
+| 视角 | 核心问题 | 代表检查项 | 可确定性预查（零 LLM） |
+|---|---|---|---|
+| **V1 正确性** | 逻辑错/边界/并发；**AI 代码专项怀疑：空测试**（删实现测试还过 = 空洞测试） | 边界穷尽、错误分支、竞态 | cargo clippy/test 全绿、空测试启发扫描 |
+| **V2 错误处理健全性** | 每条错误路径有归属、不吞、上下文不丢 | unwrap/expect 滥用、`let _ =` 吞错、错误分类正确（基建vs质量）、context 链完整 | **静态可扫**：unwrap/expect/let-_ 计数与分布（Rust） |
+| **V3 可观测性全覆盖** | 日志零缺口：从日志可重建全流程（调试可溯源） | 关键状态迁移有事件？错误路径有 log？阶段有 phase 埋点？事件 schema 一致？ | **静态可扫**：埋点分布 vs 函数/模块清单比对缺口 |
+| **V4 架构与 AI-friendly** | 架构是 AI 的用户界面（AF 七轮经验形式化） | 文件 ≤800 行、模块垂直同居、单一职责、上下文可装载、路径稳定（PATH_MIGRATIONS 教训）、符号可索引（codegraph） | **静态可扫**：wc -l 行数、文件分布 |
+| **V5 一致性 / 能力对齐** | 同能力多挂点全库对齐：A 流程弱 B 流程强 = 发现 | 横切模式（日志/错误处理/重试/事件命名）跨 SOP 对齐；同能力多实现的差异盘点；每入口都挂了同样的门 | **codegraph 驱动**："where else is this used" 全调用点比対 |
+| **V6 安全** | 输入/凭证/注入（OWASP 锚定） | 输入验证、凭证不入日志/测试夹具、参数化查询 | 敏感模式 grep（推送前扫描血统） |
+
+**视角×流水线映射**：V1/V6 = M1 并行专家；V2/V3 = 引擎确定性预查先行（扫描报告
+注入审查官）+ LLM 语义复核；V4 = 引擎确定性清单为主（AF 标准可机检）+ LLM 评架构；
+V5 = **codegraph 驱动**（全调用点比対是 codegraph 的本行）+ LLM 判对齐质量。
+
 ## 六、研究对照与机制升级（2026-10-25 深潜：arxiv/ICML/ACL/Google）
 
 七篇原文已 ingest wiki（RepoAudit ICML'25 / RepoReviewer / Magistrate ACL ARR'26 /
