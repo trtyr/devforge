@@ -57,3 +57,34 @@
   quality_failure_sites 守卫（终审文案扫描指 doc_wiring.rs）→ 跟迁 wiring.rs
 - `src/server/tests.rs`：`doc-from-zero` StateKey 字符串无涉 ✓
 - `DOC_SOP` 常量（doc_resume 内）引用面：doc_wiring/retired 注释
+
+## R3 收官回写（2026-10-24，状态 Done，操作员执行）
+
+| commit | 内容 |
+| --- | --- |
+| 14dd29d | task-1：切片方案落档（本文件） |
+| da3f84f | 批 1：四散件 git mv（protocol/resume/incremental/fix）+ 引用面 26 处收正 |
+| 9e2b4f2 | 批 2：doc_from_zero.rs（1477）拆七文件，模块名消亡，引用面 12 处收正 |
+| 830c076 | 批 3：doc_wiring.rs 中转站落位 sop/doc/wiring.rs，守卫扫描面跟迁 |
+| f067256 | 卫生收尾：拆分残留死导入清除 + 测试模块声明归位（items-after-test-module 清零） |
+
+终态：sop/doc/ 十三文件全 ≤500（最大 runner_tests 476）；doc_from_zero/doc_wiring 模块名消亡，
+对外路径 crate::sop::doc::*；全量 7 靶绿 exit 0；clippy 与 R2 收官基线完全一致零新增。
+
+### 守卫体系迁移适配（新增机制，非纯移动例外）
+
+- **PATH_MIGRATIONS + normalize_path**（`src/change/plan_audit.rs`）：仓库手术迁移文件的
+  单点登记表。a16 步提交对账在比对前归一化——历史提交是事实（git 历史不可改），
+  白名单登记现状。后续手术迁文件只加表项，不动断言。
+- c7-1 计划的路径指针更新为新路径（行号保留——写作时刻快照，audit 只查存在性）。
+- module_path 依赖断言跟迁：里程碑 target 断言（runner/fix 两处）随模块落点更新。
+
+### 已知残留
+
+- `the_run_writes_a_heartbeat_into_the_fixtures_dir_and_keeps_it` 负载敏感 flake：
+  Settled 轮询通过后立即读心跳文件，deferred 后台写线程在满载编译时可被饿
+  （空载三连绿 + 全量重放绿）。非 R3 回归（planning SOP 与 doc 迁移无涉），修复归未来批次。
+- sop/change/ 等其余域垂直切片未动（方案边界 4）；AF 批 A 另行派工。
+- 验收证据：7889 新 binary 重启（pid 3105690 探活 200），acc2 resume run 4b71328b，
+  实例日志见 `devforge::sop::doc::wiring`（skip=12 续跑）与 `devforge::sop::doc::runner`
+  （unit-src-25 推进）新模块路径活跃。
