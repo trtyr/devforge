@@ -8,12 +8,9 @@ use std::path::Path;
 use crate::domain::runner::RunOutcome;
 use crate::domain::task::Task;
 use crate::error::{Context as _, Result};
-use crate::sop::planning::ReviewSessionFactory;
 
 use super::finding::Finding;
-use super::pipeline::{
-    stage0_plan, stage1_review_batch, stage2_cross, Progress, AuditSessionFactory,
-};
+use super::pipeline::{stage0_plan, stage1_review_batch, stage2_cross, AuditSessionFactory, Progress};
 use super::{build_plan, AuditUnit};
 use super::verify::verify;
 
@@ -84,7 +81,7 @@ pub fn run_audit(
             tracing::info!(component = "audit-engine", unit = %unit.id, "断点：批次已完成，跳过");
             continue;
         }
-        match super::pipeline::stage1_review_batch(factory, unit, &unit_labels, precheck) {
+        match stage1_review_batch(factory, unit, &unit_labels, precheck) {
             Ok(fs) => {
                 findings.extend(fs);
                 progress.done_batches.push(unit.id.clone());
@@ -106,6 +103,8 @@ pub fn run_audit(
 
     // ---- 核验过滤（确定性零 LLM，RepoAudit validator 血统）----
     let verified = verify(&task.workspace, &findings);
+    // ---- 跨单元去重（T2.2：同位置完全重复合并）----
+    let deduped = super::report::dedup(&verified.kept);
 
     // ---- Stage 2 跨单元分析 ----
     let cross = if progress.stage2_done {
@@ -123,7 +122,7 @@ pub fn run_audit(
         out
     };
 
-    // ---- 报告组装（JSON，M2 完善 MD/去重/端点）----
+    // ---- 报告组装（JSON + MD，M2）----
     let report = serde_json::json!({
         "project": task.project,
         "task": task.id,
@@ -131,17 +130,26 @@ pub fn run_audit(
         "batches_done": progress.done_batches.len(),
         "batches_abandoned": abandoned,
         "findings": {
-            "kept": verified.kept,
+            "kept": deduped,
             "dropped_ghosts": verified.dropped,
         },
         "cross_analysis": cross,
-        "severity_summary": severity_summary(&verified.kept, &cross.findings),
+        "severity_summary": severity_summary(&deduped, &cross.findings),
     });
     std::fs::write(
         blackboard.join("audit-report.json"),
         serde_json::to_vec_pretty(&report).ctx("序列化审计报告")?,
     )
     .ctx("写审计报告")?;
+    let md = super::report::render_markdown(
+        &task.project,
+        &task.id,
+        &deduped,
+        &cross.findings,
+        &verified.dropped,
+        &abandoned,
+    );
+    std::fs::write(blackboard.join("audit-report.md"), md).ctx("写审计报告 MD")?;
     tracing::info!(
         component = "audit-engine",
         kept = verified.kept.len(),

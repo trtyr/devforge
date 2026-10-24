@@ -1,6 +1,6 @@
 //! 调度器单测（P012 M4）：就绪派工 / 依赖失败阻塞 / 容量拒绝 / 预算熔断 / 自动入队 / 独占窗口。
 
-use super::{body_json, fixture, send, start::*};
+use super::{body_json, fixture, send};
 use crate::domain::store::FinishOutcome;
 use crate::domain::task::{TaskDeps, TaskStatus};
 use crate::domain::{now_ms, SopRegistry};
@@ -159,7 +159,6 @@ async fn over_budget_run_is_fused() {
 
 #[tokio::test]
 async fn settled_contract_task_auto_enqueues() {
-    let f = fixture();
     let f = fixture();
     let plans_root = f.state.plans_root.clone();
     // 契约走 create_task 提交（get_task_mut 是 store 私有——外部从创建时给）

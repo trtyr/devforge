@@ -63,6 +63,10 @@ pub fn build_router(state: SharedState) -> Router {
         get(handlers::run_transcript),
     )
         .route("/projects/{name}/tasks/{task}/graph", get(handlers::task_graph))
+.route(
+    "/projects/{name}/tasks/{task}/audit-report",
+    get(handlers::audit_report),
+)
 .route("/scheduler/status", get(handlers::scheduler_status))
         // 交互中继
         .route("/ui/{id}/answer", post(handlers::answer_ui))

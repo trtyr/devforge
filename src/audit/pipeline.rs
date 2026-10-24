@@ -260,7 +260,7 @@ impl Progress {
             blackboard.join("audit-progress.json"),
             serde_json::to_vec_pretty(self).ctx("序列化进度")?,
         )
-        .ctx("写进度");
+        .ctx("写进度")?;
         Ok(())
     }
 }

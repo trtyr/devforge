@@ -10,12 +10,13 @@
 //! Stage 2 跨单元分析 → Stage 3 汇总分级
 //! ```
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::{Context as _, Result};
 
 pub mod finding;
 pub mod pipeline;
+pub mod report;
 pub mod runner;
 pub mod verify;
 

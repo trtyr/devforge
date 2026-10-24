@@ -163,6 +163,27 @@ pub async fn scheduler_status(State(st): State<SharedState>) -> Json<serde_json:
     Json(crate::server::scheduler::status(&st))
 }
 
+/// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。
+pub async fn audit_report(
+    State(st): State<SharedState>,
+    Path((project, task)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let path = st
+        .plans_root
+        .join(&project)
+        .join(&task)
+        .join("audit-report.json");
+    let bytes = std::fs::read(&path).map_err(|_| {
+        ApiError::not_found(format!(
+            "审计报告尚未生成：{}",
+            path.display()
+        ))
+    })?;
+    Ok(Json(serde_json::from_slice(&bytes).map_err(|e| {
+        ApiError::internal(format!("审计报告损坏：{e}"))
+    })?))
+}
+
 #[derive(Deserialize)]
 pub struct CreateTaskReq {
     pub id: String,
