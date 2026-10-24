@@ -46,6 +46,21 @@ fn path_covered_by(path: &str, pattern: &str) -> bool {
         // 裸 `**` = 一切路径（gitignore 语义；与插件 match.ts 同步，样例集驱动）
         return true;
     }
+    if let Some(sub) = pattern.strip_prefix("**/") {
+        // 中间通配（gitignore 语义）：`**/secrets/**` = 任意层级的 secrets 目录下全部
+        if sub == "**" {
+            return true;
+        }
+        if let Some(dir) = sub.strip_suffix("/**") {
+            return path == dir
+                || path.starts_with(&format!("{dir}/"))
+                || path.contains(&format!("/{dir}/"));
+        }
+        if sub.ends_with('/') {
+            return path.starts_with(sub) || path.contains(&format!("/{sub}"));
+        }
+        return path == sub || path.ends_with(&format!("/{sub}"));
+    }
     if let Some(prefix) = pattern.strip_suffix("/**") {
         // `src/**`：src 自身或其子路径
         path == prefix || path.starts_with(&format!("{prefix}/"))

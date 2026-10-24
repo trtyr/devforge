@@ -16,6 +16,21 @@ export function pathCoveredBy(path: string, pattern: PathPattern): boolean {
   if (pattern === "**") {
     return true; // 裸 ** = 一切路径（gitignore 语义，渲染端 write:["**"] 默认形态）
   }
+  if (pattern.startsWith("**/")) {
+    // 中间通配（gitignore 语义）：`**/secrets/**` = 任意层级的 secrets 目录下全部
+    const sub = pattern.slice(3);
+    if (sub === "**") {
+      return true;
+    }
+    if (sub.endsWith("/**")) {
+      const dir = sub.slice(0, -3);
+      return path === dir || path.startsWith(`${dir}/`) || path.includes(`/${dir}/`);
+    }
+    if (sub.endsWith("/")) {
+      return path.startsWith(sub) || path.includes(`/${sub}`);
+    }
+    return path === sub || path.endsWith(`/${sub}`);
+  }
   if (pattern.endsWith("/**")) {
     const prefix = pattern.slice(0, -3);
     return path === prefix || path.startsWith(`${prefix}/`);

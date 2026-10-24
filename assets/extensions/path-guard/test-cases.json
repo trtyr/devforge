@@ -78,5 +78,25 @@
     "x",
     "**",
     true
+  ],
+  [
+    "a/secrets/b.txt",
+    "**/secrets/**",
+    true
+  ],
+  [
+    "secrets/b.txt",
+    "**/secrets/**",
+    true
+  ],
+  [
+    "a/secretsx/b.txt",
+    "**/secrets/**",
+    false
+  ],
+  [
+    "a/b.txt",
+    "**/secrets/**",
+    false
   ]
 ]
