@@ -376,7 +376,6 @@ fn profile_gate_failure_keeps_its_text_unchanged() {
 fn quality_failure_in_map_intervention_is_logged_as_warn_with_the_retry_layer_fields() {
     // 错实现形态：①质量失败落 ERROR（应 WARN）②缺 `error_chain` / `attempt` / `retryable`
     // ③只留既有那条无字段的 WARN → 本用例必须变红
-    let dir = tempfile::tempdir().unwrap();
     let text = crate::observability::test_support::capture_jsonl(|| {
         let outcome = crate::engine::policy::map_intervention(
             &RunControl::new(),
