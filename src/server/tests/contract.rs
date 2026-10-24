@@ -97,6 +97,38 @@ async fn boundary_violation_fails_an_otherwise_successful_run() {
 }
 
 #[tokio::test]
+async fn project_registration_cleans_orphan_worktrees() {
+    // P012 M1 · T1.3：重启后首个 POST projects 即接管清理钩子——预埋孤儿 → 注册即清
+    let (g, base) = git_repo_with_base();
+    // 预埋孤儿：创建 worktree 后手删目录（注册表记录还在）
+    let spec = crate::workspace::WorkspaceSpec {
+        repo: g.path().to_path_buf(),
+        task_id: "orphan-task".into(),
+        base_rev: base,
+    };
+    let ws = crate::workspace::Workspace::create(&spec).unwrap();
+    std::fs::remove_dir_all(&ws.path).unwrap();
+    assert_eq!(crate::workspace::scan_orphans(g.path()).unwrap().len(), 1);
+
+    let f = fixture();
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": g.path().to_str().unwrap()})),
+    )
+    .await;
+    // 注册即清：无孤儿残留 + 清理事件在总线
+    assert!(crate::workspace::scan_orphans(g.path()).unwrap().is_empty());
+    let replayed = f.state.bus.replay_after(0);
+    assert!(
+        replayed.iter().any(|(_, e)| e.contains("workspace.orphans_cleaned")),
+        "应有清理事件：{:?}",
+        replayed.iter().map(|(_, e)| e.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn in_contract_changes_pass_the_boundary_check() {
     // 对照：改动全部落在 owned_paths 内 → run 正常 Completed（boundary.ok）
     let (g, base) = git_repo_with_base();

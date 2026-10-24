@@ -138,6 +138,27 @@ pub struct AgentManifest {
     /// 降档是当前最有效的提速手段（2026-10-19 性能剖析）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<String>,
+    /// 工具级路径权限（P012 topic 07）：渲染 `.pi/pathguard.json`，pi 侧 path-guard 插件
+    /// 拦截 read/write/edit。None = 不生成（老清单兼容）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_permissions: Option<PathPermissions>,
+}
+
+/// 工具级路径权限声明（deny-first：deny 永远赢；read 拒绝连带堵 write/edit）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PathPermissions {
+    /// 允许读的 glob（空 = 不限，仅受 deny_read 约束）。
+    #[serde(default)]
+    pub read: Vec<String>,
+    /// 允许写的 glob（空 = 不限，仅受 deny_write 约束）。
+    #[serde(default)]
+    pub write: Vec<String>,
+    /// 拒绝读（优先级最高；deny_read 命中连 write/edit 一起堵）。
+    #[serde(default)]
+    pub deny_read: Vec<String>,
+    /// 拒绝写（优先级最高；profile 目录与 guard 配置自身默认追加在 deny_write，防提权）。
+    #[serde(default)]
+    pub deny_write: Vec<String>,
 }
 
 /// 配置清单——真源。
@@ -253,6 +274,7 @@ impl ConfigManifest {
                     skills: vec!["plan-tree".into()],
                     mcp: vec![],
                     thinking_level: None,
+                    path_permissions: None,
                 },
                 AgentManifest {
                     name: "plan-review".into(),
@@ -262,6 +284,7 @@ impl ConfigManifest {
                     skills: vec!["plan-tree".into()],
                     mcp: vec![],
                     thinking_level: Some("medium".into()),
+                    path_permissions: None,
                 },
                 // P005 T003：编码双 Agent（提示词 T004/T005 换正稿）；模型沿规划期拍板：
                 // 编码 → deepseek-flash，审查 → grok-4.7
@@ -280,6 +303,7 @@ impl ConfigManifest {
                     ],
                     mcp: vec![codegraph_mcp(), context7_mcp()],
                     thinking_level: None,
+                    path_permissions: None,
                 },
                 AgentManifest {
                     name: "coding-review".into(),
@@ -296,6 +320,7 @@ impl ConfigManifest {
                     ],
                     mcp: vec![codegraph_mcp(), context7_mcp()],
                     thinking_level: Some("medium".into()),
+                    path_permissions: None,
                 },
                 // P007 T001：测试双 Agent（D007 供给即纪律：外部知识给，内部捷径扣）
                 AgentManifest {
@@ -306,6 +331,7 @@ impl ConfigManifest {
                     skills: vec!["python-best-practices".into()],
                     mcp: vec![context7_mcp()],
                     thinking_level: None,
+                    path_permissions: None,
                 },
                 AgentManifest {
                     name: "test-review".into(),
@@ -315,6 +341,7 @@ impl ConfigManifest {
                     skills: vec![],
                     mcp: vec![],
                     thinking_level: Some("medium".into()),
+                    path_permissions: None,
                 },
                 // P007 T001：文档双 Agent（doc-fix=coding 家族供给，需对着代码 triage；doc-review 极简）
                 AgentManifest {
@@ -331,6 +358,7 @@ impl ConfigManifest {
                     ],
                     mcp: vec![codegraph_mcp(), context7_mcp()],
                     thinking_level: None,
+                    path_permissions: None,
                 },
                 AgentManifest {
                     name: "doc-agent".into(),
@@ -346,6 +374,7 @@ impl ConfigManifest {
                     ],
                     mcp: vec![codegraph_mcp(), context7_mcp()],
                     thinking_level: None,
+                    path_permissions: None,
                 },
                 AgentManifest {
                     name: "doc-review".into(),
@@ -358,6 +387,7 @@ impl ConfigManifest {
                     // 审查官人肉重推导（61 次调用/14.5min）且读码探索失控触发协议违例双轮。
                     mcp: vec![],
                     thinking_level: Some("medium".into()),
+                    path_permissions: None,
                 },
                 // P009：变更 SOP 规划双 Agent。与 MVP 的 plan 双 Agent 平行：
                 // 工具多一层 codegraph（把需求落到文件与符号上），技能仍是 plan-tree。
@@ -372,6 +402,7 @@ impl ConfigManifest {
                     // D009：只给 codegraph，不给 context7（本阶段不查外部库文档）
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("high".into()),
+                    path_permissions: None,
                 },
                 AgentManifest {
                     name: "change-plan-review".into(),
@@ -382,6 +413,7 @@ impl ConfigManifest {
                     // D012：核调用关系/实体存在必须有图
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
+                    path_permissions: None,
                 },
                 // P009：变更编码双 Agent（D014/D016）——与 MVP coding 同款供给，提示词换 change 纪律。
                 AgentManifest {
@@ -399,6 +431,7 @@ impl ConfigManifest {
                     // 改真代码常调第三方 API：codegraph + context7 两个都要（D016）
                     mcp: vec![codegraph_mcp(), context7_mcp()],
                     thinking_level: Some("high".into()),
+                    path_permissions: None,
                 },
                 AgentManifest {
                     name: "change-coding-review".into(),
@@ -409,6 +442,7 @@ impl ConfigManifest {
                     // D016：审查靠对账与读 diff，不给 context7
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
+                    path_permissions: None,
                 },
                 // P009：变更测试双 Agent（黑盒：不给 codegraph，D019）
                 AgentManifest {
@@ -419,6 +453,7 @@ impl ConfigManifest {
                     skills: vec!["python-best-practices".into()],
                     mcp: vec![],
                     thinking_level: Some("high".into()),
+                    path_permissions: None,
                 },
                 AgentManifest {
                     name: "change-test-review".into(),
@@ -428,6 +463,7 @@ impl ConfigManifest {
                     skills: vec![],
                     mcp: vec![],
                     thinking_level: Some("medium".into()),
+                    path_permissions: None,
                 },
             ],
             api_key: None,

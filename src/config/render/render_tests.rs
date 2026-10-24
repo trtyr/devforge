@@ -512,3 +512,61 @@ fn base_packages_exactly_four_verbatim() {
     assert_eq!(base_packages().len(), 4);
     assert!(base_packages().contains(&"git:github.com/NVlabs/SoL-Pi".to_string()));
 }
+
+// ---------- P012 · pathguard 配置渲染（topic 07） ----------
+
+#[test]
+fn path_permissions_render_to_pathguard_json_with_escalation_guard() {
+    // deny-first 口径的形状验证：deny 原样进档；profile 目录恒追加在 deny_write（防提权）
+    let mut manifest = ConfigManifest::builtin();
+    let target = "plan-agent";
+    let agent = manifest
+        .agents
+        .iter_mut()
+        .find(|a| a.name == target)
+        .expect("内置清单应有 plan-agent");
+    agent.path_permissions = Some(crate::config::manifest::PathPermissions {
+        read: vec!["**".into()],
+        write: vec!["src/**".into(), "docs/**".into()],
+        deny_read: vec![".env".into(), "**/secrets/**".into()],
+        deny_write: vec!["assets/prompts/**".into()],
+    });
+    let root = tempfile::tempdir().unwrap();
+    renderer(&manifest)
+        .render_agent(root.path(), target)
+        .expect("渲染应成功");
+
+    let raw = std::fs::read_to_string(
+        root.path().join(target).join(".pi").join("pathguard.json"),
+    )
+    .expect("pathguard.json 应存在");
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(v["read"][0], "**");
+    assert_eq!(v["write"][1], "docs/**");
+    assert_eq!(v["deny_read"][0], ".env");
+    assert_eq!(v["deny_write"][0], "assets/prompts/**");
+    // 提权防护：profile 目录恒在 deny_write（插件不可改自己的边界）
+    let profile_dir = root.path().join(target);
+    let dir_str = profile_dir.to_string_lossy().to_string();
+    let deny_write = v["deny_write"].as_array().unwrap();
+    assert!(
+        deny_write
+            .iter()
+            .any(|d| d.as_str().unwrap().starts_with(&format!("{dir_str}/**"))),
+        "profile 目录应在 deny_write：{raw}"
+    );
+}
+
+#[test]
+fn agents_without_path_permissions_get_no_pathguard_file() {
+    // 老清单兼容：无 pathPermissions → 不生成 pathguard.json（存量 profile 不受影响）
+    let manifest = ConfigManifest::builtin();
+    let root = tempfile::tempdir().unwrap();
+    renderer(&manifest)
+        .render_agent(root.path(), "plan-agent")
+        .expect("渲染应成功");
+    assert!(
+        !root.path().join("plan-agent").join(".pi").join("pathguard.json").exists(),
+        "无声明不应生成 pathguard.json"
+    );
+}

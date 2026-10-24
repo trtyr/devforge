@@ -65,6 +65,24 @@ impl<'a> Renderer<'a> {
         )
         .ctx(format!("写 {} 的 settings.json", agent.name))?;
 
+        // pathguard.json（P012 topic 07）：工具级路径权限，pi 侧 path-guard 插件拦截
+        // read/write/edit；deny-first + realpath 语义在插件侧。None = 不生成（老清单兼容）。
+        // 提权防护：profile 目录与 guard 配置自身恒追加在 deny_write（插件不可改自己的边界）。
+        if let Some(pp) = &agent.path_permissions {
+            let mut guard = pp.clone();
+            let profile_deny = format!("{}/**", dir.to_string_lossy());
+            if !guard.deny_write.iter().any(|d| *d == profile_deny) {
+                guard.deny_write.push(profile_deny);
+            }
+            let pg_dir = dir.join(".pi");
+            fs::create_dir_all(&pg_dir).ctx("创建 .pi 目录")?;
+            fs::write(
+                pg_dir.join("pathguard.json"),
+                serde_json::to_string_pretty(&guard).ctx("序列化 pathguard")?,
+            )
+            .ctx(format!("写 {} 的 pathguard.json", agent.name))?;
+        }
+
         // models.json（P2-ISSUE-03 修复：provider 定义 + 模型窗口/输出预算）
         let provider = self.manifest.resolve_provider(agent)?;
         let models: Vec<serde_json::Value> = self
