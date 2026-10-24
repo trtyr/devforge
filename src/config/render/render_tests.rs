@@ -570,3 +570,63 @@ fn agents_without_path_permissions_get_no_pathguard_file() {
         "无声明不应生成 pathguard.json"
     );
 }
+
+#[test]
+fn path_permissions_distribute_plugin_files_matching_embedded_assets() {
+    // 启用 agent：分发三件运行件且逐字节与内嵌资产一致（产品化：非源码部署同产物）
+    let mut manifest = ConfigManifest::builtin();
+    let target = "plan-agent";
+    let agent = manifest
+        .agents
+        .iter_mut()
+        .find(|a| a.name == target)
+        .expect("内置清单应有 plan-agent");
+    agent.path_permissions = Some(crate::config::manifest::PathPermissions::default());
+    let root = tempfile::tempdir().unwrap();
+    renderer(&manifest).render_agent(root.path(), target).unwrap();
+
+    for (rel, content) in crate::config::extension_assets::PATH_GUARD_FILES {
+        let written = std::fs::read_to_string(
+            root.path().join(target).join("extensions").join("path-guard").join(rel),
+        )
+        .unwrap_or_else(|e| panic!("分发件 {rel} 应存在：{e}"));
+        assert_eq!(written, *content, "分发件 {rel} 应与内嵌资产逐字节一致");
+    }
+}
+
+#[test]
+fn agents_without_path_permissions_get_no_plugin_dir() {
+    // None：不分发（零痕迹）
+    let manifest = ConfigManifest::builtin();
+    let root = tempfile::tempdir().unwrap();
+    renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
+    assert!(
+        !root.path().join("plan-agent").join("extensions").exists(),
+        "无声明不应创建 extensions 目录"
+    );
+}
+
+#[test]
+fn plugin_distribution_does_not_depend_on_skills_source() {
+    // 反回退：skills_source=None（生产默认，走内嵌资产）时插件照常分发——
+    // 防止实现回退成「目录复制」导致非源码部署失效
+    let mut manifest = ConfigManifest::builtin();
+    let agent = manifest
+        .agents
+        .iter_mut()
+        .find(|a| a.name == "plan-agent")
+        .unwrap();
+    agent.path_permissions = Some(crate::config::manifest::PathPermissions::default());
+    let root = tempfile::tempdir().unwrap();
+    // renderer() helper 的 skills_source 恒为 None（生产默认形态）
+    renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
+    assert!(
+        root.path()
+            .join("plan-agent")
+            .join("extensions")
+            .join("path-guard")
+            .join("index.ts")
+            .exists(),
+        "skills_source=None 时插件仍应分发"
+    );
+}

@@ -81,6 +81,14 @@ impl<'a> Renderer<'a> {
                 serde_json::to_string_pretty(&guard).ctx("序列化 pathguard")?,
             )
             .ctx(format!("写 {} 的 pathguard.json", agent.name))?;
+            // 插件分发：内嵌 TS（include_str!，非源码部署可用）写到 agent-dir extensions/，
+            // pi 自动加载（topic 08 §形态与分发）。None 的 profile 不分发（零痕迹）。
+            for (rel, content) in crate::config::extension_assets::PATH_GUARD_FILES {
+                let target = dir.join("extensions").join("path-guard").join(rel);
+                fs::create_dir_all(target.parent().expect("插件路径有父目录"))
+                    .ctx("创建插件目录")?;
+                fs::write(&target, content).ctx(format!("分发 path-guard/{rel}"))?;
+            }
         }
 
         // models.json（P2-ISSUE-03 修复：provider 定义 + 模型窗口/输出预算）

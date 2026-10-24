@@ -42,6 +42,10 @@ impl WorkItemContract {
 
 /// 单条目匹配（`WorkItemContract::covers` 的实现细节）。
 fn path_covered_by(path: &str, pattern: &str) -> bool {
+    if pattern == "**" {
+        // 裸 `**` = 一切路径（gitignore 语义；与插件 match.ts 同步，样例集驱动）
+        return true;
+    }
     if let Some(prefix) = pattern.strip_suffix("/**") {
         // `src/**`：src 自身或其子路径
         path == prefix || path.starts_with(&format!("{prefix}/"))
@@ -98,4 +102,25 @@ mod tests {
         assert!(c.covers("src/a.rs"));
         assert!(!c.covers("src/b.rs"));
     }
+    // ---------- 双端样例集同判（P012 topic 08：与 path-guard 插件 match.ts 共用） ----------
+
+    /// 样例集 = assets/extensions/path-guard/test-cases.json（插件 match.ts 的 node 测试
+    /// 用同一份）。修改 glob 语义必须让这份样例集在两端全绿。
+    #[test]
+    fn sample_cases_agree_with_plugin_match_semantics() {
+        let raw = include_str!("../../assets/extensions/path-guard/test-cases.json");
+        let cases: Vec<(String, String, bool)> =
+            serde_json::from_str(raw).expect("样例集 JSON 合法");
+        assert!(cases.len() >= 10, "样例集不应缩水：{}", cases.len());
+        for (path, pattern, expected) in cases {
+            // 单条目判定：path_covered_by 是私有 fn，经 covers 单条目化验证
+            let single = contract(&[&pattern]);
+            assert_eq!(
+                single.covers(&path),
+                expected,
+                "样例 ({path:?}, {pattern:?}) 双端语义不一致"
+            );
+        }
+    }
+
 }

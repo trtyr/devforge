@@ -316,6 +316,19 @@ impl RpcClient {
         ))
     }
 
+/// P012 · path-guard 否决判定：RPC 事件的 tool_execution_end 是否为插件拦截。
+/// 约定：isError=true 且 result 文本含 `[path-guard] ` 前缀（插件 block reason 的固定前缀）。
+fn is_path_guard_denial(e: &EventRecord) -> bool {
+    if !e.extra.get("isError").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return false;
+    }
+    e.extra
+        .get("result")
+        .map(|v| v.to_string())
+        .unwrap_or_default()
+        .contains("[path-guard] ")
+}
+
     /// DR-9 L2：步进遥测——工具调用起止 + usage 采集（probe4 实证事件形态：
     /// tool_execution_start/end 带 toolName+toolCallId；message_update 带 usage）。
     fn note_step_telemetry(
@@ -368,6 +381,17 @@ impl RpcClient {
                     ms = ms,
                     "工具调用结束"
                 );
+                // P012 · path-guard 事件回流：被插件拦截的调用（isError + reason 前缀约定）
+                // 转 boundary.violation —— 与 M0 引擎终校验共用同一事件名，过滤时对得上。
+                if Self::is_path_guard_denial(e) {
+                    tracing::warn!(
+                        component = "engine",
+                        event = "boundary.violation",
+                        role = %self.spec.role,
+                        tool = %tool,
+                        "path-guard 拦截了越界工具调用"
+                    );
+                }
             }
             _ => {}
         }
@@ -431,3 +455,40 @@ impl Drop for RpcClient {
 
 #[cfg(test)]
 mod client_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::protocol::EventRecord;
+
+    fn tool_end_event(is_error: bool, result_text: &str) -> EventRecord {
+        serde_json::from_value(serde_json::json!({
+            "type": "tool_execution_end",
+            "toolCallId": "call_1",
+            "toolName": "write",
+            "isError": is_error,
+            "result": {"content": [{"type": "text", "text": result_text}], "details": {}},
+        }))
+        .expect("事件构造合法")
+    }
+
+    #[test]
+    fn path_guard_denial_is_detected_by_prefix() {
+        let e = tool_end_event(true, "[path-guard] /x/y 不在 write 允许列表内（允许：src/**）");
+        assert!(RpcClient::is_path_guard_denial(&e));
+    }
+
+    #[test]
+    fn ordinary_tool_error_is_not_misreported_as_denial() {
+        // 无前缀的普通工具失败不得误报（isError 但 reason 不是插件给的）
+        let e = tool_end_event(true, "permission denied: /etc/passwd");
+        assert!(!RpcClient::is_path_guard_denial(&e));
+    }
+
+    #[test]
+    fn non_error_tool_result_is_never_a_denial() {
+        // 成功结果即使文本里出现前缀字样也不算（isError 才是门槛）
+        let e = tool_end_event(false, "前缀字样出现在正常输出里 [path-guard] ");
+        assert!(!RpcClient::is_path_guard_denial(&e));
+    }
+}
