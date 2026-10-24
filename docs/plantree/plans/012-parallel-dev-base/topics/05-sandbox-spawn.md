@@ -60,27 +60,23 @@ N 个 agent 各持 bash 无人值守跑通宵，爆炸半径相乘，一个失�
 4. **模型/MCP 网络**：已实测容器内可达 tailnet；模型 API（new-api 内网/公网）与 engram MCP
    （公网域名）均无障碍。宿主 localhost 服务若 agent 需要访问，用 host-gateway 别名。
 
-**降摩擦的分级沙箱策略（2026-10-24 修正版）**：
+**降摩擦的分级沙箱策略（2026-10-24 三修，与 topic 07 对齐）**：
 
 防御面拆解（不止单一工具）：
-- **bash = 执行面**（最大）：任意命令、外传、装后门、删库。
+- **bash = 执行面**（最大）：任意命令、外传、装后门、删库。不可枚举 → 只能 OS 级隔离。
 - **write/edit = 写面 + 提权链**：pi 官方 security.md 明说「working folder 不阻止工具访问
   Pi 进程权限内的其他路径」——持 write 的 agent 能改宿主任意可写文件，包括**改自己的
   settings.json 加回被剥的工具（提权链）**，或改 devforge profiles、其他仓代码。
-- **read = 泄露面**：越权读（.ssh/凭证/其他仓）内容进上下文；出口已收窄时（无 bash、
-  MCP 受控）风险降级但不为零。
-- 官方三连：cwd 不是围栏、project trust 不是安全边界、人工 review 不是边界——
-  pi 承认的唯一边界 = OS/虚拟化隔离（整进程容器）。
+  **可枚举 → 归工具级路径权限（path-guard，见 topic 07），非沙箱职责**。
+- **read = 泄露面**：越权读（.ssh/凭证/其他仓）内容进上下文；同上归 path-guard
+  的 denyRead 白名单。
+- 官方三连（security.md）：cwd 不是围栏、project trust 不是安全边界、人工 review 不是边界——
+  应用层守卫补的是「工具正规调用」这层；bash 的任意进程面仍需 OS 边界。
 
-这正是容器主体 > srt 的根本原因：**容器罩的是整个进程（所有工具一起罩），srt 只罩 bash 树**。
-
-推面按风险序，终点全容器化：
-1. 第一批（必须容器）：持 bash 的 change coding agent（工具链镜像）。
-2. 第二批：持 write 的全部 agent（doc-agent/doc-review）——用 base 镜像（node+pi+git）
-   零额外工具链成本，收掉写面提权链与越权读。
-3. 终态：全 agent 容器化；SandboxSpec None（宿主直跑）仅作调试/退化模式。
-
-（原「无 bash 不进容器」的说法作废：write 提权链是实打实的任意写面。）
+**三层防线（最终版，详见 topic 07）**：执行面（bash）→ 容器；文件面（read/write/edit）→
+path-guard 扩展（pi tool_call 拦截，官方 protected-paths.ts 骨架）；MCP 面 → mcp.json 渲染管控。
+容器范围随之收窄：**只罩持 bash 的 agent**（change coding 等）；无 bash agent 用
+path-guard + 受控 MCP 即达边界完整，容器降为深度防御可选项。
 
 ## pi 容器化能力（已查证 containerization.md）
 
