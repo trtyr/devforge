@@ -7,6 +7,8 @@
 
 pub mod client;
 pub mod builtin;
+#[cfg(test)]
+mod builtin_tests;
 pub mod doc_wiring;
 pub mod ledger;
 pub mod process;
