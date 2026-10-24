@@ -33,7 +33,7 @@ use crate::engine::process::SpawnSpec;
 use crate::error::{Context as _, Result};
 use crate::sop::coding::CodingSopLoop;
 use crate::sop::doc_fix::DocFixSopLoop;
-use crate::sop::doc_from_zero::{DOCS_DIR, META_DIR, DocSopLoop};
+use crate::sop::doc_from_zero::{DOCS_DIR, META_DIR};
 use crate::sop::planning::{PlanningLoop, ReviewSessionFactory, UserLink};
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
 use crate::sop::testing::{TestingOutcome, TestingSopLoop};
@@ -415,7 +415,7 @@ impl BuiltinRpcEngine {
         }
     }
 
-    /// doc-from-zero SOP（P008）：门 0（清单 + 闭包 + 单元）→ DocSopLoop 逐单元滚动。
+    /// doc-from-zero SOP（P008）：门 0（清单 + 闭包 + 单元）→ run_pipeline 流水线滚动（ARC-R1 后唯一 runner）。
     fn run_doc_from_zero(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
         let started = std::time::Instant::now();
         for p in Self::profiles_for_sop("doc-from-zero") {
@@ -518,7 +518,7 @@ impl BuiltinRpcEngine {
             crate::runstate::StateKey::new(&task.project, &task.id, crate::sop::doc_resume::DOC_SOP),
         );
         let loaded = store.load();
-        // 供闭包之后推进基线用（store 会被 DocSopLoop 吃掉）
+        // 供闭包之后推进基线用（store 会被 run_pipeline 吃掉）
         let store_final = crate::runstate::StateStore::new(
             self.plans_root.clone(),
             crate::runstate::StateKey::new(&task.project, &task.id, crate::sop::doc_resume::DOC_SOP),
@@ -651,9 +651,7 @@ impl BuiltinRpcEngine {
             }
             out
         });
-        let only = std::env::var("DEVFORGE_DOC_ONLY")
-            .ok()
-            .filter(|s| !s.trim().is_empty());
+        // ARC-R1：DEVFORGE_DOC_ONLY 单元重派随串行 runner 退役——单单元重跑由续跑计划（doc_resume plan 过滤）承担
         let run_id = run.id.0.clone();
         // 终审（t11）：同一 profile、新实例；捕获所需路径（闭包外先克隆）
         let final_review_root = self.profile_root.join("doc-review");
@@ -668,31 +666,21 @@ impl BuiltinRpcEngine {
             self.idle_ms,
             vec![self.session_root.join("doc"), self.session_root.join("doc-reviews")],
             || {
-                let pipeline = std::env::var("DEVFORGE_DOC_PIPELINE").as_deref() == Ok("on");
-                let report = if pipeline {
-                    // DR-14：流水线并行——审查(N) 与 写作(N+1) 重叠；工厂经 Arc<Mutex> 共享给审查线程。
-                    // 注：`only` 单元重派仅在串行模式生效（流水线的 to_run 已由续跑计划过滤）。
-                    let factory = std::sync::Arc::new(std::sync::Mutex::new(factory));
-                    crate::sop::doc_from_zero::run_pipeline(
-                        agent,
-                        factory,
-                        store,
-                        &mut user,
-                        &workspace,
-                        &run_units,
-                        "complete",
-                        resume_note,
-                        Some(audit),
-                    )?
-                } else {
-                    let mut sop_loop = DocSopLoop::new(agent, factory, store)
-                        .with_audit(audit)
-                        .with_resume_note(resume_note);
-                    if let Some(unit) = only {
-                        sop_loop = sop_loop.with_only(unit);
-                    }
-                    sop_loop.run(&mut user, &workspace, &run_units, "complete")?
-                };
+                // DR-14/ARC-R1：pipeline 是唯一 runner（审查(N) 与 写作(N+1) 重叠）；
+                // 工厂经 Arc<Mutex> 共享给审查线程。
+                let factory = std::sync::Arc::new(std::sync::Mutex::new(factory));
+                let report = crate::sop::doc_from_zero::run_pipeline(
+                    agent,
+                    factory,
+                    store,
+                    &mut user,
+                    &workspace,
+                    &run_units,
+                    "complete",
+                    resume_note,
+                    Some(audit),
+                    None,
+                )?;
 
                 // ---- 终审（跨模块 / 汇编引用 / 全量 lint 与覆盖）----
                 let docs = final_ws.join(DOCS_DIR);

@@ -157,39 +157,41 @@ impl PlanAgentSession for ScriptedAgent {
 }
 
 struct ScriptedReview {
-    queue: Rc<RefCell<VecDeque<String>>>,
+    queue: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl ReviewSession for ScriptedReview {
     fn review(&mut self, _instruction: &str) -> Result<String> {
         Ok(self
             .queue
-            .borrow_mut()
+            .lock()
+            .expect("review 队列锁")
             .pop_front()
             .expect("review 脚本耗尽（少给了一条回复）"))
     }
 }
 
 /// 脚本化审查工厂：每轮开一个全新实例。
+/// 内部用 Arc<Mutex>（ARC-R1：run_pipeline 的工厂要跨审查线程，需 Send）。
 struct ScriptedFactory {
-    queue: Rc<RefCell<VecDeque<String>>>,
-    opened: Rc<RefCell<usize>>,
+    queue: Arc<Mutex<VecDeque<String>>>,
+    opened: Arc<Mutex<usize>>,
 }
 
 impl ScriptedFactory {
     fn new(replies: &[&str]) -> Self {
         Self {
-            queue: Rc::new(RefCell::new(
+            queue: Arc::new(Mutex::new(
                 replies.iter().map(|s| s.to_string()).collect(),
             )),
-            opened: Rc::new(RefCell::new(0)),
+            opened: Arc::new(Mutex::new(0)),
         }
     }
 }
 
 impl ReviewSessionFactory for ScriptedFactory {
     fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
-        *self.opened.borrow_mut() += 1;
+        *self.opened.lock().expect("opened 锁") += 1;
         Ok(Box::new(ScriptedReview {
             queue: self.queue.clone(),
         }))
@@ -1078,10 +1080,20 @@ fn each_mvp_and_doc_loop_logs_its_own_fix_pair() {
             "单元 1 写完\n<doc-complete>1</doc-complete>",
             "单元 1 改完\n<doc-complete>1</doc-complete>",
         ]);
-        let mut factory = ScriptedFactory::new(&[DOC_REVIEW_FAIL, DOC_REVIEW_PASS]);
-        devforge::sop::doc_from_zero::DocSopLoop::new(agent, &mut factory, store)
-            .run(&mut NoUser, &dir.path().join("repo"), &["1".to_string()], "none")
-            .expect("doc 单元循环应通过");
+        let factory = ScriptedFactory::new(&[DOC_REVIEW_FAIL, DOC_REVIEW_PASS]);
+        devforge::sop::doc_from_zero::run_pipeline(
+            agent,
+            std::sync::Arc::new(std::sync::Mutex::new(factory)),
+            store,
+            &mut NoUser,
+            &dir.path().join("repo"),
+            &["1".to_string()],
+            "none",
+            String::new(),
+            None,
+            None,
+        )
+        .expect("doc 单元循环应通过");
         let text = cap.lines();
         assert_eq!(lines_with(&text, "fix.start").len(), 1, "doc 回注：{text:?}");
         assert_eq!(lines_with(&text, "fix.end").len(), 1, "doc 回注：{text:?}");
@@ -1186,10 +1198,20 @@ fn the_doc_from_zero_review_open_round_is_the_bump_review_count() {
         StateKey::new("p", "t", "doc-from-zero"),
     );
     let agent = ScriptedAgent::new(&["单元 1 写完\n<doc-complete>1</doc-complete>"]);
-    let mut factory = ScriptedFactory::new(&[DOC_REVIEW_PASS]);
-    devforge::sop::doc_from_zero::DocSopLoop::new(agent, &mut factory, store)
-        .run(&mut NoUser, &dir.path().join("repo"), &["1".to_string()], "none")
-        .expect("doc 单元循环应通过");
+    let factory = ScriptedFactory::new(&[DOC_REVIEW_PASS]);
+    devforge::sop::doc_from_zero::run_pipeline(
+        agent,
+        std::sync::Arc::new(std::sync::Mutex::new(factory)),
+        store,
+        &mut NoUser,
+        &dir.path().join("repo"),
+        &["1".to_string()],
+        "none",
+        String::new(),
+        None,
+        None,
+    )
+    .expect("doc 单元循环应通过");
     let text = cap.lines();
     let opens = lines_with(&text, "review.open");
     assert_eq!(opens.len(), 1, "一次开庭一条：{text:?}");

@@ -26,11 +26,7 @@ pub const DOCS_DIR: &str = "docs/contexts";
 /// 元数据目录（清单/词表/置信度/缺口）。
 pub const META_DIR: &str = "docs/contexts/_meta";
 // 检查点常量已删除：运行状态住黑板（plan 010 D001），产物目录不再持有 state.json。
-
-/// 无有效完成标记时的重推话术。
-pub const DOC_CONTINUE_NUDGE: &str = "\
-继续当前单元。写完并自检（必填节 / 实体存在 / 链接 / Runbook 七件套 / doc-lint 退出码 0）后，\
-在回复末尾单独一行输出 <doc-complete>unit-xxx</doc-complete>（xxx 为 kickoff 给的单元号）。";
+// DOC_CONTINUE_NUDGE 已随串行 runner 删除（ARC-R1）：pipeline 用内联 nudge 话术。
 
 /// 打回回注前缀：必须带回 route，让 agent 回对那一层。
 pub const DOC_REMEDIATION_PREFIX: &str = "审查未通过，以下是必须修复的问题（请按 route 回到对应阶段修）：";
@@ -219,345 +215,7 @@ pub struct DocReport {
 /// 引擎侧审计提供者：输入单元号，返回确定性审计文本（覆盖 + lint）。
 pub type AuditProvider = Box<dyn Fn(&str) -> String + Send>;
 
-pub struct DocSopLoop<P: PlanAgentSession, F: ReviewSessionFactory> {
-    pub agent: P,
-    pub review_factory: F,
-    /// 断点存取（黑板 `<plans>/<project>/<task>/doc-from-zero/state.json`，plan 010 D001）。
-    pub store: StateStore,
-    /// 只跑这一个单元（`--only`，幂等重派）。
-    pub only: Option<String>,
-    /// 引擎侧确定性审计（每轮审查前算好，作为审查输入注入——D012：不靠 agent 自述）。
-    pub audit: Option<AuditProvider>,
-    /// 续跑恢复语（只拼进本次第一个单元的 kickoff，plan 010 D005）。
-    pub resume_note: String,
-    /// DR-4：首单元逾期告警阈值（ms）；None = 默认 stall_warn_ms×2（production）。
-    pub first_unit_deadline_ms: Option<u64>,
-}
 
-impl<P: PlanAgentSession, F: ReviewSessionFactory> DocSopLoop<P, F> {
-    pub fn new(agent: P, review_factory: F, store: StateStore) -> Self {
-        Self {
-            agent,
-            review_factory,
-            store,
-            only: None,
-            audit: None,
-            resume_note: String::new(),
-            first_unit_deadline_ms: None,
-        }
-    }
-
-    /// 注入首单元逾期阈值（DR-4 测试注入小值用；生产走默认）。
-    pub fn with_first_unit_deadline(mut self, ms: Option<u64>) -> Self {
-        self.first_unit_deadline_ms = ms;
-        self
-    }
-
-    /// 注入续跑恢复语（重做了哪些单元、为什么）。
-    pub fn with_resume_note(mut self, note: impl Into<String>) -> Self {
-        self.resume_note = note.into();
-        self
-    }
-
-    pub fn with_only(mut self, unit: impl Into<String>) -> Self {
-        self.only = Some(unit.into());
-        self
-    }
-
-    /// 注入引擎侧审计（覆盖 + lint 摘要）；审查官看到的是确定性事实。
-    pub fn with_audit(mut self, audit: AuditProvider) -> Self {
-        self.audit = Some(audit);
-        self
-    }
-
-    /// 跑完全部单元（或被 `only` 限定的一单元）。
-    pub fn run(
-        &mut self,
-        ui: &mut dyn UserLink,
-        repo: &Path,
-        units: &[String],
-        doc_level: &str,
-    ) -> Result<DocReport> {
-        let mut state = match self.store.load() {
-            crate::runstate::Loaded::Found(s) => s,
-            crate::runstate::Loaded::Missing => self.store.fresh_state(),
-            crate::runstate::Loaded::Unusable(reason) => {
-                tracing::warn!(component = "doc-sop", %reason, "断点不可用，按冷启动");
-                self.store.fresh_state()
-            }
-        };
-        let docs_root = repo.join(DOCS_DIR);
-        let mut protocol_violations = 0usize;
-        // 阶段推进记录：上一个单元（首个单元的前驱 = "start"）
-        let mut last_unit: Option<String> = None;
-
-        // DR-5：总单元数入断点（进度聚合端点读它算 x/y；已存不覆盖——resume 以现状为准）
-        data_obj(&mut state)
-            .entry("units_total".to_string())
-            .or_insert_with(|| serde_json::json!(units.len()));
-        // 立即落盘：首单元写作期间（可达 10 分钟）进度端点就能看到 x/total，而不是 None
-        self.store.save(&mut state)?;
-        // DR-4：首单元逾期守卫——开跑超阈值仍无任何单元完成 → 告警一次（假活/单元过重）
-        let run_started = std::time::Instant::now();
-        let first_unit_deadline = self
-            .first_unit_deadline_ms
-            .unwrap_or(crate::observability::stall_warn_ms() * 2);
-        let mut first_unit_warned = false;
-        // DR-9 L3：回合间隙计时——上个阶段终点，供 glue 事件计「交卷→开庭」「裁决→下单元」
-        let mut stage: Option<(&'static str, std::time::Instant)> = None;
-        for (idx, unit) in units.iter().enumerate() {
-            if let Some(only) = &self.only
-                && only != unit
-            {
-                continue;
-            }
-            // 传入的 units 就是「本次要跑的集合」（引擎已按续跑计划算好）——
-            // **不得用 is_done 再过滤一遍**：证据失效的单元会被引擎放回 to_run，
-            // 旧断点里那个 done 标记说的是「上次做过」，不是「这次跳过」。
-            if is_done(&state, unit) {
-                // 重做：旧完成记录作废，避免中途崩溃后留下假绿
-                unmark_done(&mut state, unit);
-                self.store.save(&mut state)?;
-            }
-            let before = snapshot_files(&docs_root);
-            // 阶段推进：单元推进（上一个单元 → 当前单元）
-            tracing::info!(
-                component = "doc-sop",
-                event = "phase.change",
-                from = last_unit.clone().unwrap_or_else(|| "start".into()),
-                to = unit.as_str(),
-                "doc 单元推进"
-            );
-            last_unit = Some(unit.clone());
-            // DR-9 L3：间隙计时——上阶段终点→本单元发起
-            if let Some((name, t0)) = &stage {
-                tracing::info!(
-                    component = "doc-sop",
-                    event = "engine.glue",
-                    stage = format!("{}_to_next_unit", name),
-                    gap_ms = t0.elapsed().as_millis() as u64,
-                    "阶段间隙计时"
-                );
-            }
-            // DR-2：单元进度事件（带 index/total，聚合端点与日志检索直接可读）
-            tracing::info!(
-                component = "doc-sop",
-                event = "doc.unit_start",
-                unit = unit.as_str(),
-                index = idx + 1,
-                total = units.len(),
-                "单元开始"
-            );
-
-            let mut message = doc_kickoff(repo, unit, doc_level);
-            if !self.resume_note.is_empty() {
-                message.push_str("\n\n");
-                message.push_str(&self.resume_note);
-                self.resume_note.clear(); // 只对本单元生效
-            }
-            let mut nudges = 0usize;
-            // DR-8：空响应计数（连满升级 infra，收到非空即清零）
-            let mut empty_replies = 0usize;
-            // 被打回后待收尾的修复轮（回注在下一轮 agent 回合才发生 → fix.end 落在那一回合返回处）
-            let mut pending_fix: Option<u32> = None;
-            loop {
-                // DR-4：首单元逾期检查（每回合前查一次；只告警一次）。deadline=0（测试注入）即首回合即告警
-                if !first_unit_warned
-                    && done_units(&state).is_empty()
-                    && run_started.elapsed().as_millis() as u64 >= first_unit_deadline
-                {
-                    first_unit_warned = true;
-                    tracing::warn!(
-                        component = "doc-sop",
-                        event = "doc.first_unit_overdue",
-                        deadline_ms = first_unit_deadline,
-                        elapsed_ms = run_started.elapsed().as_millis() as u64,
-                        "首单元逾期：开跑超阈值仍无任何单元完成——agent 可能假活或单元过重"
-                    );
-                }
-                let text = self.agent.converse(&message, ui)?;
-                // DR-8：空响应（0 字符）= provider 侧失败信号，非 agent 不配合——
-                // 有界重试后升级为基础设施故障（System → 重试层自动重启），不计入 nudges
-                if text.trim().is_empty() {
-                    empty_replies += 1;
-                    if empty_replies > MAX_DOC_EMPTY_REPLIES {
-                        return Err(DevforgeError::System(format!(
-                            "单元 `{unit}` 连续 {empty_replies} 次返回空内容（0 tokens，provider 侧失败），判定为基础设施故障，可重试"
-                        )));
-                    }
-                    tracing::warn!(
-                        component = "doc-sop",
-                        event = "agent.empty_reply",
-                        unit = unit.as_str(),
-                        count = empty_replies,
-                        "空回复（provider 失败信号），重新提示"
-                    );
-                    continue;
-                }
-                empty_replies = 0;
-                // 上一轮单元审查判负后的回注已随本回合交卷 → 修复轮收尾
-                if let Some(round) = pending_fix.take() {
-                    tracing::info!(
-                        component = "doc-sop",
-                        event = "fix.end",
-                        round,
-                        "单元重写结束"
-                    );
-                }
-                stage = Some(("write", std::time::Instant::now()));
-                let Some(done_unit) = parse_doc_complete(&text) else {
-                    nudges += 1;
-                    if nudges > MAX_DOC_CONTINUE_NUDGES {
-                        return Err(DevforgeError::Quality(format!(
-                            "单元 `{unit}` 连续 {nudges} 次未输出 <doc-complete>，判定为质量失败（agent 不配合，重启也无意义）"
-                        )));
-                    }
-                    message = DOC_CONTINUE_NUDGE.to_string();
-                    continue;
-                };
-                nudges = 0;
-                if done_unit != *unit {
-                    // 单元号不匹配：可能是预分配漂移，按错报处理（D020 编号必须稳定）
-                    message = format!(
-                        "你输出的是 `{done_unit}`，但本单元是 `{unit}`。请确认编号（不得自行改号）并重新输出 <doc-complete>{unit}</doc-complete>。"
-                    );
-                    continue;
-                }
-
-                // 本轮审查：全新实例，用完即弃；协议违例重跑审查（C19-R1 口径）
-                let mut review_retries = 0usize;
-                let (report, review_round) = loop {
-                    let round = bump_review(&mut state);
-                    // 「审查开庭」里程碑：在**发起**那一刻落（轮次 = bump_review 的 1-based 计数，Q6）
-                    tracing::info!(
-                        component = "doc-sop",
-                        event = "review.open",
-                        role = "doc-review",
-                        round,
-                        "审查开庭"
-                    );
-                    let mut session = self.review_factory.open()?;
-                    let mut instruction = doc_review_instruction(unit, round);
-                    if let Some(audit) = &self.audit {
-                        instruction.push_str("\n\n## 引擎审计（确定性，勿质疑）\n\n");
-                        instruction.push_str(&audit(unit));
-                    }
-                    // 空回复 / 进程异常：换新实例重试，而不是把整个 run 判死（2026-10-20 实测）
-                    let review_text = match session.review(&instruction) {
-                        Ok(t) if !t.trim().is_empty() => t,
-                        Ok(_) => {
-                            drop(session);
-                            review_retries += 1;
-                            if review_retries > MAX_DOC_REVIEW_RETRIES {
-                                return Err(DevforgeError::System(format!(
-                                    "单元 `{unit}` 审查会话连续 {review_retries} 次返回空回复，判定为基础设施故障"
-                                )));
-                            }
-                            tracing::warn!(
-                                component = "doc-sop",
-                                round,
-                                "审查空回复，换新实例重试"
-                            );
-                            continue;
-                        }
-                        Err(e) => {
-                            drop(session);
-                            review_retries += 1;
-                            if review_retries > MAX_DOC_REVIEW_RETRIES {
-                                return Err(DevforgeError::System(format!(
-                                    "单元 `{unit}` 审查会话连续 {review_retries} 次失败（最后一次：{e}）"
-                                )));
-                            }
-                            tracing::warn!(
-                                component = "doc-sop",
-                                round,
-                                error = %e,
-                                "审查会话异常，换新实例重试"
-                            );
-                            continue;
-                        }
-                    };
-                    drop(session);
-
-                    let report = parse_doc_review(&review_text)?;
-                    if !report.protocol_violation {
-                        break (report, round as u32);
-                    }
-                    protocol_violations += 1;
-                    if protocol_violations > MAX_DOC_PROTOCOL_VIOLATIONS {
-                        return Err(DevforgeError::Quality(format!(
-                            "审查连续 {protocol_violations} 轮输出协议违例（缺 doc-verdict/route 块），判定为质量失败（不自动重启）：{}",
-                            report.issues.join("；")
-                        )));
-                    }
-                    tracing::warn!(
-                        component = "doc-sop",
-                        round,
-                        violations = protocol_violations,
-                        "文档审查协议违例，重跑本轮审查（不回注被审 Agent）"
-                    );
-                };
-                // DR-9 L3：裁决在手 = 审查阶段终点
-                stage = Some(("review", std::time::Instant::now()));
-
-                match report.verdict {
-                    DocVerdict::Pass => {
-                        // 登记本单元产出的文件（相对产出根）——续跑复核靠它（010 D003）
-                        let files = produced_files(&docs_root, &before);
-                        mark_done(&mut state, unit, &files);
-                        self.store.save(&mut state)?;
-                        // DR-2：单元完成事件（done = 含本单元的累计完成数）
-                        tracing::info!(
-                            component = "doc-sop",
-                            event = "doc.unit_done",
-                            unit = unit.as_str(),
-                            index = idx + 1,
-                            total = units.len(),
-                            done = done_units(&state).len(),
-                            "单元完成"
-                        );
-                        tracing::info!(
-                            component = "doc-sop",
-                            unit,
-                            files = files.len(),
-                            round = review_rounds(&state),
-                            "单元通过并落盘"
-                        );
-                        // PASS + route=finish 只意味着「这个单元收口了」，**不是整个 run 结束**。
-                        // 2026-10-19 实测：审查官对第一个单元就回了 finish，旧逻辑直接 return，
-                        // 后面的 unit-root-02 压根没写，run 却报了 Settled。
-                        break;
-                    }
-                    DocVerdict::Fail => {
-                        add_issues(&mut state, report.issues.len());
-                        // 单元审查判负 → 回注 agent 重写：fix 起止一对（含轮次）
-                        tracing::info!(
-                            component = "doc-sop",
-                            event = "fix.start",
-                            round = review_round,
-                            "单元重写开始"
-                        );
-                        pending_fix = Some(review_round);
-                        let mut msg = format!(
-                            "{DOC_REMEDIATION_PREFIX}\n<route>{}</route>\n",
-                            report.route.as_str()
-                        );
-                        for i in &report.issues {
-                            msg.push_str(&format!("- {i}\n"));
-                        }
-                        message = msg;
-                    }
-                }
-            }
-        }
-
-        Ok(DocReport {
-            units_done: done_units(&state),
-            review_rounds: review_rounds(&state),
-            issues_total: issues_total(&state),
-        })
-    }
-}
 
 /// DR-14：审查 worker——独立线程上开全新审查会话，空响应/异常有界重试（C19-R1 口径），
 /// 结果（含错误）经 channel 回主循环。
@@ -576,13 +234,29 @@ fn spawn_review_worker<F>(
     std::thread::spawn(move || {
         let result = (|| -> Result<String> {
             let mut retries = 0usize;
+            // 协议违例独立计数（原串行 runner 口径：与空回复/异常重试分开）
+            let mut violations = 0usize;
             loop {
                 let mut session = {
                     let mut f = factory.lock().expect("审查工厂锁");
                     f.open()?
                 };
                 match session.review(&instruction) {
-                    Ok(t) if !t.trim().is_empty() => return Ok(t),
+                    Ok(t) if !t.trim().is_empty() => {
+                        // ARC-R1（自串行 runner 移植）：审查协议违例（有内容但缺 doc-verdict/route 块）
+                        // → 就地重跑本轮审查（不回注被审 Agent）；耗尽按质量失败收场
+                        let report = parse_doc_review(&t)?;
+                        if !report.protocol_violation {
+                            return Ok(t);
+                        }
+                        violations += 1;
+                        if violations > MAX_DOC_PROTOCOL_VIOLATIONS {
+                            return Err(DevforgeError::Quality(format!(
+                                "审查连续 {violations} 轮输出协议违例（缺 doc-verdict/route 块），判定为质量失败（不自动重启）：{}",
+                                report.issues.join("；")
+                            )));
+                        }
+                    }
                     Ok(_) => {
                         retries += 1;
                         if retries > MAX_DOC_REVIEW_RETRIES {
@@ -607,6 +281,7 @@ fn spawn_review_worker<F>(
 /// DR-14 流水线 runner：审查(N) 与 写作(N+1) 重叠（lead=1，在途审查槽 = 1），
 /// 断路器 = 连续 2 FAIL（andon），fix 队列优先于新单元。事件与串行版同套。
 /// 工厂经 Arc<Mutex<F>> 共享给审查线程；被审 Agent 仍为单会话顺序推进。
+#[allow(clippy::too_many_arguments, unused_assignments)]
 pub fn run_pipeline<P, F>(
     mut agent: P,
     factory: std::sync::Arc<std::sync::Mutex<F>>,
@@ -617,6 +292,7 @@ pub fn run_pipeline<P, F>(
     doc_level: &str,
     resume_note: String,
     audit: Option<AuditProvider>,
+    first_unit_deadline_ms: Option<u64>,
 ) -> Result<DocReport>
 where
     P: PlanAgentSession,
@@ -640,30 +316,35 @@ where
     let mut pending: Option<(usize, String, u32, std::sync::mpsc::Receiver<(String, u32, Result<String, DevforgeError>)>)> = None;
     // lead=1 写超前：审查槽被占时交卷的单元先排队，槽空出时补派
     let mut written_unreviewed: std::collections::VecDeque<(usize, String, u32)> = Default::default();
-    let mut fix_queue: std::collections::VecDeque<(String, String, Vec<String>)> = Default::default();
+    let mut fix_queue: std::collections::VecDeque<(String, String, Vec<String>, u32)> = Default::default();
     let mut consecutive_fails = 0u32;
     let mut frontier = 0usize;
     let mut active = String::new();
     let mut active_idx = 0usize;
     let mut active_is_fix = false;
+    let mut active_fix_round: Option<u32> = None;
+    let mut last_unit: Option<String> = None;
     let mut unit_before = None;
     let mut resume_note = resume_note;
     let mut first_kickoff_sent = false;
     let mut nudges = 0usize;
     let mut nudged_for = String::new();
-    // TODO(DR-10③)：流水线路径的 glue 计时（stage）与协议违例计数尚未接线，先用串行路径的口径
+    // TODO(DR-10③)：流水线路径的 glue 计时（stage）尚未接线；协议违例计数已下沉到 spawn_review_worker
     let mut _stage: Option<(&'static str, std::time::Instant)> = None;
-    let mut _protocol_violations = 0u32;
+    // DR-4：首单元逾期守卫——开跑超阈值仍无任何单元完成 → 告警一次（假活/单元过重）
+    let run_started = std::time::Instant::now();
+    let first_unit_deadline =
+        first_unit_deadline_ms.unwrap_or(crate::observability::stall_warn_ms() * 2);
+    let mut first_unit_warned = false;
 
     enum Next {
-        Fix(String, String, Vec<String>),
+        Fix(String, String, Vec<String>, u32),
         Write(String),
-        Done,
     }
 
     // 裁决处理：Pass → mark_done；Fail → fix 队列 + 断路器
     macro_rules! process_verdict {
-        ($unit:expr, $report:expr) => {{
+        ($unit:expr, $report:expr, $round:expr) => {{
             let report = $report;
             match report.verdict {
                 DocVerdict::Pass => {
@@ -688,6 +369,7 @@ where
                         $unit.clone(),
                         report.route.as_str().to_string(),
                         report.issues.clone(),
+                        $round,
                     ));
                     consecutive_fails += 1;
                     if consecutive_fails >= 2 {
@@ -722,13 +404,34 @@ where
     }
 
     loop {
+        // DR-4：首单元逾期检查（每轮查一次，只告警一次）
+        if !first_unit_warned
+            && done_units(&state).is_empty()
+            && run_started.elapsed().as_millis() as u64 >= first_unit_deadline
+        {
+            first_unit_warned = true;
+            tracing::warn!(
+                component = "doc-sop",
+                event = "doc.first_unit_overdue",
+                deadline_ms = first_unit_deadline,
+                elapsed_ms = run_started.elapsed().as_millis() as u64,
+                "首单元逾期：开跑超阈值仍无任何单元完成——agent 可能假活或单元过重"
+            );
+        }
+
         // ── A. 非阻塞清账：在途裁决到了就处理 ──
         if let Some((idx, unit, round, rx)) = pending.take() {
             match rx.try_recv() {
                 Ok((u, round, text)) => {
-                    let text = text.map_err(|e| DevforgeError::System(format!("审查重试耗尽：{e}")))?;
+                    let text = text.map_err(|e| {
+                        if e.is_quality_failure() {
+                            e
+                        } else {
+                            DevforgeError::System(format!("审查重试耗尽：{e}"))
+                        }
+                    })?;
                     let report = parse_doc_review(&text)?;
-                    process_verdict!(u, report);
+                    process_verdict!(u, report, round);
                     let _ = (idx, round);
                     spawn_queued_review!();
                 }
@@ -742,8 +445,8 @@ where
         }
 
         // ── B. 决定下一步 ──
-        let next = if let Some((u, route, issues)) = fix_queue.pop_front() {
-            Next::Fix(u, route, issues)
+        let next = if let Some((u, route, issues, fix_round)) = fix_queue.pop_front() {
+            Next::Fix(u, route, issues, fix_round)
         } else if frontier < units.len() {
             // lead=1（用户拍板 10-23）：审查 N 在途期间允许写 N+1（写超前 1）；
             // 要写 N+2（写超前将到 2）才必须先等 N 的裁决落地。
@@ -762,23 +465,34 @@ where
                 let (vu, vround, vtext) = rx
                     .recv()
                     .map_err(|_| DevforgeError::System("审查线程失联".into()))?;
-                let vtext = vtext.map_err(|e| DevforgeError::System(format!("审查重试耗尽：{e}")))?;
+                let vtext = vtext.map_err(|e| {
+                    if e.is_quality_failure() {
+                        e
+                    } else {
+                        DevforgeError::System(format!("审查重试耗尽：{e}"))
+                    }
+                })?;
                 let report = parse_doc_review(&vtext)?;
-                process_verdict!(vu, report);
+                process_verdict!(vu, report, vround);
                 let _ = vround;
                 spawn_queued_review!();
                 continue;
             }
-        } else if let Some((idx, unit, round, rx)) = pending.take() {
+        } else if let Some((_, _, _, rx)) = pending.take() {
             // 无新活但审查在途 → 等它（可能产生 fix 或补派排队审查）；
             // 终止由循环头收敛：裁决清完 + 队列空 + fix 空 → else break
             let (vunit, vround, vtext) = rx
                 .recv()
                 .map_err(|_| DevforgeError::System("审查线程失联".into()))?;
-            let vtext = vtext.map_err(|e| DevforgeError::System(format!("审查重试耗尽：{e}")))?;
+            let vtext = vtext.map_err(|e| {
+                if e.is_quality_failure() {
+                    e
+                } else {
+                    DevforgeError::System(format!("审查重试耗尽：{e}"))
+                }
+            })?;
             let report = parse_doc_review(&vtext)?;
-            process_verdict!(vunit, report);
-            let _ = (idx, vround);
+            process_verdict!(vunit, report, vround);
             spawn_queued_review!();
             continue;
         } else {
@@ -786,16 +500,17 @@ where
         };
 
         // ── C. 组消息 + 交回合 ──
-        let (unit, mut message, is_fix) = match next {
-            Next::Done => break,
-            Next::Fix(u, route, issues) => {
+        let (unit, mut message, _is_fix) = match next {
+            Next::Fix(u, route, issues, fix_round) => {
                 active = u.clone();
                 active_idx = units.iter().position(|x| *x == u).unwrap_or(active_idx);
                 active_is_fix = true;
+                active_fix_round = Some(fix_round);
                 tracing::info!(
                     component = "doc-sop",
                     event = "fix.start",
                     unit = %u,
+                    round = fix_round,
                     "单元重写开始（流水线）"
                 );
                 let mut msg = format!("{DOC_REMEDIATION_PREFIX}\n<route>{route}</route>\n");
@@ -807,6 +522,7 @@ where
             Next::Write(u) => {
                 active = u.clone();
                 active_is_fix = false;
+                active_fix_round = None;
                 unit_before = Some(snapshot_files(&docs_root));
                 tracing::info!(
                     component = "doc-sop",
@@ -826,51 +542,77 @@ where
                 (u, msg, false)
             }
         };
-
-        // ── D. 交回合（空响应守卫同串行）──
-        let mut empty_replies = 0usize;
-        let text = loop {
-            let t = agent.converse(&message, ui)?;
-            if !t.trim().is_empty() {
-                break t;
-            }
-            empty_replies += 1;
-            if empty_replies > MAX_DOC_EMPTY_REPLIES {
-                return Err(DevforgeError::System(format!(
-                    "单元 `{unit}` 连续 {empty_replies} 次返回空内容（0 tokens，provider 侧失败），判定为基础设施故障，可重试"
-                )));
-            }
-            tracing::warn!(
+        // DR-2：阶段推进（上一个单元 → 当前单元；fix 轮单元未变不重复落）
+        if !active_is_fix {
+            tracing::info!(
                 component = "doc-sop",
-                event = "agent.empty_reply",
-                unit = %unit,
-                count = empty_replies,
-                "空回复（provider 失败信号），重新提示"
+                event = "phase.change",
+                from = last_unit.clone().unwrap_or_else(|| "start".into()),
+                to = unit.as_str(),
+                "doc 单元推进（流水线）"
             );
-        };
-
-        // ── E. 标记守卫（nudge 同串行，按 active 单元计）──
-        if nudged_for != active {
-            nudges = 0;
-            nudged_for = active.clone();
+            last_unit = Some(unit.clone());
         }
-        let Some(done_unit) = parse_doc_complete(&text) else {
-            nudges += 1;
-            if nudges > MAX_DOC_CONTINUE_NUDGES {
-                return Err(DevforgeError::Quality(format!(
-                    "单元 `{active}` 连续 {nudges} 次未输出 <doc-complete>，判定为质量失败（agent 不配合，重启也无意义）"
-                )));
+
+        // ── D. 交回合（空响应 + 标记守卫原地重试）──
+        // ARC-R1 修：nudge 不回主循环——lead=1 状态机下 continue 回循环头会命中
+        // B 段 break/重新 kickoff，话术永远到不了模型（四大失败用例同根因）
+        let mut empty_replies = 0usize;
+        loop {
+            let t = agent.converse(&message, ui)?;
+            // DR-8：空响应 = provider 侧失败信号，有界重试后升级基础设施故障
+            if t.trim().is_empty() {
+                empty_replies += 1;
+                if empty_replies > MAX_DOC_EMPTY_REPLIES {
+                    return Err(DevforgeError::System(format!(
+                        "单元 `{unit}` 连续 {empty_replies} 次返回空内容（0 tokens，provider 侧失败），判定为基础设施故障，可重试"
+                    )));
+                }
+                tracing::warn!(
+                    component = "doc-sop",
+                    event = "agent.empty_reply",
+                    unit = %unit,
+                    count = empty_replies,
+                    "空回复（provider 失败信号），重新提示"
+                );
+                continue;
             }
-            message = format!(
-                "连续 {nudges} 次未输出完成标记。请补交：<doc-complete>{active}</doc-complete>（单独一行）。"
-            );
-            continue;
+            // 标记守卫（nudge 同串行，按 active 单元计；原地重试）
+            if nudged_for != active {
+                nudges = 0;
+                nudged_for = active.clone();
+            }
+            let Some(done_unit) = parse_doc_complete(&t) else {
+                nudges += 1;
+                if nudges > MAX_DOC_CONTINUE_NUDGES {
+                    return Err(DevforgeError::Quality(format!(
+                        "单元 `{active}` 连续 {nudges} 次未输出 <doc-complete>，判定为质量失败（agent 不配合，重启也无意义）"
+                    )));
+                }
+                message = format!(
+                    "连续 {nudges} 次未输出完成标记。请补交：<doc-complete>{active}</doc-complete>（单独一行）。"
+                );
+                continue;
+            };
+            if done_unit != active {
+                message = format!(
+                    "你输出的是 `{done_unit}`，但当前单元是 `{active}`。请确认编号（不得自行改号）并重新输出 <doc-complete>{active}</doc-complete>。"
+                );
+                continue;
+            }
+            nudges = 0;
+            break t;
         };
-        if done_unit != active {
-            message = format!(
-                "你输出的是 `{done_unit}`，但当前单元是 `{active}`。请确认编号（不得自行改号）并重新输出 <doc-complete>{active}</doc-complete>。"
+        // fix 回注已随本回合交卷 → 修复轮收尾（串行口径：fix.end 落在交卷回合）
+        if active_is_fix {
+            tracing::info!(
+                component = "doc-sop",
+                event = "fix.end",
+                round = active_fix_round.unwrap_or(0),
+                "单元重写结束（流水线）"
             );
-            continue;
+            active_is_fix = false;
+            active_fix_round = None;
         }
 
         // ── F. 交卷 → 派审查（占 pending 槽；槽被占则排队，空出时补派）──
@@ -894,7 +636,6 @@ where
             spawn_review_worker(&factory, &active, round, &instruction, tx);
             pending = Some((active_idx, active.clone(), round, rx));
         }
-        let _ = active_is_fix;
 
         // 回到循环头：非阻塞清账 → 决定下一个（fix 优先 / 新单元 kickoff）
         // lead=1：pending 占位期间不开新审查；写手与审查的时间重叠由此产生。
@@ -942,45 +683,33 @@ mod tests {
         }
     }
 
-    struct MockReview {
-        replies: Rc<RefCell<VecDeque<String>>>,
-        instructions: Rc<RefCell<Vec<String>>>,
-    }
-    struct MockReviewFactory {
-        replies: Rc<RefCell<VecDeque<String>>>,
-        instructions: Rc<RefCell<Vec<String>>>,
-    }
-    impl ReviewSessionFactory for MockReviewFactory {
-        fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
-            Ok(Box::new(MockReview {
-                replies: self.replies.clone(),
-                instructions: self.instructions.clone(),
-            }))
-        }
-    }
-    impl ReviewSession for MockReview {
-        fn review(&mut self, instruction: &str) -> Result<String> {
-            self.instructions.borrow_mut().push(instruction.into());
-            Ok(self
-                .replies
-                .borrow_mut()
-                .pop_front()
-                .expect("MockReview 轮次耗尽"))
+    /// 无闸门审查工厂：裁决立即返回（行为类测试用）
+    fn pipe_factory(replies: &[&str]) -> PipeReviewFactory {
+        PipeReviewFactory {
+            replies: Arc::new(Mutex::new(
+                replies.iter().map(|s| s.to_string()).collect(),
+            )),
+            instructions: Arc::new(Mutex::new(Vec::new())),
+            gates: no_gates(),
         }
     }
 
-    fn factory(replies: &[&str]) -> (MockReviewFactory, Rc<RefCell<Vec<String>>>) {
-        let replies = Rc::new(RefCell::new(
-            replies.iter().map(|s| s.to_string()).collect::<VecDeque<_>>(),
-        ));
-        let instructions = Rc::new(RefCell::new(Vec::new()));
-        (
-            MockReviewFactory {
-                replies,
-                instructions: instructions.clone(),
-            },
-            instructions,
-        )
+    /// 行为类测试的 pipeline 调用（闸门/注入类用例用全参数 run_pipeline）
+    macro_rules! run_pipe {
+        ($agent:expr, $f:expr, $tmp:expr, $units:expr) => {
+            run_pipeline(
+                $agent,
+                Arc::new(Mutex::new($f)),
+                state_path(&$tmp),
+                &mut NoUser,
+                $tmp.path(),
+                &$units,
+                "complete",
+                String::new(),
+                None,
+                None,
+            )
+        };
     }
 
     fn state_path(tmp: &tempfile::TempDir) -> StateStore {
@@ -1009,13 +738,12 @@ mod tests {
             "写完 A\n<doc-complete>unit-a-01</doc-complete>",
             "写完 B\n<doc-complete>unit-b-02</doc-complete>",
         ]);
-        let (f, _) = factory(&[
+        let f = pipe_factory(&[
             "<doc-verdict>PASS</doc-verdict>",
             "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
         ]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
         let units = vec!["unit-a-01".to_string(), "unit-b-02".to_string()];
-        let rep = lp.run(&mut NoUser, tmp.path(), &units, "complete").unwrap();
+        let rep = run_pipe!(agent, f, tmp, units).unwrap();
         assert_eq!(rep.units_done, units);
         assert_eq!(rep.review_rounds, 2);
         let saved = state_path(&tmp).load();
@@ -1027,23 +755,19 @@ mod tests {
         // 2026-10-20 实测：doc-review 返回空回复（模型一字未出），旧行为把整个 run 判死
         let tmp = tempfile::tempdir().unwrap();
         let agent = MockAgent::new(&["写完了\n<doc-complete>unit-a-01</doc-complete>"]);
-        let (f, instructions) = factory(&["", "<doc-verdict>PASS</doc-verdict>"]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
-        let rep = lp
-            .run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
-            .unwrap();
+        let f = pipe_factory(&["", "<doc-verdict>PASS</doc-verdict>"]);
+        let instructions = f.instructions.clone();
+        let rep = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
         assert_eq!(rep.units_done, vec!["unit-a-01"]);
-        assert_eq!(instructions.borrow().len(), 2, "空回复应换实例重试一次");
+        assert_eq!(instructions.lock().unwrap().len(), 2, "空回复应换实例重试一次");
     }
 
     #[test]
     fn repeated_empty_reviews_fail_fast() {
         let tmp = tempfile::tempdir().unwrap();
         let agent = MockAgent::new(&["写完了\n<doc-complete>unit-a-01</doc-complete>"]);
-        let (f, _) = factory(&["", "", "", ""]);
-        let err = DocSopLoop::new(agent, f, state_path(&tmp))
-            .run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
-            .unwrap_err();
+        let f = pipe_factory(&["", "", "", ""]);
+        let err = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("空回复"), "{msg}");
     }
@@ -1053,10 +777,8 @@ mod tests {
         // 零上限的旧口径在这里就是无限空转：连续不发标记必须报错
         let tmp = tempfile::tempdir().unwrap();
         let agent = MockAgent::new(&["想想", "再想想", "还在想", "就是不写"]);
-        let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>"]);
-        let err = DocSopLoop::new(agent, f, state_path(&tmp))
-            .run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
-            .unwrap_err();
+        let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>"]);
+        let err = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap_err();
         assert!(format!("{err}").contains("doc-complete"), "{err}");
     }
 
@@ -1065,12 +787,22 @@ mod tests {
         // （模拟假活：deadline 注入 0；agent 永不交卷）
         let tmp = tempfile::tempdir().unwrap();
         let agent = MockAgent::new(&["想想", "再想想", "还在想", "就是不写"]);
-        let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>"]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp)).with_first_unit_deadline(Some(0));
+        let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>"]);
         let log = crate::observability::test_support::capture_jsonl(|| {
             // mock 回合微秒级完成：不给时钟前进的机会就永远到不了 deadline
             std::thread::sleep(std::time::Duration::from_millis(5));
-            let err = lp.run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete");
+            let err = run_pipeline(
+                agent,
+                Arc::new(Mutex::new(f)),
+                state_path(&tmp),
+                &mut NoUser,
+                tmp.path(),
+                &["unit-a-01".to_string()],
+                "complete",
+                String::new(),
+                None,
+                Some(0),
+            );
             assert!(err.is_err(), "agent 永不交卷应报错收场");
         });
         assert!(log.contains("doc.first_unit_overdue"), "应告警: {log}");
@@ -1107,42 +839,13 @@ mod tests {
         // DR-8：空响应 = provider 侧失败 → System（可重试），非 Quality；不计入 doc-complete nudges
         let tmp = tempfile::tempdir().unwrap();
         let agent = MockAgent::new(&["", "", "", ""]);
-        let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>"]);
-        let err = DocSopLoop::new(agent, f, state_path(&tmp))
-            .run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
-            .unwrap_err();
+        let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>"]);
+        let err = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap_err();
         assert!(!err.is_quality_failure(), "空响应不得判质量失败: {err}");
         assert!(format!("{err}").contains("基础设施故障"), "{err}");
     }
 
-    #[test]
-    fn unit_lifecycle_emits_glue_timing() {
-        // DR-9 L3：交卷→开庭、裁决→下单元的间隙计时事件（首个单元无前驱无 glue）
-        let tmp = tempfile::tempdir().unwrap();
-        let agent = MockAgent::new(&[
-            "A\n<doc-complete>unit-a-01</doc-complete>",
-            "B\n<doc-complete>unit-b-02</doc-complete>",
-        ]);
-        let (f, _) = factory(&[
-            "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
-            "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
-        ]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
-        let log = crate::observability::test_support::capture_jsonl(|| {
-            lp.run(
-                &mut NoUser,
-                tmp.path(),
-                &["unit-a-01".to_string(), "unit-b-02".to_string()],
-                "complete",
-            )
-            .unwrap();
-        });
-        assert!(log.contains("engine.glue"), "应有间隙计时事件: {log}");
-        assert!(
-            log.contains("review_to_next_unit"),
-            "裁决→下单元的间隙要被计时: {log}"
-        );
-    }
+    // DR-9 L3 glue 计时（engine.glue）在流水线路径尚未接线（TODO DR-10③），专项用例随串行 runner 退役
 
     // ── DR-14 流水线并行测试（Send 版 mock）──
 
@@ -1283,6 +986,7 @@ mod tests {
             "complete",
             String::new(),
             None,
+            None,
         )
         .unwrap();
         assert!(
@@ -1348,6 +1052,7 @@ mod tests {
             "complete",
             String::new(),
             None,
+            None,
         )
         .unwrap();
         assert!(
@@ -1402,6 +1107,7 @@ mod tests {
             "complete",
             String::new(),
             None,
+            None,
         )
         .unwrap_err();
         assert!(err.is_quality_failure(), "断路器应判质量失败: {err}");
@@ -1417,13 +1123,12 @@ mod tests {
             "写完 A\n<doc-complete>unit-a-01</doc-complete>",
             "写完 B\n<doc-complete>unit-b-02</doc-complete>",
         ]);
-        let (f, _) = factory(&[
+        let f = pipe_factory(&[
             "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
             "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
         ]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
         let units = vec!["unit-a-01".to_string(), "unit-b-02".to_string()];
-        let rep = lp.run(&mut NoUser, tmp.path(), &units, "complete").unwrap();
+        let rep = run_pipe!(agent, f, tmp, units).unwrap();
         assert_eq!(rep.units_done, units, "finish 只收口本单元，不得结束整个 run");
         assert_eq!(rep.review_rounds, 2);
     }
@@ -1436,13 +1141,11 @@ mod tests {
             "v2\n<doc-complete>unit-a-01</doc-complete>",
         ]);
         let received = agent.received.clone();
-        let (f, _) = factory(&[
+        let f = pipe_factory(&[
             "<doc-verdict>FAIL</doc-verdict>\n<route>phase1</route>\n<issues>\n- 事实错\n</issues>",
             "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
         ]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
-        lp.run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
-            .unwrap();
+        run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
         let msgs = received.borrow();
         assert!(msgs.len() >= 2);
         assert!(msgs[1].contains("<route>phase1</route>"));
@@ -1458,14 +1161,13 @@ mod tests {
             "v1\n<doc-complete>unit-a-01</doc-complete>",
             "v2\n<doc-complete>unit-a-01</doc-complete>",
         ]);
-        let (f, _) = factory(&[
+        let f = pipe_factory(&[
             "<doc-verdict>FAIL</doc-verdict>\n<route>phase1</route>\n<issues>\n- 事实错\n</issues>",
             "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
         ]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
         let units = vec!["unit-a-01".to_string()];
         let text = crate::observability::test_support::capture_jsonl(|| {
-            lp.run(&mut NoUser, tmp.path(), &units, "complete").unwrap();
+            run_pipe!(agent, f, tmp, units).unwrap();
         });
 
         // 审查开庭：两轮各一条，角色名与轮次（首审 = 1，轮次 = bump_review 的 1-based 计数）
@@ -1511,13 +1213,24 @@ mod tests {
     fn audit_text_is_injected_into_review_instruction() {
         let tmp = tempfile::tempdir().unwrap();
         let agent = MockAgent::new(&["v1\n<doc-complete>unit-a-01</doc-complete>"]);
-        let (f, instructions) = factory(&["<doc-verdict>PASS</doc-verdict>"]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp)).with_audit(Box::new(|unit: &str| {
-            format!("覆盖审计：单元 {unit} 缺 2 条")
-        }));
-        lp.run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
-            .unwrap();
-        let ins = instructions.borrow();
+        let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>"]);
+        let instructions = f.instructions.clone();
+        run_pipeline(
+            agent,
+            Arc::new(Mutex::new(f)),
+            state_path(&tmp),
+            &mut NoUser,
+            tmp.path(),
+            &["unit-a-01".to_string()],
+            "complete",
+            String::new(),
+            Some(Box::new(|unit: &str| {
+                format!("覆盖审计：单元 {unit} 缺 2 条")
+            })),
+            None,
+        )
+        .unwrap();
+        let ins = instructions.lock().unwrap();
         assert!(ins[0].contains("引擎审计（确定性，勿质疑）"));
         assert!(ins[0].contains("覆盖审计：单元 unit-a-01 缺 2 条"));
     }
@@ -1527,16 +1240,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let agent = MockAgent::new(&["v1\n<doc-complete>unit-a-01</doc-complete>"]);
         let received = agent.received.clone();
-        let (f, _) = factory(&[
-            "我审完了，写得不错。", // 缺协议块 → 违例
+        let f = pipe_factory(&[
+            "我审完了，写得不错。", // 缺协议块 → 违例（worker 层就地重跑，不重新开庭）
             "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
         ]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
-        let rep = lp
-            .run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
-            .unwrap();
+        let rep = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
         assert_eq!(rep.units_done.len(), 1);
-        assert_eq!(rep.review_rounds, 2, "违例后重跑审查");
+        assert_eq!(rep.review_rounds, 1, "违例重跑在同一轮内（round = 开庭次数）");
         assert_eq!(received.borrow().len(), 1, "agent 只被调用一次（不回注违例）");
     }
 
@@ -1544,11 +1254,8 @@ mod tests {
     fn violation_cap_aborts_run() {
         let tmp = tempfile::tempdir().unwrap();
         let agent = MockAgent::new(&["v1\n<doc-complete>unit-a-01</doc-complete>"]);
-        let (f, _) = factory(&["无协议块", "无协议块", "无协议块", "无协议块"]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
-        let err = lp
-            .run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
-            .unwrap_err();
+        let f = pipe_factory(&["无协议块", "无协议块", "无协议块", "无协议块"]);
+        let err = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap_err();
         assert!(err.to_string().contains("协议违例"), "{err}");
     }
 
@@ -1579,11 +1286,8 @@ mod tests {
 
         let agent = MockAgent::new(&["B\n<doc-complete>unit-b-02</doc-complete>"]);
         let seen = agent.received.clone();
-        let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>\n<route>finish</route>"]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
-        let rep = lp
-            .run(&mut NoUser, tmp.path(), &plan.to_run, "complete")
-            .unwrap();
+        let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>\n<route>finish</route>"]);
+        let rep = run_pipe!(agent, f, tmp, plan.to_run).unwrap();
         assert_eq!(rep.units_done, all);
         assert_eq!(rep.review_rounds, 2, "已完成的单元不再审");
         assert_eq!(seen.borrow().len(), 1, "只应跑 to_run 里的那个单元");
@@ -1618,10 +1322,8 @@ mod tests {
         // plan 010 T007：状态住黑板 `plans/<p>/<t>/<sop>/state.json`，不得再写进产物目录
         let tmp = tempfile::tempdir().unwrap();
         let agent = MockAgent::new(&["A\n<doc-complete>unit-a-01</doc-complete>"]);
-        let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>"]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
-        lp.run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
-            .unwrap();
+        let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>"]);
+        run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
 
         let store = state_path(&tmp);
         assert!(store.path().exists(), "断点应落在黑板：{}", store.path().display());
@@ -1652,19 +1354,17 @@ mod tests {
             "A\n<doc-complete>unit-a-01</doc-complete>",
             "B\n<doc-complete>unit-b-02</doc-complete>",
         ]);
-        let (f, _) = factory(&[
+        let f = pipe_factory(&[
             "<doc-verdict>PASS</doc-verdict>",
             "<doc-verdict>PASS</doc-verdict>",
         ]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
-        let rep = lp
-            .run(
-                &mut NoUser,
-                tmp.path(),
-                &["unit-a-01".to_string(), "unit-b-02".to_string()],
-                "complete",
-            )
-            .unwrap();
+        let rep = run_pipe!(
+            agent,
+            f,
+            tmp,
+            ["unit-a-01".to_string(), "unit-b-02".to_string()]
+        )
+        .unwrap();
         assert_eq!(rep.units_done, vec!["unit-a-01", "unit-b-02"], "旧断点不得生效");
         assert_eq!(rep.review_rounds, 2, "旧轮次计数不得被采用");
     }
@@ -1700,20 +1400,27 @@ mod tests {
             "写 B\n<doc-complete>unit-b-02</doc-complete>",
         ]);
         let seen = agent.received.clone();
-        let (f, _) = factory(&[
+        let f = pipe_factory(&[
             "<doc-verdict>PASS</doc-verdict>",
             "<doc-verdict>PASS</doc-verdict>",
         ]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp)).with_resume_note(
+        let rep = run_pipeline(
+            agent,
+            Arc::new(Mutex::new(f)),
+            state_path(&tmp),
+            &mut NoUser,
+            tmp.path(),
+            &plan.to_run,
+            "complete",
             crate::runstate::resume::Resumable::resume_brief(
                 &resume,
                 store.load().state().expect("断点应在"),
                 &plan.redo,
             ),
-        );
-        let rep = lp
-            .run(&mut NoUser, tmp.path(), &plan.to_run, "complete")
-            .unwrap();
+            None,
+            None,
+        )
+        .unwrap();
         // 硬断言：kickoff 回路真的发生，而不是只信 plan 与收尾名单（审计指出的假阳性）
         let kicks = seen.borrow();
         assert_eq!(kicks.len(), 2, "两个单元都应收到 kickoff：{kicks:?}");
@@ -1752,26 +1459,8 @@ mod tests {
         assert_eq!(plan.to_run, vec!["unit-b-02".to_string()]);
     }
 
-    #[test]
-    fn only_limits_to_single_unit_idempotently() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = state_path(&tmp);
-        seed_done(&state, &["unit-a-01"]);
-
-        let agent = MockAgent::new(&["B\n<doc-complete>unit-b-02</doc-complete>"]);
-        let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>\n<route>finish</route>"]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp)).with_only("unit-b-02");
-        let rep = lp
-            .run(
-                &mut NoUser,
-                tmp.path(),
-                &["unit-a-01".to_string(), "unit-b-02".to_string()],
-                "complete",
-            )
-            .unwrap();
-        assert_eq!(rep.units_done, vec!["unit-a-01", "unit-b-02"]);
-        assert_eq!(rep.review_rounds, 2);
-    }
+    // DEVFORGE_DOC_ONLY 单元重派随串行 runner 退役（ARC-R1）：单单元重跑由续跑计划承担
+    //（见 done_units_are_skipped_on_resume / broken_evidence_unit_is_reincluded_and_rewritten）
 
     #[test]
     fn unit_mismatch_is_rejected() {
@@ -1781,10 +1470,8 @@ mod tests {
             "改正\n<doc-complete>unit-a-01</doc-complete>",
         ]);
         let received = agent.received.clone();
-        let (f, _) = factory(&["<doc-verdict>PASS</doc-verdict>\n<route>finish</route>"]);
-        let mut lp = DocSopLoop::new(agent, f, state_path(&tmp));
-        lp.run(&mut NoUser, tmp.path(), &["unit-a-01".to_string()], "complete")
-            .unwrap();
+        let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>\n<route>finish</route>"]);
+        run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
         assert!(received.borrow()[1].contains("不得自行改号"));
     }
 }
