@@ -314,4 +314,27 @@ lint/审查通过率不回退；off 模式与现行为等价。
 - 观察项：模型单一（doc 全链只在 flash 上验证过，换模型未测）/ 用量累计口径 / 40 字 slug 截断 /
   F6 静默死亡杀手未捉到（tracepoint 天网在岗值班中）。
 
+## DR-17 ·（高，10-24 acc2 实测立案）审查 worker 事件旁路：审查回合对事件流隐形
+
+- **现象**：acc2 run 11013e6b 事件文件里审查回合步进停在 04:29:50 UTC，但 tracing 日志里
+  04:33-04:41 审查步进持续——spawn_review_worker 的独立 RpcClient 只进 tracing，不进 run 事件 JSONL。
+  watcher 因看不到审查活动误发 agent.stall 假告警（01:24），纯 API 观测会误判「卡死」。
+- **根因**：审查线程的 RpcClient 事件只接了 tracing，没接 run 事件文件写入路径。
+- **违反**：DR-7「纯 API 看到一切」——审查回合是观测盲区。
+- **修法方向**：worker 事件并入 run 事件文件（role 标签已具备，只差落盘路径）；
+  或 stall 判据排除审查窗口。验收：审查回合事件在 events 端点可见。
+- **同场正面验证**：DR-14 断路器（andon）首秀成功——unit-src-21 连续 2 轮审查 FAIL
+  （真实文档矛盾：state.rs.md load 时序两处自相矛盾 + 引擎写/SOP 读写职责表述冲突）
+  → 熔断 Quality 可续，无故障无浪费；FAIL 理由具体可行动（审查官干得对）。
+
+## DR-18 ·（高，10-24 acc2 实测立案）L4 transcript 端点生产空转：run_id 与 pi 会话文件名映射错
+
+- **现象**：`GET .../runs/{run}/transcript` 对真实 run 恒返回 0 条目。
+- **根因**：pi 会话文件名 = pi session id（如 `01a16bf5-...jsonl`），端点按 devforge run id 扫描
+  `sessions_root/<role>/*.jsonl` → 永远匹配不到。单测用夹具 pin 的假文件过了，真值映射从未验证
+  （DR-6 教训重演：夹具绿 ≠ 生产对）。
+- **修法方向**：spawn 时把 run id 传给 pi 会话命名；或端点改按角色目录取最新会话 + 时间窗过滤。
+  验收：真实 run 的 transcript 端点返回非空且内容与 tracing 对得上。
+- 备注：AF-1 作业本 + AF-5 交卷工具化落地后 transcript 消费需求会降，但端点承诺了就要能工作。
+
 ## 附：修复批次之外的已知遗留（立案在旧账，勿重记录）
