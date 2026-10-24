@@ -12,7 +12,6 @@
 pub mod coding;
 pub mod coding_protocol;
 pub mod doc;
-pub mod doc_from_zero;
 pub mod output;
 pub mod planning;
 pub mod review_gate;
@@ -42,5 +41,6 @@ pub use review_gate::{
 pub use rpc_bridge::{RpcPlanSession, RpcReviewFactory, RpcReviewSession};
 
 pub use doc::fix::DocFixSopLoop;
+pub use doc::prompts::{DOC_REMEDIATION_PREFIX, DOCS_DIR as DOCGEN_DOCS_DIR};
 pub use doc::protocol::{parse_doc_complete, parse_doc_review, DocRoute, DocVerdict, DocReviewReport};
-pub use doc_from_zero::{DocReport, DOCS_DIR as DOCGEN_DOCS_DIR, DOC_REMEDIATION_PREFIX};
+pub use doc::runner::DocReport;

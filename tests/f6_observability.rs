@@ -1081,7 +1081,7 @@ fn each_mvp_and_doc_loop_logs_its_own_fix_pair() {
             "单元 1 改完\n<doc-complete>1</doc-complete>",
         ]);
         let factory = ScriptedFactory::new(&[DOC_REVIEW_FAIL, DOC_REVIEW_PASS]);
-        devforge::sop::doc_from_zero::run_pipeline(
+        devforge::sop::doc::run_pipeline(
             agent,
             std::sync::Arc::new(std::sync::Mutex::new(factory)),
             store,
@@ -1199,7 +1199,7 @@ fn the_doc_from_zero_review_open_round_is_the_bump_review_count() {
     );
     let agent = ScriptedAgent::new(&["单元 1 写完\n<doc-complete>1</doc-complete>"]);
     let factory = ScriptedFactory::new(&[DOC_REVIEW_PASS]);
-    devforge::sop::doc_from_zero::run_pipeline(
+    devforge::sop::doc::run_pipeline(
         agent,
         std::sync::Arc::new(std::sync::Mutex::new(factory)),
         store,
@@ -1221,7 +1221,7 @@ fn the_doc_from_zero_review_open_round_is_the_bump_review_count() {
         "轮次 = bump_review 的 1-based 计数（首审 = 1）：{opens:?}"
     );
     assert!(
-        opens[0].contains("\"target\":\"devforge::sop::doc_from_zero\""),
+        opens[0].contains("\"target\":\"devforge::sop::doc::runner\""),
         "target 必须是发出它的模块：{opens:?}"
     );
 }

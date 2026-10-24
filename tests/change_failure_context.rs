@@ -52,7 +52,7 @@ const WHITELIST: &[&str] = &[
     "src/sop/planning.rs",
     "src/sop/coding.rs",
     "src/sop/testing.rs",
-    "src/sop/doc_from_zero.rs",
+    "src/sop/doc/runner.rs",
     "src/sop/doc/fix.rs",
     "tests/change_ask_ring.rs",
     "tests/change_failure_context.rs",

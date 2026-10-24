@@ -792,7 +792,7 @@ fn quality_failure_sites_do_not_use_system_error() {
         ("testing", include_str!("../sop/testing.rs"), "stage-verdict/next），判定为基础设施故障"),
         (
             "doc_from_zero",
-            include_str!("../sop/doc_from_zero.rs"),
+            include_str!("../sop/doc/runner.rs"),
             "doc-verdict/route 块），判定为基础设施故障",
         ),
     ];

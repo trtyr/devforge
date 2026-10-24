@@ -13,7 +13,7 @@ use crate::engine::process::SpawnSpec;
 use crate::error::{Context as _, Result};
 use crate::observability::watchdog::run_with_watchdog;
 use crate::server::RelayUserLink;
-use crate::sop::doc_from_zero::{DOCS_DIR, META_DIR};
+use crate::sop::doc::{DOCS_DIR, META_DIR};
 use crate::sop::planning::ReviewSessionFactory;
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
 
@@ -273,7 +273,7 @@ impl BuiltinRpcEngine {
                 // DR-14/ARC-R1：pipeline 是唯一 runner（审查(N) 与 写作(N+1) 重叠）；
                 // 工厂经 Arc<Mutex> 共享给审查线程。
                 let factory = std::sync::Arc::new(std::sync::Mutex::new(factory));
-                let report = crate::sop::doc_from_zero::run_pipeline(
+                let report = crate::sop::doc::run_pipeline(
                     agent,
                     factory,
                     store,
@@ -341,7 +341,7 @@ impl BuiltinRpcEngine {
                 let mut final_factory =
                     RpcReviewFactory::per_round_in(final_review_root, "doc-review", final_session_root, final_blackboard);
                 let mut session = final_factory.open()?;
-                let final_text = session.review(&crate::sop::doc_from_zero::doc_final_instruction(&full))?;
+                let final_text = session.review(&crate::sop::doc::prompts::doc_final_instruction(&full))?;
                 drop(session);
                 let verdict = crate::sop::doc::protocol::parse_doc_review(&final_text)?;
 

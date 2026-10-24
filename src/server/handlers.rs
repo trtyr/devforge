@@ -408,10 +408,10 @@ pub async fn get_run_detail(
         );
         match s.load().state() {
             Some(state) => {
-                let done = crate::sop::doc_from_zero::done_units(state);
+                let done = crate::sop::doc::state::done_units(state);
                 json!({
                     "done": done.len(),
-                    "total": crate::sop::doc_from_zero::units_total(state),
+                    "total": crate::sop::doc::state::units_total(state),
                     "units_done": done,
                 })
             }
