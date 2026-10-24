@@ -270,7 +270,7 @@ fn server_fixture(hang_ms: u64, fail_system_times: u32) -> ServerFixture {
             fail_system_times: failures.clone(),
         })
     });
-    let bus = Arc::new(devforge::server::EventBus::new());
+    let bus = Arc::new(devforge::observability::events::EventBus::new());
     let ui = Arc::new(devforge::server::UiRelay::new(bus.clone()));
     let mut state = devforge::server::ServerState::new(
         Store::new(),
@@ -669,7 +669,7 @@ fn a_missing_profile_fails_the_run_explicitly_without_a_restart() {
         session_root: dir.path().join("sessions"),
         plans_root: dir.path().join("plans"),
         ui: Arc::new(devforge::server::UiRelay::new(Arc::new(
-            devforge::server::EventBus::new(),
+            devforge::observability::events::EventBus::new(),
         ))),
         codegraph_bin: PathBuf::from("codegraph"),
         idle_ms: None,
@@ -697,7 +697,7 @@ fn a_missing_profile_is_a_config_error_and_is_not_an_infrastructure_failure() {
         session_root: dir.path().join("sessions"),
         plans_root: dir.path().join("plans"),
         ui: Arc::new(devforge::server::UiRelay::new(Arc::new(
-            devforge::server::EventBus::new(),
+            devforge::observability::events::EventBus::new(),
         ))),
         codegraph_bin: PathBuf::from("codegraph"),
         idle_ms: None,
@@ -1907,8 +1907,10 @@ fn the_heartbeat_is_refreshed_by_the_watchdog_for_every_sop_including_change() {
             "{name} 必须经过 watchdog（否则长 agent 轮里心跳陈旧）：{body}"
         );
     }
-    // watchdog 线程本身就是心跳低频兜底的挂载点
-    let watchdog = fn_body(&server, "fn run_with_watchdog")
+    // watchdog 线程本身就是心跳低频兜底的挂载点（ARC-R2：定义已迁 observability/watchdog.rs）
+    let watchdog_src = std::fs::read_to_string(repo_root().join("src/observability/watchdog.rs"))
+        .expect("读 watchdog");
+    let watchdog = fn_body(&watchdog_src, "fn run_with_watchdog")
         .expect("源码里应能找到 run_with_watchdog（watchdog 是兜底刷新的挂载点）");
     assert!(
         watchdog.contains("touch_run("),

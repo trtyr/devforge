@@ -174,7 +174,7 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|n| *n > 0);
-    let bus = std::sync::Arc::new(devforge::server::EventBus::new());
+    let bus = std::sync::Arc::new(devforge::observability::events::EventBus::new());
     let ui = Arc::new(devforge::server::UiRelay::new(bus.clone()));
     let engine_profiles = profiles_root.clone();
     let engine_sessions = sessions_root.clone();

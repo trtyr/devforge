@@ -363,8 +363,12 @@ pub fn error_chain(e: &DevforgeError) -> String {
 
 /// 心跳文件（run 活性证据）。
 pub mod heartbeat;
+/// 事件总线（SSE 单源序号/留档/广播；ARC-R2 自 server 迁入）。
+pub mod events;
 /// 死亡取证（panic 墓碑）。
 pub mod tombstone;
+/// 失活收割看门狗（会话指纹活性监测；ARC-R2 自 server 迁入）。
+pub mod watchdog;
 
 /// 测试支撑：把一段闭包里的 tracing 日志收成 JSONL 全文（行为断言核对「日志面」用）。
 ///
