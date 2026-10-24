@@ -71,7 +71,7 @@ devforge 教 doc-agent 的纪律——4K 片段、先读清单、codegraph-first
 | 序 | 活 | 主治特征 |
 | --- | --- | --- |
 | R1 | pipeline 定唯一 runner，删串行路径与 env 开关【✅ 2026-10-24 b1a88da，操作员亲自执行（底座手术期 devforge 不自举）】 | 边界完整性 + 控制耦合退役 |
-| R2 | server/mod.rs 拆解：events.rs / engine/builtin.rs（接线闭包迁 sop/）/ http.rs；watchdog 归 observability；目标 ≤500 行/文件 | 爆炸半径 + 可导航性 |
+| R2 | server/mod.rs 拆解：events.rs / engine/builtin.rs（接线闭包迁 sop/）/ http.rs；watchdog 归 observability；目标 ≤500 行/文件【✅ 2026-10-24 d5a7ab3+174eb3a+64dc347+0a38dab+f8e3295，操作员亲自执行；拆出 events/watchdog/gate/http/builtin/doc_wiring/builtin_tests 七文件全 ≤500，mod.rs 342；接线闭包落 engine/doc_wiring.rs 为 R3 中转站，拆解方案与偏差记录见 ideas/arc-r2-split-plan-20261024.md】 | 爆炸半径 + 可导航性 |
 | R3 | 按五阶段剧本垂直切片：sop/doc/（runner+协议+提示词+测试同居）、sop/change/ 等 | 局部性 |
 | R4 | 提示词外置 assets/prompts/*.md（include_str! 保单二进制） | 局部性（规则单点） |
 | R5 | 横切策略（重试/干预/事件）收敛单点模块 | 横切耦合 |
