@@ -181,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
     let engine_plans = plans_root.clone();
     let engine_ui = ui.clone();
     let engine_factory = Box::new(move || -> Box<dyn devforge::domain::runner::RunEngine + Send> {
-        Box::new(devforge::server::BuiltinRpcEngine {
+        Box::new(devforge::engine::builtin::BuiltinRpcEngine {
             profile_root: engine_profiles.clone(),
             session_root: engine_sessions.clone(),
             plans_root: engine_plans.clone(),

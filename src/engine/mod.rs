@@ -6,6 +6,8 @@
 //! - [`client`]：生命周期客户端（保活 agent_settled / 唤醒 prompt / 终止关 stdin）
 
 pub mod client;
+pub mod builtin;
+pub mod doc_wiring;
 pub mod ledger;
 pub mod process;
 pub mod protocol;

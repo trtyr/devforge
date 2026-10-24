@@ -664,7 +664,7 @@ fn a_missing_profile_fails_the_run_explicitly_without_a_restart() {
     // 错实现形态：profile 缺失时错误文本不点名缺失的 profile / 路径，或被当成基础设施故障盲重启
     // → 本用例必须变红
     let dir = tempfile::tempdir().expect("临时目录");
-    let mut engine = devforge::server::BuiltinRpcEngine {
+    let mut engine = devforge::engine::builtin::BuiltinRpcEngine {
         profile_root: dir.path().join("profiles"),
         session_root: dir.path().join("sessions"),
         plans_root: dir.path().join("plans"),
@@ -692,7 +692,7 @@ fn a_missing_profile_is_a_config_error_and_is_not_an_infrastructure_failure() {
     // 错实现形态：错误种类仍是 System（会被 is_infra_failure 判成基础设施故障 → 盲重启 3 次）
     // → 本用例必须变红
     let dir = tempfile::tempdir().expect("临时目录");
-    let mut engine = devforge::server::BuiltinRpcEngine {
+    let mut engine = devforge::engine::builtin::BuiltinRpcEngine {
         profile_root: dir.path().join("profiles"),
         session_root: dir.path().join("sessions"),
         plans_root: dir.path().join("plans"),
@@ -1889,13 +1889,15 @@ fn the_heartbeat_is_refreshed_by_the_watchdog_for_every_sop_including_change() {
     assert_eq!(after.phase, "plan", "兜底刷新不改阶段");
 
     // 兜底刷新要覆盖**六个 SOP**（change 也不例外）
-    let server = std::fs::read_to_string(repo_root().join("src/server/mod.rs")).expect("读 server");
+    let server = std::fs::read_to_string(repo_root().join("src/engine/builtin.rs")).expect("读 server");
+    let doc_wiring =
+        std::fs::read_to_string(repo_root().join("src/engine/doc_wiring.rs")).expect("读接线");
     let change =
         std::fs::read_to_string(repo_root().join("src/server/change_engine.rs")).expect("读引擎");
     for (name, text) in [
         ("fn run_planning", server.as_str()),
         ("fn run_coding", server.as_str()),
-        ("fn run_doc_from_zero", server.as_str()),
+        ("fn run_doc_from_zero", doc_wiring.as_str()),
         ("fn run_testing", server.as_str()),
         ("fn run_doc_fix", server.as_str()),
         ("fn run_change", change.as_str()),

@@ -827,10 +827,13 @@ fn quality_failure_sites_do_not_use_system_error() {
         let near = &gate[at..(at + 200).min(gate.len())];
         assert!(near.contains(needle), "{why}：{near}");
     }
-    let server = include_str!("mod.rs");
+    // ARC-R2：终审文案随 run_doc_from_zero 迁入 engine/doc_wiring.rs，守卫扫描面跟迁移走
+    let doc_wiring = include_str!("../engine/doc_wiring.rs");
     for anchor in ["终审未通过", "终审输出协议违例"] {
-        let at = server.find(anchor).unwrap_or_else(|| panic!("找不到 {anchor}"));
-        let near = &server[at.saturating_sub(200)..(at + 200).min(server.len())];
+        let at = doc_wiring
+            .find(anchor)
+            .unwrap_or_else(|| panic!("找不到 {anchor}"));
+        let near = &doc_wiring[at.saturating_sub(200)..(at + 200).min(doc_wiring.len())];
         assert!(
             near.contains("DevforgeError::Quality"),
             "{anchor} 必须返回 Quality（不被重试），附近：{near}"
@@ -841,7 +844,7 @@ fn quality_failure_sites_do_not_use_system_error() {
 #[test]
 fn quality_error_becomes_failed_and_is_not_retried() {
     // plan 010 T006/D004：质量失败→明确的 Failed（不进重启分支）；System 仍向上抛（可重启）
-    let engine = super::BuiltinRpcEngine {
+    let engine = crate::engine::builtin::BuiltinRpcEngine {
         profile_root: std::path::PathBuf::from("/tmp"),
         session_root: std::path::PathBuf::from("/tmp"),
         plans_root: std::path::PathBuf::from("/tmp"),

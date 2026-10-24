@@ -235,7 +235,7 @@ pub async fn start_task(
             .map_err(ApiError::from)?;
     // 渲染闸门（用户裁决 A）：开跑前等「本 run 所需 profile 的 settings.json 落盘」
     // 或「渲染结束」——等的是 awaitable 原语，不占 tokio worker（其它端点照常被处理）。
-    let required = crate::server::BuiltinRpcEngine::profiles_for_sop(&sop_name);
+    let required = crate::engine::builtin::BuiltinRpcEngine::profiles_for_sop(&sop_name);
     st.render_gate
         .wait_for_profiles(&st.profiles_root, required)
         .await;
