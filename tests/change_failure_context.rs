@@ -42,7 +42,7 @@ const WHITELIST: &[&str] = &[
     "src/observability/tombstone.rs",
     "src/lib.rs",
     "src/main.rs",
-    "src/engine/retry.rs",
+    "src/engine/policy.rs",
     "src/engine/client.rs",
     "src/server/mod.rs",
     "src/server/handlers.rs",

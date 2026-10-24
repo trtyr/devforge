@@ -929,7 +929,7 @@ async fn persistent_infra_failures_fail_after_four_attempts() {
 /// 看不出「为什么重启」→ 本用例必须变红。
 ///
 /// 为什么要跑**真实 run 路径**且**跑在本线程**：「自动重启 run」这条 WARN 只在服务端落
-/// （`src/server/mod.rs`），ERROR 条目只在重试层落（`src/engine/retry.rs`）——两处落点必须
+/// （`src/server/mod.rs`），ERROR 条目只在重试层落（`src/engine/policy.rs`）——两处落点必须
 /// 出现在**同一条日志流**里才有先后可言；而捕获器按线程分流（`observability::test_support`），
 /// 经 HTTP `start` 的那条路会把 run 扔进别的线程 → 两处落点就散在不同缓冲里，看不到顺序。
 #[tokio::test]

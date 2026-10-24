@@ -28,6 +28,7 @@ const VAGUE_ACCEPTANCE: [&str; 4] = ["功能正常", "正常工作", "体验良�
 pub const PATH_MIGRATIONS: &[(&str, &str)] = &[
     ("src/sop/doc_fix.rs", "src/sop/doc/fix.rs"),
     ("src/sop/doc_from_zero.rs", "src/sop/doc/runner.rs"),
+    ("src/engine/retry.rs", "src/engine/policy.rs"),
 ];
 
 /// 把历史路径归一化到现状路径（不在迁移表中的路径原样返回）。
