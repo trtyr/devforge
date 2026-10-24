@@ -362,6 +362,30 @@ fn contract_boundary_check(
             return Ok(outcome);
         }
     };
+    // ① forbidden_paths 绝对禁令（P012 挂账补全）：命中即越界，优先于 owned 覆盖判定——
+    //    即便文件在 owned 内，禁改条目仍然生效（如 assets/prompts/** 等系统资产）。
+    let forbidden_hits: Vec<&String> = changed
+        .iter()
+        .filter(|f| contract.hits_forbidden(f))
+        .collect();
+    if !forbidden_hits.is_empty() {
+        let reason = format!(
+            "触碰禁改路径：{} 个文件命中 contract.forbidden_paths（base {base}）：{}",
+            forbidden_hits.len(),
+            forbidden_hits.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        );
+        tracing::warn!(component = "boundary", event = "boundary.violation", forbidden = true, "{reason}");
+        state.emit(json!({
+            "type": "boundary.violation",
+            "project": project,
+            "task": task_id,
+            "base_rev": base,
+            "forbidden": true,
+            "violations": forbidden_hits,
+        }));
+        return Ok(RunOutcome::Failed { reason });
+    }
+    // ② owned_paths 覆盖判定（M0 原有）。
     let violations: Vec<&String> = changed.iter().filter(|f| !contract.covers(f)).collect();
     if violations.is_empty() {
         state.emit(json!({

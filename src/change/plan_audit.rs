@@ -259,6 +259,31 @@ impl PlanAudit {
 
 /// 审计计划文本。`repo` 用于判定路径是否存在。
 pub fn audit(plan: &str, repo: &Path) -> PlanAudit {
+    audit_with_contract(plan, repo, None)
+}
+
+/// 审计计划文本（带契约，P012 挂账①）：契约存在时校验「白名单 ⊆ 契约 owned_paths」——
+/// 提案越界在计划阶段就打回（早失败），不等引擎终校验（晚失败）。
+pub fn audit_with_contract(
+    plan: &str,
+    repo: &Path,
+    contract: Option<&crate::domain::contract::WorkItemContract>,
+) -> PlanAudit {
+    let mut a = audit_inner(plan, repo);
+    if let Some(c) = contract {
+        let whitelist = section_paths(plan, "白名单");
+        for f in &whitelist {
+            if !c.covers(f) {
+                a.issues.push(format!(
+                    "白名单里的 {f} 超出契约 owned_paths（提案越界：申报与契约不一致，须改计划或改契约）"
+                ));
+            }
+        }
+    }
+    a
+}
+
+fn audit_inner(plan: &str, repo: &Path) -> PlanAudit {
     let mut a = PlanAudit::default();
 
     for block in PLAN_BLOCKS {
@@ -440,10 +465,19 @@ pub fn review_instruction(
 
 /// 解析计划文本并审计（供编排层调用）。
 pub fn audit_plan_file(plan_path: &Path, repo: &Path) -> Result<PlanAudit> {
+    audit_plan_file_with_contract(plan_path, repo, None)
+}
+
+/// 契约感知版（P012 挂账①）：编排层把 task 契约传进来，提案越界在 plan 审查即打回。
+pub fn audit_plan_file_with_contract(
+    plan_path: &Path,
+    repo: &Path,
+    contract: Option<&crate::domain::contract::WorkItemContract>,
+) -> Result<PlanAudit> {
     let text = std::fs::read_to_string(plan_path).map_err(|e| {
         crate::error::DevforgeError::System(format!("读计划 {} 失败：{e}", plan_path.display()))
     })?;
-    Ok(audit(&text, repo))
+    Ok(audit_with_contract(&text, repo, contract))
 }
 
 #[cfg(test)]
@@ -556,6 +590,38 @@ mod tests {
         let plan = good_plan().replace("## 4 白名单\n`src/a.rs`\n`tests/a_test.rs`", "## 4 白名单\n");
         let a = audit(&plan, r.path());
         assert!(a.issues.iter().any(|i| i.contains("白名单为空")));
+    }
+
+    #[test]
+    fn whitelist_outside_contract_is_flagged_with_contract_awareness() {
+        // P012 挂账①：契约存在时，白名单超出契约 owned_paths = 提案越界（plan 阶段即打回）
+        let r = repo();
+        let plan = good_plan();
+        // 无契约：不产生越界 issue（向后兼容）
+        let a = audit(&plan, r.path());
+        assert!(!a.issues.iter().any(|i| i.contains("超出契约")));
+        // 契约只覆盖 docs/**：白名单的 src/a.rs 越界
+        let contract = crate::domain::contract::WorkItemContract {
+            owned_paths: vec!["docs/**".into()],
+            forbidden_paths: vec![],
+            base_rev: None,
+            isolation: crate::domain::contract::Isolation::None,
+        };
+        let a = audit_with_contract(&plan, r.path(), Some(&contract));
+        assert!(
+            a.issues.iter().any(|i| i.contains("src/a.rs") && i.contains("超出契约")),
+            "提案越界应被打回：{:?}",
+            a.issues
+        );
+        // 契约覆盖 src/** + tests/**：全白名单合规 → 无越界 issue
+        let contract = crate::domain::contract::WorkItemContract {
+            owned_paths: vec!["src/**".into(), "tests/**".into()],
+            forbidden_paths: vec![],
+            base_rev: None,
+            isolation: crate::domain::contract::Isolation::None,
+        };
+        let a = audit_with_contract(&plan, r.path(), Some(&contract));
+        assert!(!a.issues.iter().any(|i| i.contains("超出契约")));
     }
 
     #[test]

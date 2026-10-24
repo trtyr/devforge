@@ -135,6 +135,7 @@ fn fixture(with_git: bool) -> Fixture {
             baseline,
             requirement: "把 a 改成 b".into(),
             doc_level: DocLevel::None,
+            contract: None,
         },
         tmp,
     }

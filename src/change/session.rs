@@ -39,6 +39,8 @@ pub struct ChangeCtx {
     /// 用户需求原文（plan kickoff 要用）。
     pub requirement: String,
     pub doc_level: DocLevel,
+    /// 工作项契约（P012 挂账：plan 审查时校验白名单 ⊆ 契约 owned_paths；None = 无契约不校验）。
+    pub contract: Option<crate::domain::contract::WorkItemContract>,
 }
 
 impl ChangeCtx {
@@ -307,11 +309,15 @@ impl ProdChangeSession {
                 issues: verdicts.issues,
             });
         }
-        let audit = crate::change::plan_audit::audit_plan_file(&plan_path, &self.ctx.repo).map_err(
-            |e| {
+        let audit =
+            crate::change::plan_audit::audit_plan_file_with_contract(
+                &plan_path,
+                &self.ctx.repo,
+                self.ctx.contract.as_ref(),
+            )
+            .map_err(|e| {
                 DevforgeError::Quality(format!("计划文件不可读（{}）：{e}", plan_path.display()))
-            },
-        )?;
+            })?;
         // plan 侧的审查实例数（= 审查轮次）落字段：报告里的轮次如实反映重审（D026 · Q12）。
         let (report, plan_instances) = review_once(
             &mut *self.plan_review,

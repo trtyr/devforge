@@ -175,7 +175,7 @@ impl BuiltinRpcEngine {
             Err(_) => (Vec::new(), Vec::new()),
         };
 
-        let ctx = build_ctx(&prep, &run_ws, &requirement);
+        let ctx = build_ctx(&prep, &run_ws, &requirement, task.contract.clone());
 
         // 会话装配：三个干活（长驻）+ 三个审查（每轮新实例，用完即弃）
         let run_id = run.id.0.clone();
@@ -304,7 +304,12 @@ impl BuiltinRpcEngine {
 }
 
 /// 把门 0 产出装配成会话上下文（抽出来单测：真实 run 不需要 pi 也能验路径）。
-pub fn build_ctx(prep: &crate::change::prepare::ChangePrep, repo: &Path, requirement: &str) -> ChangeCtx {
+pub fn build_ctx(
+    prep: &crate::change::prepare::ChangePrep,
+    repo: &Path,
+    requirement: &str,
+    contract: Option<crate::domain::contract::WorkItemContract>,
+) -> ChangeCtx {
     ChangeCtx {
         repo: repo.to_path_buf(),
         blackboard: prep.blackboard.clone(),
@@ -313,6 +318,7 @@ pub fn build_ctx(prep: &crate::change::prepare::ChangePrep, repo: &Path, require
         baseline: prep.baseline.sha.clone(),
         requirement: requirement.to_string(),
         doc_level: prep.doc_level,
+        contract,
     }
 }
 
@@ -385,7 +391,7 @@ mod tests {
             (2026, 10, 20),
         )
         .unwrap();
-        let ctx = build_ctx(&prep, &repo, "add x");
+        let ctx = build_ctx(&prep, &repo, "add x", None);
         assert_eq!(
             ctx.plan_path(),
             repo.join("docs/plantree/changes")

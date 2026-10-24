@@ -173,3 +173,55 @@ async fn in_contract_changes_pass_the_boundary_check() {
         "契约内改动不得拦截：{body}"
     );
 }
+
+#[tokio::test]
+async fn forbidden_paths_fail_even_inside_owned() {
+    // P012 挂账补全：forbidden_paths 绝对禁令——文件在 owned（src/**）内、
+    // 但命中 forbidden（src/secret.rs）→ 必 FAIL（禁改优先于覆盖）
+    let (g, base) = git_repo_with_base();
+    std::fs::create_dir_all(g.path().join("src")).unwrap();
+    std::fs::write(g.path().join("src/secret.rs"), "touched forbidden\n").unwrap();
+    commit_all(&g, "touch-forbidden");
+
+    let f = fixture();
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": g.path().to_str().unwrap()})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({
+            "id": "t",
+            "sop": "doc-from-zero",
+            "contract": {
+                "owned_paths": ["src/**"],
+                "forbidden_paths": ["src/secret.rs"],
+                "base_rev": base,
+                "isolation": "none",
+            },
+        })),
+    )
+    .await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    wait_settled(&f, "p", "t").await;
+
+    let body = body_json(
+        send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await,
+    )
+    .await;
+    assert_eq!(
+        body["runs"][0]["status"], "Failed",
+        "禁改命中即使在 owned 内也必须 FAIL：{body}"
+    );
+    let replayed = f.state.bus.replay_after(0);
+    let hit = replayed
+        .iter()
+        .find(|(_, e)| e.contains("boundary.violation") && e.contains("forbidden"))
+        .expect("应有 forbidden 性质的 violation 事件");
+    assert!(hit.1.contains("src/secret.rs"), "事件应指认禁改文件：{}", hit.1);
+}

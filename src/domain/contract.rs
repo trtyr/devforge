@@ -38,6 +38,11 @@ impl WorkItemContract {
     pub fn covers(&self, path: &str) -> bool {
         self.owned_paths.iter().any(|pat| path_covered_by(path, pat))
     }
+
+    /// forbidden_paths 命中判定（P012 挂账补全）：绝对禁令，独立于 owned 覆盖。
+    pub fn hits_forbidden(&self, path: &str) -> bool {
+        self.forbidden_paths.iter().any(|p| path_covered_by(path, p))
+    }
 }
 
 /// 单条目匹配（`WorkItemContract::covers` 的实现细节）。
