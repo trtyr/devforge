@@ -805,3 +805,60 @@ mod tests {
         );
     }
 }
+
+// ---------- P012 M3 · 集成队列（merge queue） ----------
+
+#[derive(Deserialize)]
+pub struct EnqueueCandidateReq {
+    /// 来源任务 id（分支 task/{id} 的所有者）。
+    pub task_id: String,
+    /// 冻结 commit（worktree freeze 产物）。
+    pub frozen_sha: String,
+    /// 候选基点。
+    pub base_rev: String,
+    /// 契约边界（组合验证后复核）。
+    #[serde(default)]
+    pub owned_paths: Vec<String>,
+}
+
+/// 入队：候选冻结件登记（集成由后台消费者串行执行——M4 调度器接入前为手动触发的
+/// `integrate_next`；本端点只负责登记与可见性）。
+pub async fn enqueue_candidate(
+    State(st): State<SharedState>,
+    Path(project): Path<String>,
+    Json(req): Json<EnqueueCandidateReq>,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    let mut q = crate::integration::MergeQueue::load(&st.plans_root, &project)?;
+    let cand = crate::integration::Candidate {
+        task_id: req.task_id.clone(),
+        frozen_sha: req.frozen_sha,
+        base_rev: req.base_rev,
+        owned_paths: req.owned_paths,
+        status: crate::integration::CandidateStatus::Pending,
+        evidence_paths: vec![],
+    };
+    q.enqueue(cand);
+    q.save()?;
+    st.emit(json!({
+        "type": "integration.enqueued",
+        "project": project,
+        "task": req.task_id,
+    }));
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({"queued": true, "depth": q.candidates.len()})),
+    ))
+}
+
+/// 队列状态：全部候选与各自状态（Pending/Integrated/NeedsRepair/NeedsRebase）。
+pub async fn get_integration_queue(
+    State(st): State<SharedState>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let q = crate::integration::MergeQueue::load(&st.plans_root, &project)?;
+    Ok(Json(json!({
+        "project": project,
+        "depth": q.candidates.len(),
+        "candidates": q.candidates,
+    })))
+}

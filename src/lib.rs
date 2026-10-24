@@ -11,6 +11,7 @@ pub mod change;
 pub mod docgen;
 pub mod domain;
 pub mod engine;
+pub mod integration;
 pub mod error;
 pub mod logging;
 pub mod observability;

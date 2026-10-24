@@ -46,6 +46,10 @@ pub fn build_router(state: SharedState) -> Router {
         "/projects/{name}/tasks/{task}/runs",
         get(handlers::list_runs),
     )
+        .route(
+        "/projects/{name}/integration/queue",
+        post(handlers::enqueue_candidate).get(handlers::get_integration_queue),
+    )
     .route(
         "/projects/{name}/tasks/{task}/runs/{run}",
         get(handlers::get_run_detail),
