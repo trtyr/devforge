@@ -111,6 +111,30 @@ pub async fn create_project(
         store.remove_project(&created.name);
         return Err(ApiError::from(e));
     }
+    // P012 M1 · T1.3：接管清理——注册项目时扫描该仓孤儿 worktree（重启后首个 POST 即钩子；
+    // 注册时不可能有活 run：run 需要 task，task 需要项目）
+    match crate::workspace::scan_orphans(&created.local_path) {
+        Ok(orphans) if !orphans.is_empty() => {
+            for o in &orphans {
+                tracing::warn!(
+                    component = "workspace",
+                    task = %o.task_id,
+                    path = %o.path.display(),
+                    "清理孤儿 worktree"
+                );
+                let _ = crate::workspace::remove_orphan(&created.local_path, o);
+            }
+            st.emit(json!({
+                "type": "workspace.orphans_cleaned",
+                "project": created.name,
+                "count": orphans.len(),
+            }));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(component = "workspace", error = %e, "孤儿扫描失败（不阻塞注册）");
+        }
+    }
     st.emit(json!({"type": "project.created", "project": created.name}));
     Ok((StatusCode::CREATED, Json(created)))
 }

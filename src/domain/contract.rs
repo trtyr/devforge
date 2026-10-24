@@ -6,12 +6,14 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 隔离模式（T0.4）：当前唯一合法值 `none`（分支直改）——worktree/沙箱在 M1/M2 加入枚举。
+/// 隔离模式（T0.4）：`none`（分支直改，现状）/ `worktree`（M1：独立 git worktree 全生命周期）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Isolation {
     /// 当前分支直改（现状固化，向后兼容的枚举起点）。
     None,
+    /// 独立 worktree（M1）：create → spawn cwd = worktree → freeze 候选 → remove（分支保留）。
+    Worktree,
 }
 
 /// 工作项契约：task 创建时提交，不可变（改契约 = 新工作项）。

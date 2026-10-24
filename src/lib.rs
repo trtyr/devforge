@@ -17,3 +17,4 @@ pub mod observability;
 pub mod runstate;
 pub mod server;
 pub mod sop;
+pub mod workspace;

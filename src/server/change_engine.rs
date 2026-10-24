@@ -75,11 +75,59 @@ impl BuiltinRpcEngine {
                 task.project, task.id
             )));
         }
+        // P012 M1 · T1.2：worktree 隔离——契约带 worktree 时，本 run 的全部读写落在
+        // 独立 worktree（create → spawn cwd = worktree → freeze 候选 → remove，分支保留）。
+        // guard 负责 Ok/Err 两路都清理；冻结 sha 在 Ok 分支落黑板供 diff 归因。
+        struct WsCleanup<'a> {
+            ws: Option<crate::workspace::Workspace>,
+            repo: &'a std::path::Path,
+        }
+        impl Drop for WsCleanup<'_> {
+            fn drop(&mut self) {
+                if let Some(ws) = self.ws.take() {
+                    let _ = ws.remove(self.repo);
+                }
+            }
+        }
+        let ws_guard = {
+            let want = task
+                .contract
+                .as_ref()
+                .map(|c| matches!(c.isolation, crate::domain::contract::Isolation::Worktree))
+                .unwrap_or(false);
+            if want {
+                let base = task
+                    .contract
+                    .as_ref()
+                    .and_then(|c| c.base_rev.clone())
+                    .unwrap_or_else(|| "HEAD".into());
+                let ws = crate::workspace::Workspace::ensure(&crate::workspace::WorkspaceSpec {
+                    repo: task.workspace.clone(),
+                    task_id: task.id.clone(),
+                    base_rev: base,
+                })?;
+                tracing::info!(
+                    component = "change-engine",
+                    path = %ws.path.display(),
+                    "worktree 工作区已创建（本 run 全部读写落在其中）"
+                );
+                WsCleanup {
+                    ws: Some(ws),
+                    repo: &task.workspace,
+                }
+            } else {
+                WsCleanup { ws: None, repo: &task.workspace }
+            }
+        };
+        let run_ws = match &ws_guard.ws {
+            Some(ws) => ws.path.clone(),
+            None => task.workspace.clone(),
+        };
         for p in CHANGE_PROFILES {
             self.require_profile(p)?;
         }
         // change-plan-agent 被要求 codegraph-first：索引必须先建（与其他代码类 SOP 同口径）
-        crate::engine::builtin::preflight_codegraph(&task.workspace, &self.codegraph_bin);
+        crate::engine::builtin::preflight_codegraph(&run_ws, &self.codegraph_bin);
 
         let task_root = self.plans_root.join(&task.project).join(&task.id);
         std::fs::create_dir_all(&task_root).ctx("建任务黑板目录")?;
@@ -102,7 +150,7 @@ impl BuiltinRpcEngine {
         let today = today_parts();
         let prep = prepare(
             &self.plans_root,
-            &task.workspace,
+            &run_ws,
             &task.project,
             &task.id,
             &requirement,
@@ -127,7 +175,7 @@ impl BuiltinRpcEngine {
             Err(_) => (Vec::new(), Vec::new()),
         };
 
-        let ctx = build_ctx(&prep, &task.workspace, &requirement);
+        let ctx = build_ctx(&prep, &run_ws, &requirement);
 
         // 会话装配：三个干活（长驻）+ 三个审查（每轮新实例，用完即弃）
         let run_id = run.id.0.clone();
@@ -194,7 +242,7 @@ impl BuiltinRpcEngine {
         let started = std::time::Instant::now();
         let session_root = self.session_root.clone();
         let ui = self.ui.clone();
-        let workspace = task.workspace.clone();
+        let workspace = run_ws.clone();
         let change_id = prep.change_id.clone();
         let baseline = prep.baseline.sha.clone();
         let watch_dirs = session_dirs(&self.session_root).to_vec();
@@ -227,6 +275,19 @@ impl BuiltinRpcEngine {
         match sop_result {
             Ok(mut outcome) => {
                 let finalized = finalize(&mut outcome, &session_root, &workspace, started)?;
+                // P012 M1 · T1.1：候选冻结 commit 落黑板（diff 归因锚点）；随后 guard 清 worktree（分支保留）
+                if let Some(ws) = &ws_guard.ws {
+                    let frozen = ws.freeze()?;
+                    let frozen_path = self.plans_root.join(&task.project).join(&task.id).join("frozen-commit.txt");
+                    std::fs::write(&frozen_path, format!("{frozen}\n"))
+                        .ctx("写冻结 commit 记录")?;
+                    tracing::info!(
+                        component = "change-engine",
+                        frozen = %frozen,
+                        branch = %ws.branch,
+                        "候选已冻结（worktree 即将清理，分支保留）"
+                    );
+                }
                 tracing::info!(
                     component = "change-engine",
                     change_id = %change_id,
