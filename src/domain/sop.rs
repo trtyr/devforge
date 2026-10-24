@@ -49,6 +49,13 @@ pub const CHANGE_SOP: Sop = Sop {
     description: "既有仓 + 一句需求：门0（基线/doc_level/change-id）→ change-plan（codegraph 影响面 + 白名单 + 验收标准）→ 按步提交的 coding（越界必需申报）→ 回归优先的 testing（验收逐条对账）→ 引擎写报告",
 };
 
+/// 内置 SOP：全量代码审计（P013 · 从零审整仓，非 PR/diff：盘点→切片→四阶段审查→核验→分级报告）。
+pub const CODE_REVIEW_SOP: Sop = Sop {
+    id: "code-review",
+    name: "全量代码审计",
+    description: "对任意项目整仓审计（非 diff）：引擎盘点清单与切片（门0）→ audit-agent 逐批次综合六视角审查（正确性/错误处理/可观测/架构 AI-friendly/一致性/安全）→ 引擎核验过滤与去重分级 → 审计报告（JSON+MD）",
+};
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sop {
     /// 内置标识（任务绑定用，如 `"planning"`）。
@@ -74,6 +81,7 @@ impl SopRegistry {
                 DOC_FIX_SOP,
                 DOC_FROM_ZERO_SOP,
                 CHANGE_SOP,
+                CODE_REVIEW_SOP,
             ],
         }
     }
@@ -109,7 +117,7 @@ mod tests {
         let reg = SopRegistry::builtin();
         assert_eq!(
             reg.ids(),
-            vec!["planning", "coding", "testing", "doc-fix", "doc-from-zero", "change"]
+            vec!["planning", "coding", "testing", "doc-fix", "doc-from-zero", "change", "code-review"]
         );
         for id in reg.ids() {
             assert!(reg.validate(id).is_ok());

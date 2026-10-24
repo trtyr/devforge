@@ -115,8 +115,8 @@ fn builtin_has_eleven_agents_and_four_base_packages() {
     assert_eq!(m.base_packages, BASE_PACKAGES.iter().map(|s| s.to_string()).collect::<Vec<_>>());
     assert_eq!(
         m.agents.len(),
-        15,
-        "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双 + 变更编码双 + 变更测试双（P007/P008/P009）"
+        16,
+        "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双 + 变更编码双 + 变更测试双 + 审计单（P007/P008/P009/P013）"
     );
     // 差异化包仅 Plan Agent
     let pa = m.get_agent("plan-agent").unwrap();
@@ -268,7 +268,7 @@ fn coding_discipline_skill_goes_to_exactly_the_four_coding_agents() {
             "{name} 不该拿 coding-discipline skill"
         );
     }
-    assert_eq!(m.agents.len(), 15, "4 正 + 11 负 = 15");
+    assert_eq!(m.agents.len(), 16, "4 正 + 12 负 = 16（code-review 不带 coding-discipline，P013）");
 }
 
 #[test]

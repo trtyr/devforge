@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod change;
+pub mod audit;
 pub mod docgen;
 pub mod domain;
 pub mod engine;

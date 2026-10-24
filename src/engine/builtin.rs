@@ -72,6 +72,10 @@ impl RunEngine for BuiltinRpcEngine {
             "doc-fix" => self.run_doc_fix(task, run, control),
             "doc-from-zero" => self.run_doc_from_zero(task, run, control),
         "change" => self.run_change(task, run, control),
+        "code-review" => crate::audit::run_skeleton(
+            task,
+            &self.plans_root,
+        ),
             other => Err(crate::error::DevforgeError::System(format!(
                 "SOP `{other}` 未接线编排器（注册表与引擎必须同步）"
             ))),
@@ -92,6 +96,7 @@ impl BuiltinRpcEngine {
             "doc-from-zero" => &["doc-agent", "doc-review"],
             "doc-fix" => &["doc-fix", "doc-review"],
             "change" => &crate::server::change_engine::CHANGE_PROFILES,
+        "code-review" => &["code-review"],
             _ => &[],
         }
     }

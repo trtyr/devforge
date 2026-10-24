@@ -394,8 +394,8 @@ fn render_all_covers_every_agent() {
     let rendered = renderer(&manifest).render_all(root.path()).unwrap();
     assert_eq!(
         rendered.len(),
-        15,
-        "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双 + 变更编码双 + 变更测试双（P007/P008/P009）"
+        16,
+        "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双 + 变更编码双 + 变更测试双 + 审计单（P007/P008/P009/P013）"
     );
     for name in [
         "plan-agent",

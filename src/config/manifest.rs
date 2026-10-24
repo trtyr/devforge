@@ -91,6 +91,9 @@ pub const DOC_AGENT_PROMPT: &str = include_str!("../../assets/prompts/doc-agent.
 /// Doc Review 提示词（P007 T001 正稿；D004/D008 一致性审查落地，勿手改——改决策先改 plan tree）。
 pub const DOC_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/doc-review.md");
 
+/// Code Review Agent 提示词（P013 全量代码审计：批次审查官，六视角综合 + 结构化发现协议）。
+pub const CODE_REVIEW_AGENT_PROMPT: &str = include_str!("../../assets/prompts/code-review-agent.md");
+
 /// 模型管理面：系统级模型池条目。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelEntry {
@@ -462,6 +465,18 @@ impl ConfigManifest {
                     model: "grok-4.7".into(),
                     skills: vec![],
                     mcp: vec![],
+                    thinking_level: Some("medium".into()),
+                    path_permissions: None,
+                },
+                // P013：全量代码审计单 Agent（批次综合六视角；量大走便宜模型；
+                // codegraph 供 V5 一致性全调用点比对；CODING_AGENT_EXTRA 供只读检查工具）
+                AgentManifest {
+                    name: "code-review".into(),
+                    role_prompt: CODE_REVIEW_AGENT_PROMPT.into(),
+                    extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
+                    model: "deepseek-flash".into(),
+                    skills: vec!["rust-best-practices".into(), "python-best-practices".into(), "ts-js-best-practices".into(), "go-best-practices".into()],
+                    mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
                     path_permissions: None,
                 },
