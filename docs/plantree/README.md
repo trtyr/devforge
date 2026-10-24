@@ -28,6 +28,7 @@ DevForge：AI 自动化开发流水线——**服务器形态的编排平台**�
 | P006 | [coding-hardening](plans/006-coding-hardening/README.md) | sop/server/config | In Progress | 四项修复落地（F1/F2/P3/超时重设计），v4 e2e campaign 收官中 | 04b5d5b | TEST_REPORT v4 |
 | P007 | [testing-stage](plans/007-testing-stage/README.md) | sop/config/server | Ready | 定稿（Q001-Q009 关账，D001-D012 落档，T001-T008 分解完） | 2026-10-18 定稿 commit | 用户发令开工 |
 | P008 | [doc-from-zero](plans/008-doc-from-zero/README.md) | sop/config | Planning | 框架草案（四阶段：清单→并行写作→汇编→三查审计） | 2026-10-19 立项 | 用户看完框架后拍 Q001-Q006 |
+| P012 | [parallel-dev-base](plans/012-parallel-dev-base/README.md) | server/engine/sop/workspace(新)/sched(新) | Planning | Plan 定稿（M0-M5 六期，含 worktree 生命周期/沙箱 spawn/merge queue/调度准入），open-questions Q1-Q6 待拍 | 2026-10-24 立项（b921ffe 研究 + 本 plan） | Q1-Q6 拍板后开工；**执行人 = 操作员（底座手术不派工）** |
 
 ## Baseline
 
@@ -36,3 +37,6 @@ DevForge：AI 自动化开发流水线——**服务器形态的编排平台**�
 ## Ideas
 
 - [ideas/inbox.md](ideas/inbox.md) — 低承诺灵感池
+- [ideas/ai-friendly-findings-20261024.md](ideas/ai-friendly-findings-20261024.md) — AI friendly 协议/提示词面五案（AF-1/3/4 已拍板待派工）
+- [ideas/arch-ai-friendly-20261024.md](ideas/arch-ai-friendly-20261024.md) — AI friendly 代码结构面五病灶 + 还债路线 ARC-R1..R5
+- [ideas/real-run-doc-issues-20261023.md](ideas/real-run-doc-issues-20261023.md) — 真实仓首跑问题清单（DR-1..18，两批已修）
