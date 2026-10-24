@@ -3,26 +3,26 @@
 > 状态图例：☐ 待做 / ◐ 进行中 / ✅ 完成 / ⛔ 阻塞
 > 执行人：操作员（底座手术不派工）。每期收尾：全量测试绿 + 纯 API 验收 + commit。
 
-## M0 · 契约与测量（先行，1-2 天）
+## M0 · 契约与测量（先行，1-2 天）✅ 2026-10-24 1de960f
 
-- ☐ T0.1 `TaskManifest`/run 契约字段：`owned_paths: Vec<glob>`、`base_rev: Option<String>`、
+- ✅ T0.1 `TaskManifest`/run 契约字段：`owned_paths: Vec<glob>`、`base_rev: Option<String>`、
   `forbidden_paths`、`acceptance: Vec<String>`（evidence schema），入库 runstate
-- ☐ T0.2 change SOP 接契约：change_plan 产出 owned paths 提案 → 引擎校验执行期实际改动 ⊆ owned_paths，
+- ✅ T0.2 change SOP 接契约：change_plan 产出 owned paths 提案 → 引擎校验执行期实际改动 ⊆ owned_paths，
   越界即 FAIL（复用越界改动判据，D005 血统）
-- ☐ T0.3 串行分数测量：run 记录 spec（用户拍板）/implement/verify/integrate 四段时间戳，
+- ✅ T0.3 串行分数测量：run 记录 spec（用户拍板）/implement/verify/integrate 四段时间戳，
   events 端点透出；攒第一份 devforge 自举的串行分数数据
-- ☐ T0.4 现状固化：当前分支直改模式加 `isolation: "none"` 显式标记（向后兼容的枚举起点）
+- ✅ T0.4 现状固化：当前分支直改模式加 `isolation: "none"` 显式标记（向后兼容的枚举起点）
 
 **验收**：单任务带契约跑通；越界改动被拦；串行分数四段在 events 可查。
 
-## M1 · worktree 工作区生命周期（2-3 天）
+## M1 · worktree 工作区生命周期（2-3 天）✅ 2026-10-24 afe2c64
 
-- ☐ T1.1 工作区管理模块 `src/workspace/`：create（`git worktree add -b task/{id} @{base_rev}`）、
+- ✅ T1.1 工作区管理模块 `src/workspace/`：create（`git worktree add -b task/{id} @{base_rev}`）、
   freeze（候选 = 冻结 commit + evidence bundle 路径）、remove（含孤儿扫描）
-- ☐ T1.2 change SOP 迁入 worktree：spawn cwd = worktree；main 工作树受保护（引擎拒绝在
+- ✅ T1.2 change SOP 迁入 worktree：spawn cwd = worktree；main 工作树受保护（引擎拒绝在
   main 工作树跑 mutation 任务）
-- ☐ T1.3 崩溃清理：server 启动扫描孤儿 worktree/分支，清理所有权转移（按 work-item 记录处置）
-- ☐ T1.4 断点续跑与 worktree 对齐：resume 时校验 worktree 仍在且 base 未漂移，漂移则重建
+- ✅ T1.3 崩溃清理：server 启动扫描孤儿 worktree/分支，清理所有权转移（按 work-item 记录处置）
+- ✅ T1.4 断点续跑与 worktree 对齐：resume 时校验 worktree 仍在且 base 未漂移，漂移则重建
 
 **验收**：change 任务全生命周期在 worktree 内完成；kill -9 server 后重启能清孤儿；
 候选冻结 commit 可 diff 归因。
