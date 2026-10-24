@@ -231,6 +231,47 @@ pub fn map_intervention(
     }
 }
 
+/// 重启编排的记账（ARC-R5 自 server::run_in_background 闭包体平移）：attempt 递增落盘
+/// （审计用；断点本体由各 SOP 自己维护）+ 重启 WARN + run.retry 事件。
+/// 事件推送经 `notify_retry` 回调注入（server 的 emit 是 UI 中继能力，不反向依赖）。
+pub fn run_attempt_bookkeeping(
+    plans_root: &std::path::Path,
+    project: &str,
+    task_id: &str,
+    sop: &str,
+    run_id: &str,
+    attempt: u32,
+    notify_retry: impl FnOnce(serde_json::Value),
+) {
+    // attempt 递增落盘（审计用；断点本体由各 SOP 自己维护）
+    let store = crate::runstate::StateStore::new(
+        plans_root.to_path_buf(),
+        crate::runstate::StateKey::new(project, task_id, sop),
+    );
+    let mut rs = match store.load() {
+        crate::runstate::Loaded::Found(s) => s,
+        _ => store.fresh_state(),
+    };
+    rs.attempt = attempt;
+    if let Err(e) = store.save(&mut rs) {
+        tracing::warn!(component = "run", error = %e, "attempt 落盘失败");
+    }
+    tracing::warn!(
+        component = "run",
+        attempt,
+        project = %project,
+        task = %task_id,
+        "基础设施故障，自动重启 run（从断点继续）"
+    );
+    notify_retry(serde_json::json!({
+        "type": "run.retry",
+        "project": project,
+        "task": task_id,
+        "run_id": run_id,
+        "attempt": attempt,
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

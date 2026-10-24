@@ -255,33 +255,16 @@ pub fn run_in_background(
         (project.clone(), task_id.clone(), run.id.0.clone());
     let (outcome, attempts) = crate::engine::policy::run_with_retry(&policy, &control, |attempt| {
         if attempt > 1 {
-            // attempt 递增落盘（审计用；断点本体由各 SOP 自己维护）
-            let store = crate::runstate::StateStore::new(
-                state_for_retry.plans_root.clone(),
-                crate::runstate::StateKey::new(&project_for_retry, &task_for_retry, &sop_for_state),
-            );
-            let mut rs = match store.load() {
-                crate::runstate::Loaded::Found(s) => s,
-                _ => store.fresh_state(),
-            };
-            rs.attempt = attempt;
-            if let Err(e) = store.save(&mut rs) {
-                tracing::warn!(component = "run", error = %e, "attempt 落盘失败");
-            }
-            tracing::warn!(
-                component = "run",
+            // 重启记账（attempt 落盘 + WARN + run.retry 事件）已收敛至 policy（ARC-R5）
+            crate::engine::policy::run_attempt_bookkeeping(
+                &state_for_retry.plans_root,
+                &project_for_retry,
+                &task_for_retry,
+                &sop_for_state,
+                &run_id_for_retry,
                 attempt,
-                project = %project_for_retry,
-                task = %task_for_retry,
-                "基础设施故障，自动重启 run（从断点继续）"
+                |v| state_for_retry.emit(v),
             );
-            state_for_retry.emit(json!({
-                "type": "run.retry",
-                "project": project_for_retry,
-                "task": task_for_retry,
-                "run_id": run_id_for_retry,
-                "attempt": attempt,
-            }));
         }
         engine.execute(&task_snapshot, &run, &control)
     });
