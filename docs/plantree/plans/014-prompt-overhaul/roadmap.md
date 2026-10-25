@@ -34,16 +34,15 @@
 - ✅ T4.2 coding-agent / coding-review（预审四条事故教训/plan 偏差协议/刚需四条/从零 boot 门禁/九项审查面全保留重排 + 边界段四/四项；「自己跑一遍」回补 + 「完全基于文档写测试」跨行断开修复）
 - 验收：四条过检查表 + pinning 同步（锚修复 ×3 + fixture 重 dump） + 全目标 776 绿
 
-## M5 · pi 侧系统提示词（pi-config 仓） ☐
+## M5 · pi 侧系统提示词（pi-config 仓） ✅
 
-- ☐ T5.1 personality（江晚棠）+ APPEND 工作栈按同标准审改：砍冗余（堆积审计）、
-  硬约束前置带原因、禁止带正向替代、动态内容与稳定内容分离
-- ☐ T5.2 pi-config 独立提交（sync-guard 域，commit 即推）
+- ✅ T5.1 personality + APPEND 轻审改（零行为变更）：Fleet 基准一条塞六项拆六子弹点；编辑纪律删反面重述句（堆积审计）；Don't fake understanding 补正向替代；personality dont_know 缩进修齐。审计结论：pi 侧达标度高（规则带事故注脚/禁止带替代/加载保证分水岭达标），语料库系人格 few-shot 不砍
+- ✅ T5.2 pi-config 9efa5513 已推（sync-guard 自动）
 
-## M6 · 终验与回写 ☐
+## M6 · 终验与回写 ✅
 
-- ☐ T6.1 全目标 cargo test 0 failed + clippy 无新增（双 EXIT 原始日志）
-- ☐ T6.2 roadmap 全勾 + overview 补前后对比（token 量/结构检查表结果）+ commit
+- ✅ T6.1 双 EXIT 原始日志（bg_prnscokm）：TEST_EXIT=0（776 全绿 0 failed：lib 666 + 集成 19/16/31/43 + doctest 1）；CLIPPY_EXIT=0。生产代码 diff 为空（e8a4cdb..HEAD 仅 manifest_tests.rs 断言锦 1 行）→ clippy warning 列表差异系基线记录口径不全，非本批新增
+- ✅ T6.2 roadmap 全勾 + overview 补前后对比（见 overview §改造后量测）+ commit
 
 ## 依赖与顺序
 
