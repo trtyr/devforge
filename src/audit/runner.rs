@@ -74,7 +74,11 @@ pub fn run_audit(
     // V2 unwrap 扫描/V3 埋点缺口比对随 T1.4 落地。
     let precheck = "（引擎预查：本批次为首批接入，确定性扫描报告将随 T1.4 落地）";
 
-    let mut findings: Vec<Finding> = Vec::new();
+    // 复验事故修复（M3 缺陷①）：每批 findings 即时落黑板——先落盘再打勾，
+    // 断点续跑从黑板回读已完成批次，进程死亡不再丢发现。
+    let findings_dir = blackboard.join("audit-findings");
+    std::fs::create_dir_all(&findings_dir).ctx("建 audit-findings 目录")?;
+    let mut findings: Vec<Finding> = load_persisted_findings(&findings_dir, &progress.done_batches);
     let mut abandoned: Vec<String> = Vec::new();
     for unit in &ordered {
         if progress.done_batches.contains(&unit.id) {
@@ -83,6 +87,12 @@ pub fn run_audit(
         }
         match stage1_review_batch(factory, unit, &unit_labels, precheck) {
             Ok(fs) => {
+                // 先落盘批次发现，再打勾进度（顺序不可反：进程死在中间也不丢）
+                std::fs::write(
+                    findings_dir.join(format!("{}.json", unit.id)),
+                    serde_json::to_vec_pretty(&fs).ctx("序列化批次发现")?,
+                )
+                .ctx("写批次发现")?;
                 findings.extend(fs);
                 progress.done_batches.push(unit.id.clone());
                 progress.save(&blackboard)?;
@@ -183,6 +193,33 @@ fn severity_summary(
     })
 }
 
+/// 断点回读：进度里已完成的批次，发现从黑板加载。缺文件/坏文件的批次跳过
+/// （进度打了勾但发现丢了 = 历史遗留数据，如实少记不崩，WARN 留痕）。
+fn load_persisted_findings(dir: &Path, done_batches: &[String]) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for id in done_batches {
+        let p = dir.join(format!("{id}.json"));
+        let Ok(bytes) = std::fs::read(&p) else {
+            tracing::warn!(
+                component = "audit-engine",
+                unit = %id,
+                "断点批次的发现文件缺失，跳过回读（历史遗留批次）"
+            );
+            continue;
+        };
+        match serde_json::from_slice::<Vec<Finding>>(&bytes) {
+            Ok(fs) => out.extend(fs),
+            Err(e) => tracing::warn!(
+                component = "audit-engine",
+                unit = %id,
+                error = %e,
+                "断点批次发现反序列化失败，跳过"
+            ),
+        }
+    }
+    out
+}
+
 fn read_stage0(blackboard: &Path) -> Result<super::pipeline::ReviewPlan> {
     let bytes = std::fs::read(blackboard.join("audit-stage0.json"))
         .ctx("读 Stage0 断点")?;
@@ -193,4 +230,38 @@ fn read_stage2(blackboard: &Path) -> Result<super::pipeline::CrossAnalysis> {
     let bytes = std::fs::read(blackboard.join("audit-stage2.json"))
         .ctx("读 Stage2 断点")?;
     serde_json::from_slice(&bytes).ctx("Stage2 断点反序列化")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 复验 M3 缺陷①回归：断点续跑时已落盘的 findings 从黑板回读，
+    /// 不随进程死亡丢失；进度里但文件缺失的历史批次跳过不崩。
+    #[test]
+    fn persisted_findings_are_read_back_on_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let findings_dir = dir.path().join("audit-findings");
+        std::fs::create_dir_all(&findings_dir).unwrap();
+        let f = Finding {
+            path: "src/x.rs".into(),
+            line: 1,
+            view: crate::audit::finding::View::Correctness,
+            severity: crate::audit::finding::Severity::Major,
+            claim: "测试发现".into(),
+            evidence: "src/x.rs:1".into(),
+            batch: "unit-001".into(),
+        };
+        std::fs::write(
+            findings_dir.join("unit-001.json"),
+            serde_json::to_vec_pretty(&vec![f]).unwrap(),
+        )
+        .unwrap();
+        let got = load_persisted_findings(
+            &findings_dir,
+            &["unit-001".to_string(), "unit-002".to_string()],
+        );
+        assert_eq!(got.len(), 1, "存在的批次回读，缺失的跳过");
+        assert_eq!(got[0].batch, "unit-001");
+    }
 }
