@@ -48,3 +48,22 @@
   防的是「名单写错」，代价却是可让整个串行槽位卡死：**守卫该用 Err 不该用 panic**。
 - #2（终态无回转）与 P013 audit 批次 #8「静默进度重置」同族：状态机缺「失败态如何复位」的出口。
 - #7 是「同一纪律在两条链路上只落了一条」的第三次复发（前有 changed_files 过滤、freshness 门）。
+
+## 修复状态表（2026-10-25 第二批，全部落地）
+
+> 9/9 已修复；终验 817 绿 0 failed（lib 707 + integration 19/16/31/43 + doctest 1，
+> TEST_EXIT=0，原始日志 bg_cej3gzdn），clippy lib 13 条与修复前持平
+> （CLIPPY_EXIT=0，bg_yq4snr6w）。按建议顺序分六个 commit，每条带回归。
+
+| # | 修复 commit | 落地内容 |
+|---|---|---|
+| 1 | ac76c6f | `run_in_background` 的 `engine.execute` 加 `catch_unwind`：panic 按 **Quality** 收尾（bug 重启只会复现；且 panic 可能毒化共享锁，盲重试烧光 4 次尝试），日志 + `run.panic` 事件留证，`finish_run` 与 `runs_control` 清理恢复正常路径；doc runner 快照守卫从 `panic!` 降为 `Err(Quality)`。回归 engine_panic_ends_run_failed_and_frees_the_slot（Failed 终态 + 再 start 仍 202 且引擎真被再调） |
+| 2 | c338d01 | NeedsRebase 不再是死状态：tick 把 NeedsRebase 放回 Pending 重验；去重改按状态分层（Pending/Integrated 跳过、NeedsRepair 仅同 frozen_sha 跳过）。回归 needs_rebase_candidate_is_rearmed_and_not_stuck + needs_repair_allows_reentry_with_new_frozen_commit |
+| 3 | 20d84e0 | `audit_report` 先按 store 校验项目/任务存在再读盘，路径段拒 `.`/`..`/分隔符，404 不回显绝对路径。回归 audit_report_404_does_not_leak_absolute_path |
+| 4 | b507ad0 | DocLevel 归一：唯一枚举在 `docgen::audit`（含 None/Detailed），`change::gate0` 改为重导出；`parse`（宽松，未知→Complete）+ `parse_strict`（change 配置面，未知=Config）；`change::docs::apply` 补 Detailed 分支。gate0 测试扩四档 + 字符串往返 |
+| 5 | 20d84e0 | `create_project` 前置校验 local_path：不存在/空目录/已是 git 仓之外一律 400（不推翻 P004 decisions/001 的手动指定设计）。回归 create_project_rejects_non_empty_non_git_dir + create_project_accepts_empty_dir_and_git_repo |
+| 6 | 20d84e0 | token 改常量时间比较（ct_eq，长度差也走全量扇描）+ 缺失即不匹配；回归 token_gate_still_rejects_wrong_token（回环免鉴权仍为 DR-9 L5 设计，未动） |
+| 7 | 6e229f9 | 空箱回注单点化：`MAX_EMPTY_ISSUES_NUDGES` + `ISSUES_NUDGE` 下沉 `sop::review_gate`（change/testing 共用）；testing 的 FAIL-无 issues 分支拒收+追补，超限判质量失败。回归 fail_without_issues_is_bounded_not_infinite |
+| 8 | 5784352 | doc-lint 缺口检测维护 `in_fence` 状态（``` 与 ~~~ 都开关），围栏内 🔴 不再计入缺口。回归 red_gap_inside_code_fence_is_not_a_gap（围栏内不报 + 围栏外仍报） |
+| 9 | c338d01 | 集成冲突/失败产物从恒 `_global` 改按项目分目录（`integrations/{project}/artifacts/`），`artifact_dir_name` 删除；测试断言产物路径 |
+
