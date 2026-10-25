@@ -311,6 +311,11 @@ fn profiles_for_sop_is_the_single_source_for_the_gate_and_the_door() {
         BuiltinRpcEngine::profiles_for_sop("change"),
         crate::server::change_engine::CHANGE_PROFILES.as_slice()
     );
+    // 引擎审计修复 #5：锁住 code-review 表项——删表项走空切片，门卫会放行未渲染 profile
+    assert_eq!(
+        BuiltinRpcEngine::profiles_for_sop("code-review"),
+        ["code-review"].as_slice()
+    );
     assert!(
         BuiltinRpcEngine::profiles_for_sop("unknown-sop").is_empty(),
         "未知 SOP 没有 profile 需求"

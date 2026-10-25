@@ -93,14 +93,33 @@ pub enum Inbound {
     Event(EventRecord),
 }
 
+/// 解码失败时的行摘要（引擎审计修复 #8）：只露 type/id 字段与长度——
+/// 整行 JSONL 可能含凭据/token，不得原样进日志。
+fn summarize_line(line: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(v) => format!(
+            "type={:?}, id={:?}, len={}",
+            v.get("type").and_then(|t| t.as_str()).unwrap_or("?"),
+            v.get("id").and_then(|i| i.as_str()).unwrap_or("?"),
+            line.len()
+        ),
+        Err(_) => format!("（整行不可解析，len={}）", line.len()),
+    }
+}
+
 /// 解码一行 JSONL（不含 LF）。
 pub fn decode_line(line: &str) -> Result<Inbound> {
     let v: serde_json::Value = serde_json::from_str(line)
-        .ctx(format!("解析 RPC 记录失败: {line}"))?;
+        .ctx(format!("解析 RPC 记录失败: {}", summarize_line(line)))?;
     let r#type = v
         .get("type")
         .and_then(|t| t.as_str())
-        .ok_or_else(|| DevforgeError::RpcProtocol(format!("记录缺 type 字段: {line}")))?
+        .ok_or_else(|| {
+            DevforgeError::RpcProtocol(format!(
+                "记录缺 type 字段: {}",
+                summarize_line(line)
+            ))
+        })?
         .to_string();
     match r#type.as_str() {
         "response" => {

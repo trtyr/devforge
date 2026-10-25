@@ -311,10 +311,23 @@ impl RpcClient {
                         l.push('\n');
                         self.stdin
                             .as_mut()
-                            .expect("stdin 仅在 kill 后不可用")
+                            // 引擎审计修复 #7：同 prompt 路径，kill 后不再 panic
+                            .ok_or_else(|| {
+                                DevforgeError::RpcProtocol(
+                                    "stdin 已关闭：子进程被杀后无法发送 UI 应答".into(),
+                                )
+                            })?
                             .write_all(l.as_bytes())
                             .ctx("发送 extension_ui_response")?;
-                            self.stdin.as_mut().expect("stdin").flush().ctx("flush UI 应答")?;
+                            self.stdin
+                                .as_mut()
+                                .ok_or_else(|| {
+                                    DevforgeError::RpcProtocol(
+                                        "stdin 已关闭：子进程被杀后无法 flush UI 应答".into(),
+                                    )
+                                })?
+                                .flush()
+                                .ctx("flush UI 应答")?;
                         out.events.push(e);
                         continue;
                     }

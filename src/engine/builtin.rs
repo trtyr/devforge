@@ -27,14 +27,50 @@ pub fn preflight_codegraph(workspace: &Path, codegraph_bin: &Path) {
     if workspace.join(".codegraph").exists() {
         return;
     }
-    match std::process::Command::new(codegraph_bin)
+    // 引擎审计修复 #10：init 不再裸 status()（无超时永久占坑）+ stderr 落 tracing（挂死可诊断）
+    let mut child = match std::process::Command::new(codegraph_bin)
         .arg("init")
         .arg(workspace)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::piped())
+        .spawn()
     {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                component = "coding-engine",
+                bin = %codegraph_bin.display(),
+                error = %e,
+                "codegraph init spawn 失败，跳过预检（agent 侧优雅降级原生工具）"
+            );
+            return;
+        }
+    };
+    if let Some(stderr) = child.stderr.take() {
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stderr).lines().flatten() {
+                tracing::warn!(component = "coding-engine", "codegraph init: {line}");
+            }
+        });
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let outcome = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {
+                if std::time::Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err("init 超过 10s 未退出，已强杀（挂死不再永久占坑）".to_string());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => break Err(format!("wait 失败：{e}")),
+        }
+    };
+    match outcome {
         Ok(s) if s.success() => tracing::info!(
             component = "coding-engine",
             workspace = %workspace.display(),
