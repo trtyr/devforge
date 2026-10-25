@@ -328,8 +328,11 @@ impl RpcClient {
             error = %detail,
             "agent 命令失败（快速失败，不等 settled）"
         );
-        DevforgeError::System(format!(
-            "agent[{}] 命令 {} 失败：{}（多半是 profile 配置问题：缺 API key / 模型名错误；见 auth.json 与 models.json）",
+        // 审计修复 #2：配置类命令失败用 Config（非 System）——is_infra_failure 只认裸 System，
+        // 用 System 会盲重启 4 次（退避 10s/30s/90s）；配置问题重启永远不会变好，
+        // require_profile 的「配置问题用 Config」口径在此对齐。
+        DevforgeError::Config(format!(
+            "agent[{}] 命令 {} 失败：{}（配置问题：缺 API key / 模型名错误；见 auth.json 与 models.json，修好配置后重新启动 run）",
             self.spec.role, r.command, detail
         ))
     }

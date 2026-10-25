@@ -88,12 +88,16 @@ where
         // 原始错误全量可见（010 F6 靶 · 需求 1）：每次尝试失败先落一条**分级**条目——
         // 质量类失败落 WARN，其余落 ERROR；落盘点在**决定重试之前**（先记错误、再决定重启）。
         if let Err(e) = &result {
-            let message = if e.is_quality_failure() {
-                "run 尝试失败（质量类，不重启）"
+            let (message, as_warn) = if e.is_quality_failure() {
+                ("run 尝试失败（质量类，不重启）", true)
+            } else if matches!(e, DevforgeError::Config(_)) {
+                // 审计修复 #2：配置类失败与质量类同款分级（WARN + 不重启）——
+                // 配置问题重启永远不会变好，ERROR 会误导成基础设施故障。
+                ("run 尝试失败（配置类，不重启）", true)
             } else {
-                "run 尝试失败"
+                ("run 尝试失败", false)
             };
-            log_attempt_failed_shape("run-retry", message, e.is_quality_failure(), attempt, e, retryable);
+            log_attempt_failed_shape("run-retry", message, as_warn, attempt, e, retryable);
         }
         if !retryable || attempt >= policy.max_attempts {
             // 多次尝试后仍失败：错误串必须带每次尝试的末段，否则事后无法定位是哪一次怎么挂的
@@ -217,6 +221,21 @@ pub fn map_intervention(
         log_attempt_failed_shape(
             component,
             "SOP 质量失败（原始错误已落盘，不重启）",
+            true,
+            crate::observability::attempt(),
+            &e,
+            false,
+        );
+        Ok(RunOutcome::Failed {
+            reason: msg.clone(),
+        })
+    } else if let DevforgeError::Config(msg) = &e {
+        // 审计修复 #2：配置失败（缺 profile/缺 API key/模型名错误）与质量失败同款处理——
+        // 明确的 Failed、不进自动重启（修好配置才有意义，重启只会重复同一失败）。
+        tracing::warn!(component, reason = %msg, "SOP 配置失败（不重试，修配置后重启 run）");
+        log_attempt_failed_shape(
+            component,
+            "SOP 配置失败（不重启，修配置后重启 run）",
             true,
             crate::observability::attempt(),
             &e,
@@ -447,6 +466,28 @@ mod log_capture_tests {
         assert!(lines[0].contains("\"attempt\":1"), "{}", lines[0]);
         assert!(lines[0].contains("缺验收标准"), "缺原始错误全文：{}", lines[0]);
         assert!(lines[0].contains("error_chain"), "缺 source 链字段：{}", lines[0]);
+    }
+
+    /// 审计修复 #2 回归：配置类失败（缺 API key 等 success:false）不进自动重启——
+    /// 错实现形态：command_failure 返回 System → is_infra_failure 命中 → 盲重启 4 次
+    /// （退避 10s/30s/90s），配置问题重启永远不会变好。
+    #[test]
+    fn config_failures_are_not_retried_and_logged_as_warn() {
+        let text = capture_jsonl(|| {
+            let (result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), |_| {
+                Err(DevforgeError::Config("缺 API key（配置问题）".into()))
+            });
+            assert_eq!(attempts, 1, "配置失败不得重启：{attempts}");
+            assert!(result.is_err());
+        });
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("run.attempt_failed"))
+            .collect();
+        assert_eq!(lines.len(), 1, "配置失败应落一条条目：{text}");
+        assert!(lines[0].contains("\"level\":\"WARN\""), "{}", lines[0]);
+        assert!(lines[0].contains("\"retryable\":false"), "配置失败不重启：{}", lines[0]);
+        assert!(lines[0].contains("缺 API key"), "缺原始错误全文：{}", lines[0]);
     }
 
     #[test]
