@@ -10,7 +10,7 @@ use crate::domain::task::Task;
 use crate::error::{Context as _, Result};
 
 use super::finding::Finding;
-use super::pipeline::{stage1_review_batch, AuditSession, AuditSessionFactory, Progress};
+use super::pipeline::{AuditSession, AuditSessionFactory, Progress};
 use super::{build_plan, AuditUnit};
 use super::verify::verify;
 
@@ -33,6 +33,28 @@ fn check_intervention(control: &RunControl) -> Result<()> {
 /// 其他 SOP 仍保持「默认不收割」（006 decisions/002），仅 code-review 有默认值；
 /// 显式设 DEVFORGE_RUN_IDLE_MS 时以它为准。
 pub const DEFAULT_AUDIT_IDLE_MS: u64 = 15 * 60 * 1000;
+
+/// 第三方 r3 M4：单批墙钟（默认 30 分钟）。idle 收割打不中「流式刷活性但不推进」
+/// 的活死批（DR-3 之后 text_delta 会刷新 liveness），只能由批次自己的墙钟叫停：
+/// 到点 → 会话返回 Quality → 该批记 abandoned，余批继续。
+pub const DEFAULT_AUDIT_BATCH_TIMEOUT_MS: u64 = 30 * 60 * 1000;
+
+/// 本批墙钟；`0` 或环境变量设 0 = 不限制（旧行为）。
+fn batch_deadline() -> Option<std::time::Instant> {
+    let ms = std::env::var("DEVFORGE_AUDIT_BATCH_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_AUDIT_BATCH_TIMEOUT_MS);
+    batch_deadline_from_ms(ms)
+}
+
+fn batch_deadline_from_ms(ms: u64) -> Option<std::time::Instant> {
+    if ms == 0 {
+        None
+    } else {
+        Some(std::time::Instant::now() + std::time::Duration::from_millis(ms))
+    }
+}
 
 /// 全量审计执行（生产入口）。`factory` 每次开新会话（用完即弃）。
 pub fn run_audit(
@@ -119,13 +141,36 @@ pub fn run_audit(
             "Stage 0 的 skip 含不存在的单元号，已忽略"
         );
     }
+    // 第三方 r3 M2：skip 除了「必须在单元集合内」，还要求**批次内容真是生成物/锁文件**——
+    // 旧版照 LLM 说的跳，把 src/audit 整组标 skip 也算「全量成功」。
+    // 规则保守：宁多审不少审（不匹配的 skip 一律忽略并 WARN）。
+    let mut rejected_skip: Vec<&String> = Vec::new();
     let skipped_units: Vec<String> = review_plan
         .skip
         .iter()
-        .filter(|s| known_ids.contains(s.as_str()))
+        .filter(|s| {
+            let Some(unit) = plan.units.iter().find(|u| &u.id == *s) else {
+                return false; // 不存在的单元号已在上面 WARN
+            };
+            if skippable_unit(unit) {
+                true
+            } else {
+                rejected_skip.push(s);
+                false
+            }
+        })
         .cloned()
         .collect();
+    if !rejected_skip.is_empty() {
+        tracing::warn!(
+            component = "audit-engine",
+            rejected = ?rejected_skip,
+            "Stage 0 的 skip 指向非生成物/锁文件批次，已忽略（全量审计宁可多审）"
+        );
+    }
     if skipped_units.len() == plan.units.len() {
+        // 防御性兑底：skip 已被限定在「生成物批次」，而切入器只切源码面——
+        // 正常路径到不了这里；留着是为了万一以后放开 skip 范围时零审查不能静默成功。
         return Err(crate::error::DevforgeError::Quality(
             "Stage 0 把全部批次都标了 skip——全量审计不允许零审查收工（检查 skip 规则）".into(),
         ));
@@ -176,18 +221,20 @@ pub fn run_audit(
             batches = pending.len(),
             "Stage 1 并行批次派发"
         );
-        let results =
-            run_stage1_parallel(factory, &pending, &unit_labels, &task.workspace, concurrency, control);
-        for (idx, res) in results {
+        let results = run_stage1_parallel(
+            factory,
+            &pending,
+            &unit_labels,
+            &task.workspace,
+            concurrency,
+            control,
+            &findings_dir,
+        );
+        // 工作窃取导致完成序≠派发序：按 idx 排序后串行打勾（断点写入串行化）。
+        // 发现已在 worker 内落盘——此处任一兄弟失败不会带走已完成批次（第三方 r3 M1）。
+        for (_, unit_id, res) in results {
             check_intervention(control)?;
-            persist_batch_result(
-                pending[idx],
-                res,
-                &mut findings,
-                &mut progress,
-                &findings_dir,
-                &blackboard,
-            )?;
+            apply_batch_outcome(&unit_id, res, &mut findings, &mut progress, &blackboard)?;
         }
     } else {
         for unit in &ordered {
@@ -199,15 +246,18 @@ pub fn run_audit(
             // 复验事故修复（M3 缺陷①）：每批 findings 即时落黑板——先落盘再打勾，
             // 断点续跑从黑板回读已完成批次，进程死亡不再丢发现。
             let precheck = precheck_report(&task.workspace, &unit.files);
-            let res = stage1_review_batch(factory, &task.workspace, unit, &unit_labels, &precheck);
-            persist_batch_result(
+            let res = crate::audit::pipeline::stage1_review_batch_with_deadline(
+                factory,
+                &task.workspace,
                 unit,
-                res,
-                &mut findings,
-                &mut progress,
-                &findings_dir,
-                &blackboard,
-            )?;
+                &unit_labels,
+                &precheck,
+                batch_deadline(),
+            );
+            if let Ok(fs) = &res {
+                write_batch_findings(&findings_dir, &unit.id, fs)?;
+            }
+            apply_batch_outcome(&unit.id, res, &mut findings, &mut progress, &blackboard)?;
         }
     }
     let abandoned: Vec<String> = progress.abandoned.clone();
@@ -325,6 +375,26 @@ pub fn run_audit(
 
 /// 全仓审计 M3：批次并发度（DEVFORGE_AUDIT_CONCURRENCY，默认 4，边界 1..=8）。
 /// 单批 ~6 分钟，旧串行 87 批 ≈ 9h；四路并发是批次数与 provider 限流间的保守值。
+/// 第三方 r3 M2：一个批次能不能被 skip——必须整批都是「生成物 / 锁文件 / vendor 树」。
+/// 宁可多审（误判为不可跳 → 照审）也不许把核心目录用一句「生成物」糊过去。
+fn skippable_unit(unit: &AuditUnit) -> bool {
+    !unit.files.is_empty()
+        && unit.files.iter().all(|f| {
+            let p = f.as_str();
+            p.ends_with(".lock")
+                || p.ends_with(".min.js")
+                || p.ends_with(".min.css")
+                || p.ends_with(".snap")
+                || p.contains(".generated.")
+                || p.contains("_generated.")
+                || p.ends_with("package-lock.json")
+                || p.starts_with("target/")
+                || p.starts_with("node_modules/")
+                || p.starts_with("dist/")
+                || p.starts_with("vendor/")
+        })
+}
+
 fn audit_concurrency() -> usize {
     #[cfg(test)]
     if let Some(n) = tests::concurrency_override() {
@@ -337,30 +407,37 @@ fn audit_concurrency() -> usize {
         .unwrap_or(4)
 }
 
-/// 批次结果落地（串行/并行共用）：先落盘发现再打勾（顺序不可反）；
+/// 批次发现落盘（先落盘再打勾的前半）。串行路径与并行 worker **都**调它：
+/// 并行时 worker 自己存盘，兄弟批次挂掉也不会带走已完成批次（第三方 r3 M1）。
+fn write_batch_findings(findings_dir: &Path, unit_id: &str, fs: &[Finding]) -> Result<()> {
+    std::fs::write(
+        findings_dir.join(format!("{unit_id}.json")),
+        serde_json::to_vec_pretty(&fs).ctx("序列化批次发现")?,
+    )
+    .ctx("写批次发现")
+}
+
+/// 批次结果落地（串行/并行共用）：调用前**发现已落盘**；这里只打勾/记放弃。
 /// 质量类失败 = 放弃并记入断点；实例/基础设施失败 = 打断整次审计（不伪装成放弃）。
-fn persist_batch_result(
-    unit: &AuditUnit,
+///
+/// 第三方 r3 M1：旧版把「写盘 + 打勾」揃在一起、且并行路径「全跑完才落盘」——
+/// 兄弟批次一失败，内存里已审完的批次全丢。现在拆两半，写盘在 worker 内完成。
+fn apply_batch_outcome(
+    unit_id: &str,
     res: Result<Vec<Finding>>,
     findings: &mut Vec<Finding>,
     progress: &mut Progress,
-    findings_dir: &Path,
     blackboard: &Path,
 ) -> Result<()> {
     match res {
         Ok(fs) => {
             let batch_n = fs.len();
-            std::fs::write(
-                findings_dir.join(format!("{}.json", unit.id)),
-                serde_json::to_vec_pretty(&fs).ctx("序列化批次发现")?,
-            )
-            .ctx("写批次发现")?;
             findings.extend(fs);
-            progress.done_batches.push(unit.id.clone());
+            progress.done_batches.push(unit_id.to_string());
             progress.save(blackboard)?;
             tracing::info!(
                 component = "audit-engine",
-                unit = %unit.id,
+                unit = %unit_id,
                 batch_findings = batch_n,
                 findings_total = findings.len(),
                 "批次审查完成"
@@ -368,15 +445,15 @@ fn persist_batch_result(
             Ok(())
         }
         Err(crate::error::DevforgeError::Quality(msg)) => {
-            progress.abandoned.push(format!("{}：{msg}", unit.id));
+            progress.abandoned.push(format!("{unit_id}：{msg}"));
             progress.save(blackboard)?;
-            tracing::warn!(component = "audit-engine", unit = %unit.id, "批次放弃");
+            tracing::warn!(component = "audit-engine", unit = %unit_id, "批次放弃");
             Ok(())
         }
         Err(e) => {
             tracing::error!(
                 component = "audit-engine",
-                unit = %unit.id,
+                unit = %unit_id,
                 error = %e,
                 "批次实例失败，打断整次审计（非质量类错误不伪装成放弃）"
             );
@@ -387,6 +464,9 @@ fn persist_batch_result(
 
 /// 全仓审计 M3：并行跑待审批次（固定并发，工作窃取式取下标），结果按原下标排序返回。
 /// 线程 panic 映射为 System（不静默丢批）。
+/// 并行批次结果：派发下标（排序用） / 单元号 / 该批发现或错误。
+type BatchResult = (usize, String, Result<Vec<Finding>>);
+
 fn run_stage1_parallel(
     factory: &dyn AuditSessionFactory,
     units: &[&AuditUnit],
@@ -394,9 +474,10 @@ fn run_stage1_parallel(
     workspace: &Path,
     concurrency: usize,
     control: &RunControl,
-) -> Vec<(usize, Result<Vec<Finding>>)> {
+    findings_dir: &Path,
+) -> Vec<BatchResult> {
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let mut results: Vec<(usize, Result<Vec<Finding>>)> = Vec::new();
+    let mut results: Vec<BatchResult> = Vec::new();
     std::thread::scope(|scope| {
         let mut handles = Vec::new();
         for _ in 0..concurrency.min(units.len()) {
@@ -405,36 +486,56 @@ fn run_stage1_parallel(
             };
             let next = &next;
             handles.push(scope.spawn(move || {
-                let mut local: Vec<(usize, Result<Vec<Finding>>)> = Vec::new();
+                let mut local: Vec<BatchResult> = Vec::new();
                 loop {
                     let idx = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let Some(unit) = units.get(idx) else {
                         break;
                     };
+                    let unit_id = unit.id.clone();
                     if let Err(e) = check_intervention(control) {
-                        local.push((idx, Err(e)));
+                        local.push((idx, unit_id, Err(e)));
                         break;
                     }
                     let precheck = precheck_report(workspace, &unit.files);
-                    let res = stage1_review_batch(fork.as_mut(), workspace, unit, labels, &precheck);
-                    local.push((idx, res));
+                    let deadline = batch_deadline();
+                    // 第三方 r3 M1：panic 在该批内部收成 System——
+                    // 旧版向主线程扔 usize::MAX 哨兵，主线程 `pending[usize::MAX]` 直接越界 panic。
+                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        crate::audit::pipeline::stage1_review_batch_with_deadline(
+                            fork.as_mut(),
+                            workspace,
+                            unit,
+                            labels,
+                            &precheck,
+                            deadline,
+                        )
+                    }))
+                    .unwrap_or_else(|_| {
+                        Err(crate::error::DevforgeError::System(format!(
+                            "批次 {unit_id} 审查线程 panic（已兜底，整次审计失败）"
+                        )))
+                    });
+                    // 成功即落盘：兄弟批次失败不带走本批发现
+                    let res = match res {
+                        Ok(fs) => match write_batch_findings(findings_dir, &unit_id, &fs) {
+                            Ok(()) => Ok(fs),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    };
+                    local.push((idx, unit_id, res));
                 }
                 local
             }));
         }
         for h in handles {
-            match h.join() {
-                Ok(mut v) => results.append(&mut v),
-                Err(_) => results.push((
-                    usize::MAX,
-                    Err(crate::error::DevforgeError::System(
-                        "批次审查线程 panic（已兜底，整次审计失败）".into(),
-                    )),
-                )),
+            if let Ok(mut v) = h.join() {
+                results.append(&mut v);
             }
         }
     });
-    results.sort_by_key(|(i, _)| *i);
+    results.sort_by_key(|(i, _, _)| *i);
     results
 }
 
@@ -940,16 +1041,34 @@ mod tests {
         run_audit(&task, root.path(), &control, &mut f).unwrap();
     }
 
-    /// 全仓审计 M6：Stage 0 把全部批次都标 skip = 零审查，必须拒收。
+    /// 第三方 r3 M2：skip 指向非生成物批次 → 被忽略，该批仍进审查（自审不能再
+    /// 用一句「生成物」把 src/audit 跳过）。旧的「skip 全量拒收」用例已并到这里：
+    /// skip 只能命中生成物批次，而切入器只切源码面，那条 100% 分支现在只是防御性兑底。
     #[test]
-    fn skip_everything_is_rejected() {
+    fn skip_of_core_unit_is_ignored_and_still_reviewed() {
         let (_ws, root, task) = audit_task();
         let control = crate::domain::runner::RunControl::new();
-        let all_skip =
+        let skip_core =
             "```json\n{\"priority\": [], \"skip\": [\"unit-001\"], \"cross_concerns\": []}\n```";
-        let mut f = mk(vec![vec![all_skip]]);
-        let err = run_audit(&task, root.path(), &control, &mut f).unwrap_err();
-        assert!(format!("{err}").contains("skip"), "{err}");
+        // 先 skip 后正常审：若 skip 被采纳，第二/三次会话不会被消费 → 脚本耗尽时报错
+        let mut f = mk(vec![vec![skip_core], vec![F1], vec![C0]]);
+        run_audit(&task, root.path(), &control, &mut f)
+            .expect("核心批次被 skip 时应忽略 skip 并照审");
+        let progress: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                root.path()
+                    .join("p-audit")
+                    .join("audit-x")
+                    .join("audit-progress.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            progress["done_batches"].as_array().unwrap().len(),
+            1,
+            "unit-001 必须真被审（不能被 skip 掉）：{progress}"
+        );
     }
 
     /// 全仓审计 M7/M8：JSON 的 cross_analysis 只写核验后集合（幽灵单放到 dropped），
@@ -1056,6 +1175,87 @@ mod tests {
             2,
             "并行路径下两批都应完成：{progress}"
         );
+    }
+
+    /// 第三方 r3 M1：worker 内 panic 收成该批 System（不再向主线程扔 usize::MAX 哨兵），
+    /// 且同批已成功的兄弟批次发现已落盘（兄弟失败不带走已完成批次）。
+    #[test]
+    fn parallel_panic_is_contained_and_successful_batch_persisted() {
+        struct LabelSession;
+        impl crate::audit::pipeline::AuditSession for LabelSession {
+            fn ask(&mut self, instruction: &str) -> crate::error::Result<String> {
+                // 只匹「本批」那一行——指令里的「其他批次」列表也会列出别的 label
+                if instruction.contains("审查批次 `label-unit-002`") {
+                    panic!("模拟审查线程 panic");
+                }
+                Ok(F1.to_string())
+            }
+        }
+        struct LabelFactory;
+        impl crate::audit::pipeline::AuditSessionFactory for LabelFactory {
+            fn open(
+                &mut self,
+            ) -> crate::error::Result<Box<dyn crate::audit::pipeline::AuditSession>> {
+                Ok(Box::new(LabelSession))
+            }
+            fn fork(
+                &self,
+            ) -> Option<Box<dyn crate::audit::pipeline::AuditSessionFactory + Send>> {
+                Some(Box::new(LabelFactory))
+            }
+        }
+
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("a.rs"), "fn a() {}\n").unwrap();
+        let findings_dir = tempfile::tempdir().unwrap();
+        let units = vec![
+            AuditUnit {
+                id: "unit-001".into(),
+                files: vec!["a.rs".into()],
+                label: "label-unit-001".into(),
+            },
+            AuditUnit {
+                id: "unit-002".into(),
+                files: vec!["a.rs".into()],
+                label: "label-unit-002".into(),
+            },
+        ];
+        let refs: Vec<&AuditUnit> = units.iter().collect();
+        let labels: Vec<String> = units.iter().map(|u| u.label.clone()).collect();
+        let control = crate::domain::runner::RunControl::new();
+        set_concurrency(2);
+        let results = run_stage1_parallel(
+            &LabelFactory,
+            &refs,
+            &labels,
+            ws.path(),
+            2,
+            &control,
+            findings_dir.path(),
+        );
+        set_concurrency(0);
+        assert_eq!(results.len(), 2, "两批都要有结果（panic 不得吞掉其他批）");
+        let panic_res = results
+            .iter()
+            .find(|(_, id, _)| id == "unit-002")
+            .expect("unit-002 必须在结果里");
+        let msg = format!(
+            "{:?}",
+            panic_res.2.as_ref().err().expect("panic 批必须是 Err")
+        );
+        assert!(msg.contains("panic"), "panic 要收成带说明的 System：{msg}");
+        assert!(
+            findings_dir.path().join("unit-001.json").is_file(),
+            "兄弟批失败不得带走已完成批次的发现（r3 M1 回潮点）"
+        );
+    }
+
+    /// 第三方 r3 M4：0 = 不限时限（旧行为），非 0 = 给未来截止点。
+    #[test]
+    fn batch_deadline_zero_means_unlimited() {
+        assert!(batch_deadline_from_ms(0).is_none());
+        let at = batch_deadline_from_ms(1_000).expect("非 0 应有截止点");
+        assert!(at > std::time::Instant::now());
     }
 
     /// 全仓审计 m1：Stage 0 断点产物损坏 → 清标记重算，不硬失败。

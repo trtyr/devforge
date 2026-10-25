@@ -74,8 +74,17 @@ pub struct RpcReviewSession {
 
 impl ReviewSession for RpcReviewSession {
     fn review(&mut self, instruction: &str) -> Result<String> {
+        self.review_with_deadline(instruction, None)
+    }
+
+    /// 第三方 r3 M4：批次墙钟——到点让 wait_settled 返回 Quality（该批放弃，余批继续）。
+    fn review_with_deadline(
+        &mut self,
+        instruction: &str,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<String> {
         let id = self.client.prompt(instruction)?;
-        let outcome = self.client.wait_settled()?; // Review 永不碰用户——无 UI 处理
+        let outcome = self.client.wait_settled_deadline(deadline)?;
         self.client.require_success(&outcome, &id)?;
         // C19-R2（e2e test_19 实证）：审查进程可能“静默死亡”——会话正常结束但
         // 未产出任何正文。空串不得当作合法审查结论（否那么保守解析会把它当成

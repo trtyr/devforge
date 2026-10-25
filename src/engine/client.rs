@@ -230,10 +230,31 @@ impl RpcClient {
 
     /// 等待 agent_settled（pi 不会再自动继续 = 暂停保活点）。期间收集响应/流式文本/事件。
     pub fn wait_settled(&mut self) -> Result<WaitOutcome> {
+        self.wait_settled_deadline(None)
+    }
+
+    /// 带墙钟的等待（第三方 r3 M4）：到点即返回 Quality——
+    /// 「流式输出刷 liveness、但再也不收尾」的活死批靠 idle 收割是打不中的，
+    /// 只能由批次自己的墙钟叫停。`None` = 旧行为（永不死等）。
+    pub fn wait_settled_deadline(
+        &mut self,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<WaitOutcome> {
         let started_at_ms = now_ms();
         let mut out = WaitOutcome::default();
         let mut tool_starts = std::collections::HashMap::new();
         loop {
+            // 单层 match 而非嵌两层 if：clippy 会嫌 `if let` 包 `if` 可合，
+            // 而 let-chain 在 edition 2021 不可用。
+            if let Some(at) = deadline {
+                let expired = std::time::Instant::now() >= at;
+                if expired {
+                    return Err(DevforgeError::Quality(
+                        "审查会话超过批次墙钟仍未收尾（流式刷活性但不再推进）——按质量失败放弃该批"
+                            .into(),
+                    ));
+                }
+            }
             let line = self.next_line()?;
             match decode_line(line.trim_end())? {
                 crate::engine::protocol::Inbound::Response(r) => {

@@ -45,6 +45,17 @@ pub struct CrossAnalysis {
 /// 审计会话抽象（假 session 可注入；生产 = RpcReviewFactory 桥）。
 pub trait AuditSession {
     fn ask(&mut self, instruction: &str) -> Result<String>;
+
+    /// 带墙钟的 ask（第三方 r3 M4）：默认忽略墙钟（脚本替身无阻塞语义）；
+    /// 真 RPC 会话覆写成「到点返回 Quality」。
+    fn ask_deadline(
+        &mut self,
+        instruction: &str,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<String> {
+        let _ = deadline;
+        self.ask(instruction)
+    }
 }
 
 pub trait AuditSessionFactory {
@@ -79,6 +90,14 @@ pub struct SessionBridge(pub Box<dyn ReviewSession>);
 impl AuditSession for SessionBridge {
     fn ask(&mut self, instruction: &str) -> Result<String> {
         self.0.review(instruction)
+    }
+
+    fn ask_deadline(
+        &mut self,
+        instruction: &str,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<String> {
+        self.0.review_with_deadline(instruction, deadline)
     }
 }
 
@@ -119,7 +138,7 @@ fn stage0_instruction(units: &[AuditUnit]) -> String {
         "你是审计规划官。以下是全仓审计的批次清单（仅元数据，无代码）。\
          产出审查计划，输出一个 ```json 块：{{\"priority\": [\"unit-XXX\"...], \
          \"skip\": [\"unit-XXX\"...], \"cross_concerns\": [\"假设\"...]}}。\n\
-         priority = 应优先深审的批次（核心业务逻辑/复杂依赖）；skip = 可跳过\n\
+         priority = 应优先深审的批次（核心业务逻辑/复杂依赖）；skip = 只可跳生成物/锁文件（引擎二次校验，非生成物一律忽略）\n\
          （生成物/锁文件/纯声明无逻辑）；cross_concerns = 跨批次的结构性关注假设\n\
          （如「错误处理模式在各 SOP 是否一致」「事件命名是否统一」）。\n\n批次清单：\n{meta:?}"
     );
@@ -182,11 +201,31 @@ pub fn stage1_review_batch(
     all_unit_labels: &[String],
     precheck_report: &str,
 ) -> Result<Vec<Finding>> {
+    stage1_review_batch_with_deadline(
+        factory,
+        workspace,
+        unit,
+        all_unit_labels,
+        precheck_report,
+        None,
+    )
+}
+
+/// 带墙钟的批次审查（第三方 r3 M4）：`deadline` 到点 → 会话返回 Quality，
+/// 该批被 runner 记入 abandoned 后继续（「活死批」不得占着 worker 不理）。
+pub fn stage1_review_batch_with_deadline(
+    factory: &mut dyn AuditSessionFactory,
+    workspace: &Path,
+    unit: &AuditUnit,
+    all_unit_labels: &[String],
+    precheck_report: &str,
+    deadline: Option<std::time::Instant>,
+) -> Result<Vec<Finding>> {
     let mut last_err = String::new();
     for attempt in 0..2 {
         let mut session = factory.open().ctx("开审计会话")?;
         let instruction = batch_instruction(workspace, unit, all_unit_labels, precheck_report);
-        let reply = match session.ask(&instruction) {
+        let reply = match session.ask_deadline(&instruction, deadline) {
             Ok(r) => r,
             // 审计修复 #1：ask 失败保持原分类上抛（System/Agent 等基础设施故障）——
             // 不包 Quality：实例失败该打断整次审计而非伪装成质量失败被放弃。

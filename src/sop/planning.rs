@@ -56,6 +56,17 @@ impl<P: PlanAgentSession + ?Sized> PlanAgentSession for &mut P {
 pub trait ReviewSession {
     /// 丢检查指令，等结果，返回 Review 最终文本。
     fn review(&mut self, instruction: &str) -> Result<String>;
+
+    /// 带墙钟的 review（第三方 r3 M4）：默认忽略墙钟（脚本替身无阻塞语义）；
+    /// 真 RPC 会话覆写成「到点返回 Quality」。
+    fn review_with_deadline(
+        &mut self,
+        instruction: &str,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<String> {
+        let _ = deadline;
+        self.review(instruction)
+    }
 }
 
 /// Review 会话工厂（每轮全新实例，不带前轮记忆）。
