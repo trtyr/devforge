@@ -113,7 +113,7 @@ impl From<crate::error::DevforgeError> for ApiError {
             Self::conflict(msg)
         } else if msg.contains("不存在") {
             Self::not_found(msg)
-        } else if msg.contains("串行") || msg.contains("不可发起") {
+        } else if msg.contains("串行") || msg.contains("不可发起") || msg.contains("并发上限") {
             Self::conflict(msg)
         } else if msg.contains("未知 SOP") {
             Self::bad_request(msg)
@@ -350,31 +350,21 @@ pub async fn start_task(
     if !safe_segment(&project) || !safe_segment(&task) {
         return Err(ApiError::bad_request("项目/任务名含非法路径字符"));
     }
-    // 可选 sop 覆盖（无 body / 无字段 = 沿用任务注册的 sop）
+    // 可选 sop 覆盖：**先记下、不落盘**——server #2：旧实现先 set_task_sop 再 begin_run，
+    // 准入失败时任务的 SOP 已经被换掉（一次失败的 start 改写了任务身份）。
     let mut fresh = false;
-    let mut sop_override = false;
+    let mut requested_sop: Option<String> = None;
     if let Some(Json(req)) = body {
         fresh = req.fresh.unwrap_or(false);
-        if let Some(sop) = req.sop {
-            sop_override = true;
-            let mut store = st.store.lock().expect("store 锁");
-            store
-                .set_task_sop(&st.registry, &project, &task, sop)
-                .map_err(ApiError::from)?;
-        }
+        requested_sop = req.sop;
     }
-    // 前置快速校验（真正的守卫在 begin_run，双保险）
-    let sop_name = {
+    let sop_override = requested_sop.is_some();
+    // 前置校验（只读）：任务存在性 + 已完成 change 的隐式空转
+    let registered_sop = {
         let store = st.store.lock().expect("store 锁");
         let t = store
             .get_task(&project, &task)
             .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
-        if store.running_run_count() >= store.max_concurrent_runs {
-            return Err(ApiError::conflict(format!(
-                "已达并发上限 {}（P012 M4：worktree 隔离下多 run 并行）",
-                store.max_concurrent_runs
-            )));
-        }
         // 复验 N1（中高）：change 已完成后再 start 是静默空转（编排器 phase=Done 全跳过、
         // spawn 六个会话后用旧产物出报告）——显式拒绝，重跑带 fresh。
         // 只挡 change（通用 SOP 重跑 = 冷启动重跑，合法）；sop 覆盖 = 跨 SOP 换道（P005），放行。
@@ -385,19 +375,18 @@ pub async fn start_task(
         }
         t.sop.clone()
     };
-    // 复验 N1：fresh 完整重置——change 的 current 标记/change-id 黑板一并轮换，
-    // 重新 assign_change_id 会分配新号（旧号目录不残留）。
-    if fresh && sop_name == "change" {
-        let change_root =
-            crate::change::change_id::change_root(&st.plans_root, &project, &task);
-        if change_root.is_dir() {
-            std::fs::remove_dir_all(&change_root).map_err(|e| {
-                ApiError::internal(format!(
-                    "清空 change 黑板 {} 失败：{e}",
-                    change_root.display()
-                ))
-            })?;
-        }
+    let sop_name = requested_sop
+        .clone()
+        .unwrap_or_else(|| registered_sop.clone());
+    // sop 覆盖必须在准入之前写盘（`set_task_sop` 拒绝 Running 态，而 begin_run 会把任务置
+    // Running）——所以准入失败时**回滚**旧 sop，不让一次失败的 start 改写任务身份（server #2）。
+    let mut previous_sop: Option<String> = None;
+    if let Some(sop) = requested_sop.clone() {
+        let mut store = st.store.lock().expect("store 锁");
+        store
+            .set_task_sop(&st.registry, &project, &task, sop)
+            .map_err(ApiError::from)?;
+        previous_sop = Some(registered_sop);
     }
     // 续跑门（plan 010 T003）：fresh 清空该 SOP 的断点；否则按断点存在与否回显 resumed；
     // 只动该 SOP 自己那份状态，同 task 其他 SOP 不受影响。
@@ -410,12 +399,54 @@ pub async fn start_task(
     st.render_gate
         .wait_for_profiles(&st.profiles_root, required)
         .await;
+    // *** 准入在响应之前 ***（server #1）：旧实现直接回 202，真正的 can_begin_run 在后台线程，
+    // 失败只发一条 run.error 事件——调用方永远不知道 run 没起来，两个并发请求都能拿到 202。
+    let run = {
+        let mut store = st.store.lock().expect("store 锁");
+        match store.begin_run(&project, &task) {
+            Ok(r) => r,
+            Err(e) => {
+                // 回滚 sop 覆盖：准入没通过，任务身份不得被改写
+                if let Some(old) = previous_sop.clone() {
+                    let _ = store.set_task_sop(&st.registry, &project, &task, old);
+                }
+                return Err(ApiError::from(e));
+            }
+        }
+    };
+    // 复验 N1：fresh 完整重置——change 的 current 标记/change-id 黑板一并轮换，
+    // 重新 assign_change_id 会分配新号（旧号目录不残留）。
+    // 放在准入之后：被拒的 start 不许先把现场删掉。
+    if fresh && sop_name == "change" {
+        let change_root =
+            crate::change::change_id::change_root(&st.plans_root, &project, &task);
+        if change_root.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(&change_root) {
+                // 已准入：失败要回滚槽位再抛，否则任务卡 Running
+                {
+                    let mut store = st.store.lock().expect("store 锁");
+                    let _ = store.finish_run(
+                        &run.id,
+                        crate::domain::store::FinishOutcome::Failed {
+                            reason: format!("清空 change 黑板失败：{e}"),
+                        },
+                    );
+                }
+                return Err(ApiError::internal(format!(
+                    "清空 change 黑板 {} 失败：{e}",
+                    change_root.display()
+                )));
+            }
+        }
+    }
     let engine = (st.engine_factory)();
-    std::thread::spawn(move || run_in_background(st, project, task, engine));
+    let run_id = run.id.0.clone();
+    std::thread::spawn(move || run_in_background(st, project, task, engine, run));
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({
             "sop": sop_name,
+            "run_id": run_id,
             "resumed": decision.resumed,
             "note": decision.note,
         })),

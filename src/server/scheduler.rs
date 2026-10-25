@@ -334,10 +334,28 @@ pub async fn launch(st: &SharedState, project: &str, task_id: &str) {
         .wait_for_profiles(&st.profiles_root, required)
         .await;
     let engine = (st.engine_factory)();
+    // 准入在派发线程之前完成（与 start_task 同口径：202/派发不得早于 begin_run）；
+    // 失败只打日志——调度器没有请求方可以回错了。
+    let run = {
+        let mut store = st.store.lock().expect("store 锁");
+        match store.begin_run(project, task_id) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    component = "scheduler",
+                    project,
+                    task = task_id,
+                    error = %e,
+                    "调度派工被准入拦下（任务状态/并发上限）"
+                );
+                return;
+            }
+        }
+    };
     let st2 = st.clone();
     let project = project.to_string();
     let task_id = task_id.to_string();
-    std::thread::spawn(move || run_in_background(st2, project, task_id, engine));
+    std::thread::spawn(move || run_in_background(st2, project, task_id, engine, run));
 }
 
 /// 调度循环：1s 心跳看 kick，30s 周期全量 tick（serve 时 spawn；测试可直接调 tick）。

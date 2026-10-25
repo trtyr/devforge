@@ -197,24 +197,21 @@ impl ServerState {
 pub type EngineBox = Box<dyn RunEngine + Send>;
 
 /// 在独立线程跑一个 run（不持锁执行引擎——Store 锁只在 begin/finish 短暂持有）。
+/// 准入（`begin_run`）已在 handler 里**同步完成**（server #1：202 不能早于准入），
+/// 这里拿到已建好的 `Run`，只负责取快照与开跑。
 pub fn run_in_background(
     state: SharedState,
     project: String,
     task_id: String,
     mut engine: EngineBox,
+    run: crate::domain::run::Run,
 ) {
-    let (run, task_snapshot) = {
-        let mut store = state.store.lock().expect("store 锁");
-        match store.begin_run(&project, &task_id) {
-            Ok(run) => {
-                let task = store
-                    .get_task(&project, &task_id)
-                    .cloned()
-                    .expect("begin_run 已校验存在");
-                (run, task)
-            }
-            Err(e) => {
-                state.emit(json!({"type": "run.error", "project": project, "task": task_id, "error": e.to_string()}));
+    let task_snapshot = {
+        let store = state.store.lock().expect("store 锁");
+        match store.get_task(&project, &task_id).cloned() {
+            Some(t) => t,
+            None => {
+                state.emit(json!({"type": "run.error", "project": project, "task": task_id, "error": "任务不存在（准入后消失）"}));
                 return;
             }
         }

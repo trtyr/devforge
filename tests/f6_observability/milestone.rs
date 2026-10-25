@@ -73,7 +73,13 @@ pub(super) fn the_change_orchestrator_logs_the_phase_change_and_the_fix_pairs() 
         "应有测试回注的 fix.start：{text:?}"
     );
     // 里程碑形状：级别 INFO + 带 component
-    for line in lines_with(&text, "\"event\":") {
+    // 只查本用例关心的三类事件——全局日志缓冲里还有别的用例（含 WARN/ERROR）的行，
+    // 按 "event": 泛指会把它们算进来（2026-10-25 并行 5 跑红 2 的根因）。
+    let mut ours: Vec<&str> = Vec::new();
+    for ev in ["phase.change", "fix.start", "fix.end"] {
+        ours.extend(lines_with(&text, ev));
+    }
+    for line in ours {
         assert!(line.contains("\"level\":\"INFO\""), "里程碑必须是 INFO：{line}");
         assert!(line.contains("\"component\":"), "里程碑要带 component：{line}");
     }

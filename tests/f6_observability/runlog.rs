@@ -22,7 +22,13 @@ pub(super) fn infra_failure_is_logged_as_error_with_the_full_text_and_the_source
         assert!(result.is_err());
     }
     let text = cap.lines();
-    let lines = lines_with(&text, "run.attempt_failed");
+    // 只认本用例 marker：Capture 的锁只串行「用了 Capture 的用例」，同二进制的其他用例
+    // 也往同一个全局日志缓冲写 run.attempt_failed，按事件名计数会偶发多算
+    //（2026-10-25 全量并行 4 跑红 1 的根因）。
+    let lines: Vec<&str> = lines_with(&text, "run.attempt_failed")
+        .into_iter()
+        .filter(|l| l.contains(marker))
+        .collect();
     assert_eq!(lines.len(), 4, "每次尝试一条：{text:?}");
     let first = lines[0];
     assert!(
@@ -66,7 +72,11 @@ pub(super) fn quality_failure_is_logged_as_warn_with_the_same_fields_and_is_not_
         assert!(result.is_err());
     }
     let text = cap.lines();
-    let lines = lines_with(&text, "run.attempt_failed");
+    // 同上：只认本用例 marker，避免并行下把别的用例的条目算进来
+    let lines: Vec<&str> = lines_with(&text, "run.attempt_failed")
+        .into_iter()
+        .filter(|l| l.contains(marker))
+        .collect();
     assert_eq!(lines.len(), 1, "质量失败只落一条：{text:?}");
     let line = lines[0];
     assert!(line.contains("\"level\":\"WARN\""), "质量失败落 WARN：{line}");
@@ -87,21 +97,29 @@ pub(super) fn four_infra_failures_log_four_attempt_entries_and_one_exhausted_ent
     // 错实现形态：①只落一条（把四次尝试合成一条）②缺 run.attempt_exhausted
     // ③终态条目不带总尝试次数 → 本用例必须变红
     let cap = Capture::new();
+    let marker = "f6-infra-marker-4";
     {
         let (result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), |n| {
-            Err(DevforgeError::System(format!("第 {n} 次挂了")))
+            Err(DevforgeError::System(format!("第 {n} 次挂了（{marker}）")))
         });
         assert_eq!(attempts, 4, "首次 + 3 次重试");
         assert!(result.is_err());
     }
     let text = cap.lines();
-    let attempts = lines_with(&text, "run.attempt_failed");
+    // 同上：只认本用例 marker
+    let attempts: Vec<&str> = lines_with(&text, "run.attempt_failed")
+        .into_iter()
+        .filter(|l| l.contains(marker))
+        .collect();
     assert_eq!(attempts.len(), 4, "4 次尝试各一条：{text:?}");
     for (i, line) in attempts.iter().enumerate() {
         assert!(line.contains(&format!("\"attempt\":{}", i + 1)), "{line}");
         assert!(line.contains("\"level\":\"ERROR\""), "基础设施故障落 ERROR：{line}");
     }
-    let exhausted = lines_with(&text, "run.attempt_exhausted");
+    let exhausted: Vec<&str> = lines_with(&text, "run.attempt_exhausted")
+        .into_iter()
+        .filter(|l| l.contains(marker))
+        .collect();
     assert_eq!(exhausted.len(), 1, "应有且仅有一条终态条目：{text:?}");
     assert!(
         exhausted[0].contains("\"attempts\":4"),
@@ -127,7 +145,11 @@ pub(super) async fn the_error_entry_is_logged_before_the_restart_warning() {
         hang_ms: 0,
         fail_system_times: Arc::new(Mutex::new(1)),
     });
-    devforge::server::run_in_background(f.state.clone(), "p".into(), "t".into(), engine);
+    let run = {
+        let mut store = f.state.store.lock().expect("store 锁");
+        store.begin_run("p", "t").expect("准入")
+    };
+    devforge::server::run_in_background(f.state.clone(), "p".into(), "t".into(), engine, run);
     let text = cap.lines();
     let err_at = text
         .iter()
@@ -388,23 +410,15 @@ pub(super) async fn two_concurrent_starts_while_the_gate_waits_run_at_most_one()
         std::fs::write(d.join("settings.json"), "{}").expect("写 settings.json");
     }
     f.state.render_gate.end_render();
-    assert_eq!(a.await.expect("第一个 start").status(), 202);
-    assert_eq!(b.await.expect("第二个 start").status(), 202);
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let run_errors = loop {
-        let n = events(&f)
-            .iter()
-            .filter(|e| e.contains("\"type\":\"run.error\""))
-            .count();
-        if n > 0 || std::time::Instant::now() > deadline {
-            break n;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    };
+    // server #1 修复后：准入在响应之前——一路 202、一路 409，不存在「后台才失败」的静默路径
+    let s1 = a.await.expect("第一个 start").status().as_u16();
+    let s2 = b.await.expect("第二个 start").status().as_u16();
+    let mut got = vec![s1, s2];
+    got.sort_unstable();
     assert_eq!(
-        run_errors, 1,
-        "并发 start 只能有一个开跑，另一个必须以 run.error 事件明确失败"
+        got,
+        vec![202, 409],
+        "并发 start 只能有一路拿到 202（另一路当场 409），实际：{s1}/{s2}"
     );
     let body = body_json(
         send(&f.router, "GET", "/api/v1/projects/p/tasks/t1/runs", None).await,

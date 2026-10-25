@@ -203,8 +203,12 @@ async fn the_infra_error_is_logged_before_the_restart_warning() {
         quality_fail: false,
         panic_times: Arc::new(Mutex::new(0)),
     });
+    let run = {
+        let mut store = f.state.store.lock().expect("store 锁");
+        store.begin_run("p", "t").expect("准入")
+    };
     let text = crate::observability::test_support::capture_jsonl(|| {
-        crate::server::run_in_background(f.state.clone(), "p".into(), "t".into(), engine);
+        crate::server::run_in_background(f.state.clone(), "p".into(), "t".into(), engine, run);
     });
     let lines: Vec<&str> = text.lines().collect();
     let err_at = lines

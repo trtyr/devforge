@@ -242,28 +242,17 @@ async fn two_concurrent_starts_while_the_gate_waits_run_at_most_one() {
     }
     f.state.render_gate.end_render();
 
-    // 两个 start 都被受理（202）：串行槽的判定在后台线程里，不在 HTTP 层
-    assert_eq!(a.await.unwrap().status(), 202);
-    assert_eq!(b.await.unwrap().status(), 202);
-
-    // 输的那一路必须以 run.error 事件明确失败（不产生双跑）
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    let run_errors = loop {
-        let n = f
-            .state
-            .bus
-            .replay_after(0)
-            .iter()
-            .filter(|(_, data)| data.contains("\"type\":\"run.error\""))
-            .count();
-        if n > 0 || std::time::Instant::now() > deadline {
-            break n;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    };
+    // 准入在响应之前（server #1 修复后）：只能有一路拿 202，另一路当场 409——
+    // 旧契约「两个 start 都回 202，串行槽判定在后台线程」正是被审出来的缺陷：
+    // 调用方永远不知道自己的 run 没起来。
+    let s1 = a.await.unwrap().status().as_u16();
+    let s2 = b.await.unwrap().status().as_u16();
+    let mut got = vec![s1, s2];
+    got.sort_unstable();
     assert_eq!(
-        run_errors, 1,
-        "并发 start 只能有一个开跑，另一个必须以 run.error 事件明确失败"
+        got,
+        vec![202, 409],
+        "并发 start 只能有一路拿到 202（另一路 409 冲突），实际：{s1}/{s2}"
     );
 
     // 至多一个 run 真正开跑、引擎只被调用一次
