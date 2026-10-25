@@ -156,8 +156,11 @@ impl RpcClient {
             match self.lines.recv_timeout(Duration::from_millis(500)) {
                 Ok(l) => return Ok(l),
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Err(DevforgeError::RpcProtocol(
-                        "子进程 EOF：agent_settled 之前流已结束".into(),
+                    // 引擎审计修复 #3：子进程流提前结束与 try_wait 发现退出是同一类故障
+                    // （「子进程没了」的两种表象）——统一归 System（基础设施，可重启），
+                    // 不再一个 RpcProtocol 一个 System 各奔东西。
+                    return Err(DevforgeError::System(
+                        "子进程 EOF：agent_settled 之前流已结束（基础设施故障）".into(),
                     ));
                 }
                 Err(RecvTimeoutError::Timeout) => {

@@ -57,6 +57,15 @@ pub enum DevforgeError {
 }
 
 impl DevforgeError {
+    /// 剥开 WithContext 包装链取根因（引擎审计修复 #3：分类判定看根因不看包装）。
+    pub fn root_cause(&self) -> &DevforgeError {
+        let mut cur = self;
+        while let DevforgeError::WithContext { source, .. } = cur {
+            cur = source;
+        }
+        cur
+    }
+
     /// 便捷构造：子 Agent 失败。
     pub fn agent(role: impl Into<String>, message: impl Into<String>) -> Self {
         Self::Agent {

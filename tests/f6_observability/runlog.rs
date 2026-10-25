@@ -13,16 +13,17 @@ pub(super) fn infra_failure_is_logged_as_error_with_the_full_text_and_the_source
     let marker = "f6-infra-marker-1";
     {
         let (result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), |_| {
-            // 带上下文的包装错误：source 链有两层（上下文层 + 内层错误）
+            // 带上下文的包装错误：source 链有两层（上下文层 + 内层错误）——
+            // 引擎审计修复 #3：分类看根因不看包装，根因 System → 照常重启耗尽
             let inner: Result<()> = Err(DevforgeError::System(format!("上游 500（{marker}）")));
             Err(inner.ctx("拉模型响应").unwrap_err())
         });
-        assert_eq!(attempts, 1, "包装过的错误不是裸 System → 不进自动重启分支");
+        assert_eq!(attempts, 4, "根因 System（剥包装后）应进重启分支直到耗尽");
         assert!(result.is_err());
     }
     let text = cap.lines();
     let lines = lines_with(&text, "run.attempt_failed");
-    assert_eq!(lines.len(), 1, "每次尝试一条：{text:?}");
+    assert_eq!(lines.len(), 4, "每次尝试一条：{text:?}");
     let first = lines[0];
     assert!(
         first.contains("\"level\":\"ERROR\""),
@@ -43,8 +44,9 @@ pub(super) fn infra_failure_is_logged_as_error_with_the_full_text_and_the_source
     assert!(first.contains("→"), "source 链要用 → 连接：{first}");
     assert!(first.contains("error_chain"), "缺 source 链字段：{first}");
     assert!(
-        first.contains("\"retryable\":false"),
-        "这条失败不重启（不是裸 System）：{first}"
+        first.contains("\"retryable\":true"),
+        // 引擎审计修复 #3：根因 System（剥包装后）可重启——retryable 翻 true
+        "根因 System 应标记可重启：{first}"
     );
 }
 

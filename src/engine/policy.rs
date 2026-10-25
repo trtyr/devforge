@@ -56,9 +56,18 @@ impl RetryPolicy {
     }
 }
 
-/// 只有基础设施类错误值得重启。
+/// 只有基础设施类错误值得重启（引擎审计修复 #3：分类单一事实源——剥 WithContext 包装看根因）。
+/// 可重启：根因为 `System`（子进程死亡/流提前 EOF/挂死收割）或 `Io`（spawn 瞬时失败——
+/// 进程表满/临时资源耗尽；二进制不存在属配置问题但 spawn 层分不清，接受重试后
+/// Failed 的成本换取瞬时故障自愈，决策注释即文档）。
+/// 不重启：`Quality`（重启只会得到同一结论）、`Config`（修配置后重启 run）、
+/// `Agent`（子 Agent 决策类失败）、`RpcProtocol`（真实协议违例——坏数据不是外部故障）、
+/// `Store`/`Json`（数据模型故障，重启不修数据）。
 pub fn is_infra_failure(result: &crate::error::Result<RunOutcome>) -> bool {
-    matches!(result, Err(DevforgeError::System(_)))
+    matches!(
+        result.as_ref().err().map(|e| e.root_cause()),
+        Some(DevforgeError::System(_) | DevforgeError::Io(_))
+    )
 }
 
 /// 带重试地执行一次 run。
@@ -445,6 +454,46 @@ mod log_capture_tests {
         assert_eq!(exhausted.len(), 1, "应有且仅有一条终态条目：{text}");
         assert!(exhausted[0].contains("\"attempts\":4"), "终态条目要带尝试次数：{}", exhausted[0]);
         assert!(exhausted[0].contains("\"level\":\"ERROR\""), "{}", exhausted[0]);
+    }
+
+    /// 引擎审计修复 #3 回归：is_infra_failure 分类矩阵——剥 WithContext 看根因；
+    /// 子进程死亡（EOF 与 try_wait 退出）同归 System 同重启；协议违例/质量/配置不重启。
+    #[test]
+    fn infra_failure_classification_matrix() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "临时资源耗尽");
+        let cases: Vec<(crate::error::DevforgeError, bool)> = vec![
+            (DevforgeError::System("子进程已退出".into()), true),
+            (DevforgeError::Io(io_err), true),
+            // spawn 的 .ctx() 包装：剥开看根因 Io → 仍算基础设施（此前不重启 = 漏自愈）
+            (
+                DevforgeError::WithContext {
+                    context: "spawn pi (role=plan-agent)".into(),
+                    source: Box::new(DevforgeError::Io(
+                        std::io::Error::new(std::io::ErrorKind::Other, "boom"),
+                    )),
+                },
+                true,
+            ),
+            (
+                DevforgeError::WithContext {
+                    context: "写台账".into(),
+                    source: Box::new(DevforgeError::System("盘满".into())),
+                },
+                true,
+            ),
+            (DevforgeError::RpcProtocol("坏记录".into()), false),
+            (DevforgeError::Quality("审查打回".into()), false),
+            (DevforgeError::Config("缺 API key".into()), false),
+            (DevforgeError::agent("x", "子 Agent 决策失败"), false),
+        ];
+        for (e, want) in cases {
+            let r: crate::error::Result<RunOutcome> = Err(e);
+            assert_eq!(
+                is_infra_failure(&r),
+                want,
+                "分类漂移：{r:?}"
+            );
+        }
     }
 
     #[test]
