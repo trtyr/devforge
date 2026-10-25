@@ -423,6 +423,21 @@ impl BuiltinRpcEngine {
                                 findings = ?issues,
                                 "doc-side 判定 → 触发 doc-fix 子 SOP"
                             );
+                            // 引擎批次 #5 之二：交接前先验 profile 已渲染——testing 入口只验了
+                            // 自己那两个 profile；doc-fix/doc-review 缺 settings.json 时真 pi 会以空
+                            // agent-dir 启动并挂死（与 e2e F1 同一形态）。纯路径检查，不需要 self。
+                            for (role, dir) in [
+                                ("doc-fix", &docfix_profile),
+                                ("doc-review", &doc_review_profile),
+                            ] {
+                                let marker = dir.join("settings.json");
+                                if !marker.is_file() {
+                                    return Err(crate::error::DevforgeError::Config(format!(
+                                        "profile `{role}` 未渲染（缺 {}）——testing→doc-fix 交接中止；先 PUT /api/v1/config/manifest 完成渲染",
+                                        marker.display()
+                                    )));
+                                }
+                            }
                             // D004：doc-fix 定点修补（新会话）+ doc-review 内置审查轮
                             let docfix_client = RpcClient::spawn(
                                 SpawnSpec::new(

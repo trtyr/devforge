@@ -174,7 +174,7 @@ pub fn run<S: ChangeSession>(
     session: &mut S,
     ui: &mut dyn UserLink,
 ) -> Result<ChangeOutcome> {
-    let mut state = crate::change::state::load_strict(run.store, run.change_id, run.baseline_sha)?;
+    let mut state = load_strict(run.store, run.change_id, run.baseline_sha)?;
     if state.baseline_sha.is_empty() {
         state.baseline_sha = run.baseline_sha.to_string();
     }
