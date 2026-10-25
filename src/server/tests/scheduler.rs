@@ -358,3 +358,129 @@ async fn capacity_one_with_running_run_dispatches_nothing() {
         "waiting 应阻塞在容量：{report:?}"
     );
 }
+
+/// 建「带契约 + 已完成 + frozen-commit 落盘」的任务（自动入队用例的公共前置）。
+fn settled_contract_task(f: &super::Fixture, task: &str, frozen_sha: &str) {
+    let plans_root = f.state.plans_root.clone();
+    {
+        let mut store = f.state.store.lock().unwrap();
+        if store.get_project("devforge").is_none() {
+            store
+                .create_project(crate::domain::project::Project::new(
+                    "devforge",
+                    std::path::PathBuf::from("/tmp/sched-fixture"),
+                    1,
+                ))
+                .unwrap();
+        }
+        store
+            .create_task(
+                &SopRegistry::builtin(),
+                "devforge",
+                task,
+                "planning",
+                Some(crate::domain::contract::WorkItemContract {
+                    owned_paths: vec!["src/**".into()],
+                    forbidden_paths: vec![],
+                    base_rev: Some("deadbeef".into()),
+                    isolation: crate::domain::contract::Isolation::None,
+                }),
+                TaskDeps::default(),
+            )
+            .unwrap();
+        let run = store.begin_run("devforge", task).unwrap();
+        store.finish_run(&run.id, FinishOutcome::Completed).unwrap();
+    }
+    let dir = plans_root.join("devforge").join(task);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("frozen-commit.txt"), format!("{frozen_sha}\n")).unwrap();
+}
+
+/// 全仓审计 #2 回归：NeedsRebase 不得把任务永久卡死——
+/// 错实现形态：next_pending 只挑 Pending + scheduler 任意状态都跳过入队 → 一次 CAS
+/// 失败后该任务既不被消费也不再入队，静默停摆。
+#[tokio::test]
+async fn needs_rebase_candidate_is_rearmed_and_not_stuck() {
+    let f = fixture();
+    let plans_root = f.state.plans_root.clone();
+    settled_contract_task(&f, "rebased", "cafebabe");
+
+    // 先入队，再模拟 CAS 失败后的状态
+    let mut queue = crate::integration::MergeQueue::load(&plans_root, "devforge").unwrap();
+    queue.enqueue(crate::integration::Candidate {
+        task_id: "rebased".into(),
+        frozen_sha: "cafebabe".into(),
+        base_rev: "deadbeef".into(),
+        owned_paths: vec!["src/**".into()],
+        status: crate::integration::CandidateStatus::NeedsRebase {
+            target_moved_to: "beefcafe".into(),
+        },
+        evidence_paths: vec![],
+    });
+    queue.save().unwrap();
+
+    let report = tick(&f.state, &SchedulerConfig::default());
+    let _ = report;
+    let queue = crate::integration::MergeQueue::load(&plans_root, "devforge").unwrap();
+    let mine: Vec<_> = queue
+        .candidates
+        .iter()
+        .filter(|c| c.task_id == "rebased")
+        .collect();
+    assert_eq!(mine.len(), 1, "不得重复入队：{queue:?}");
+    assert_eq!(
+        mine[0].status,
+        crate::integration::CandidateStatus::Pending,
+        "NeedsRebase 应放回 Pending 重验（否则永久停滞）"
+    );
+}
+
+/// 全仓审计 #2 回归的另一面：NeedsRepair 是终态，但**任务重跑出新证据**（新 frozen_sha）
+/// 必须能再入队——旧口径「任意状态跳过」会让修复后的任务永远进不了集成。
+#[tokio::test]
+async fn needs_repair_allows_reentry_with_new_frozen_commit() {
+    let f = fixture();
+    let plans_root = f.state.plans_root.clone();
+    settled_contract_task(&f, "repaired", "old111");
+
+    let mut queue = crate::integration::MergeQueue::load(&plans_root, "devforge").unwrap();
+    queue.enqueue(crate::integration::Candidate {
+        task_id: "repaired".into(),
+        frozen_sha: "old111".into(),
+        base_rev: "deadbeef".into(),
+        owned_paths: vec!["src/**".into()],
+        status: crate::integration::CandidateStatus::NeedsRepair {
+            reason: "组合验证失败".into(),
+        },
+        evidence_paths: vec![],
+    });
+    queue.save().unwrap();
+
+    // 同一 sha：不重复入队（同一批失败重投只会再失败一次）
+    tick(&f.state, &SchedulerConfig::default());
+    let queue = crate::integration::MergeQueue::load(&plans_root, "devforge").unwrap();
+    assert_eq!(
+        queue.candidates.iter().filter(|c| c.task_id == "repaired").count(),
+        1,
+        "同一 frozen_sha 不应重复入队"
+    );
+
+    // 修复后重跑 → 新 frozen_sha → 允许再入队
+    std::fs::write(
+        plans_root.join("devforge").join("repaired").join("frozen-commit.txt"),
+        "new222\n",
+    )
+    .unwrap();
+    tick(&f.state, &SchedulerConfig::default());
+    let queue = crate::integration::MergeQueue::load(&plans_root, "devforge").unwrap();
+    let shas: Vec<_> = queue
+        .candidates
+        .iter()
+        .filter(|c| c.task_id == "repaired")
+        .map(|c| c.frozen_sha.clone())
+        .collect();
+    assert!(
+        shas.contains(&"new222".to_string()),
+        "新证据应允许再入队：{shas:?}"
+    );
+}

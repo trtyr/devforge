@@ -148,8 +148,40 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
                 continue;
             }
         };
-        if queue.candidates.iter().any(|c| c.task_id == task_id) {
-            continue; // 已在队（任何状态）——不重复入队
+        // 全仓审计 #2：NeedsRebase 不是终态——语义是「目标在集成期间被推进，
+        // rebase 到新目标后重验」。旧实现 next_pending 只挑 Pending，一次 CAS 失败
+        // 就把任务永久卡死（scheduler 又「任意状态都跳过入队」）。这里把 NeedsRebase
+        // 放回 Pending 重验；NeedsRepair 保持终态（修复 = 新候选带新证据 = 新 frozen_sha）。
+        let mut rearmed = false;
+        for c in queue.candidates.iter_mut() {
+            if let CandidateStatus::NeedsRebase { target_moved_to } = &c.status {
+                tracing::warn!(
+                    component = "scheduler",
+                    project = %project,
+                    task = %c.task_id,
+                    target = %target_moved_to,
+                    "NeedsRebase 候选放回 Pending 重验（终态不停滞）"
+                );
+                c.status = CandidateStatus::Pending;
+                rearmed = true;
+            }
+        }
+        if rearmed && let Err(e) = queue.save() {
+            tracing::warn!(component = "scheduler", error = %e, "重排候选回写失败");
+        }
+        // 去重口径（全仓审计 #2）：Pending/Integrated = 本任务已在队或已合入；
+        // NeedsRepair 只在 frozen_sha 未变时跳过（同一批失败重投只会再失败一次），
+        // 任务重跑产生新 frozen_sha 即视为「新证据」允许入队——不再静默停滞。
+        let already = queue.candidates.iter().any(|c| {
+            c.task_id == task_id
+                && match &c.status {
+                    CandidateStatus::Pending | CandidateStatus::Integrated { .. } => true,
+                    CandidateStatus::NeedsRebase { .. } => true,
+                    CandidateStatus::NeedsRepair { .. } => c.frozen_sha == sha,
+                }
+        });
+        if already {
+            continue;
         }
         let contract = {
             let store = st.store.lock().expect("store 锁");

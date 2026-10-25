@@ -173,6 +173,7 @@ impl<'a> Integrator<'a> {
             let _ = git(&iw_path, &["merge", "--abort"]);
             drop(guard);
             let artifact = self.write_artifact(
+                &queue.project,
                 &cand,
                 &serde_json::json!({
                     "kind": "merge_conflict",
@@ -197,6 +198,7 @@ impl<'a> Integrator<'a> {
         if let Err(e) = (self.validate)(&iw_path) {
             drop(guard);
             let artifact = self.write_artifact(
+                &queue.project,
                 &cand,
                 &serde_json::json!({
                     "kind": "validation_failed",
@@ -273,11 +275,17 @@ impl<'a> Integrator<'a> {
     }
 
     /// 冲突/失败产物：`{plans_root}/integrations/{project}/artifacts/{task_id}-{n}.json`。
-    fn write_artifact(&self, cand: &Candidate, body: &serde_json::Value) -> Result<PathBuf> {
+    /// 全仓审计 #9：按项目分目录（旧实现恒 `_global`，多项目产物混放，检索与清理边界模糊）。
+    fn write_artifact(
+        &self,
+        project: &str,
+        cand: &Candidate,
+        body: &serde_json::Value,
+    ) -> Result<PathBuf> {
         let dir = self
             .plans_root
             .join("integrations")
-            .join(artifact_dir_name())
+            .join(project)
             .join("artifacts");
         std::fs::create_dir_all(&dir).ctx("建产物目录")?;
         let n = std::fs::read_dir(&dir)
@@ -288,11 +296,6 @@ impl<'a> Integrator<'a> {
             .ctx("写冲突/失败产物")?;
         Ok(path)
     }
-}
-
-/// 产物目录的项目提示：M3 先用 flat + task_id 前缀；M4 调度器接线时按项目分目录收紧。
-fn artifact_dir_name() -> String {
-    "_global".into()
 }
 
 /// worktree 清理 guard（Ok/Err 两路都摘集成工作树）。
@@ -505,6 +508,12 @@ mod tests {
         };
         assert_eq!(task_id, "task-bad");
         assert!(reason.contains("模拟组合验证失败"));
+        // 全仓审计 #9：产物按项目分目录（旧实现恒 `_global`，多项目产物混放）
+        assert!(
+            artifact.to_string_lossy().contains("/integrations/p/artifacts/"),
+            "产物应落在项目目录下：{}",
+            artifact.display()
+        );
         let body = std::fs::read_to_string(&artifact).unwrap();
         assert!(body.contains("validation_failed"), "{body}");
         assert!(matches!(
