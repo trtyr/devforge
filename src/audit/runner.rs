@@ -1214,11 +1214,13 @@ mod tests {
                 id: "unit-001".into(),
                 files: vec!["a.rs".into()],
                 label: "label-unit-001".into(),
+                focus: Vec::new(),
             },
             AuditUnit {
                 id: "unit-002".into(),
                 files: vec!["a.rs".into()],
                 label: "label-unit-002".into(),
+                focus: Vec::new(),
             },
         ];
         let refs: Vec<&AuditUnit> = units.iter().collect();

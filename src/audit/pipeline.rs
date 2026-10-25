@@ -180,11 +180,22 @@ pub fn batch_instruction(
     precheck_report: &str,
 ) -> String {
     let others: Vec<&String> = all_unit_labels.iter().filter(|l| **l != unit.label).collect();
+    // r3 m5：超大文件分片——把「本批看哪段」写进指令，否则 1000+ 行的编排内核
+    // 整包丢给一个会话，并行只提吞吐、降不了装载量。
+    let focus_line = if unit.focus.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "本批是**超大文件分片**：同一文件的其它符号段由其它批次负责（不要重复报同一处）；\
+             重点符号：\n- {}\n",
+            unit.focus.join("\n- ")
+        )
+    };
     format!(
         "代码工作区（绝对路径）= {}；当前目录是共享黑板（两者不同）。\n\
          读源码请用工作区路径拼下面列出的相对路径；你输出的 `path:line` 里的 path 也是相对工作区的。\n\
          审查批次 `{}`，文件：{:?}。\n\
-         引擎预查报告（参考计数，非裁决依据——简化扫描含字符串/test 代码命中）：\n{precheck_report}\n\
+         {focus_line}引擎预查报告（参考计数，非裁决依据——简化扫描含字符串/test 代码命中）：\n{precheck_report}\n\
          其他批次（路径感知，不在本批审查范围）：{others:?}\n\
          按你的角色提示词执行六视角审查并输出 <audit-findings> 协议块。",
         workspace.display(),
@@ -423,6 +434,7 @@ mod tests {
             id: id.into(),
             files: vec!["src/a.rs".into()],
             label: format!("label-{id}"),
+            focus: Vec::new(),
         }
     }
 

@@ -29,6 +29,10 @@ pub struct AuditUnit {
     pub files: Vec<String>,
     /// 人类可读标签（聚合依据：inventory 单元名或目录名）。
     pub label: String,
+    /// 超大文件分片的重点符号（`name（第 a–b 行）`）；空 = 整文件审查。
+    /// 第三方 r3 m5：单文件超行数预算后不可再切，只能把「看哪段」写进批次指令，
+    /// 否则 1000+ 行的编排内核会整包丢给一个会话。
+    pub focus: Vec<String>,
 }
 
 /// 切片产物：全部审查单元 + 覆盖对账计数（全仓审计 M6）。
@@ -53,6 +57,38 @@ fn line_count(workspace: &Path, rel: &str) -> usize {
     std::fs::read_to_string(workspace.join(rel))
         .map(|c| c.lines().count())
         .unwrap_or(0)
+}
+
+/// 超大单文件按**符号边界**分片（第三方 r3 m5）：每片的符号跨度 ≤ MAX_UNIT_LINES；
+/// 无符号信息时退回整文件一片（至少不丢文件）。
+fn split_oversized_file(path: &str, symbols: &[(usize, String)]) -> Vec<(Vec<String>, Vec<String>)> {
+    let mut syms = symbols.to_vec();
+    syms.sort_by_key(|(l, _)| *l);
+    if syms.is_empty() {
+        return vec![(vec![path.to_string()], Vec::new())];
+    }
+    let mut out: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+    let mut group: Vec<(usize, String)> = Vec::new();
+    for (line, name) in syms {
+        let start = group.first().map(|(l, _)| *l).unwrap_or(line);
+        if !group.is_empty() && line.saturating_sub(start) > MAX_UNIT_LINES {
+            out.push(piece_of(path, &group));
+            group.clear();
+        }
+        group.push((line, name));
+    }
+    if !group.is_empty() {
+        out.push(piece_of(path, &group));
+    }
+    out
+}
+
+fn piece_of(path: &str, group: &[(usize, String)]) -> (Vec<String>, Vec<String>) {
+    let focus = group
+        .iter()
+        .map(|(l, n)| format!("{n}（第 {l} 行）"))
+        .collect();
+    (vec![path.to_string()], focus)
 }
 
 /// 按双预算顺序切批（不重排：同批文件语义仍连贯）。
@@ -86,9 +122,18 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
     let mut groups: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // 符号行号（超大文件分片用）：path → [(line, name)]
+    let mut symbols: std::collections::BTreeMap<String, Vec<(usize, String)>> =
+        std::collections::BTreeMap::new();
     // 全仓审计 M6：非源码面条目（Config/Data/Behavior）不再静默丢弃——计数进报告
     let mut excluded_entries = 0usize;
     for e in &inventory.entries {
+        if e.kind == crate::docgen::inventory::EntryKind::Symbol {
+            symbols
+                .entry(e.path.clone())
+                .or_default()
+                .push((e.line, e.canonical_name.clone()));
+        }
         if e.kind != crate::docgen::inventory::EntryKind::Module
             && e.kind != crate::docgen::inventory::EntryKind::Symbol
         {
@@ -118,8 +163,7 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
 
     // 超限切分：文件数（MAX_UNIT_FILES）+ 行数（MAX_UNIT_LINES）双预算——
     // 只按文件数挡不住「同目录多个大文件」（第三方 r2 M3）。
-    let mut units: Vec<AuditUnit> = Vec::new();
-    let mut seq = 0usize;
+    let mut units: Vec<AuditUnit> = Vec::new();    let mut seq = 0usize;
     for (key, mut files) in groups {
         files.sort();
         let label = key
@@ -131,18 +175,33 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
         let n_chunks = chunks.len();
         for (chunk_i, chunk) in chunks.into_iter().enumerate() {
             seq += 1;
-            units.push(AuditUnit {
-                id: format!("unit-{seq:03}"),
-                files: chunk,
-                label: format!(
-                    "{label}{}",
-                    if n_chunks > 1 {
-                        format!("（分片 {}/{})", chunk_i + 1, n_chunks)
-                    } else {
-                        String::new()
-                    }
-                ),
-            });
+            // r3 m5：单文件超行数预算时拆成多个「同文件不同符号区间」单元，
+            // 否则 1000+ 行的编排内核整包丢给一个会话（并行只提吞吐，降不了装载量）。
+            let multi: Vec<(Vec<String>, Vec<String>)> = if chunk.len() == 1
+                && line_count(workspace, &chunk[0]) > MAX_UNIT_LINES
+            {
+                let syms = symbols.get(&chunk[0]).cloned().unwrap_or_default();
+                split_oversized_file(&chunk[0], &syms)
+            } else {
+                vec![(chunk, Vec::new())]
+            };
+            let multi_n = multi.len();
+            for (piece_i, (piece, focus)) in multi.into_iter().enumerate() {
+                seq += 1;
+                let mut piece_label = label.clone();
+                if n_chunks > 1 {
+                    piece_label.push_str(&format!("（分片 {}/{})", chunk_i + 1, n_chunks));
+                }
+                if multi_n > 1 {
+                    piece_label.push_str(&format!("（符号段 {}/{})", piece_i + 1, multi_n));
+                }
+                units.push(AuditUnit {
+                    id: format!("unit-{seq:03}"),
+                    files: piece,
+                    label: piece_label,
+                    focus,
+                });
+            }
         }
     }
     units.sort_by(|a, b| a.id.cmp(&b.id));
@@ -263,6 +322,37 @@ mod tests {
             prompt.contains("代码原文"),
             "证据必须引原文（核验器逐字比对）也要写进提示词"
         );
+    }
+
+    /// 第三方 r3 m5：单文件超行数预算 → 按符号边界分片（同文件多单元 + focus 非空），
+    /// 不再整包丢给一个会话。
+    #[test]
+    fn oversized_file_is_split_by_symbol_boundaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        let mut body = String::new();
+        // 每 100 行一个函数，共 1800 行（单个文件，不可再按文件切）
+        for i in 0..18 {
+            for n in 0..99 {
+                body.push_str(&format!("// filler {i}-{n}\n"));
+            }
+            body.push_str(&format!("pub fn f{i}() {{}}\n"));
+        }
+        std::fs::write(tmp.path().join("src/big.rs"), body).unwrap();
+        let plan = build_plan(tmp.path()).unwrap();
+        let big: Vec<&AuditUnit> = plan
+            .units
+            .iter()
+            .filter(|u| u.files == vec!["src/big.rs".to_string()])
+            .collect();
+        assert!(
+            big.len() >= 2,
+            "超 800 行单文件必须分片（实际 {} 片）",
+            big.len()
+        );
+        for u in &big {
+            assert!(!u.focus.is_empty(), "分片必须带 focus（否则等于没切）：{u:?}");
+        }
     }
 
     #[test]

@@ -117,7 +117,8 @@ pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
         // 判据取目标行的前 40 字符前缀（空白压缩后包含），够宽松不卡正常引用，
         // 但猜行号的人不可能正好凑中原文。行太短（<8 字符，如 `}`）不强制。
         if let Some(prefix) = line_prefix(file_lines.get(f.line as usize - 1).map(|s| s.as_str())) {
-            if !normalize_ws(&f.evidence).contains(&prefix) {
+            let quoted = normalize_ws(&f.evidence).contains(&prefix);
+            if !quoted {
                 report.dropped.push((
                     format!("{}/{}", f.path, f.line),
                     format!("未引用原文：evidence 未出现第 {} 行的代码（疑猜行号，前缀={prefix}）", f.line),
