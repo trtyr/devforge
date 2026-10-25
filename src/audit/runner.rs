@@ -1005,7 +1005,7 @@ mod tests {
 
     const P0: &str = "```json\n{\"priority\": [], \"skip\": [], \"cross_concerns\": []}\n```";
     const F1: &str = r#"<audit-findings>
-[{"path":"a.rs","line":1,"view":"correctness","severity":"major","claim":"c","evidence":"a.rs:1"}]
+[{"path":"a.rs","line":1,"view":"correctness","severity":"major","claim":"c","evidence":"fn main() {} （a.rs:1）"}]
 </audit-findings>"#;
     const C0: &str = "```json\n{\"findings\": [], \"concern_verdicts\": []}\n```";
     const JUNK: &str = "我先想一下……（这里没有 json 块）";
@@ -1076,8 +1076,9 @@ mod tests {
     #[test]
     fn cross_layer_duplicates_count_once_and_json_excludes_ghosts() {
         let (_ws, root, task) = audit_task();
+        // 本地与跨层各一条同位置同主张（evidence 必须引原文，否则被核验器当猜行号丢掉）
         let cross_dup = r#"```json
-{"findings": [{"path":"a.rs","line":1,"view":"correctness","severity":"major","claim":"c","evidence":"a.rs:1"},{"path":"../x.rs","line":1,"view":"correctness","severity":"critical","claim":"ghost","evidence":"../x.rs:1"}], "concern_verdicts": []}
+{"findings": [{"path":"a.rs","line":1,"view":"correctness","severity":"major","claim":"c","evidence":"fn main() {} （a.rs:1）"},{"path":"../x.rs","line":1,"view":"correctness","severity":"critical","claim":"ghost","evidence":"../x.rs:1"}], "concern_verdicts": []}
 ```"#;
         let control = crate::domain::runner::RunControl::new();
         let mut f = mk(vec![vec![P0], vec![F1], vec![cross_dup]]);

@@ -245,6 +245,26 @@ mod tests {
         }
     }
 
+    /// 第三方 r3 M3：V5 依赖 codegraph——必须强制带 projectPath（本机多仓索引共存时
+    /// 不带路径的 explore 可能返回别的仓；官方设计就是每调用传 projectPath）。
+    /// 同时钉住 C1 的「只报读过的代码」（它是审查官侧唯一的行为约束）。
+    #[test]
+    fn prompt_pins_codegraph_project_path_and_read_first() {
+        let prompt = include_str!("../../assets/prompts/code-review-agent.md");
+        assert!(
+            prompt.contains("projectPath"),
+            "V5 必须要求 codegraph 调用带 projectPath"
+        );
+        assert!(
+            prompt.contains("没打开过文件就不报"),
+            "「只报读过的代码」约束不得被删"
+        );
+        assert!(
+            prompt.contains("代码原文"),
+            "证据必须引原文（核验器逐字比对）也要写进提示词"
+        );
+    }
+
     #[test]
     fn slice_is_deterministic() {
         let r = repo();

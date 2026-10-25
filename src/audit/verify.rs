@@ -24,6 +24,20 @@ fn path_traversal(p: &str) -> bool {
     std::path::Path::new(p).is_absolute() || p.split('/').any(|seg| seg == "..")
 }
 
+/// 空白压缩（证据与原文比对前统一口径：换行/缩进不计）。
+fn normalize_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 目标行可引用的前缀：行太短（<8 字符，如 `}`、`});`）不强制引用。
+fn line_prefix(line: Option<&str>) -> Option<String> {
+    let t = line?.trim();
+    if t.chars().count() < 8 {
+        return None;
+    }
+    Some(normalize_ws(&t.chars().take(40).collect::<String>()))
+}
+
 /// evidence 中是否含 `path:line` 形态引用（审计修复 #4：零证据不入的判定基础）。
 /// 解析启发式与 [`evidence_refs_out_of_file`] 同源：路径段（含扩展名或目录分隔）+ 纯数字行号。
 fn has_evidence_ref(evidence: &str) -> bool {
@@ -35,7 +49,8 @@ fn has_evidence_ref(evidence: &str) -> bool {
             .char_indices()
             .rev()
             .find(|(_, c)| !(c.is_alphanumeric() || *c == '_' || *c == '.' || *c == '-' || *c == '/'))
-            .map(|(idx, _)| idx + 1)
+            // 多字节分隔符（如全角括号）：idx+1 会切在字符中间 → panic
+            .map(|(idx, c)| idx + c.len_utf8())
             .unwrap_or(0);
         let path = &evidence[path_start..abs];
         let tail = &evidence[abs + 1..];
@@ -53,8 +68,8 @@ fn has_evidence_ref(evidence: &str) -> bool {
 
 /// 对一批发现跑核验：`workspace` = 仓库根（存在性判定的基准）。
 pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
-    // 行号缓存：path → 行数（同一文件的多次发现只读一次盘）
-    let mut line_counts: BTreeMap<String, Option<usize>> = BTreeMap::new();
+    // 行缓存：path → 文件全文行（同一文件的多次发现只读一次盘）
+    let mut cache: BTreeMap<String, Option<Vec<String>>> = BTreeMap::new();
     let mut report = VerifyReport::default();
     for f in findings {
         // 审计修复 #7：路径穿越先拒绝（不读盘）
@@ -74,10 +89,11 @@ pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
             ));
             continue;
         }
-        let lines = line_counts
-            .entry(f.path.clone())
-            .or_insert_with(|| read_within(workspace, &f.path).map(|s| s.lines().count()));
-        let Some(total) = lines else {
+        let lines = cache.entry(f.path.clone()).or_insert_with(|| {
+            read_within(workspace, &f.path)
+                .map(|s| s.lines().map(|l| l.to_string()).collect::<Vec<String>>())
+        });
+        let Some(file_lines) = lines else {
             report.dropped.push((
                 format!("{}/{}", f.path, f.line),
                 format!("幽灵发现：文件 {} 不存在", f.path),
@@ -85,7 +101,8 @@ pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
             continue;
         };
         // 审计修复 #9：line 0 与越界同样丢弃（1-based 约定下 0 必非法，与 evidence 分支对齐）
-        if *total == 0 || f.line == 0 || f.line as usize > *total {
+        let total = file_lines.len();
+        if total == 0 || f.line == 0 || f.line as usize > total {
             report.dropped.push((
                 format!("{}/{}", f.path, f.line),
                 format!(
@@ -94,6 +111,19 @@ pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
                 ),
             ));
             continue;
+        }
+        // 第三方 r3 遗留：**证据必须引用目标行原文**——旧核验器只验 path:line 存在，
+        // 猜一个真实行号就能进报告（自审「从未真正读过代码」的最后一环）。
+        // 判据取目标行的前 40 字符前缀（空白压缩后包含），够宽松不卡正常引用，
+        // 但猜行号的人不可能正好凑中原文。行太短（<8 字符，如 `}`）不强制。
+        if let Some(prefix) = line_prefix(file_lines.get(f.line as usize - 1).map(|s| s.as_str())) {
+            if !normalize_ws(&f.evidence).contains(&prefix) {
+                report.dropped.push((
+                    format!("{}/{}", f.path, f.line),
+                    format!("未引用原文：evidence 未出现第 {} 行的代码（疑猜行号，前缀={prefix}）", f.line),
+                ));
+                continue;
+            }
         }
         // ② 顺序合法性（evidence 里的引用行号不得全部大于文件行数——
         //    解析 evidence 中的 `path:line` 引用并查存在性）
@@ -140,7 +170,8 @@ fn evidence_refs_out_of_file(workspace: &Path, evidence: &str) -> Option<String>
             .char_indices()
             .rev()
             .find(|(_, c)| !(c.is_alphanumeric() || *c == '_' || *c == '.' || *c == '-' || *c == '/'))
-            .map(|(idx, _)| idx + 1)
+            // 多字节分隔符：同上，不能 +1
+            .map(|(idx, c)| idx + c.len_utf8())
             .unwrap_or(0);
         let path = &evidence[path_start..abs];
         let tail = &evidence[abs + 1..];
@@ -205,6 +236,28 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/real.rs"), "line1\nline2\nline3\n").unwrap();
         tmp
+    }
+
+    /// 第三方 r3 遗留：「猜行号」不再能进报告——只写 path:line 不引原文 → 丢弃；
+    /// 引用目标行原文 → 通过。
+    #[test]
+    fn evidence_must_quote_the_source_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("src/real.rs"),
+            "let value = compute();\nlet b = 2;\n",
+        )
+        .unwrap();
+        let mut guess = finding("src/real.rs", 1);
+        guess.evidence = "src/real.rs:1 这里可能有问题".into();
+        let v = verify(tmp.path(), &[guess]);
+        assert!(v.kept.is_empty(), "未引原文应被丢弃：{:?}", v.kept);
+        assert!(v.dropped[0].1.contains("未引用原文"), "{}", v.dropped[0].1);
+
+        let mut quoted = finding("src/real.rs", 1);
+        quoted.evidence = "`let value = compute();`（src/real.rs:1）算完没校验".into();
+        assert_eq!(verify(tmp.path(), &[quoted]).kept.len(), 1, "引用原文应通过");
     }
 
     #[test]
