@@ -21,19 +21,34 @@ use tokio_stream::StreamExt as _;
 use std::sync::{Arc, Mutex};
 
 /// 测试引擎：立刻完成并记录调用；hang_ms>0 时模拟长 run（响应取消/超时干预）；
-/// fail_system_times>0 时先抛 N 次基础设施故障（验证自动重启）；quality_fail 时直接抛质量失败。
+/// fail_system_times>0 时先抛 N 次基础设施故障（验证自动重启）；quality_fail 时直接抛质量失败；
+/// panic_times>0 时先真 panic N 次（验证引擎 panic 兜底，全仓审计 #1）。
 struct MockEngine {
     calls: Arc<Mutex<Vec<String>>>,
     hang_ms: u64,
     fail_system_times: Arc<Mutex<u32>>,
     quality_fail: bool,
+    panic_times: Arc<Mutex<u32>>,
 }
 impl RunEngine for MockEngine {
     fn execute(&mut self, task: &Task, _run: &Run, control: &RunControl) -> Result<RunOutcome> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("{}/{}", task.project, task.id));
+        {
+            // 先释放 calls 锁再 panic：否则锁被毒化，后续 run 也会连带 PoisonError
+            let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+            calls.push(format!("{}/{}", task.project, task.id));
+        }
+        let should_panic = {
+            let mut left = self.panic_times.lock().unwrap_or_else(|e| e.into_inner());
+            if *left > 0 {
+                *left -= 1;
+                true
+            } else {
+                false
+            }
+        };
+        if should_panic {
+            panic!("模拟引擎 panic（测试注入）");
+        }
         if self.quality_fail {
             return Err(crate::error::DevforgeError::Quality(
                 "终审未通过（route=finish）：文档与代码不一致".into(),
@@ -81,22 +96,27 @@ fn fixture() -> Fixture {
 }
 
 fn fixture_with_token(token: Option<&str>) -> Fixture {
-    fixture_with_engine(0, None, token)
+    fixture_full(0, None, token, 0, false, 0)
 }
 
 /// 可注入长 run / 超时的夹具变体（取消与超时单测用）。
 fn fixture_with_engine(hang_ms: u64, timeout_ms: Option<u64>, token: Option<&str>) -> Fixture {
-    fixture_full(hang_ms, timeout_ms, token, 0, false)
+    fixture_full(hang_ms, timeout_ms, token, 0, false, 0)
 }
 
 /// 可注入基础设施故障次数的夹具变体（续跑/自动重启单测用）。
 fn fixture_with_failures(fail_system_times: u32) -> Fixture {
-    fixture_full(0, None, None, fail_system_times, false)
+    fixture_full(0, None, None, fail_system_times, false, 0)
 }
 
 /// 质量失败（审查打回/终审不通过）的夹具：不得被自动重启。
 fn fixture_with_quality_failure() -> Fixture {
-    fixture_full(0, None, None, 0, true)
+    fixture_full(0, None, None, 0, true, 0)
+}
+
+/// 引擎 panic 的夹具（全仓审计 #1：panic 兜底后不得卡死串行槽位）。
+fn fixture_with_panic(panic_times: u32) -> Fixture {
+    fixture_full(0, None, None, 0, false, panic_times)
 }
 
 fn fixture_full(
@@ -105,6 +125,7 @@ fn fixture_full(
     token: Option<&str>,
     fail_system_times: u32,
     quality_fail: bool,
+    panic_times: u32,
 ) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     // 观测根注入到该夹具的临时目录（Q4 路径 ①）：走真实 start 路径的单测把心跳写在这里，
@@ -114,12 +135,14 @@ fn fixture_full(
     let calls = Arc::new(Mutex::new(Vec::new()));
     let calls2 = calls.clone();
     let failures = Arc::new(Mutex::new(fail_system_times));
+    let panics = Arc::new(Mutex::new(panic_times));
     let engine_factory = Box::new(move || -> Box<dyn RunEngine + Send> {
         Box::new(MockEngine {
             calls: calls2.clone(),
             hang_ms,
             fail_system_times: failures.clone(),
             quality_fail,
+            panic_times: panics.clone(),
         })
     });
     let bus = std::sync::Arc::new(crate::server::EventBus::new());
@@ -209,8 +232,10 @@ async fn body_json(resp: axum::response::Response) -> Value {
 
 mod contract;
 mod crud;
+mod hardening;
 mod http;
 mod observe;
+mod panic_safety;
 mod restart;
 mod retry;
 mod scheduler;

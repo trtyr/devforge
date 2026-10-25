@@ -242,10 +242,15 @@ where
                         // 机械门不达标：本单元未完成（不 mark_done），等 fix 队列消化
                     } else {
                     // 引擎审计修复 #3：produced_files 用本单元自己的「写前→交卷」快照对；
-                    // 无快照 = PASS 先于任何写前到达（只可能是 bug），宁可失败不落错名单
-                    let (before, committed) = unit_snapshots.remove(&$unit).unwrap_or_else(|| {
-                        panic!("PASS 到达但单元 `{}` 无写前快照（引擎审计修复 #3 守卫）", $unit)
-                    });
+                    // 无快照 = PASS 先于任何写前到达（只可能是 bug）——按质量失败中止，
+                    // 不落错名单。注意这里**不能用 panic**：引擎外层虽有兜底，但 panic 属
+                    // 进程级爆炸，本可局部失败的场景不该走那条路（全仓审计 #1）。
+                    let Some((before, committed)) = unit_snapshots.remove(&$unit) else {
+                        return Err(DevforgeError::Quality(format!(
+                            "PASS 到达但单元 `{}` 无写前快照（快照生命周期 bug，不落错名单）",
+                            $unit
+                        )));
+                    };
                     let files = crate::sop::doc::evidence::produced_files_between(&committed, &before);
                     mark_done(&mut state, &$unit, &files);
                     store.save(&mut state)?;

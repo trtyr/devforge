@@ -201,6 +201,7 @@ async fn the_infra_error_is_logged_before_the_restart_warning() {
         hang_ms: 0,
         fail_system_times: Arc::new(Mutex::new(1)),
         quality_fail: false,
+        panic_times: Arc::new(Mutex::new(0)),
     });
     let text = crate::observability::test_support::capture_jsonl(|| {
         crate::server::run_in_background(f.state.clone(), "p".into(), "t".into(), engine);

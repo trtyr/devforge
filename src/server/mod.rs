@@ -267,7 +267,37 @@ pub fn run_in_background(
                 |v| state_for_retry.emit(v),
             );
         }
-        engine.execute(&task_snapshot, &run, &control)
+        // 全仓审计 #1：引擎 panic 兜底——SOP 里任何一次 panic 都会展开 run 线程，
+        // 而 Running 终态只由下方 finish_run 出清（准入看 running_run_count）。
+        // 裸展开 = 串行槽位与任务状态永久卡死，只能重启进程。
+        let exec = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            engine.execute(&task_snapshot, &run, &control)
+        }));
+        match exec {
+            Ok(r) => r,
+            Err(payload) => {
+                let msg = panic_text(&payload);
+                tracing::error!(
+                    component = "run",
+                    event = "run.panic",
+                    run_id = %run.id.0,
+                    panic = %msg,
+                    "引擎 panic 已兜底：按 System 失败收尾（不裸展开 run 线程）"
+                );
+                state_for_retry.emit(json!({
+                    "type": "run.panic",
+                    "project": project_for_retry,
+                    "task": task_for_retry,
+                    "run_id": run_id_for_retry,
+                    "panic": msg,
+                }));
+                // 按质量失败归类（不自动重启）：panic 是引擎自身 bug，重启只会复现；
+                // 且 panic 可能已毒化共享锁，盲重试只会把 4 次尝试全烧光。
+                Err(crate::error::DevforgeError::Quality(format!(
+                    "引擎 panic（bug，重启只会复现）：{msg}"
+                )))
+            }
+        }
     });
 
     state
@@ -304,6 +334,17 @@ pub fn run_in_background(
     crate::observability::end_run(&run.id.0);
     // P012 M4：run 收尾踢调度器——依赖本任务的后继立即就绪判定 + Settled 自动入队
     crate::server::scheduler::kick();
+}
+
+/// 引擎 panic 兜底（全仓审计 #1）：从 panic payload 取人读文本。
+fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "非字符串 panic payload".to_string()
+    }
 }
 
 /// P012 M0 · T0.2：契约边界终校验（引擎层，SOP 无关）。
