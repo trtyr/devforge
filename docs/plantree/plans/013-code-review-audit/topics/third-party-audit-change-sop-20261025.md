@@ -33,6 +33,29 @@
 #7-#10 清扫。修复方向注意：#1 与 #5 都涉及 route 语义与状态持久化，宜一并设计；
 #3 修复应连带审视 changed_files 过滤清单与基线建立顺序。
 
+## 修复状态表（2026-10-25 第二轮，全部落地）
+
+> 10/10 已修复，按 route 语义整体收口首发（#1+#5 同层整体设计不逐条打补丁）；
+> 终验 797 绿 0 failed，clippy 无新增（双 EXIT 原始日志 bg_azchpbhp / 重跑确认 bg_7djt07e4：
+> TEST_EXIT=0 / CLIPPY_EXIT=0，20 条与修复前持平；preflight 负载偶发一次，隔离 4/4 绿）。
+
+| # | 修复 commit | 落地内容 |
+|---|---|---|
+| 1 | 7984c47 | boundary::classify 重排：route=plan 优先于 extra 判定——白名单内改动 + route token 走 RoutePlan 回规划（不再借「extra 空→InBoundary」直通 testing 跳三门）；有越界时申报覆盖校验保留；非 plan-route 维持原语义不算申报（首次重写漏掉该门槛被既有守卫 route_other_than_plan 逮住，已对齐） |
+| 5 | 7984c47 | testing→plan 回退接入 plan 修复额度管线：issues 持久化进新字段 last_plan_issues（serde default 旧断点兼容）+ plan_fix_rounds 计数（MAX_PLAN_FIXES cap 生效）+ resume 后 plan 循环走 fix_plan(issues) 而非重新 kickoff——无界循环关死 |
+| 2 | 3063a18 | 白名单存在性只对「要改的」强制：新增文件（不在「要改的」）plan 时必然存在不了，不再必然注入 issue；clean_plan 测试删除「先建文件」豁免 workaround（实现保证替代测试预设）；回归 modify_target_must_exist |
+| 3 | be2ab4c | changed_files 过滤清单加 docs/contexts/——SOP 自产文档域（essential 档 _meta 盘点/词汇表/伴生文档同步）与 docs/plantree 同性质；已有 git 仓基线只记 HEAD，untracked 文档不再必踩范围膨胀 FAIL；回归 untracked 文档不进变更集 |
+| 4 | cba2c08 | check_regression_log 加 not_before freshness（mtime 早于本轮开始 = 上一轮残留拒收，与 baseline/self-check 同口径，reverify #6 第三份证据补齐）；fixture 四处+support.rs 补刷 regression.log mtime |
+| 6 | cba2c08 | snapshot_tracked_changes（tracked 相对基线改动集，untracked 噪音不纳入；git 不可用降级空集+WARN 不掩盖测试阶段真错误）+ check_no_product_code_edits（tests/docs/evidence 之外新增 tracked 改动 = Quality）——「不改产品代码」从 prompt 升级为机械门；回归两条 |
+| 7 | 06c02f2 | diff_stats 失败 Err 上抛（报告不再吞成 no-op 统计）；编排测试环境升级真 git 仓（orchestrator_tests + change_failure_context 的 store() init_git+sha 落文件、cfg() 读 sha，20 处调用点零改动） |
+| 8 | 06c02f2 | history.md 读失败 Err 上抛（宁可不写不静默清空既有往返轨迹） |
+| 9 | 06c02f2 | P009 README 对齐实现：<route> 非 <reroute>；连续 3 次 nudge 后 Quality 不自动重启 |
+| 10 | 06c02f2 | impl_steps_done 死字段删除（编排器从未写入，活体步对账走 git log vs impl-steps.md；mark_step_done 删除；旧断点文件的该键由 serde 忽略未知字段安全兼容，两处 fixture json 保留该键作兼容活验证） |
+
+新增回归测试共 10+ 条：boundary route 优先两条、编排回退持久化/resume 两条、
+modify_target 存在性、essential 文档过滤、regression freshness、产品代码编辑 Quality、
+kill 前后 expect 消失（编译面）、clean_plan 无豁免；f6/协议 fixture mtime 全量适配。
+
 ## 核实总评
 
 - 连续第四份外部报告 0 误报（10/10 实锤）。#1/#3 是本轮 P013/P014 修复时引入或
