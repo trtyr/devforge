@@ -65,8 +65,10 @@ fn load_kick() -> bool {
 pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
     let mut report = TickReport::default();
 
-    // ① 超预算熔断：Running 且 started_at + budget < now → cancel 置位（引擎按失败收尾）。
-    let to_fuse: Vec<(String, String)> = {
+    // ① 超预算熔断：Running 且 started_at + budget < now → cancel 置位 + 台账强杀。
+    // 复验归因：cancel 是协作式（SOP 轮询间隙检查），pi 子进程工具挂死时无人消费，
+    // run 永驻 Running（M3 挂死 14h 的直接教训）——必须台账精确 SIGKILL。
+    let to_fuse: Vec<(String, String, String)> = {
         let store = st.store.lock().expect("store 锁");
         if cfg.budget_wall_minutes == 0 {
             Vec::new()
@@ -79,11 +81,23 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
                     r.status == RunStatus::Running
                         && now_ms().saturating_sub(r.started_at_ms) > budget_ms
                 })
-                .map(|r| (r.task_project.clone(), r.task_id.clone()))
+                .map(|r| (r.task_project.clone(), r.task_id.clone(), r.id.0.clone()))
                 .collect()
         }
     };
-    for (project, task) in &to_fuse {
+    for (project, task, run_id) in &to_fuse {
+        // 强杀先行（台账精确 + 双验证），cancel 兜底协作路径
+        let ledger_path = st.plans_root.join(project).join("spawn-ledger.json");
+        let killed = crate::engine::ledger::kill_run_processes(&ledger_path, run_id);
+        tracing::warn!(
+            component = "scheduler",
+            project,
+            task,
+            run_id,
+            budget_minutes = cfg.budget_wall_minutes,
+            killed,
+            "budget 熔断：run 超墙钟上限，强杀挂死进程并置取消位"
+        );
         let control = st
             .runs_control
             .lock()
@@ -98,7 +112,9 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             "type": "scheduler.budget_fused",
             "project": project,
             "task": task,
+            "run_id": run_id,
             "budget_minutes": cfg.budget_wall_minutes,
+            "killed": killed,
         }));
     }
 

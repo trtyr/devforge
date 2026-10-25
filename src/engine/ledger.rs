@@ -101,6 +101,40 @@ pub fn has_devforge_marker(pid: u32) -> bool {
     read_managed_marker(pid).is_some()
 }
 
+/// 复验熔断归因修复：按 run_id 强杀台账登记的进程。
+/// 双验证（存活 + environ 标记 = 该 run-id），SIGKILL（挂死进程 TERM 不响应）。
+/// 台账条目保留（Dead 由下次 reconcile 清）；无台账/无命中返回 0。
+/// 红线不破：只按台账精确执行，绝不扫全系统。
+pub fn kill_run_processes(ledger_path: &Path, run_id: &str) -> usize {
+    let Ok(ledger) = SpawnLedger::load(ledger_path) else {
+        return 0;
+    };
+    let mut killed = 0;
+    for e in &ledger.entries {
+        if e.run_id != run_id || !process_alive(e.pid) {
+            continue;
+        }
+        // 双验证：environ 标记必须等于该 run-id（防 PID 复用误杀）
+        if read_managed_marker(e.pid).as_deref() != Some(run_id) {
+            continue;
+        }
+        // SAFETY: kill(2) 系统调用，仅传 pid 与 SIGKILL，无非空指针参与
+        let rc = unsafe { libc::kill(e.pid as i32, libc::SIGKILL) };
+        if rc == 0 {
+            killed += 1;
+        }
+    }
+    if killed > 0 {
+        tracing::warn!(
+            component = "scheduler",
+            run_id,
+            killed,
+            "budget 熔断强杀：台账精确命中并 SIGKILL 挂死进程"
+        );
+    }
+    killed
+}
+
 /// 杀掉自家孤儿（Q005：直接杀，不收养）。SIGTERM。
 pub fn kill_orphan(pid: u32) -> Result<()> {
     // SAFETY: kill(2) 系统调用，仅传 pid 与 SIGTERM，无非空指针参与

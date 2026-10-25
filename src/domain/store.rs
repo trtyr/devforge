@@ -23,6 +23,10 @@ pub struct Store {
     /// 并发 run 上限（P012 M4）：默认 1 = decisions/003 串行兼容；调度器/worktree 模式下调高。
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_runs: usize,
+    /// 持久化路径（复验 backlog：store 纯内存是设计错误——重启即蒸发）。
+    /// None = 内存态（单测）；Some = 每个 &mut 变更方法尾调 persist()。
+    #[serde(skip)]
+    pub persist_path: Option<std::path::PathBuf>,
 }
 
 fn default_max_concurrent() -> usize {
@@ -36,6 +40,7 @@ impl Default for Store {
             tasks: Vec::new(),
             runs: Vec::new(),
             max_concurrent_runs: default_max_concurrent(),
+            persist_path: None,
         }
     }
 }
@@ -52,11 +57,32 @@ impl Store {
         Self::default()
     }
 
+    /// 开启持久化：后续所有变更方法自动落盘（服务启动时用；单测不调即内存态）。
+    pub fn with_persist(mut self, path: std::path::PathBuf) -> Self {
+        self.persist_path = Some(path);
+        self
+    }
+
+    /// 变更落盘（persist_path 未设则空操作）。失败只 WARN 不阻断（可观测优先于强一致）。
+    fn persist(&self) {
+        if let Some(path) = &self.persist_path {
+            if let Err(e) = self.save(path) {
+                tracing::warn!(
+                    component = "store",
+                    path = %path.display(),
+                    error = %e,
+                    "store 落盘失败（内存态继续，重启将丢自上次成功落盘后的变更）"
+                );
+            }
+        }
+    }
+
     // ---------- 项目层 ----------
 
     /// 回滚插入（P1-ISSUE-01：目录落地失败时不留半注册项目）。
     pub fn remove_project(&mut self, name: &str) {
         self.projects.retain(|p| p.name != name);
+        self.persist();
     }
 
     pub fn create_project(&mut self, project: Project) -> Result<&Project> {
@@ -67,6 +93,7 @@ impl Store {
             )));
         }
         self.projects.push(project);
+        self.persist();
         Ok(self.projects.last().expect("刚 push"))
     }
 
@@ -136,6 +163,7 @@ impl Store {
             .unwrap_or_default();
         let id = task.id.clone();
         self.tasks.push(task);
+        self.persist();
         Ok(self
             .tasks
             .iter()
@@ -215,6 +243,7 @@ impl Store {
         status: TaskStatus,
     ) -> Result<()> {
         self.get_task_mut(project, id)?.status = status;
+        self.persist();
         Ok(())
     }
 
@@ -241,6 +270,7 @@ impl Store {
             )));
         }
         task.sop = sop;
+        self.persist();
         Ok(())
     }
 
@@ -282,6 +312,7 @@ impl Store {
         task.status = TaskStatus::Running;
         task.current_run = Some(run_id.clone());
         task.runs.push(run_id);
+        self.persist();
         Ok(self
             .runs
             .last()
@@ -322,6 +353,7 @@ impl Store {
             FinishOutcome::Completed => TaskStatus::Completed,
             FinishOutcome::Failed { .. } => TaskStatus::Failed,
         };
+        self.persist();
         Ok(())
     }
 
@@ -334,6 +366,18 @@ impl Store {
     }
 
     // ---------- 持久化（JSON 单文件，MVP 口径） ----------
+
+    /// 铁律守卫（用户 10-25 拍板）：路径命中临时目录返回违反原因，否则 None。
+    /// 覆盖 /tmp、/var/tmp、/dev/shm、/run 及其子路径（前缀判定，含恰等）。
+    pub fn tmp_path_violation(path: &std::path::Path) -> Option<String> {
+        let p = path.to_string_lossy();
+        for tmp in ["/tmp", "/var/tmp", "/dev/shm", "/run"] {
+            if p == tmp || p.starts_with(&format!("{tmp}/")) {
+                return Some(format!("位于临时目录 {tmp}（非持久，重启即清）"));
+            }
+        }
+        None
+    }
 
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self)
@@ -534,4 +578,43 @@ mod tests {
         let c = s.get_task("devforge", "dag-c").unwrap();
         assert_eq!(c.depends_on, vec!["dag-b".to_string()]);
     }
+
+    #[test]
+    fn persist_roundtrip_survives_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.json");
+        let mut s = Store::new().with_persist(path.clone());
+        s.create_project(Project::new("p", std::path::PathBuf::from("/x"), 1))
+            .unwrap();
+        s.create_task(
+            &SopRegistry::builtin(),
+            "p",
+            "t",
+            "planning",
+            None,
+            TaskDeps::default(),
+        )
+        .unwrap();
+        let run = s.begin_run("p", "t").unwrap();
+        s.finish_run(&run.id, FinishOutcome::Failed { reason: "x".into() })
+            .unwrap();
+        drop(s);
+        let s2 = Store::load(&path).unwrap();
+        assert_eq!(s2.projects.len(), 1, "项目应持久化");
+        assert_eq!(s2.tasks.len(), 1, "任务应持久化");
+        assert_eq!(s2.runs.len(), 1, "run 应持久化");
+        assert_eq!(s2.tasks[0].status, TaskStatus::Failed, "终态应持久化");
+    }
+
+    #[test]
+    fn tmp_paths_are_rejected_by_guard() {
+        use std::path::Path;
+        assert!(Store::tmp_path_violation(Path::new("/tmp/devforge")).is_some());
+        assert!(Store::tmp_path_violation(Path::new("/tmp")).is_some());
+        assert!(Store::tmp_path_violation(Path::new("/var/tmp/devforge-accept")).is_some());
+        assert!(Store::tmp_path_violation(Path::new("/dev/shm/x")).is_some());
+        assert!(Store::tmp_path_violation(Path::new("/home/u/devforge")).is_none());
+        assert!(Store::tmp_path_violation(Path::new("/var/lib/devforge")).is_none());
+    }
+
 }

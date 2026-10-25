@@ -66,6 +66,24 @@ impl RpcClient {
                 spec.role,
                 spec.run_id
             ))?;
+    // 运行时台账登记（复验熔断归因修复）：budget fuse 强杀与孤儿对账的事实源。
+    // 台账落 plans/<项目>/spawn-ledger.json（working_dir = plans/<项目>/<任务>）。
+    {
+        let ledger_path = spec
+            .working_dir
+            .parent()
+            .map(|p| p.join("spawn-ledger.json"))
+            .unwrap_or_else(|| spec.working_dir.join("spawn-ledger.json"));
+        let mut ledger =
+            crate::engine::ledger::SpawnLedger::load(&ledger_path).unwrap_or_default();
+        ledger.record(crate::engine::ledger::LedgerEntry {
+            pid: child.id(),
+            role: spec.role.clone(),
+            run_id: spec.run_id.clone(),
+            started_at_ms: crate::domain::now_ms(),
+        });
+        let _ = ledger.save(&ledger_path);
+    }
         let stdin = child.stdin.take().expect("stdin 已 piped");
         let stdout = child.stdout.take().expect("stdout 已 piped");
         let stderr = child.stderr.take().expect("stderr 已 piped");

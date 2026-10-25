@@ -167,6 +167,18 @@ async fn main() -> anyhow::Result<()> {
     let plans_root = root.join("plans");
     let sessions_root = root.join("sessions");
 
+    // 铁律守卫（用户 10-25 拍板）：最终产物禁入临时目录——root 命中 /tmp、/var/tmp
+    // 及一切 tmpfs 挂载点直接拒绝启动（fail fast，重启即蒸发的教训已付过一次）。
+    for (label, path) in [("--root", &root), ("plans_root", &plans_root)] {
+        if let Some(reason) = devforge::domain::store::Store::tmp_path_violation(path) {
+            anyhow::bail!(
+                "{label} = {} 落在临时目录（{reason}）：最终产物禁入非持久位置，\n\
+                 请改用持久路径（如 ~/.devforge 或数据盘目录）后重启",
+                path.display()
+            );
+        }
+    }
+
     // 生产引擎：规划 SOP 的 RPC 接线
     // 失活收割阈值（006 decisions/002）：DEVFORGE_RUN_IDLE_MS 显式开启（ms，>0），
     // 默认 None = 永不因无进展自动杀 run（零硬限制哲学；慢而活着的 run 不误伤）
@@ -192,7 +204,22 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let mut state = devforge::server::ServerState::new(
-        devforge::domain::Store::new(),
+        // store 持久化（复验 backlog 设计错误修复）：启动加载 --root/store.json，
+        // 变更自动落盘——重启不再蒸发 projects/tasks/runs。
+        devforge::domain::Store::load(&root.join("store.json"))
+            .map(|s| s.with_persist(root.join("store.json")))
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    component = "main",
+                    error = %e,
+                    "store.json 不可用，按空仓冷启动（旧文件已备份为 .bak）"
+                );
+                let _ = std::fs::rename(
+                    root.join("store.json"),
+                    root.join("store.json.bak"),
+                );
+                devforge::domain::Store::new().with_persist(root.join("store.json"))
+            }),
         devforge::domain::sop::SopRegistry::builtin(),
         manifest,
         engine_factory,
