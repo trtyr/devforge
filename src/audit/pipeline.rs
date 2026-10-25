@@ -435,6 +435,7 @@ mod tests {
             files: vec!["src/a.rs".into()],
             label: format!("label-{id}"),
             focus: Vec::new(),
+            focus_range: None,
         }
     }
 

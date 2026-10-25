@@ -33,6 +33,9 @@ pub struct AuditUnit {
     /// 第三方 r3 m5：单文件超行数预算后不可再切，只能把「看哪段」写进批次指令，
     /// 否则 1000+ 行的编排内核会整包丢给一个会话。
     pub focus: Vec<String>,
+    /// 分片行区间（1-based 闭区间；`None` = 整文件）——预查只数本段，
+    /// 否则同一文件的多个分片看到相同计数（r3 m5 遗留）。
+    pub focus_range: Option<(usize, usize)>,
 }
 
 /// 切片产物：全部审查单元 + 覆盖对账计数（全仓审计 M6）。
@@ -59,36 +62,66 @@ fn line_count(workspace: &Path, rel: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// 分片：文件列表 / 重点符号 / 行区间（1-based 闭区间；None = 整文件）。
+pub type Piece = (Vec<String>, Vec<String>, Option<(usize, usize)>);
+
 /// 超大单文件按**符号边界**分片（第三方 r3 m5）：每片的符号跨度 ≤ MAX_UNIT_LINES；
 /// 无符号信息时退回整文件一片（至少不丢文件）。
-fn split_oversized_file(path: &str, symbols: &[(usize, String)]) -> Vec<(Vec<String>, Vec<String>)> {
+/// 行区间供预查只看本段（不然同一文件的多个分片看到相同计数）。
+fn split_oversized_file(
+    path: &str,
+    symbols: &[(usize, String)],
+    total_lines: usize,
+) -> Vec<Piece> {
     let mut syms = symbols.to_vec();
     syms.sort_by_key(|(l, _)| *l);
     if syms.is_empty() {
-        return vec![(vec![path.to_string()], Vec::new())];
+        return vec![(vec![path.to_string()], Vec::new(), None)];
     }
-    let mut out: Vec<(Vec<String>, Vec<String>)> = Vec::new();
-    let mut group: Vec<(usize, String)> = Vec::new();
+    let mut groups: Vec<Vec<(usize, String)>> = Vec::new();
     for (line, name) in syms {
-        let start = group.first().map(|(l, _)| *l).unwrap_or(line);
-        if !group.is_empty() && line.saturating_sub(start) > MAX_UNIT_LINES {
-            out.push(piece_of(path, &group));
-            group.clear();
+        let start = groups
+            .last()
+            .and_then(|g| g.first())
+            .map(|(l, _)| *l)
+            .unwrap_or(line);
+        let need_new = groups
+            .last()
+            .map(|g| !g.is_empty() && line.saturating_sub(start) > MAX_UNIT_LINES)
+            .unwrap_or(false);
+        if need_new {
+            groups.push(Vec::new());
         }
-        group.push((line, name));
+        match groups.last_mut() {
+            Some(g) => g.push((line, name)),
+            None => groups.push(vec![(line, name)]),
+        }
     }
-    if !group.is_empty() {
-        out.push(piece_of(path, &group));
-    }
-    out
-}
-
-fn piece_of(path: &str, group: &[(usize, String)]) -> (Vec<String>, Vec<String>) {
-    let focus = group
+    let n = groups.len();
+    let starts: Vec<usize> = groups
         .iter()
-        .map(|(l, n)| format!("{n}（第 {l} 行）"))
+        .map(|g| g.first().map(|(l, _)| *l).unwrap_or(1))
         .collect();
-    (vec![path.to_string()], focus)
+    let ends: Vec<usize> = (0..n)
+        .map(|i| {
+            if i + 1 < n {
+                starts[i + 1].saturating_sub(1)
+            } else {
+                total_lines.max(starts[i])
+            }
+        })
+        .collect();
+    groups
+        .into_iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let focus = g
+                .iter()
+                .map(|(l, name)| format!("{name}（第 {l} 行）"))
+                .collect();
+            (vec![path.to_string()], focus, Some((starts[i], ends[i])))
+        })
+        .collect()
 }
 
 /// 按双预算顺序切批（不重排：同批文件语义仍连贯）。
@@ -163,7 +196,8 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
 
     // 超限切分：文件数（MAX_UNIT_FILES）+ 行数（MAX_UNIT_LINES）双预算——
     // 只按文件数挡不住「同目录多个大文件」（第三方 r2 M3）。
-    let mut units: Vec<AuditUnit> = Vec::new();    let mut seq = 0usize;
+    let mut units: Vec<AuditUnit> = Vec::new();
+    let mut seq = 0usize;
     for (key, mut files) in groups {
         files.sort();
         let label = key
@@ -177,16 +211,16 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
             seq += 1;
             // r3 m5：单文件超行数预算时拆成多个「同文件不同符号区间」单元，
             // 否则 1000+ 行的编排内核整包丢给一个会话（并行只提吞吐，降不了装载量）。
-            let multi: Vec<(Vec<String>, Vec<String>)> = if chunk.len() == 1
+            let multi: Vec<Piece> = if chunk.len() == 1
                 && line_count(workspace, &chunk[0]) > MAX_UNIT_LINES
             {
                 let syms = symbols.get(&chunk[0]).cloned().unwrap_or_default();
-                split_oversized_file(&chunk[0], &syms)
+                split_oversized_file(&chunk[0], &syms, line_count(workspace, &chunk[0]))
             } else {
-                vec![(chunk, Vec::new())]
+                vec![(chunk, Vec::new(), None)]
             };
             let multi_n = multi.len();
-            for (piece_i, (piece, focus)) in multi.into_iter().enumerate() {
+            for (piece_i, (piece, focus, focus_range)) in multi.into_iter().enumerate() {
                 seq += 1;
                 let mut piece_label = label.clone();
                 if n_chunks > 1 {
@@ -200,6 +234,7 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
                     files: piece,
                     label: piece_label,
                     focus,
+                    focus_range,
                 });
             }
         }

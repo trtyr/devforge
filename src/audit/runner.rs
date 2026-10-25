@@ -245,7 +245,7 @@ pub fn run_audit(
             check_intervention(control)?;
             // 复验事故修复（M3 缺陷①）：每批 findings 即时落黑板——先落盘再打勾，
             // 断点续跑从黑板回读已完成批次，进程死亡不再丢发现。
-            let precheck = precheck_report(&task.workspace, &unit.files);
+            let precheck = precheck_report(&task.workspace, &unit.files, unit.focus_range);
             let res = crate::audit::pipeline::stage1_review_batch_with_deadline(
                 factory,
                 &task.workspace,
@@ -497,7 +497,7 @@ fn run_stage1_parallel(
                         local.push((idx, unit_id, Err(e)));
                         break;
                     }
-                    let precheck = precheck_report(workspace, &unit.files);
+                    let precheck = precheck_report(workspace, &unit.files, unit.focus_range);
                     let deadline = batch_deadline();
                     // 第三方 r3 M1：panic 在该批内部收成 System——
                     // 旧版向主线程扔 usize::MAX 哨兵，主线程 `pending[usize::MAX]` 直接越界 panic。
@@ -560,7 +560,7 @@ fn workspace_sha(workspace: &Path) -> Option<String> {
 /// 全仓审计 m5：这些是**参考计数**，不是逐行语义级事实——简化扫描不建 AST：
 /// 行首/行尾注释已剔，但字符串字面量与 `#[cfg(test)]` 代码仍会计入。
 /// 审查官提示词已同步降级为「参考值」（不得当裁决依据，不得据它反驳实际代码）。
-fn precheck_report(workspace: &Path, files: &[String]) -> String {
+fn precheck_report(workspace: &Path, files: &[String], range: Option<(usize, usize)>) -> String {
     let mut out = String::from("引擎预查（参考计数，非裁决依据）：\n");
     for f in files {
         let content = match std::fs::read_to_string(workspace.join(f)) {
@@ -570,10 +570,23 @@ fn precheck_report(workspace: &Path, files: &[String]) -> String {
                 continue;
             }
         };
+        // r3 m5 遗留收口：分片只看本段行（否则同一文件的多个分片看到相同计数）。
+        let scope: Vec<&str> = match range {
+            Some((a, b)) if files.len() == 1 => content
+                .lines()
+                .skip(a.saturating_sub(1))
+                .take(b.saturating_sub(a) + 1)
+                .collect(),
+            _ => content.lines().collect(),
+        };
+        let scope_desc = match range {
+            Some((a, b)) if files.len() == 1 => format!("（本分片 = 第 {a}–{b} 行）"),
+            _ => String::new(),
+        };
         let mut unwraps = 0usize;
         let mut swallowed = 0usize;
         let mut events = 0usize;
-        for line in content.lines() {
+        for line in &scope {
             let t = line.trim_start();
             if t.starts_with("//") {
                 continue; // 注释行不计
@@ -604,8 +617,8 @@ fn precheck_report(workspace: &Path, files: &[String]) -> String {
             }
         }
         out.push_str(&format!(
-            "- {f}: 共 {} 行 / unwrap·expect·panic·todo·unreachable {unwraps} 处 / let _ = 吞错 {swallowed} 处 / tracing 事件 {events} 处\n",
-            content.lines().count()
+            "- {f}{scope_desc}: 共 {} 行 / unwrap·expect·panic·todo·unreachable {unwraps} 处 / let _ = 吞错 {swallowed} 处 / tracing 事件 {events} 处\n",
+            scope.len()
         ));
     }
     out
@@ -918,7 +931,7 @@ mod tests {
             "fn f() {\n    let x = vec![1].pop().unwrap(); // 行尾注释不跳过\n    let _ = std::fs::read_to_string(\"x\");\n    tracing::info!(\"hello\");\n}\n",
         )
         .unwrap();
-        let report = precheck_report(ws.path(), &["a.rs".to_string()]);
+        let report = precheck_report(ws.path(), &["a.rs".to_string()], None);
         assert!(report.contains("a.rs"), "{report}");
         assert!(report.contains("unreachable 1 处"), "{report}");
         assert!(report.contains("吞错 1 处"), "{report}");
@@ -1215,12 +1228,14 @@ mod tests {
                 files: vec!["a.rs".into()],
                 label: "label-unit-001".into(),
                 focus: Vec::new(),
+                focus_range: None,
             },
             AuditUnit {
                 id: "unit-002".into(),
                 files: vec!["a.rs".into()],
                 label: "label-unit-002".into(),
                 focus: Vec::new(),
+                focus_range: None,
             },
         ];
         let refs: Vec<&AuditUnit> = units.iter().collect();
@@ -1259,6 +1274,25 @@ mod tests {
         assert!(batch_deadline_from_ms(0).is_none());
         let at = batch_deadline_from_ms(1_000).expect("非 0 应有截止点");
         assert!(at > std::time::Instant::now());
+    }
+
+    /// r3 m5 遗留收口：分片预查只数本段行（否则同文件多分片看到相同计数）。
+    #[test]
+    fn precheck_counts_only_the_focus_range() {
+        let ws = tempfile::tempdir().unwrap();
+        // 第 1–3 行有 unwrap，第 4–6 行干净
+        std::fs::write(
+            ws.path().join("a.rs"),
+            "let a = x.unwrap();\nlet b = y.unwrap();\nlet c = z.unwrap();\nlet d = 1;\nlet e = 2;\nlet f = 3;\n",
+        )
+        .unwrap();
+        let whole = precheck_report(ws.path(), &["a.rs".to_string()], None);
+        assert!(whole.contains("共 6 行"), "{whole}");
+        assert!(whole.contains("unwrap·expect·panic·todo·unreachable 3 处"), "{whole}");
+        let tail = precheck_report(ws.path(), &["a.rs".to_string()], Some((4, 6)));
+        assert!(tail.contains("第 4–6 行"), "{tail}");
+        assert!(tail.contains("共 3 行"), "{tail}");
+        assert!(tail.contains("unreachable 0 处"), "分片不得看到整文件计数：{tail}");
     }
 
     /// 全仓审计 m1：Stage 0 断点产物损坏 → 清标记重算，不硬失败。
