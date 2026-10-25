@@ -127,6 +127,32 @@ pub fn has_devforge_marker(pid: u32) -> bool {
 /// 双验证（存活 + environ 标记 = 该 run-id），SIGKILL（挂死进程 TERM 不响应）。
 /// 台账条目保留（Dead 由下次 reconcile 清）；无台账/无命中返回 0。
 /// 红线不破：只按台账精确执行，绝不扫全系统。
+/// 统一杀进程入口（引擎审计修复 #9：两套范式收敛成一条路径）。
+/// 优先台账精确命中（双验证：存活 + environ 标记 = run-id）；台账缺失/不可读/零命中时
+/// 降级 /proc 扫描兕底（标记校验仍生效）并打 WARN——扫盘不再是与台账并列的第二套范式，
+/// 只是同一入口内的降级分支。
+pub fn kill_run(ledger_path: Option<&Path>, run_id: &str) -> usize {
+    if let Some(path) = ledger_path {
+        let killed = kill_run_processes(path, run_id);
+        if killed > 0 {
+            return killed;
+        }
+        // 台账存在但零命中（PID 已死/条目陈旧）——不扫盘（避免误杀 PID 复用的新进程），
+        // 台账不可读的 ERROR 已在 kill_run_processes 内留痕。
+        if path.exists() {
+            return 0;
+        }
+    }
+    // 无台账路径或台账文件缺失：降级扫盘兕底（标记校验仍生效）
+    tracing::warn!(
+        component = "engine-ledger",
+        run_id = %run_id,
+        ledger = ?ledger_path.map(|p| p.display().to_string()),
+        "台账未命中或不可用，降级 /proc 扫描兕底（DEVFORGE_MANAGED 标记校验仍生效）"
+    );
+    scan_and_kill_run(run_id)
+}
+
 pub fn kill_run_processes(ledger_path: &Path, run_id: &str) -> usize {
     let Ok(ledger) = SpawnLedger::load(ledger_path) else {
         // 引擎审计修复 #4 消费侧：熔断/对账读不到台账 = 精确收割失效，必须 ERROR 留痕——
@@ -325,6 +351,34 @@ mod tests {
             Reconciliation::Dead(_) => {}
             other => panic!("死 PID 应判 Dead: {other:?}"),
         }
+    }
+
+    /// 引擎审计修复 #9 回归：台账精确命中（双验证）走台账路径杀真进程；
+    /// 台账缺失/无路径时降级扫盘兕底不 panic（标记校验仍生效）。
+    #[test]
+    fn kill_run_hits_ledger_first_and_falls_back_with_warn() {
+        // —— 台账命中：带标记真进程被台账路径精确击杀 ——
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .env(MANAGED_ENV, "run-1")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        assert_eq!(wait_for_marker(pid, 2000).as_deref(), Some("run-1"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spawn-ledger.json");
+        let mut ledger = SpawnLedger::default();
+        ledger.record(entry(pid)); // entry 的 run_id = "run-1"，与标记一致
+        ledger.save(&path).unwrap();
+        assert_eq!(kill_run(Some(&path), "run-1"), 1, "台账命中应精确击杀");
+        child.wait().unwrap(); // reap，防 zombie 占 /proc
+        assert!(!process_alive(pid));
+
+        // —— 台账文件缺失：降级扫盘兕底（无匹配进程返 0，不 panic）——
+        assert_eq!(kill_run(Some(&dir.path().join("nope.json")), "run-nope"), 0);
+        // —— 无台账路径（watchdog 场景）：直接兕底扫盘 ——
+        assert_eq!(kill_run(None, "run-never-existed"), 0);
     }
 
     /// 引擎审计修复 #6 回归：损坏台账备份 .bak 后空账起底——不许静默 unwrap_or_default

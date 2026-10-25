@@ -86,9 +86,9 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         }
     };
     for (project, task, run_id) in &to_fuse {
-        // 强杀先行（台账精确 + 双验证），cancel 兜底协作路径
+        // 强杀统一入口（引擎审计修复 #9：台账精确优先，缺失降级扫盘兕底+WARN）
         let ledger_path = st.plans_root.join(project).join("spawn-ledger.json");
-        let killed = crate::engine::ledger::kill_run_processes(&ledger_path, run_id);
+        let killed = crate::engine::ledger::kill_run(Some(&ledger_path), run_id);
         tracing::warn!(
             component = "scheduler",
             project,

@@ -98,7 +98,8 @@ pub(crate) fn run_with_watchdog<T>(
                 }
                 let now = crate::domain::now_ms();
                 if control.is_cancelled() || control.timed_out(now) {
-                    let killed = crate::engine::ledger::scan_and_kill_run(&run_id);
+                    // 引擎审计修复 #9：统一杀进程入口（watchdog 无台账路径上下文 → 直接兕底扫盘，标记校验仍生效）
+                    let killed = crate::engine::ledger::kill_run(None, &run_id);
                     if killed > 0 {
                         tracing::warn!(
                             component = "planning-engine",
@@ -122,7 +123,8 @@ pub(crate) fn run_with_watchdog<T>(
                             idle_ms = idle,
                             "会话无进展超过闲置阈值，失活收割"
                         );
-                        let killed = crate::engine::ledger::scan_and_kill_run(&run_id);
+                        // 引擎审计修复 #9：统一杀进程入口（同上：直接兕底扫盘）
+                        let killed = crate::engine::ledger::kill_run(None, &run_id);
                         if killed > 0 {
                             tracing::warn!(
                                 component = "planning-engine",
