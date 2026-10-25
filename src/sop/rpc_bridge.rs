@@ -300,4 +300,48 @@ mod tests {
         assert!(msg.contains("无有效回复"), "应报空回复基础设施故障: {msg}");
         assert!(msg.contains("coding-review"), "应指明角色: {msg}");
     }
+
+    #[test]
+    fn review_subprocess_marker_carries_the_parent_run_id() {
+        // 引擎批次 #1（critical）回归：审查子进程的 `DEVFORGE_MANAGED` 必须是**父 run-id**，
+        // 否则 ledger::kill_run_processes（e.run_id != run_id → continue）与调度熔断
+        // 都杀不到审查 pi——cancel / watchdog / 熔断三条路径全打空。
+        // 旧实现每轮 `RunId::generate()`，本用例必红。
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        crate::observability::begin_run_in_deferred(root.clone(), "run-parent-42", "coding");
+        let mut f = RpcReviewFactory::per_round(root.join("profile"), root.join("sessions"));
+        let s1 = (f.make_spec.lock().expect("spec 生成器锁"))();
+        let s2 = (f.make_spec.lock().expect("spec 生成器锁"))();
+        assert_eq!(
+            s1.run_id, "run-parent-42",
+            "审查子进程必须带父 run-id，实际：{}",
+            s1.run_id
+        );
+        assert_eq!(
+            s2.run_id, "run-parent-42",
+            "第二轮也必须带父 run-id，实际：{}",
+            s2.run_id
+        );
+        // 会话目录仍按轮次隔离（run 标记与目录分离）
+        assert_ne!(s1.session_dir, s2.session_dir, "会话目录仍按轮次隔离");
+        assert!(s1.session_dir.ends_with("review-0"));
+        assert!(s2.session_dir.ends_with("review-1"));
+
+        // per_round_in 是同一条路径（编码 / 文档审查走它）
+        let mut g = RpcReviewFactory::per_round_in(
+            root.join("profile"),
+            "coding-review",
+            root.join("sessions2"),
+            root.join("bb"),
+        );
+        let s3 = (g.make_spec.lock().expect("spec 生成器锁"))();
+        assert_eq!(
+            s3.run_id, "run-parent-42",
+            "per_round_in 也必须带父 run-id，实际：{}",
+            s3.run_id
+        );
+        assert_eq!(s3.role, "coding-review");
+        crate::observability::end_run("run-parent-42");
+    }
 }
