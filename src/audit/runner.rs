@@ -261,7 +261,7 @@ fn severity_summary(
     local: &[Finding],
     cross: &[Finding],
 ) -> serde_json::Value {
-    let mut count = |sev: &str, list: &[Finding]| {
+    let count = |sev: &str, list: &[Finding]| {
         list.iter()
             .filter(|f| {
                 serde_json::to_value(f.severity)

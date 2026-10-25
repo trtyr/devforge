@@ -281,12 +281,17 @@ mod tests {
         }
     }
     struct ScriptFactory {
-        replies: Vec<std::collections::VecDeque<&'static str>>,
+        /// 回复队列（审计修复 #3：FIFO——压入序即消费序；LIFO 会让「违例→成功」
+        /// 压序测试第一次就拿到成功回复，重试循环从未被走到，空洞绿）。
+        replies: std::collections::VecDeque<std::collections::VecDeque<&'static str>>,
+        /// open 次数（断言换实例逻辑真实发生）。
+        opens: usize,
     }
     impl AuditSessionFactory for ScriptFactory {
         fn open(&mut self) -> Result<Box<dyn AuditSession>> {
+            self.opens += 1;
             self.replies
-                .pop()
+                .pop_front()
                 .map(|r| Box::new(ScriptSession { replies: RefCell::new(r) }) as Box<dyn AuditSession>)
                 .ok_or_else(|| DevforgeError::System("会话耗尽".into()))
         }
@@ -316,26 +321,33 @@ mod tests {
 
     #[test]
     fn stage1_reviews_batch_and_tags_batch_id() {
-        let mut factory = ScriptFactory { replies: vec![[FINDINGS_REPLY].into()] };
+        let mut factory = ScriptFactory { replies: std::collections::VecDeque::from([[FINDINGS_REPLY].into()]), opens: 0 };
         let u = unit("unit-009");
         let findings = stage1_review_batch(&mut factory, &u, &["l1".to_string()], "预查：无").unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].batch, "unit-009", "发现应带批次溯源");
+        assert_eq!(factory.opens, 1, "无违例应只开一次会话");
     }
 
     #[test]
     fn stage1_retries_once_on_protocol_violation_then_gives_up() {
+        // FIFO：压入序即消费序——第一次真正拿到「违例」，重试循环才被真实走到
+        // （审计修复 #3：LIFO 时代本用例是空洞绿，删掉重试循环仍过）。
         let mut factory = ScriptFactory {
-            replies: vec![["违例".into()].into(), [FINDINGS_REPLY].into()],
+            replies: std::collections::VecDeque::from([["违例".into()].into(), [FINDINGS_REPLY].into()]),
+            opens: 0,
         };
         let u = unit("unit-001");
         let f = stage1_review_batch(&mut factory, &u, &[], "无").unwrap();
         assert_eq!(f.len(), 1, "第一次违例重开后成功");
+        assert_eq!(factory.opens, 2, "违例→成功必须恰好开两次会话（换实例）");
         // 两次全违例 → 放弃
         let mut factory = ScriptFactory {
-            replies: vec![["违例2".into()].into(), ["违例3".into()].into()],
+            replies: std::collections::VecDeque::from([["违例2".into()].into(), ["违例3".into()].into()]),
+            opens: 0,
         };
         assert!(stage1_review_batch(&mut factory, &u, &[], "无").is_err());
+        assert_eq!(factory.opens, 2, "两次违例恰好开两次会话后放弃");
     }
 
     /// 审计修复 #1 回归：ask 失败保持原分类（System）上抛——不包 Quality，

@@ -24,6 +24,33 @@ fn path_traversal(p: &str) -> bool {
     std::path::Path::new(p).is_absolute() || p.split('/').any(|seg| seg == "..")
 }
 
+/// evidence 中是否含 `path:line` 形态引用（审计修复 #4：零证据不入的判定基础）。
+/// 解析启发式与 [`evidence_refs_out_of_file`] 同源：路径段（含扩展名或目录分隔）+ 纯数字行号。
+fn has_evidence_ref(evidence: &str) -> bool {
+    let mut i = 0usize;
+    while let Some(pos) = evidence[i..].find(':') {
+        let abs = i + pos;
+        let head = &evidence[..abs];
+        let path_start = head
+            .char_indices()
+            .rev()
+            .find(|(_, c)| !(c.is_alphanumeric() || *c == '_' || *c == '.' || *c == '-' || *c == '/'))
+            .map(|(idx, _)| idx + 1)
+            .unwrap_or(0);
+        let path = &evidence[path_start..abs];
+        let tail = &evidence[abs + 1..];
+        let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+        i = abs + 1;
+        if !path.is_empty()
+            && !digits.is_empty()
+            && (path.contains('.') || path.contains('/'))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// 对一批发现跑核验：`workspace` = 仓库根（存在性判定的基准）。
 pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
     // 行号缓存：path → 行数（同一文件的多次发现只读一次盘）
@@ -35,6 +62,15 @@ pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
             report.dropped.push((
                 format!("{}/{}", f.path, f.line),
                 format!("路径越界：{} 含 .. 或绝对路径，拒绝读盘", f.path),
+            ));
+            continue;
+        }
+        // 审计修复 #4：兑现「零证据不入」（协议提示词约定，M0 起推给核验器至今未实现）——
+        // evidence 空或无 path:line 引用的发现直接丢弃（在读盘之前，省 I/O）。
+        if f.evidence.trim().is_empty() || !has_evidence_ref(&f.evidence) {
+            report.dropped.push((
+                format!("{}/{}", f.path, f.line),
+                "零证据：evidence 为空或无 path:line 引用".to_string(),
             ));
             continue;
         }
@@ -208,6 +244,23 @@ mod tests {
         for (loc, reason) in &v.dropped {
             assert!(reason.contains("路径越界"), "{loc}: {reason}");
             assert!(!reason.contains("不存在"), "应静态拒绝而非当幽灵：{reason}");
+        }
+    }
+
+    /// 审计修复 #4：兑现「零证据不入」——空 evidence 或无 path:line 引用的散文
+    /// 直接丢弃（M0 起推给核验器至今未实现，结构合法就能进报告的口子被关上）。
+    #[test]
+    fn empty_or_referenceless_evidence_is_dropped() {
+        let r = fixture();
+        let mut no_evidence = finding("src/real.rs", 1);
+        no_evidence.evidence = "   ".into();
+        let mut prose_only = finding("src/real.rs", 2);
+        prose_only.evidence = "看起来这里有些问题，建议检查一下".into(); // 无任何 path:line 引用
+        let v = verify(r.path(), &[no_evidence, prose_only]);
+        assert!(v.kept.is_empty(), "零证据发现不得进 kept：{:?}", v.kept);
+        assert_eq!(v.dropped.len(), 2);
+        for (_, reason) in &v.dropped {
+            assert!(reason.contains("零证据"), "{reason}");
         }
     }
 }
