@@ -42,7 +42,7 @@ pub fn prepare(
             repo.display()
         )));
     }
-    let level = DocLevel::parse(doc_level)?;
+    let level = DocLevel::parse_strict(doc_level)?;
     let date = date_segment(today.0, today.1, today.2);
 
     // 1) change-id（幂等）与黑板目录（SOP 级：状态/证据/实施步骤都在这）

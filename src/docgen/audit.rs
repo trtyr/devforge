@@ -10,8 +10,15 @@ use crate::docgen::inventory::{EntryKind, Inventory, InventoryEntry};
 use crate::error::{Context as _, Result};
 
 /// 文档档位（D007：默认 complete）。
+///
+/// 全仓审计 #4：这是**全仓唯一的 DocLevel**——change SOP 曾有一份同名不同值域的
+/// 副本（`None/Essential/Complete`，无 `Detailed`），跨模块传递无编译期区分。
+/// 现归一到本处：change 侧的「不碰文档」就是 `None` 变体，严格解析走
+/// [`DocLevel::parse_strict`]（未知值报配置错），docgen/CLI 的宽松解析走 [`DocLevel::parse`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocLevel {
+    /// 不碰文档（change SOP 的默认档；覆盖口径 = 不要求任何条目）
+    None,
     /// 只要入口点能跑能接
     Essential,
     /// + 模块行为语义、配置项、错误码、数据模型（默认）
@@ -21,16 +28,46 @@ pub enum DocLevel {
 }
 
 impl DocLevel {
+    /// 宽松解析（docgen/CLI）：未知值落 Complete。
     pub fn parse(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
+            "none" => Self::None,
             "essential" => Self::Essential,
             "detailed" => Self::Detailed,
             _ => Self::Complete,
         }
     }
 
+    /// 严格解析（change SOP 配置面）：未知值 = 配置错误，不静默降级。
+    pub fn parse_strict(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "none" => Ok(Self::None),
+            "essential" => Ok(Self::Essential),
+            "complete" => Ok(Self::Complete),
+            "detailed" => Ok(Self::Detailed),
+            other => Err(crate::error::DevforgeError::Config(format!(
+                "未知 doc_level `{other}`（只认 none/essential/complete/detailed）"
+            ))),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Essential => "essential",
+            Self::Complete => "complete",
+            Self::Detailed => "detailed",
+        }
+    }
+
+    /// 该档位是否需要先跑文档阶段。
+    pub fn needs_docs(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
     fn requires(self, kind: EntryKind) -> bool {
         match self {
+            Self::None => false,
             Self::Essential => kind == EntryKind::Entry,
             Self::Complete => matches!(
                 kind,

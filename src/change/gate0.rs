@@ -19,42 +19,11 @@ pub struct Baseline {
     pub created_repo: bool,
 }
 
-/// 文档档位（调用方给，不由引擎猜）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DocLevel {
-    /// 不碰文档（默认）。
-    None,
-    /// 轻量：清单 + 入口 + Runbook 级覆盖。
-    Essential,
-    /// 完整：整条文档链（等价 doc-from-zero complete）。
-    Complete,
-}
-
-impl DocLevel {
-    pub fn parse(s: &str) -> Result<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "" | "none" => Ok(Self::None),
-            "essential" => Ok(Self::Essential),
-            "complete" => Ok(Self::Complete),
-            other => Err(DevforgeError::Config(format!(
-                "未知 doc_level `{other}`（只认 none/essential/complete）"
-            ))),
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Essential => "essential",
-            Self::Complete => "complete",
-        }
-    }
-
-    /// 该档位是否需要先跑文档阶段。
-    pub fn needs_docs(&self) -> bool {
-        !matches!(self, Self::None)
-    }
-}
+/// 文档档位：全仓唯一定义在 [`crate::docgen::audit::DocLevel`]（全仓审计 #4 去重）——
+/// 旧实现是本文件另立一份同名不同值域的枚举（None/Essential/Complete，无 Detailed），
+/// 跨模块传递无编译期区分。现在这里只做重导出，保持 `change::gate0::DocLevel` 路径可用；
+/// change SOP 的配置面解析用 [`DocLevel::parse_strict`]（未知值 = Config 错误）。
+pub use crate::docgen::audit::DocLevel;
 
 /// 确保基线存在，并把 sha 写到 `out_dir/baseline.txt`。
 ///
@@ -312,12 +281,19 @@ mod tests {
 
     #[test]
     fn doc_level_parses_three_tiers_and_defaults_to_none() {
-        assert_eq!(DocLevel::parse("").unwrap(), DocLevel::None);
-        assert_eq!(DocLevel::parse("none").unwrap(), DocLevel::None);
-        assert_eq!(DocLevel::parse("Essential").unwrap(), DocLevel::Essential);
-        assert_eq!(DocLevel::parse("complete").unwrap(), DocLevel::Complete);
-        assert!(DocLevel::parse("full").is_err());
+        // 全仓审计 #4：change 侧用严格解析（未知值 = Config），档位定义已归一到
+        // docgen::audit::DocLevel（包含 Detailed 与 None）
+        assert_eq!(DocLevel::parse_strict("").unwrap(), DocLevel::None);
+        assert_eq!(DocLevel::parse_strict("none").unwrap(), DocLevel::None);
+        assert_eq!(DocLevel::parse_strict("Essential").unwrap(), DocLevel::Essential);
+        assert_eq!(DocLevel::parse_strict("complete").unwrap(), DocLevel::Complete);
+        assert_eq!(DocLevel::parse_strict("detailed").unwrap(), DocLevel::Detailed);
+        assert!(DocLevel::parse_strict("full").is_err());
         assert!(!DocLevel::None.needs_docs());
         assert!(DocLevel::Essential.needs_docs() && DocLevel::Complete.needs_docs());
+        // 档位走字符串往返不缺变体
+        for lv in [DocLevel::None, DocLevel::Essential, DocLevel::Complete, DocLevel::Detailed] {
+            assert_eq!(DocLevel::parse_strict(lv.as_str()).unwrap(), lv);
+        }
     }
 }

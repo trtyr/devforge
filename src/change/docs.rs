@@ -31,7 +31,9 @@ pub enum DocAction {
 pub fn apply(repo: &Path, level: DocLevel) -> Result<DocAction> {
     match level {
         DocLevel::None => Ok(DocAction::Skipped),
-        DocLevel::Complete => Ok(DocAction::FullChainRequired),
+        // 档位定义归一后（全仓审计 #4）多出的 detailed：也是「整条文档链 + 额外约定面」，
+        // change SOP 同样不代跑 → 交调用方去跑 doc-from-zero（不因档位更严就静默降级）
+        DocLevel::Complete | DocLevel::Detailed => Ok(DocAction::FullChainRequired),
         DocLevel::Essential => {
             let inv = crate::docgen::inventory::build_inventory(repo)?;
             let meta = repo.join("docs/contexts/_meta");
