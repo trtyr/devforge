@@ -60,10 +60,61 @@ impl SpawnLedger {
         serde_json::from_str(&json).ctx("解析台账")
     }
 
-    /// 登记前的装载（引擎审计修复 #6）：文件不存在 = 冷启动静默；存在但损坏 =
+    /// 台账文件的跨进程互斥（引擎批次：`max_concurrent_mutation` 默认 2，两个同项目
+/// run 同时 spawn 时旧的「读-改-写」会互相覆写 PID 记录，后写者抹掉前者的登记）。
+///
+/// 实现：紧邻台账的 `spawn-ledger.json.lock` + `create_new` 抢占；拿不到就短睡重试，
+/// 超过 deadline 或无法建锁（权限等）时**不加锁也继续**（台账写不进去只影响未来收割，
+/// 不能把 spawn 路径卡死）；陈旧锁（持有者崩溃，>10s）会被清掉重抢。
+pub fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
+    let lock = path.with_extension("json.lock");
+    if let Some(parent) = lock.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+    let mut acquired = false;
+    while std::time::Instant::now() < deadline {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+        {
+            Ok(_) => {
+                acquired = true;
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let stale = std::fs::metadata(&lock)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .map(|d| d.as_secs() > 10)
+                    .unwrap_or(false);
+                if stale {
+                    let _ = std::fs::remove_file(&lock);
+                    continue;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => break,
+        }
+    }
+    let out = f();
+    if acquired {
+        let _ = std::fs::remove_file(&lock);
+    }
+    out
+}
+
+/// 登记前的装载（引擎审计修复 #6）：文件不存在 = 冷启动静默；存在但损坏 =
     /// WARN + 坏文件备份 .bak + 空账起底（与 store.json 口径一致）——
     /// 不许 unwrap_or_default 静默吞掉历史 PID 再覆写成空账。
     pub fn load_for_record(path: &Path) -> Self {
+        // 引擎批次 minor：文件根本不存在 = 首次 spawn（冷启动），静默返回空账——
+        // 旧实现把 ENOENT 也当「台账损坏」，首次开跑就 WARN + 备份失败日志，噪声掩盖真损坏。
+        if !path.exists() {
+            return Self::default();
+        }
         match Self::load(path) {
             Ok(l) => l,
             Err(e) => {
@@ -253,6 +304,47 @@ mod tests {
             run_id: "run-1".into(),
             started_at_ms: 42,
         }
+    }
+
+    #[test]
+    fn concurrent_registrations_do_not_overwrite_each_other() {
+        // 引擎批次：max_concurrent_mutation 默认 2，两个同项目 run 同时 spawn 时
+        // 旧的「读-改-写」会互相覆写——后写者抹掉前者的 PID 登记，删除时就成了孤儿。
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spawn-ledger.json");
+        let mut handles = Vec::new();
+        for base in [1000u32, 2000u32] {
+            let p = path.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 1..=5u32 {
+                    SpawnLedger::with_file_lock(&p, || {
+                        let mut l = SpawnLedger::load_for_record(&p);
+                        l.record(entry(base + i));
+                        l.save(&p).unwrap();
+                    });
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let ledger = SpawnLedger::load(&path).unwrap();
+        assert_eq!(
+            ledger.entries.len(),
+            10,
+            "并发登记必须全部落盘，实际：{:?}",
+            ledger.entries.iter().map(|e| e.pid).collect::<Vec<_>>()
+        );
+        assert!(!path.with_extension("json.lock").exists(), "锁文件必须收尾清掉");
+    }
+
+    #[test]
+    fn missing_ledger_file_does_not_backup() {
+        // 引擎批次 minor：ENOENT 是首次 spawn，不是「台账损坏」——不得生成 .bak
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("spawn-ledger.json");
+        assert!(SpawnLedger::load_for_record(&p).entries.is_empty());
+        assert!(!p.with_extension("json.bak").exists(), "首次启动不该生成 .bak");
     }
 
     #[test]

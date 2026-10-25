@@ -345,6 +345,11 @@ pub async fn start_task(
     Path((project, task)): Path<(String, String)>,
     body: Option<Json<StartReq>>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    // 全仓审计 server #：路径段先过安全校验——下面 fresh 分支会用 project/task 拼 change_root
+    // 再 `remove_dir_all`，而 `..` 是合法路径段（同文件的 audit_report 早就校验了，这里漏了）。
+    if !safe_segment(&project) || !safe_segment(&task) {
+        return Err(ApiError::bad_request("项目/任务名含非法路径字符"));
+    }
     // 可选 sop 覆盖（无 body / 无字段 = 沿用任务注册的 sop）
     let mut fresh = false;
     let mut sop_override = false;

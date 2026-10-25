@@ -74,6 +74,8 @@ impl RpcClient {
             .parent()
             .map(|p| p.join("spawn-ledger.json"))
             .unwrap_or_else(|| spec.working_dir.join("spawn-ledger.json"));
+        // 引擎批次：读-改-写必须跨进程互斥（max_concurrent_mutation 默认 2）
+        crate::engine::ledger::SpawnLedger::with_file_lock(&ledger_path, || {
         let mut ledger = crate::engine::ledger::SpawnLedger::load_for_record(&ledger_path);
         ledger.record(crate::engine::ledger::LedgerEntry {
             pid: child.id(),
@@ -94,6 +96,7 @@ impl RpcClient {
                 "spawn 台账落盘失败——熔断事实源缺口，本 run 挂死时无法精确收割"
             );
         }
+        });
     }
         let stdin = child.stdin.take().expect("stdin 已 piped");
         let stdout = child.stdout.take().expect("stdout 已 piped");
