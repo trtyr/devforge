@@ -16,11 +16,11 @@
 - ✅ T1.4 change-coding-review（对账七项保留 + 「不得以 diff 大小判」带原因 + 边界段三项）
 - 验收：四条过检查表（六块/原因/边界段/契约全勾，各≤1200 token）+ pinning 断言同步（codegraph-first 锚更新 + fixture 重 dump ×2）+ 全目标 776 绿
 
-## M2 · testing + 审计家族 ☐
+## M2 · testing + 审计家族 ✅
 
-- ☐ T2.1 test-agent / test-review（60/44 行：黑盒测试官 + 测试审查官）
-- ☐ T2.2 code-review-agent（39 行：审计批次官——六视角检查清单保留，补边界情况段与「不知道」示例）
-- 验收：同 M1
+- ✅ T2.1 test-agent / test-review（黑盒纪律与七条可靠性纪律全保留重排，新增两个示例；审查官七项+双路由保留，重写时遗失「环境复用」被 pinning 断言逮住回补——断言网价值实证）
+- ✅ T2.2 code-review-agent（三步法/六视角/裁决前置保留；新增「空 findings 合法」边界段——幽灵发现的提示词层防线）
+- 验收：三条过检查表（test-agent 特批超 1200 token：七条可靠性纪律逐条对应真实炸轮事故，不可删）+ pinning 同步 + 全目标 776 绿
 
 ## M3 · doc 家族 ☐
 
