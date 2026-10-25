@@ -577,10 +577,11 @@ impl ChangeSession for ProdChangeSession {
                 acceptance_done: done,
                 reviews: instances,
             }),
-            StageVerdict::Fail => Err(DevforgeError::Quality(format!(
-                "变更测试审查未通过：{}",
-                report.issues.join("；")
-            ))),
+            // change #4（testing 半）：测试审查 FAIL 也不判死——回注 coding 重做。走编排层
+            // 既有的 MAX_TEST_REROUTES 上限与失败上下文送达面（与测试回注同一条路）。
+            StageVerdict::Fail => Ok(TestingTurn::RouteCoding {
+                failures: report.issues,
+            }),
         }
     }
 

@@ -276,7 +276,9 @@ fn write_fresh_regression_log(f: &Fixture) {
 }
 
 #[test]
-fn testing_review_is_invoked_and_can_fail() {
+fn testing_review_fail_reroutes_to_coding_instead_of_failing_the_run() {
+    // change #4（testing 半）：测试审查 FAIL 不再判死——改为 RouteCoding，把审查明细
+    // 变成回注 coding 的失败清单（有界：MAX_TEST_REROUTES 在编排层）。
     let f = fixture(true);
     std::fs::create_dir_all(f.ctx.blackboard.join("testing")).unwrap();
     write_fresh_regression_log(&f);
@@ -296,8 +298,13 @@ fn testing_review_is_invoked_and_can_fail() {
         ctx: f.ctx.clone(),
         plan_review_instances: 0,
     };
-    let err = session.run_testing(&mut NoUser).unwrap_err();
-    assert!(err.to_string().contains("变更测试审查未通过"), "{err}");
+    match session.run_testing(&mut NoUser).unwrap() {
+        TestingTurn::RouteCoding { failures } => assert!(
+            failures.iter().any(|s| s.contains("没有反向验证")),
+            "审查明细必须成为回注失败清单：{failures:?}"
+        ),
+        other => panic!("测试审查 FAIL 应回注 coding，实际：{other:?}"),
+    }
 }
 
 #[test]

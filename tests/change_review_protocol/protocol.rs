@@ -192,24 +192,29 @@ pub(super) fn a7_channel_error_is_retried_with_a_new_instance() {
 
 // ---------------- 验收 8：test 审查真判负 → 仍然终止 ----------------
 
-/// 验收 8 · test 审查 FAIL + 非空 issues（真判负）→ 仍判「变更测试审查未通过」并 Quality 终止。
+/// 验收 8 · test 审查 FAIL + 非空 issues（真判负）→ 仍只开一个实例（不重审），
+/// 但不再判死 run：明细逐字进回注 coding 的失败清单（change #4）。
 #[test]
-pub(super) fn a8_test_review_fail_with_issues_still_fails_the_stage() {
-    // 错实现形态：把真判负也当成「换实例重审」（判负通道被改软）→ 本用例必须变红
+pub(super) fn a8_test_review_fail_with_issues_reroutes_to_coding_verbatim() {
+    // 错实现形态：把真判负也当成「换实例重审」（判负通道被改软）→ 本用例必须变红；
+    // 另一个错形态：FAIL 直接判死 run（旧行为）——现在应该走回注循环。
     let f = fixture();
     let test_agent = ScriptedAgent::new(&["测完了\n<stage-complete>1</stage-complete>"]);
     let test_review = ScriptedReviewFactory::new(vec![ScriptedReply::text(FAIL_WITH_ISSUES)]);
     let opened = test_review.clone();
     let mut session = testing_only(f.ctx.clone(), test_agent, test_review);
 
-    let err = session.run_testing(&mut NoUser).unwrap_err();
-    let msg = err.to_string();
-    assert!(msg.contains("变更测试审查未通过"), "判负文案要保持：{msg}");
-    assert!(
-        msg.contains("tests/change_review_protocol.rs:1 断言失败"),
-        "错误文本要逐字含 issues 原文：{msg}"
-    );
-    assert!(err.is_quality_failure(), "判负 = 质量失败：{msg}");
+    match session.run_testing(&mut NoUser).unwrap() {
+        TestingTurn::RouteCoding { failures } => {
+            assert!(
+                failures
+                    .iter()
+                    .any(|s| s.contains("tests/change_review_protocol.rs:1 断言失败")),
+                "回注清单要逐字含 issues 原文：{failures:?}"
+            );
+        }
+        other => panic!("真判负应回注 coding，实际：{other:?}"),
+    }
     assert_eq!(opened.opened(), 1, "真判负不重审（判负通道不变）");
 }
 

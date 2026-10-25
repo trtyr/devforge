@@ -25,9 +25,14 @@ use std::sync::atomic::AtomicU64;
 
 use crate::error::DevforgeError;
 
-/// 最近一次 agent 事件（turn_start / turn_end / 命令失败）的进程级时间戳（ms；0 = 从未）。
-/// DR-2/DR-3：心跳只证服务端线程活着，不证 agent 活着——本时间戳补上 agent 活性。
-static LAST_AGENT_EVENT_MS: AtomicU64 = AtomicU64::new(0);
+/// 最近一次 agent 事件（turn_start / turn_end / 命令失败 / 流式 delta）的时间戳（ms），
+/// **按 run 分槽**——地基批次 #2：旧实现是进程级单槽，上一 run 的旧戳会算到下一 run
+/// 头上（前一 run 已静默超阈值时，下一 run 的 watchdog 首跳即误报 agent.stall）。
+static AGENT_EVENTS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+
+fn agent_events() -> &'static Mutex<HashMap<String, u64>> {
+    AGENT_EVENTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// 一次 run 的当前观测状态（心跳与墓碑的「当时是谁、在哪个阶段」）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -117,6 +122,8 @@ fn begin_run_in_ctx(root: PathBuf, run_id: &str, phase: &str) {
         started_at_ms: crate::domain::now_ms(),
     };
     runs().lock().expect("observability 快照表锁").insert(run_id.to_string(), snap);
+    // 地基批次 #2：新 run 开跑前清掉同 id 的旧 agent 事件戳（按 run 分槽后每槽归本 run）
+    agent_events().lock().expect("agent 事件表锁").remove(run_id);
     phase_logs().lock().expect("phase 历史表锁").insert(run_id.to_string(), Vec::new());
     roots()
         .lock()
@@ -177,6 +184,8 @@ pub fn end_run(run_id: &str) {
     write_heartbeat(run_id);
     runs().lock().expect("observability 快照表锁").remove(run_id);
     roots().lock().expect("observability 根表锁").remove(run_id);
+    // 地基批次 #2：run 结束后摘掉本 run 的 agent 事件槽（下一 run 不得继承旧戳）
+    agent_events().lock().expect("agent 事件表锁").remove(run_id);
     LOCAL.with(|l| {
         let mut l = l.borrow_mut();
         if l.run_id.as_deref() == Some(run_id) {
@@ -260,22 +269,36 @@ pub fn current() -> Option<RunSnapshot> {
     runs().lock().expect("observability 快照表锁").get(&id).cloned()
 }
 
-/// DR-2/DR-3：记录一次 agent 事件（turn_start / turn_end / 命令失败），供活性与停滞告警判定。
-/// 进程级时间戳——watchdog 线程与 API 层跨线程可读。
+/// DR-2/DR-3：记录一次 agent 事件（turn_start / turn_end / 流式 delta / 命令失败），
+/// 供活性与停滞告警判定。**按 run 分槽**（地基批次 #2）；无 run 上下文（单测/非 run 路径）
+/// 记在空键下，不污染任何真 run 的判定。
 pub fn note_agent_event() {
-    LAST_AGENT_EVENT_MS.store(crate::domain::now_ms(), std::sync::atomic::Ordering::Relaxed);
+    let key = current_run_id().unwrap_or_default();
+    agent_events()
+        .lock()
+        .expect("agent 事件表锁")
+        .insert(key, crate::domain::now_ms());
 }
 
-/// 距最近一次 agent 事件的毫秒数；本进程从未有过 agent 事件 = `None`。
-pub fn last_agent_event_age_ms() -> Option<u64> {
-    let t = LAST_AGENT_EVENT_MS.load(std::sync::atomic::Ordering::Relaxed);
+/// 某个 run 距最近一次 agent 事件的毫秒数（该 run 从未有过事件 = `None`）。
+fn agent_event_age_for(run_id: &str) -> Option<u64> {
+    let t = *agent_events()
+        .lock()
+        .expect("agent 事件表锁")
+        .get(run_id)?;
     (t != 0).then(|| crate::domain::now_ms().saturating_sub(t))
 }
 
-/// DR-3：停滞判定——返回「距最近 agent 事件的毫秒数」（超阈值与否由调用方比）。
-/// 从未有 agent 事件时按 run 开跑时刻起算（DR-1 型「根本没开轮」也要能报警）。
+/// 距最近一次 agent 事件的毫秒数（**当前线程所在 run**；无 run 上下文 = 空键口径）。
+pub fn last_agent_event_age_ms() -> Option<u64> {
+    let key = current_run_id().unwrap_or_default();
+    agent_event_age_for(&key)
+}
+
+/// DR-3：停滞判定——返回「该 run 距最近 agent 事件的毫秒数」（超阈值与否由调用方比）。
+/// 该 run 从未有 agent 事件时按 run 开跑时刻起算（DR-1 型「根本没开轮」也要能报警）。
 pub fn stall_check(run_id: &str) -> Option<u64> {
-    match last_agent_event_age_ms() {
+    match agent_event_age_for(run_id) {
         Some(age) => Some(age),
         None => run_started_at(run_id).map(|t0| crate::domain::now_ms().saturating_sub(t0)),
     }
@@ -492,6 +515,31 @@ pub mod test_support {
 mod tests {
     use super::*;
     use crate::error::Context as _;
+
+    /// 地基批次 #2 回归：agent 活性戳按 run 分槽——A 的旧戳不得算到 B 头上
+    /// （旧实现进程级单槽，前一 run 静默超阈值时下一 run 首跳即误报 agent.stall）。
+    #[test]
+    fn agent_liveness_slot_is_per_run() {
+        let dir = tempfile::tempdir().unwrap();
+        begin_run_in_deferred(dir.path().to_path_buf(), "run-A", "coding");
+        note_agent_event();
+        assert!(agent_event_age_for("run-A").is_some(), "A 应有自己的戳");
+        assert!(
+            agent_event_age_for("run-B").is_none(),
+            "B 未开跑不得有戳（不得继承进程级旧戳）"
+        );
+        end_run("run-A");
+        assert!(agent_event_age_for("run-A").is_none(), "A 结束后槽必须摘掉");
+
+        begin_run_in_deferred(dir.path().to_path_buf(), "run-B", "coding");
+        assert!(
+            agent_event_age_for("run-B").is_none(),
+            "B 不得继承 A 的旧戳"
+        );
+        // B 没自己的事件 → stall_check 走「按开跑时刻起算」那条路
+        assert!(stall_check("run-B").is_some());
+        end_run("run-B");
+    }
 
     #[test]
     fn root_prefers_the_injected_value() {
