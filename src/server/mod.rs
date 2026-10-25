@@ -391,16 +391,18 @@ fn contract_boundary_check(
             .map(|l| l.trim().to_string())
             .collect(),
         Ok(o) => {
-            tracing::warn!(
-                component = "boundary",
-                error = %String::from_utf8_lossy(&o.stderr),
-                "契约终校验的 git diff 失败，放行"
-            );
-            return Ok(outcome);
+            // 引擎批次 #5：**门不能 fail-open**——旧实现在 git diff 失败时 warn 后放行，
+            // 而调用方看到的是 Completed（成功），owned_paths/forbidden_paths 两个契约门
+            // 静默失效。改为系统错误（基础设施故障 → 可重启，而不是伪装成「审过了」。
+            return Err(crate::error::DevforgeError::System(format!(
+                "契约终校验无法取 diff（git 非零退出）：{}——不能放行为 Completed",
+                String::from_utf8_lossy(&o.stderr).trim()
+            )));
         }
         Err(e) => {
-            tracing::warn!(component = "boundary", error = %e, "契约终校验的 git 调用失败，放行");
-            return Ok(outcome);
+            return Err(crate::error::DevforgeError::System(format!(
+                "契约终校验无法调用 git：{e}——不能放行为 Completed"
+            )));
         }
     };
     // ① forbidden_paths 绝对禁令（P012 挂账补全）：命中即越界，优先于 owned 覆盖判定——

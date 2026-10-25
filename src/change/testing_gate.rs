@@ -86,16 +86,20 @@ pub fn snapshot_tracked_changes(
         .output()
         .map_err(|e| DevforgeError::System(format!("执行 git diff 失败：{e}")))?;
     if !out.status.success() {
-        // 降级为空集 + WARN：git 不可用/无效基线时上游基线门已 Err，此处不重复报错
-        // （否则会掩盖测试阶段真正的错误明细，如空箱拒收的 Quality 文案）。
-        tracing::warn!(
+        // change 批次 #2：**门不能 fail-open**——旧实现降级为空集后 #6 机械门恒过，
+        // 注释声称「上游基线门已 Err」但基线门只在 coding 阶段，testing 是独立入口。
+        // 快照取不到 = 无法证明测试没改产品代码，必须显式失败。
+        tracing::error!(
             component = "change-engine",
             event = "gate.product_snapshot",
             baseline = %baseline,
             stderr = %String::from_utf8_lossy(&out.stderr).trim(),
-            "产品代码快照不可用（降级为空集，#6 机械门本阶段失效）"
+            "产品代码快照不可用——不能把「门没生效」当成「门通过」"
         );
-        return Ok(Default::default());
+        return Err(DevforgeError::System(format!(
+            "测试阶段产品代码快照失败（git 基线 {baseline}）：{}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
     }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
