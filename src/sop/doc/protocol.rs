@@ -72,14 +72,28 @@ pub struct DocReviewReport {
 }
 
 /// 解析 `<doc-complete>unit-xxx</doc-complete>`；取不到或为空 → None。
+/// 引擎审计修复 #8：尾部协议位——只认「其后直到文本尾都是空白」的最后一次出现，
+/// 正文引用的示例块（其后还有正文）不再能盖过尾部真标记（change SOP 同款纪律）。
 pub fn parse_doc_complete(text: &str) -> Option<String> {
     let tag = "doc-complete";
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
-    let start = text.rfind(&open)? + open.len();
-    let end = text[start..].find(&close)? + start;
-    let unit = text[start..end].trim().to_string();
-    if unit.is_empty() { None } else { Some(unit) }
+    let mut window = text;
+    while let Some(pos) = window.rfind(&open) {
+        let start = pos + open.len();
+        if let Some(rel) = window[start..].find(&close) {
+            let end = start + rel;
+            if text[end + close.len()..].trim().is_empty() {
+                let unit = window[start..end].trim().to_string();
+                if !unit.is_empty() {
+                    return Some(unit);
+                }
+            }
+        }
+        // 该出现不满足尾部协议位（或为空标记）：排除，往前找
+        window = &window[..pos];
+    }
+    None
 }
 
 /// 解析审查回复的三块协议；违例不报错（交给编排层重跑），只在报告里标记。
@@ -133,14 +147,14 @@ pub fn parse_doc_review(text: &str) -> Result<DocReviewReport> {
     })
 }
 
+/// 引擎审计修复 #8：前置协议位——取第一次出现（DR-13 裁决块在第一行，
+/// 正文引用的示例块在其后，不再能盖过真裁决）。
 fn extract_tag(text: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
-    let start = text.rfind(&open)? + open.len();
-    if let Some(end) = text[start..].find(&close) {
-        return Some(text[start..start + end].to_string());
-    }
-    None
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&close)? + start;
+    Some(text[start..end].to_string())
 }
 
 #[cfg(test)]
@@ -207,9 +221,26 @@ mod tests {
     }
 
     #[test]
-    fn last_block_wins() {
+    fn first_block_wins() {
+        // 引擎审计修复 #8：协议位收口后取第一次出现——重复块以真裁决（第一行）为准
         let text = "<doc-verdict>FAIL</doc-verdict>\n<doc-verdict>PASS</doc-verdict>\n<route>finish</route>";
         let r = parse_doc_review(text).unwrap();
-        assert_eq!(r.verdict, DocVerdict::Pass);
+        assert_eq!(r.verdict, DocVerdict::Fail);
+    }
+
+    /// 引擎审计修复 #8 回归：正文引用的示例块不得盖过第一行真裁决。
+    #[test]
+    fn quoted_example_cannot_override_head_verdict() {
+        let text = "<doc-verdict>PASS</doc-verdict>\n\n说明：若不合格应输出 <doc-verdict>FAIL</doc-verdict>。";
+        let r = parse_doc_review(text).unwrap();
+        assert_eq!(r.verdict, DocVerdict::Pass, "正文引文不得改写裁决");
+    }
+
+    /// 引擎审计修复 #8 回归：doc-complete 尾部协议位——正文里的示例标记
+    /// （其后还有正文）不收，只收尾部真标记。
+    #[test]
+    fn complete_marker_ignores_quoted_examples() {
+        let text = "先看示例：<doc-complete>unit-x</doc-complete>（这是格式说明）\n正文写完了\n<doc-complete>unit-a-01</doc-complete>";
+        assert_eq!(parse_doc_complete(text).as_deref(), Some("unit-a-01"));
     }
 }

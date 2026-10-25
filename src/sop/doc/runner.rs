@@ -9,7 +9,9 @@
 //!   → PASS + route=finish（或单元耗尽）→ 收工
 //! ```
 //!
-//! 零硬限制：单元数、打回轮次、重推次数均无上限；审查协议违例按 C19-R1 口径重跑审查（上限 3）。
+//! 硬限制（引擎审计修复 #10 对齐实现）：doc-complete 重推 3 次（MAX_DOC_CONTINUE_NUDGES）、
+//! 空回复 3 次（MAX_DOC_EMPTY_REPLIES）、审查协议违例重跑 3 次（C19-R1）、
+//! 连续 2 轮 FAIL 断路器；单元数按清单分母无额外上限。
 
 use std::path::Path;
 
