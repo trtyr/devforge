@@ -31,9 +31,10 @@ src/
 编排模型（decisions/003/004/007/008）：
 
 - **零硬限制**：无内建轮次/时长上限；run 超时默认不限时，`DEVFORGE_RUN_TIMEOUT_MS` 显式开启
-- **零校验自动流转**：Review 打回后问题回注 Plan Agent，修完自动重查，不验修复质量
+- **零校验自动流转**：Review 打回后问题连同失败明细回注（plan→`fix_plan`、coding→`fix_coding`、
+testing→回注 coding），有界（各 3 轮后判质量失败），不验修复质量
 - **精确清场**：取消/超时按 `DEVFORGE_MANAGED=run-id` 精确 SIGKILL 自家 pi，不碰用户进程
-- **会话留档**：每个 Agent 会话 JSONL 按 run-id 归档于 `~/.devforge/sessions/`；
+- **会话留档**：每个 Agent 会话 JSONL 按 run 归档于 `~/.devforge/sessions/<run-id>/<角色>/`；
   plan tree 产物落 `~/.devforge/plans/<项目>/<任务>/`
 
 ## 运行
