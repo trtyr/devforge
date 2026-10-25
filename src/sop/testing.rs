@@ -164,6 +164,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
         // 审查预算的生命周期 = 一次 drive（与既有违例计数同口径）
         let mut budget = ReviewBudget::default();
         let mut nudges = 0usize;
+        // 全仓审计 #7：FAIL 但 issues 为空的追补计数（与 change 测试回注同口径）
+        let mut empty_issue_nudges = 0usize;
         // 阶段推进记录：上一个阶段号（首个阶段的前驱 = "start"）
         let mut last_stage: Option<u64> = None;
         // 被打回后待收尾的修复轮（回注在下一轮 agent 回合才发生 → fix.end 落在那一回合返回处）
@@ -252,6 +254,23 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                         // (Fail, Fix)——其余组合已被解析器保守归一为 (Fail, Fix)
                         _ => {
                             report.issues_total += parsed.issues.len();
+                            // 全仓审计 #7：FAIL 但不给明细 = 空箱回注（agent 盲改、可无界空转）。
+                            // 拒收 + 追补，连续超限判质量失败——与 change 测试回注同一口径。
+                            if parsed.issues.is_empty() {
+                                empty_issue_nudges += 1;
+                                if empty_issue_nudges
+                                    > crate::sop::review_gate::MAX_EMPTY_ISSUES_NUDGES
+                                {
+                                    return Err(crate::error::DevforgeError::Quality(format!(
+                                        "测试审查连续 {empty_issue_nudges} 次判定 FAIL 但未给出 issues 明细，判定为质量失败（不自动重启）"
+                                    )));
+                                }
+                                step = Step::Agent(
+                                    crate::sop::review_gate::ISSUES_NUDGE.to_string(),
+                                );
+                                continue;
+                            }
+                            empty_issue_nudges = 0;
                             if parsed.reroute == Reroute::DocSide {
                                 report.doc_fix_handoffs += 1;
                                 // 阶段推进：测试侧 → 文档侧（移交 doc-fix）
@@ -645,6 +664,38 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("协议违例"), "应报质量失败: {err}");
         assert!(err.to_string().contains("质量失败"), "协议违例上限归质量失败: {err}");
+    }
+
+    /// 全仓审计 #7 回归：审查判 FAIL 却不给 issues 明细 → 拒收 + 追补；
+    /// 连续超限判质量失败。错实现形态：把空清单直接回注（agent 盲改、可无界空转），
+    /// 而 change 侧早已有 MAX_EMPTY_ISSUES_NUDGES 护栏——两条链路口径不一。
+    #[test]
+    fn fail_without_issues_is_bounded_not_infinite() {
+        let agent = MockAgent::new(&[
+            Turn::Say("阶段 1 完成。\n<stage-complete>1</stage-complete>"),
+            Turn::Say("改了点东西。\n<stage-complete>1</stage-complete>"),
+            Turn::Say("又改了点。\n<stage-complete>1</stage-complete>"),
+            Turn::Say("继续改。\n<stage-complete>1</stage-complete>"),
+        ]);
+        let received = agent.received.clone();
+        // FAIL 但 <issues> 为空——旧实现会把它当可用的失败结论直接回注
+        let empty_issues = "<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>\n<issues></issues>";
+        let mut factory =
+            MockReviewFactory::new(&[empty_issues, empty_issues, empty_issues, empty_issues]);
+        let mut user = NoUser;
+        let err = TestingSopLoop::new(agent, &mut factory)
+            .run(&mut user, Path::new("/w"), "p", "t")
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("未给出 issues 明细") && msg.contains("质量失败"),
+            "空 issues 应拒收并有界收敛：{msg}"
+        );
+        assert!(
+            received.borrow().iter().any(|m| m.contains("引擎拒收")),
+            "应把追补话术发给 agent：{:?}",
+            received.borrow()
+        );
     }
 
     #[test]

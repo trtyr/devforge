@@ -18,6 +18,15 @@ pub const MAX_PROTOCOL_VIOLATIONS: usize = 3;
 /// 审查实例失败重试上限：连续失败超过此数 → 基础设施故障（System，触发 run 级自动重启）。
 pub const MAX_REVIEW_INSTANCE_FAILURES: usize = 3;
 
+/// 空箱拒收的追补上限（全仓审计 #7：跨链路单点）——裁决 FAIL 却不给失败明细时，
+/// 回注空清单等于让 agent 盲改，可无界空转；连续这么多次还不补 → 质量失败（不自动重启）。
+pub const MAX_EMPTY_ISSUES_NUDGES: usize = 3;
+
+/// 空箱拒收的追补话术（change 测试回注 + MVP testing 循环共用）。
+pub const ISSUES_NUDGE: &str = "\
+你给出的裁决是 FAIL，但没有给出 <issues> 失败明细（每条一行，`- ` 开头）。\
+这条回注已被引擎拒收：请补齐失败明细后重发。";
+
 /// 审查预算：两个计数的**生命周期由调用方决定**。
 ///
 /// - change 侧：每次审查调用一个（一次审查就是一次判负机会）；

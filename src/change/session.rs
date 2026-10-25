@@ -170,13 +170,9 @@ pub fn coding_kickoff(ctx: &ChangeCtx, failure: Option<&TestFailureContext>) -> 
     }
 }
 
-/// 空箱拒收的追补上限：连续这么多次回注路由仍不带 `<issues>` → 质量失败（不自动重启）。
-pub const MAX_EMPTY_ISSUES_NUDGES: usize = 3;
-
-/// 空箱拒收的追补话术：路由块带了、失败明细没带 → 请补齐后重发。
-pub const ISSUES_NUDGE: &str = "\
-你输出了回注路由，但没有给出 <issues> 失败明细（每条一行，`- ` 开头）。\
-这条回注已被引擎拒收：请补齐失败明细后重发 —— 路由块与 <issues> 块都放在回复末尾。";
+/// 空箱拒收的追补上限/话术：已下沉到 [`crate::sop::review_gate`]（全仓审计 #7——
+/// 同一纪律曾在 change 侧单点落地、MVP testing 侧缺失）。这里保留路径导出。
+pub use crate::sop::review_gate::{ISSUES_NUDGE, MAX_EMPTY_ISSUES_NUDGES};
 
 pub fn testing_kickoff(ctx: &ChangeCtx) -> String {
     format!(
