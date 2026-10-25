@@ -211,6 +211,7 @@ mod contract;
 mod crud;
 mod http;
 mod observe;
+mod restart;
 mod retry;
 mod scheduler;
 mod start;

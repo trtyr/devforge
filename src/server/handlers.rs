@@ -13,6 +13,7 @@ use tokio_stream::StreamExt as _;
 
 use crate::config::ConfigManifest;
 use crate::domain::project::Project;
+use crate::domain::task::TaskStatus;
 use crate::domain::task::Task;
 use crate::server::{run_in_background, SharedState};
 
@@ -276,9 +277,11 @@ pub async fn start_task(
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     // 可选 sop 覆盖（无 body / 无字段 = 沿用任务注册的 sop）
     let mut fresh = false;
+    let mut sop_override = false;
     if let Some(Json(req)) = body {
         fresh = req.fresh.unwrap_or(false);
         if let Some(sop) = req.sop {
+            sop_override = true;
             let mut store = st.store.lock().expect("store 锁");
             store
                 .set_task_sop(&st.registry, &project, &task, sop)
@@ -297,8 +300,30 @@ pub async fn start_task(
                 store.max_concurrent_runs
             )));
         }
+        // 复验 N1（中高）：change 已完成后再 start 是静默空转（编排器 phase=Done 全跳过、
+        // spawn 六个会话后用旧产物出报告）——显式拒绝，重跑带 fresh。
+        // 只挡 change（通用 SOP 重跑 = 冷启动重跑，合法）；sop 覆盖 = 跨 SOP 换道（P005），放行。
+        if t.status == TaskStatus::Completed && !fresh && !sop_override && t.sop == "change" {
+            return Err(ApiError::conflict(format!(
+                "任务 `{project}/{task}` 已完成；重跑请带 fresh:true（完整重置）"
+            )));
+        }
         t.sop.clone()
     };
+    // 复验 N1：fresh 完整重置——change 的 current 标记/change-id 黑板一并轮换，
+    // 重新 assign_change_id 会分配新号（旧号目录不残留）。
+    if fresh && sop_name == "change" {
+        let change_root =
+            crate::change::change_id::change_root(&st.plans_root, &project, &task);
+        if change_root.is_dir() {
+            std::fs::remove_dir_all(&change_root).map_err(|e| {
+                ApiError::internal(format!(
+                    "清空 change 黑板 {} 失败：{e}",
+                    change_root.display()
+                ))
+            })?;
+        }
+    }
     // 续跑门（plan 010 T003）：fresh 清空该 SOP 的断点；否则按断点存在与否回显 resumed；
     // 只动该 SOP 自己那份状态，同 task 其他 SOP 不受影响。
     let decision =
