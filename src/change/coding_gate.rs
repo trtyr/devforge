@@ -312,7 +312,9 @@ pub fn changed_files(repo: &Path, baseline: &str) -> Result<Vec<String>> {
     }
     // 流水线自身产物（计划文档/证据/文档域）不算代码改动——与 #10 纪律同口径：它们不进 coding
     // 提交、也不参与越界判定，否则每轮 run 自己写的 change-plan.md 会永久触发范围膨胀。
-    // 引擎审计修复 #3：docs/contexts/（含 essential 档的 _meta 盘点/词汇表）同样是 SOP
+    // 2026-10-25 起计划已落台账根（仓外），这里保留过滤是为了**迁移前的旧仓**（计划还在
+    // docs/plantree/changes/ 下）不会被误判为越界。
+    // 引擎审计修复 #3：docs/contexts/（含 essential 档的 _meta 盘点/词表）同样是 SOP
     // 自产文档域——已有 git 仓基线只记 HEAD 不提交，这些 untracked 文件会让每次
     // doc_level≠none 的 change 必踩范围膨胀 FAIL。
     files.retain(|f| {
@@ -724,10 +726,10 @@ mod tests {
     fn decision_ledger_registers_d023() {
         // 决策台账同步（D023）：纪律供给口径 + change 路径的先证后报机械门 + 门只落 change 路径。
         // 放在本文件：白名单内不得新增测试文件，而本变更的门与该决策同源。
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("docs/plantree/plans/009-change-sop/decisions/README.md");
+        let path = crate::change::prepare::default_plantree_root("devforge")
+            .join("plans/009-change-sop/decisions/README.md");
         let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("决策台账不可读：{}", path.display()));
+            .unwrap_or_else(|_| panic!("决策台账不可读：{}（台账已移出仓，2026-10-25）", path.display()));
         assert!(text.contains("D023"), "台账未登记 D023");
         for anchor in ["coding-discipline", "evidence/self-check.log", "只落 change 路径"] {
             assert!(text.contains(anchor), "D023 缺登记点：{anchor}");

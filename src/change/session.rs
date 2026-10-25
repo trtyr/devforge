@@ -32,7 +32,7 @@ pub struct ChangeCtx {
     pub repo: PathBuf,
     /// 黑板（`plans/<p>/<t>`，impl-steps / evidence 在这）。
     pub blackboard: PathBuf,
-    /// 计划目录（目标仓 `docs/plantree/changes/<id>`）。
+    /// 计划目录（台账根 `plantree/<project>/changes/<id>`；**不在目标仓内**，2026-10-25 反转 D003）。
     pub change_dir: PathBuf,
     pub change_id: String,
     pub baseline: String,
@@ -292,7 +292,7 @@ impl ProdChangeSession {
         let reply = require_marker_nudged("change-plan-agent", first, |m| {
             self.plan_agent.converse(m, ui)
         })?;
-        // 计划文在目标仓，审查子进程 cwd 是黑板：必须把路径与全文一起给审查官
+        // 计划文在台账根（不在目标仓），审查子进程 cwd 是黑板：必须把路径与全文一起给审查官
         let plan_path = self.ctx.plan_path();
         let plan_text = std::fs::read_to_string(&plan_path).map_err(|e| {
             DevforgeError::Quality(format!("计划文件不可读（{}）：{e}", plan_path.display()))

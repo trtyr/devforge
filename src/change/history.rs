@@ -1,26 +1,25 @@
 //! 往返历史（P009 T013）：每次 coding→plan 回退都落一行到
-//! `docs/plantree/changes/<change-id>/history.md`，供事后审计「边界是怎么被撑大的」。
+//! `<台账根>/changes/<change-id>/history.md`，供事后审计「边界是怎么被撑大的」。
+//! 2026-10-25 反转 D003：台账不进仓——旧实现拼的是目标仓 `docs/plantree/changes/…`。
 
 use std::path::{Path, PathBuf};
 
 use crate::change::boundary::ImpactGap;
 use crate::error::{DevforgeError, Result};
 
-/// 历史文件路径。
-pub fn history_path(repo: &Path, change_id: &str) -> PathBuf {
-    repo.join("docs/plantree/changes")
-        .join(change_id)
-        .join("history.md")
+/// 历史文件路径（`change_dir` = 台账根下的计划目录）。
+pub fn history_path(change_dir: &Path) -> PathBuf {
+    change_dir.join("history.md")
 }
 
 /// 追加一次往返记录（文件不存在则带表头新建）。
 pub fn append_roundtrip(
-    repo: &Path,
+    change_dir: &Path,
     change_id: &str,
     roundtrip: usize,
     gaps: &[ImpactGap],
 ) -> Result<PathBuf> {
-    let path = history_path(repo, change_id);
+    let path = history_path(change_dir);
     let dir = path.parent().expect("history 必有父目录");
     std::fs::create_dir_all(dir)
         .map_err(|e| DevforgeError::System(format!("建目录 {} 失败：{e}", dir.display())))?;

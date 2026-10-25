@@ -258,6 +258,7 @@ impl BuiltinRpcEngine {
                     ChangeRun {
                         store: &store,
                         repo: &workspace,
+                        change_dir: &prep.change_dir,
                         change_id: &change_id,
                         baseline_sha: &baseline,
                         criteria,
@@ -394,11 +395,13 @@ mod tests {
         let ctx = build_ctx(&prep, &repo, "add x", None);
         assert_eq!(
             ctx.plan_path(),
-            repo.join("docs/plantree/changes")
+            crate::change::prepare::plantree_root(&tmp.path().join("plans"), "p")
+                .join("changes")
                 .join(&prep.change_id)
                 .join("change-plan.md"),
-            "计划路径必须在目标仓（提示词与 D003 一致）"
+            "计划路径必须在台账根（2026-10-25 反转 D003：台账不进仓）"
         );
+        assert!(!ctx.plan_path().starts_with(&repo), "计划不得落进目标仓");
         assert!(
             ctx.blackboard.ends_with("p/t/change"),
             "证据根必须是 SOP 级黑板：{}",

@@ -611,7 +611,9 @@ impl ReviewSession for NoReviewSession {
 #[test]
 pub(super) fn a14_decision_ledger_registers_d025_with_the_clearing_rules() {
     // 错实现形态：台账没登记 D025 / 只登记一半（缺清除规则或缺续跑一致性）/ D018 没加旁注 → 必须变红
-    let path = repo_root().join("docs/plantree/plans/009-change-sop/decisions/README.md");
+    // 台账已移出仓（2026-10-25）：从默认台账根读
+    let path = devforge::change::prepare::default_plantree_root("devforge")
+        .join("plans/009-change-sop/decisions/README.md");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("台账不可读：{}", path.display()));
     assert_eq!(
         text.matches("## D025 ·").count(),

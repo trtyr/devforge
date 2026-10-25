@@ -131,6 +131,8 @@ pub struct ChangeRun<'a> {
     pub store: &'a StateStore,
     /// 目标仓（diff、报告都落这里）。
     pub repo: &'a Path,
+    /// 计划目录（台账根下 `changes/<change-id>`；**不在目标仓内**，2026-10-25 反转 D003）。
+    pub change_dir: &'a Path,
     pub change_id: &'a str,
     pub baseline_sha: &'a str,
     /// 计划的验收标准（对账用）。
@@ -250,7 +252,7 @@ pub fn run<S: ChangeSession>(
                     state.bump_roundtrip();
                     // 每次回退都落历史（T013：事后能看出边界是怎么被撑大的）
                     crate::change::history::append_roundtrip(
-                        run.repo,
+                        run.change_dir,
                         run.change_id,
                         state.roundtrips,
                         &gaps,

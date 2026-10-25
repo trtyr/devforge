@@ -138,6 +138,21 @@ fn pass_testing() -> TestingTurn {
     }
 }
 
+/// 台账根在目标仓外（2026-10-25 反转 D003）：测试用仓的同级目录，
+/// 目录名带仓名以保证并行用例不互撞（tempdir 名唯一）。
+fn plantree_change_dir(repo: &Path) -> &'static Path {
+    let name = repo
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".into());
+    Box::leak(
+        repo.parent()
+            .unwrap_or(repo)
+            .join(format!("devforge-plantree-{name}"))
+            .into_boxed_path(),
+    )
+}
+
 fn cfg<'a>(store: &'a StateStore, repo: &'a Path, wl: &[&str], criteria: &[&str]) -> ChangeRun<'a> {
     // 基线 sha 从 init_git 落的文件读（store() 已初始化真 git 仓）；读不到（异常）
     // 才回退占位——diff_stats 会如实报错。
@@ -148,6 +163,7 @@ fn cfg<'a>(store: &'a StateStore, repo: &'a Path, wl: &[&str], criteria: &[&str]
     ChangeRun {
         store,
         repo,
+        change_dir: plantree_change_dir(repo),
         change_id: "change-20261020-x",
         baseline_sha: leaked,
         criteria: s(criteria),
@@ -333,10 +349,9 @@ fn coding_routes_back_to_plan_then_reenters_coding() {
     let saved = load(&st, "change-20261020-x", "base123");
     assert_eq!(saved.roundtrips, 1);
     // 往返历史已写进目标仓（T013）
-    let hist = std::fs::read_to_string(crate::change::history::history_path(
+    let hist = std::fs::read_to_string(crate::change::history::history_path(plantree_change_dir(
         tmp.path(),
-        "change-20261020-x",
-    ))
+    )))
     .unwrap();
     assert!(hist.contains("src/extra.rs"), "history 应记下越界文件：{hist}");
 }

@@ -262,6 +262,13 @@ pub fn audit(plan: &str, repo: &Path) -> PlanAudit {
     audit_with_contract(plan, repo, None)
 }
 
+/// 审计计划文本（台账感知）：计划里的 `docs/plantree/…` 引用在台账已移出仓后
+/// 本来就不在 `repo` 下——`plantree` 给了就按去前缀后的相对路径再找一次。
+/// 用于重审历史计划（那些计划的引用目标如今在台账根）。
+pub fn audit_with_plantree(plan: &str, repo: &Path, plantree: &Path) -> PlanAudit {
+    audit_inner_roots(plan, repo, Some(plantree))
+}
+
 /// 审计计划文本（带契约，P012 挂账①）：契约存在时校验「白名单 ⊆ 契约 owned_paths」——
 /// 提案越界在计划阶段就打回（早失败），不等引擎终校验（晚失败）。
 pub fn audit_with_contract(
@@ -284,6 +291,22 @@ pub fn audit_with_contract(
 }
 
 fn audit_inner(plan: &str, repo: &Path) -> PlanAudit {
+    audit_inner_roots(plan, repo, None)
+}
+
+/// 存在性判定：仓内优先；给了台账根且路径带 `docs/plantree/` 前缀时，
+/// 去掉前缀去台账根下再找一次（2026-10-25 台账移出仓后的历史计划重审）。
+fn resolves(repo: &Path, plantree: Option<&Path>, path: &str) -> bool {
+    if repo.join(path).exists() {
+        return true;
+    }
+    match (plantree, path.strip_prefix("docs/plantree/")) {
+        (Some(root), Some(rel)) => root.join(rel).exists(),
+        _ => false,
+    }
+}
+
+fn audit_inner_roots(plan: &str, repo: &Path, plantree: Option<&Path>) -> PlanAudit {
     let mut a = PlanAudit::default();
 
     for block in PLAN_BLOCKS {
@@ -301,7 +324,7 @@ fn audit_inner(plan: &str, repo: &Path) -> PlanAudit {
     // 1) path:line 存在性
     for (path, line) in path_refs(plan) {
         a.path_refs += 1;
-        if !repo.join(&path).exists() {
+        if !resolves(repo, plantree, &path) {
             a.issues.push(format!("影响面引用了不存在的路径：{path}:{line}"));
         }
     }
@@ -313,7 +336,7 @@ fn audit_inner(plan: &str, repo: &Path) -> PlanAudit {
     let whitelist = section_paths(plan, "白名单");
     let modify = section_paths(plan, "要改的");
     for f in &modify {
-        if !repo.join(f).exists() {
+        if !resolves(repo, plantree, f) {
             a.issues.push(format!("要改的文件不存在：{f}"));
         }
     }
@@ -820,10 +843,10 @@ mod tests {
     /// 错实现形态：把 D024 删了 / 把 D009 的旁注删了 → 本用例必须变红。
     #[test]
     fn decision_ledger_registers_d024_and_annotates_d009() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("docs/plantree/plans/009-change-sop/decisions/README.md");
+        let path = crate::change::prepare::default_plantree_root("devforge")
+            .join("plans/009-change-sop/decisions/README.md");
         let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("决策台账不可读：{}", path.display()));
+            .unwrap_or_else(|_| panic!("决策台账不可读：{}（台账已移出仓，2026-10-25）", path.display()));
         assert_eq!(
             text.matches("## D024 ·").count(),
             1,
@@ -844,10 +867,10 @@ mod tests {
     /// 错实现形态：把文档里的载体口径或审点删了 → 本用例必须变红。
     #[test]
     fn agents_change_doc_matches_the_implemented_contract() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("docs/plantree/plans/009-change-sop/topics/agents-change.md");
+        let path = crate::change::prepare::default_plantree_root("devforge")
+            .join("plans/009-change-sop/topics/agents-change.md");
         let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("文档不可读：{}", path.display()));
+            .unwrap_or_else(|_| panic!("文档不可读：{}（台账已移出仓，2026-10-25）", path.display()));
         // ① 答复载体：标记 + 字段 + 禁默认放行
         for anchor in [VERDICT_MUST_ASK, VERDICT_SELF, VERDICT_ANSWER_FIELD] {
             assert!(text.contains(anchor), "文档缺答复载体口径：{anchor}");

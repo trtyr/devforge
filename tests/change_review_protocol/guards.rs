@@ -139,6 +139,15 @@ pub(super) fn a26_review_rounds_count_the_re_review() {
     let run = ChangeRun {
         store: &store,
         repo: &f.ctx.repo,
+        // 台账根在目标仓外（2026-10-25 反转 D003）：测试用仓的同级目录
+        change_dir: Box::leak(
+            f.ctx
+                .repo
+                .parent()
+                .unwrap_or(&f.ctx.repo)
+                .join("plantree-changes")
+                .into_boxed_path(),
+        ),
         change_id: "change-1",
         baseline_sha: &f.baseline,
         criteria: Vec::new(),
@@ -160,7 +169,8 @@ pub(super) fn a26_review_rounds_count_the_re_review() {
 #[test]
 pub(super) fn a27_decision_ledger_registers_d026_without_touching_the_old_entries() {
     // 错实现形态：把 D026 写成 D024/D025（撞号）/ 删掉既有条目 → 本用例必须变红
-    let path = repo_root().join("docs/plantree/plans/009-change-sop/decisions/README.md");
+    let path = devforge::change::prepare::default_plantree_root("devforge")
+        .join("plans/009-change-sop/decisions/README.md");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("台账不可读：{}", path.display()));
     assert_eq!(text.matches("## D026 ·").count(), 1, "D026 只能登记一次");
     assert_eq!(text.matches("## D024 ·").count(), 1, "D024 仍在且只登记一次");
@@ -191,7 +201,8 @@ pub(super) fn a27_decision_ledger_registers_d026_without_touching_the_old_entrie
 pub(super) fn a28_topic_docs_match_the_new_contract() {
     // 错实现形态：文档仍写「测试 review FAIL → `<route>coding</route>`」/「判基础设施故障」→ 本用例必须变红
     let agents = std::fs::read_to_string(
-        repo_root().join("docs/plantree/plans/009-change-sop/topics/agents-change.md"),
+        devforge::change::prepare::default_plantree_root("devforge")
+            .join("plans/009-change-sop/topics/agents-change.md"),
     )
     .expect("agents-change.md 可读");
     assert!(
@@ -203,7 +214,8 @@ pub(super) fn a28_topic_docs_match_the_new_contract() {
     }
 
     let vs = std::fs::read_to_string(
-        repo_root().join("docs/plantree/plans/009-change-sop/topics/vs-mvp.md"),
+        devforge::change::prepare::default_plantree_root("devforge")
+            .join("plans/009-change-sop/topics/vs-mvp.md"),
     )
     .expect("vs-mvp.md 可读");
     assert!(

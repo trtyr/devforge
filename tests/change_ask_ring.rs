@@ -576,9 +576,10 @@ fn e2e_fixture_matches_builtin_and_carries_the_ask_package() {
 #[test]
 fn decision_ledger_registers_d024_and_annotates_d009() {
     // 错实现形态：把 D024 删了 / 把 D009 旁注删了 / 重复登记 D024 → 本用例必须变红
-    let path = repo_root().join("docs/plantree/plans/009-change-sop/decisions/README.md");
+    let path = devforge::change::prepare::default_plantree_root("devforge")
+        .join("plans/009-change-sop/decisions/README.md");
     let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|_| panic!("决策台账不可读：{}", path.display()));
+        .unwrap_or_else(|_| panic!("决策台账不可读：{}（台账已移出仓，2026-10-25）", path.display()));
     assert_eq!(
         text.matches("## D024 ·").count(),
         1,
@@ -598,9 +599,10 @@ fn decision_ledger_registers_d024_and_annotates_d009() {
 #[test]
 fn agents_change_doc_matches_the_implemented_contract() {
     // 错实现形态：把文档里的载体口径、供给或审点删了 → 本用例必须变红
-    let path = repo_root().join("docs/plantree/plans/009-change-sop/topics/agents-change.md");
+    let path = devforge::change::prepare::default_plantree_root("devforge")
+        .join("plans/009-change-sop/topics/agents-change.md");
     let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|_| panic!("文档不可读：{}", path.display()));
+        .unwrap_or_else(|_| panic!("文档不可读：{}（台账已移出仓，2026-10-25）", path.display()));
     for anchor in [VERDICT_MUST_ASK, VERDICT_SELF, VERDICT_ANSWER_FIELD] {
         assert!(text.contains(anchor), "文档缺答复载体口径：{anchor}");
     }

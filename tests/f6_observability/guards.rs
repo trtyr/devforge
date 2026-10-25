@@ -113,12 +113,16 @@ pub(super) fn repo_root() -> PathBuf {
 }
 
 pub(super) const CHANGE_ID: &str = "change-20261022-c7-1-start-src-server-tests-rs-145-fixtu";
-pub(super) const PLAN_REL: &str = "docs/plantree/changes/change-20261022-c7-1-start-src-server-tests-rs-145-fixtu/change-plan.md";
+pub(super) const PLAN_REL: &str =
+    "changes/change-20261022-c7-1-start-src-server-tests-rs-145-fixtu/change-plan.md";
 pub(super) const TEST_STAGE_FILE: &str = "tests/f6_observability/main.rs";
 
 /// 计划 §4 白名单（从计划文件里抽反引号列表项 → 数据驱动，不另抄一份）。
 pub(super) fn plan_whitelist() -> Vec<String> {
-    let text = std::fs::read_to_string(repo_root().join(PLAN_REL)).expect("读计划");
+    let text = std::fs::read_to_string(
+        devforge::change::prepare::default_plantree_root("devforge").join(PLAN_REL),
+    )
+    .expect("读计划");
     let section = text
         .split("## 4 白名单")
         .nth(1)
@@ -176,10 +180,12 @@ pub(super) fn const_str(text: &str, name: &str) -> String {
     rest[..end].to_string()
 }
 
-/// 本场基线（黑板口径：`docs/plantree/changes/<change-id>/baseline.txt`）。
+/// 本场基线（台账口径：`plantree/<project>/changes/<change-id>/baseline.txt`；
+/// 台账已移出仓 2026-10-25）。
 pub(super) fn baseline_of_record() -> String {
     std::fs::read_to_string(
-        repo_root().join(format!("docs/plantree/changes/{CHANGE_ID}/baseline.txt")),
+        devforge::change::prepare::default_plantree_root("devforge")
+            .join(format!("changes/{CHANGE_ID}/baseline.txt")),
     )
     .expect("读基线记录")
     .trim()
@@ -387,8 +393,11 @@ pub(super) fn the_guard_keeps_its_ignore_between_two_changes() {
 pub(super) fn the_decision_ledger_has_the_d006_section() {
     // 错实现形态：D006 缺三件交付物 / 缺渲染闸门口径 / 缺分级口径，或 D001–D005 被改动
     // → 本用例必须变红
-    let rel = "docs/plantree/plans/010-run-resume/decisions/README.md";
-    let current = std::fs::read_to_string(repo_root().join(rel)).expect("读决策台账");
+    let rel = "plans/010-run-resume/decisions/README.md";
+    let current = std::fs::read_to_string(
+        devforge::change::prepare::default_plantree_root("devforge").join(rel),
+    )
+    .expect("读决策台账");
     assert!(current.contains("## D006 ·"), "决策台账要有 D006 一节");
     for needle in [
         "原始错误",
@@ -434,8 +443,15 @@ pub(super) fn the_plan_audit_has_no_findings() {
     // 错实现形态：计划里出现别的机械门 finding（六块不全 / path:line 不存在 / 白名单外改动 /
     //   「白名单里的文件不存在」）→ 本用例必须变红
     // （计划期预期的 4 条「白名单里的文件不存在」已随四个新增文件落盘消解 → 现状必须是 0 条）
-    let plan = std::fs::read_to_string(repo_root().join(PLAN_REL)).expect("读计划");
-    let audit = devforge::change::plan_audit::audit(&plan, &repo_root());
+    let plan = std::fs::read_to_string(
+        devforge::change::prepare::default_plantree_root("devforge").join(PLAN_REL),
+    )
+    .expect("读计划");
+    let audit = devforge::change::plan_audit::audit_with_plantree(
+        &plan,
+        &repo_root(),
+        &devforge::change::prepare::default_plantree_root("devforge"),
+    );
     assert!(
         audit.issues.is_empty(),
         "机械门审计的 finding 必须为 0 条：{audit:?}"

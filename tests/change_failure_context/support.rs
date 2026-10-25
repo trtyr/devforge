@@ -213,9 +213,17 @@ pub(super) fn cfg<'a>(
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "base123".to_string());
     let leaked: &'a str = Box::leak(baseline_sha.into_boxed_str());
+    // 台账根在目标仓外（2026-10-25 反转 D003）：测试用仓的同级目录
+    let change_dir: &'a Path = Box::leak(
+        repo.parent()
+            .unwrap_or(repo)
+            .join("plantree-changes")
+            .into_boxed_path(),
+    );
     ChangeRun {
         store,
         repo,
+        change_dir,
         change_id: "change-20261020-x",
         baseline_sha: leaked,
         criteria: criteria.iter().map(|s| s.to_string()).collect(),

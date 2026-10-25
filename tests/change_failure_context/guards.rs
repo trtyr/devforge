@@ -24,10 +24,12 @@ pub(super) fn section_body(text: &str, title_prefix: &str) -> String {
 #[test]
 pub(super) fn a15_the_three_old_wording_places_are_rewritten() {
     // 错实现形态：只改了两处 / 改写时漏了「不定位」这半句 → 本用例必须变红
-    let agents = repo_root().join("docs/plantree/plans/009-change-sop/topics/agents-change.md");
+    // 台账已移出仓（2026-10-25）：从默认台账根读
+    let plantree = devforge::change::prepare::default_plantree_root("devforge");
+    let agents = plantree.join("plans/009-change-sop/topics/agents-change.md");
     let agents_text = std::fs::read_to_string(&agents)
         .unwrap_or_else(|_| panic!("文档不可读：{}", agents.display()));
-    let vs_mvp = repo_root().join("docs/plantree/plans/009-change-sop/topics/vs-mvp.md");
+    let vs_mvp = plantree.join("plans/009-change-sop/topics/vs-mvp.md");
     let vs_mvp_text = std::fs::read_to_string(&vs_mvp)
         .unwrap_or_else(|_| panic!("文档不可读：{}", vs_mvp.display()));
 

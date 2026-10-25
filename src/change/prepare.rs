@@ -16,7 +16,7 @@ pub struct ChangePrep {
     pub change_id: String,
     /// 黑板：`plans/<project>/<task>/change`。
     pub blackboard: PathBuf,
-    /// 计划目录（目标仓）：`docs/plantree/changes/<change-id>`。
+    /// 计划目录（台账根 `plantree/<project>/changes/<change-id>`；2026-10-25 起不在目标仓内）。
     pub change_dir: PathBuf,
     pub baseline: Baseline,
     pub doc_level: DocLevel,
@@ -24,9 +24,30 @@ pub struct ChangePrep {
     pub doc_action: DocAction,
 }
 
+/// 默认台账根（2026-10-25 反转 D003：plan tree 不进仓）：
+/// `DEVFORGE_HOME`（未设时 `$HOME/.devforge`）下的 `plantree/<project>`。
+/// 仓内守卫测试用它定位 devforge 自己的台账（旧写法是 `env!("CARGO_MANIFEST_DIR")/docs/plantree/…`）。
+pub fn plantree_root(plans_root: &Path, project: &str) -> PathBuf {
+    plans_root
+        .parent()
+        .map(|p| p.join("plantree"))
+        .unwrap_or_else(|| PathBuf::from("plantree"))
+        .join(project)
+}
+
+/// 从环境推默认台账根（无 plans_root 的调用方/测试用）。
+pub fn default_plantree_root(project: &str) -> PathBuf {
+    let root = std::env::var_os("DEVFORGE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".devforge")))
+        .unwrap_or_else(|| PathBuf::from(".devforge"));
+    root.join("plantree").join(project)
+}
+
 /// 预检：不创建 agent，只把门 0 的确定性部分做完。
 ///
-/// `today` 用 `(年, 月, 日)` 传入，便于测试固定日期。
+/// `today` 用 `(年, 月, 日)` 传入，便于测试固定日期。计划目录由 [`plantree_root`]
+/// 从 `plans_root` 同源推出（root/plantree/<project>/changes/<id>），不在目标仓内。
 pub fn prepare(
     plans_root: &Path,
     repo: &Path,
@@ -48,8 +69,9 @@ pub fn prepare(
     // 1) change-id（幂等）与黑板目录（SOP 级：状态/证据/实施步骤都在这）
     let (change_id, _id_dir) = assign_change_id(plans_root, project, task, requirement, &date)?;
     let blackboard = crate::change::change_id::change_root(plans_root, project, task);
-    // 计划目录在**目标仓**（D003：计划要可提交、可审查、可回查）
-    let plan_dir = repo.join("docs/plantree/changes").join(&change_id);
+    // 计划目录在**台账根**（2026-10-25 反转 D003：台账不进仓——可审查可回查，
+    // 但不进目标仓 diff/提交；旧行为是 repo/docs/plantree/changes/<id>）
+    let plan_dir = plantree_root(plans_root, project).join("changes").join(&change_id);
     std::fs::create_dir_all(&plan_dir)
         .map_err(|e| DevforgeError::System(format!("建目录 {} 失败：{e}", plan_dir.display())))?;
 
@@ -61,7 +83,7 @@ pub fn prepare(
         ));
     }
 
-    // 3) 基线（无 .git 则 init + 全量提交；sha 落到目标仓的计划目录）
+    // 3) 基线（无 .git 则 init + 全量提交；sha 落到台账根下的计划目录）
     let baseline = ensure_baseline(repo, &plan_dir)?;
 
     // 4) 黑板骨架（impl-steps / 证据 / 审查报告都在这里，agent 直接写）
@@ -110,24 +132,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(prep.change_id, "change-20261020-add-book-api");
-        // 计划目录必须落在**目标仓**（D003：可提交、可审查、可回查）
+        // 计划目录必须落在台账根（2026-10-25 反转 D003：台账不进仓）
         assert_eq!(
             prep.change_dir,
-            repo.path()
-                .join("docs/plantree/changes")
+            plantree_root(&plans, "proj")
+                .join("changes")
                 .join(&prep.change_id),
-            "change_dir 指的是目标仓计划目录，不是黑板"
+            "change_dir 指的是台账根下的计划目录，已不在目标仓内"
+        );
+        assert!(
+            !prep.change_dir.starts_with(repo.path()),
+            "计划目录不得落在目标仓（台账不进仓）"
         );
         assert!(prep.change_dir.is_dir());
         assert!(
             !prep.change_dir.starts_with(&prep.blackboard),
             "计划目录与黑板是两处，不能混"
         );
-        let baseline_txt = repo
-            .path()
-            .join("docs/plantree/changes")
-            .join(&prep.change_id)
-            .join("baseline.txt");
+        let baseline_txt = prep.change_dir.join("baseline.txt");
         assert!(baseline_txt.is_file(), "baseline.txt 要落在计划目录");
         assert_eq!(
             std::fs::read_to_string(&baseline_txt).unwrap().trim(),

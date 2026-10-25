@@ -16,9 +16,12 @@ pub(super) fn the_change_orchestrator_logs_the_phase_change_and_the_fix_pairs() 
         StateKey::new("p", "t", devforge::change::state::CHANGE_SOP),
     );
     let mut session = ScriptedChangeSession { plan_calls: 0 };
+    // 台账根在目标仓外（2026-10-25 反转 D003）
+    let change_dir = dir.path().join("plantree-changes");
     let run = ChangeRun {
         store: &store,
         repo: &dir.path().join("repo"),
+        change_dir: &change_dir,
         change_id: "change-f6".into(),
         baseline_sha: "deadbeef".into(),
         criteria: vec![],

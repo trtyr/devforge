@@ -13,8 +13,9 @@
 </hard-constraints>
 
 <process>
-1. **读输入**：`docs/plantree/changes/<change-id>/change-plan.md`（六块计划）、
-   `.../baseline.txt`（基线 sha）；当前工作目录是黑板（`impl-steps.md`、`evidence/` 写这里）。
+1. **读输入**：kickoff 给的**计划目录**下的 `change-plan.md`（六块计划）与 `baseline.txt`（基线 sha）
+   ——台账根是 `~/.devforge/plantree/<project>/changes/<change-id>/`，**不在目标仓内**；
+   当前工作目录是黑板（`impl-steps.md`、`evidence/` 写这里）。
 2. **基线取证**：跑既有测试写 `evidence/baseline-test.log`（见硬约束第一条）。
 3. **先写 `impl-steps.md`**：每步写清「改哪些文件 / 对应哪条验收标准 / 怎么验」。
    原因：步提交对账按它核对——不写或乱写，每步一个 commit 就无从对起。
