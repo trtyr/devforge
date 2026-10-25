@@ -306,12 +306,15 @@ fn audit_inner(plan: &str, repo: &Path) -> PlanAudit {
         }
     }
 
-    // 2) 白名单：路径必须存在
+    // 2) 白名单：路径必须存在——引擎审计修复 #2：存在性只对「要改的」强制
+    // （修改目标不存在 = 计划错误）；白名单中「要改的」之外的部分是新增文件
+    // （coding 阶段创建），plan 时必然不存在，强制 exists 会把合法新文件
+    // 逼成「先建空文件再规划」或「越界申报」的绕行。
     let whitelist = section_paths(plan, "白名单");
     let modify = section_paths(plan, "要改的");
-    for f in &whitelist {
+    for f in &modify {
         if !repo.join(f).exists() {
-            a.issues.push(format!("白名单里的文件不存在：{f}"));
+            a.issues.push(format!("要改的文件不存在：{f}"));
         }
     }
 
@@ -527,13 +530,31 @@ mod tests {
     #[test]
     fn clean_plan_passes_with_no_issues() {
         let r = repo();
-        // 测试文件在白名单里但还没建——按「新增文件」豁免：先建出来模拟真实流程
-        std::fs::create_dir_all(r.path().join("tests")).unwrap();
-        std::fs::write(r.path().join("tests/a_test.rs"), "").unwrap();
+        // 引擎审计修复 #2：不再预先创建 tests/a_test.rs——白名单中的新增文件
+        // （不在「要改的」里）在 plan 时必然不存在，不再报 issue。
         let a = audit(&good_plan(), r.path());
         assert!(a.is_clean(), "审计应无问题：{:?}", a.issues);
         assert!(a.path_refs >= 2);
         assert!(a.missing_blocks.is_empty());
+    }
+
+    /// 引擎审计修复 #2 回归：存在性只对「要改的」强制——修改目标不存在仍是 issue。
+    #[test]
+    fn modify_target_must_exist() {
+        let r = repo();
+        let plan = "# 变更计划\n\
+## 1 需求复述\n把 a 改成 b。\n\n\
+## 2 影响面\n- 直接命中：`src/ghost.rs:1`\n\n\
+## 3 要改的\n| 文件 | 理由 |\n| --- | --- |\n| `src/ghost.rs` | 需求点 |\n\n\
+## 4 白名单\n`src/ghost.rs`\n\n\
+## 5 验收标准\n- 给定 x=1 → 返回 2\n\n\
+## 6 风险\n- 无\n";
+        let a = audit(plan, r.path());
+        assert!(
+            a.issues.iter().any(|i| i.contains("要改的文件不存在")),
+            "修改目标不存在仍应报 issue：{:?}",
+            a.issues
+        );
     }
 
     #[test]
