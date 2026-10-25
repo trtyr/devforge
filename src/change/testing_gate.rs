@@ -42,7 +42,13 @@ pub fn check_regression_claim(log_text: &str, claims_green: bool) -> Result<i32>
 }
 
 /// 读黑板上的回归日志并判定。
-pub fn check_regression_log(blackboard: &Path, claims_green: bool) -> Result<i32> {
+/// 引擎审计修复 #4：not_before 校验 mtime 不早于本轮开始（与 baseline/self-check 的
+/// freshness 同口径）——上一轮残留的绿 log 不得给本轮提供通行证。
+pub fn check_regression_log(
+    blackboard: &Path,
+    claims_green: bool,
+    not_before: std::time::SystemTime,
+) -> Result<i32> {
     let path = blackboard.join(REGRESSION_LOG);
     let text = std::fs::read_to_string(&path).map_err(|e| {
         DevforgeError::Quality(format!(
@@ -50,7 +56,81 @@ pub fn check_regression_log(blackboard: &Path, claims_green: bool) -> Result<i32
             path.display()
         ))
     })?;
+    let mtime = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .map_err(|e| {
+            DevforgeError::Quality(format!(
+                "回归证据 {} 的修改时间不可读：{e}",
+                path.display()
+            ))
+        })?;
+    if mtime < not_before {
+        return Err(DevforgeError::Quality(format!(
+            "回归证据 {} 是上一轮残留（mtime 早于本轮开始）——本轮必须重跑既有全套",
+            path.display()
+        )));
+    }
     check_regression_claim(&text, claims_green)
+}
+
+/// 测试阶段入口快照：基线以来 tracked 文件的改动集（引擎审计修复 #6）。
+/// 只看 tracked（git diff --name-only baseline）——untracked 的依赖环境/临时产物
+/// 是黑盒测试的合法噪音，不纳入。
+pub fn snapshot_tracked_changes(
+    repo: &Path,
+    baseline: &str,
+) -> Result<std::collections::BTreeSet<String>> {
+    let out = std::process::Command::new("git")
+        .args(["-c", "core.quotePath=false", "diff", "--name-only", baseline])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| DevforgeError::System(format!("执行 git diff 失败：{e}")))?;
+    if !out.status.success() {
+        // 降级为空集 + WARN：git 不可用/无效基线时上游基线门已 Err，此处不重复报错
+        // （否则会掩盖测试阶段真正的错误明细，如空箱拒收的 Quality 文案）。
+        tracing::warn!(
+            component = "change-engine",
+            event = "gate.product_snapshot",
+            baseline = %baseline,
+            stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+            "产品代码快照不可用（降级为空集，#6 机械门本阶段失效）"
+        );
+        return Ok(Default::default());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// 测试阶段出口校验（引擎审计修复 #6）：测试期间新增的产品代码改动 = Quality。
+/// 「不改产品代码」不再只是 prompt 约束——tests/ 与流水线产物（docs/evidence）之外
+/// 的新增 tracked 改动一律拒收。
+pub fn check_no_product_code_edits(
+    before: &std::collections::BTreeSet<String>,
+    after: &std::collections::BTreeSet<String>,
+) -> Result<()> {
+    let new_edits: Vec<&String> = after
+        .difference(before)
+        .filter(|f| {
+            !f.starts_with("tests/")
+                && !f.starts_with("docs/")
+                && !f.starts_with("evidence/")
+        })
+        .collect();
+    if !new_edits.is_empty() {
+        return Err(DevforgeError::Quality(format!(
+            "测试阶段修改了产品代码（测试 Agent 只准写测试）：{}——发现 bug 回注，不自己修",
+            new_edits
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("、")
+        )));
+    }
+    Ok(())
 }
 
 /// 解析验收对账表：`- <验收标准> → <测试引用 path:line>`（按**最后一个** `→` 切，标准本身可能含箭头）。
@@ -138,8 +218,58 @@ mod tests {
     #[test]
     fn missing_regression_log_is_quality_failure() {
         let tmp = tempfile::tempdir().unwrap();
-        let err = check_regression_log(tmp.path(), true).unwrap_err();
+        let err =
+            check_regression_log(tmp.path(), true, std::time::SystemTime::UNIX_EPOCH).unwrap_err();
         assert!(err.to_string().contains("缺少回归证据"), "{err}");
+    }
+
+    /// 引擎审计修复 #4 回归：上一轮残留的绿 log（mtime 早于本轮开始）必须拒收——
+    /// 错实现形态：只读文件+解析退出码，残留绿证据给本轮提供假通行证，
+    /// 测试打回重入时可以跳过真重跑。
+    #[test]
+    fn stale_regression_log_is_rejected_by_freshness() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(REGRESSION_LOG);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, "command: cargo test\nexit_code: 0\n").unwrap();
+        // not_before 取未来 → 刚写的文件也算残留
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        let err = check_regression_log(tmp.path(), true, future).unwrap_err();
+        assert!(
+            err.to_string().contains("上一轮残留"),
+            "残留绿 log 应被 freshness 拒收：{err}"
+        );
+    }
+
+    /// 引擎审计修复 #6 回归：测试期间新增的产品代码改动（tests/ 与流水线产物之外）
+    /// = Quality；新增 tests/ 合法。
+    #[test]
+    fn product_code_edits_during_testing_are_quality_failure() {
+        let before = std::collections::BTreeSet::from([
+            "src/a.rs".to_string(),
+            "tests/test_x.py".to_string(),
+        ]);
+        // 场景 1：测试期间改了 src/main.rs → Quality
+        let after_bad = before
+            .union(&std::collections::BTreeSet::from([
+                "src/main.rs".to_string(),
+                "tests/test_new.py".to_string(),
+            ]))
+            .cloned()
+            .collect();
+        let err = check_no_product_code_edits(&before, &after_bad).unwrap_err();
+        assert!(err.to_string().contains("修改了产品代码"), "{err}");
+        // 场景 2：只新增 tests/ → 合法
+        let after_ok = before
+            .union(&std::collections::BTreeSet::from([
+                "tests/test_new.py".to_string(),
+                "evidence/trace.log".to_string(),
+            ]))
+            .cloned()
+            .collect();
+        check_no_product_code_edits(&before, &after_ok).unwrap();
     }
 
     #[test]

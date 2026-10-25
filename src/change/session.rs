@@ -503,6 +503,11 @@ impl ChangeSession for ProdChangeSession {
     }
 
     fn run_testing(&mut self, ui: &mut dyn UserLink) -> Result<TestingTurn> {
+        // 引擎审计修复 #6：入口先拍产品代码快照——出口对比，「不改产品代码」从
+        // prompt 约束升级为机械门。
+        let tracked_before =
+            crate::change::testing_gate::snapshot_tracked_changes(&self.ctx.repo, &self.ctx.baseline)?;
+        let turn_started = std::time::SystemTime::now();
         // 路由判定 + 空箱拒收：带路由但不带 `<issues>` 的回注不收（裁决 B），追一条补齐话术后重发
         let mut message = testing_kickoff(&self.ctx);
         let mut nudges = 0usize;
@@ -537,7 +542,12 @@ impl ChangeSession for ProdChangeSession {
             self.test_agent.converse(m, ui)
         })?;
         // 声称通过 → 回归日志必须是绿的
-        check_regression_log(&self.ctx.blackboard, true)?;
+        check_regression_log(&self.ctx.blackboard, true, turn_started)?;
+        // 引擎审计修复 #6：出口对比——测试期间新增的产品代码改动（tests/ 与流水线
+        // 产物之外）= Quality（机械门，不再依赖审查官人眼）。
+        let tracked_after =
+            crate::change::testing_gate::snapshot_tracked_changes(&self.ctx.repo, &self.ctx.baseline)?;
+        crate::change::testing_gate::check_no_product_code_edits(&tracked_before, &tracked_after)?;
         // 验收对账表由 agent 落盘，引擎逐条读
         let table_text = std::fs::read_to_string(self.ctx.acceptance_path()).ctx(format!(
             "缺少验收对账表 {}（每条验收标准一行 `- 标准 → 测试:行`）",

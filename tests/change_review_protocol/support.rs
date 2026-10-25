@@ -220,6 +220,13 @@ pub(super) fn fixture() -> Fixture {
         "command: cargo test\nexit_code: 0\n",
     )
     .unwrap();
+    // 引擎审计修复 #4：regression.log 也在 freshness 门槛内——同样刷未来 mtime
+    std::fs::File::options()
+        .write(true)
+        .open(blackboard.join("evidence/regression.log"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+        .unwrap();
     std::fs::write(blackboard.join("impl-steps.md"), "## 步骤 1 · 改 a\n").unwrap();
     std::fs::write(
         blackboard.join("testing/acceptance.md"),

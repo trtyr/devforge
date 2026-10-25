@@ -256,16 +256,24 @@ fn coding_review_failure_fails_the_stage() {
     assert!(err.to_string().contains("src/a.rs"), "{err}");
 }
 
+/// 引擎审计修复 #4：回归证据必须 fresh（mtime ≥ 本轮开始）——fixture 手写的
+/// regression.log 要刷未来 mtime，否则被当「上一轮残留」拒收。
+fn write_fresh_regression_log(f: &Fixture) {
+    std::fs::create_dir_all(f.ctx.blackboard.join("evidence")).unwrap();
+    let path = f.ctx.blackboard.join("evidence/regression.log");
+    std::fs::write(&path, "command: cargo test\nexit_code: 0\n").unwrap();
+    let future = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+    std::fs::File::open(&path)
+        .unwrap()
+        .set_modified(future)
+        .unwrap();
+}
+
 #[test]
 fn testing_review_is_invoked_and_can_fail() {
     let f = fixture(true);
     std::fs::create_dir_all(f.ctx.blackboard.join("testing")).unwrap();
-    std::fs::create_dir_all(f.ctx.blackboard.join("evidence")).unwrap();
-    std::fs::write(
-        f.ctx.blackboard.join("evidence/regression.log"),
-        "command: cargo test\nexit_code: 0\n",
-    )
-    .unwrap();
+    write_fresh_regression_log(&f);
     std::fs::write(
         f.ctx.blackboard.join("testing/acceptance.md"),
         "- 给定 x=1 → 返回 2 → tests/a_test.rs:10\n",
@@ -290,12 +298,7 @@ fn testing_review_is_invoked_and_can_fail() {
 fn testing_pass_reads_acceptance_table() {
     let f = fixture(true);
     std::fs::create_dir_all(f.ctx.blackboard.join("testing")).unwrap();
-    std::fs::create_dir_all(f.ctx.blackboard.join("evidence")).unwrap();
-    std::fs::write(
-        f.ctx.blackboard.join("evidence/regression.log"),
-        "command: cargo test\nexit_code: 0\n",
-    )
-    .unwrap();
+    write_fresh_regression_log(&f);
     std::fs::write(
         f.ctx.blackboard.join("testing/acceptance.md"),
         "- 给定 x=1 → 返回 2 → tests/a_test.rs:10\n",
@@ -346,12 +349,7 @@ fn testing_route_coding_returns_failures() {
 fn acceptance_table_without_test_ref_is_rejected() {
     let f = fixture(true);
     std::fs::create_dir_all(f.ctx.blackboard.join("testing")).unwrap();
-    std::fs::create_dir_all(f.ctx.blackboard.join("evidence")).unwrap();
-    std::fs::write(
-        f.ctx.blackboard.join("evidence/regression.log"),
-        "command: cargo test\nexit_code: 0\n",
-    )
-    .unwrap();
+    write_fresh_regression_log(&f);
     std::fs::write(
         f.ctx.blackboard.join("testing/acceptance.md"),
         "- 给定 x=1 → 返回 2 → （没写测试）\n",
@@ -611,12 +609,7 @@ fn test_review_violation_retries_with_a_new_instance() {
     // 错实现形态：把 FAIL 空箱当判负（终止 testing 轮 / 回注 coding agent）→ 本用例必须变红
     let f = fixture(true);
     std::fs::create_dir_all(f.ctx.blackboard.join("testing")).unwrap();
-    std::fs::create_dir_all(f.ctx.blackboard.join("evidence")).unwrap();
-    std::fs::write(
-        f.ctx.blackboard.join("evidence/regression.log"),
-        "command: cargo test\nexit_code: 0\n",
-    )
-    .unwrap();
+    write_fresh_regression_log(&f);
     std::fs::write(
         f.ctx.blackboard.join("testing/acceptance.md"),
         "- 给定 x=1 → 返回 2 → tests/a_test.rs:10\n",
