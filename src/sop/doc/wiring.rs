@@ -345,6 +345,31 @@ impl BuiltinRpcEngine {
                 let final_text = session.review(&crate::sop::doc::prompts::doc_final_instruction(&full))?;
                 drop(session);
                 let verdict = crate::sop::doc::protocol::parse_doc_review(&final_text)?;
+                // 引擎审计修复 #2：终审 PASS 也要过机械门——覆盖与 lint 不达标时
+                // 审查官的 PASS 不被采信（宁可失败让人看，不放过假绿收工）。
+                {
+                    let cov = crate::docgen::audit::coverage(
+                        &final_inv,
+                        &docs,
+                        crate::docgen::audit::DocLevel::Complete,
+                    )?;
+                    let lint = crate::docgen::lint::lint_docs_with_entities(&docs, &final_index)?;
+                    if !cov.passed() || !lint.passed() {
+                        let missing: Vec<String> = cov
+                            .missing
+                            .iter()
+                            .map(|m| format!("{}（{}）", m.canonical_name, m.id))
+                            .collect();
+                        return Err(crate::error::DevforgeError::Quality(format!(
+                            "终审 PASS 但机械门不达标：覆盖 {}/{}（缺 {} 项：{}）、lint 违规 {} 条——不采信终审结论，缺清单见上方审计文本",
+                            cov.covered,
+                            cov.required,
+                            cov.missing.len(),
+                            missing.join("、"),
+                            lint.violations().len()
+                        )));
+                    }
+                }
 
                 // 运行账单（T021 验收）：墙钟 / 单元数 / 模块数 / 审查轮次 / token 与花费
                 // token 不从 Agent 自述拿，而是扫写方与审方会话（pi 自己写的原始账）。

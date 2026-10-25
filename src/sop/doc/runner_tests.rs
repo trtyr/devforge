@@ -473,3 +473,45 @@ fn unit_mismatch_is_rejected() {
     run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
     assert!(received.borrow()[1].contains("不得自行改号"));
 }
+
+/// 引擎审计修复 #2 回归：审查官 PASS 但机械门不达标（覆盖缺失）→ 单元不 mark_done、
+/// 进 fix 队列；连续 2 轮不达标触发断路器——错实现形态：PASS 直通 mark_done 假绿收工。
+#[test]
+fn mechanical_gate_rejects_pass_without_coverage() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 门 0 真清单：源码 fixture → build_inventory → 落 _meta/inventory.json
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/core.py"),
+        "def create_note(title):\n    return title\n",
+    )
+    .unwrap();
+    let inv = crate::docgen::inventory::build_inventory(tmp.path()).unwrap();
+    let meta = tmp.path().join("docs/contexts/_meta");
+    std::fs::create_dir_all(&meta).unwrap();
+    inv.save(&meta.join("inventory.json")).unwrap();
+    let units: Vec<String> = inv
+        .entries
+        .iter()
+        .map(|e| e.unit_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert!(!units.is_empty(), "fixture 应产生至少一个单元");
+
+    // agent 写的“正文”不含任何代码符号名 → 覆盖缺失；审查官照样 PASS → 机械门拦
+    let u0 = units[0].clone();
+    let m0 = format!("正文一（不含符号名）\n<doc-complete>{u0}</doc-complete>");
+    let m1 = format!("正文二（仍不含符号名）\n<doc-complete>{u0}</doc-complete>");
+    let agent = MockAgent::new(&[m0.as_str(), m1.as_str(), "想想", "再想想"]);
+    let f = pipe_factory(&[
+        "<doc-verdict>PASS</doc-verdict>",
+        "<doc-verdict>PASS</doc-verdict>",
+    ]);
+    let err = run_pipe!(agent, f, tmp, units).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("机械门不达标"),
+        "连续两轮不达标应触发断路器：{msg}"
+    );
+}

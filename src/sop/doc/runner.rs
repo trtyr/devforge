@@ -120,6 +120,24 @@ where
     F: ReviewSessionFactory + Send + 'static,
 {
     let docs_root = repo.join(crate::sop::doc::prompts::DOCS_DIR);
+    // 引擎审计修复 #2：覆盖与 lint 机械门的数据底座——清单不可读时降级跳过（WARN），
+    // 生产链路门 0 必写清单，降级只发生在人为构造的半成品环境。
+    let gates = match crate::docgen::inventory::Inventory::load(
+        &docs_root.join("_meta").join("inventory.json"),
+    ) {
+        Ok(inv) => match crate::docgen::lint::EntityIndex::build(repo, Some(&inv)) {
+            Ok(idx) => Some((inv, idx)),
+            Err(e) => {
+                tracing::warn!(component = "doc-sop", error = %e, "实体索引构建失败，覆盖/lint 机械门降级跳过");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!(component = "doc-sop", error = %e, "清单不可读，覆盖/lint 机械门降级跳过");
+            None
+        }
+    };
+    let level = crate::docgen::audit::DocLevel::parse(doc_level);
     let mut state = match store.load() {
         crate::runstate::Loaded::Found(s) => s,
         crate::runstate::Loaded::Missing => store.fresh_state(),
@@ -169,6 +187,50 @@ where
             let report = $report;
             match report.verdict {
                 DocVerdict::Pass => {
+                    // 引擎审计修复 #2：审查官 PASS 不是终点——覆盖与 lint 机械门必须达标，
+                    // 不达标按 FAIL 同款进 fix 队列（带缺失清单），断路器兜底防死循环。
+                    let gates_ok = match &gates {
+                        Some((inv, idx)) => {
+                            let cov = crate::docgen::audit::coverage_for_unit(
+                                inv, &docs_root, level, &$unit,
+                            )?;
+                            let lint =
+                                crate::docgen::lint::lint_docs_with_entities(&docs_root, idx)?;
+                            let mut issues: Vec<String> = cov
+                                .missing
+                                .iter()
+                                .map(|m| {
+                                    format!("覆盖缺失：{}（{}）", m.canonical_name, m.id)
+                                })
+                                .collect();
+                            issues.extend(lint.violations().iter().map(|v| format!("lint：{v:?}")));
+                            if cov.passed() && lint.passed() {
+                                true
+                            } else {
+                                add_issues(&mut state, issues.len());
+                                fix_queue.push_back((
+                                    $unit.clone(),
+                                    "机械门不达标".to_string(),
+                                    issues,
+                                    $round,
+                                ));
+                                consecutive_fails += 1;
+                                if consecutive_fails >= 2 {
+                                    return Err(DevforgeError::Quality(format!(
+                                        "断路器：连续 {} 轮机械门不达标（最近单元 `{}`），停发新单元——修复队列 {} 项（resume 可续）",
+                                        consecutive_fails,
+                                        $unit,
+                                        fix_queue.len()
+                                    )));
+                                }
+                                false
+                            }
+                        }
+                        None => true, // 机械门数据不可用（降级，见 run_pipeline 开头 WARN）
+                    };
+                    if !gates_ok {
+                        // 机械门不达标：本单元未完成（不 mark_done），等 fix 队列消化
+                    } else {
                     let files = produced_files(
                         &docs_root,
                         unit_before.as_ref().expect("写前快照应在"),
@@ -183,6 +245,7 @@ where
                         done = done_units(&state).len(),
                         "单元完成（流水线）"
                     );
+                    }
                 }
                 DocVerdict::Fail => {
                     add_issues(&mut state, report.issues.len());

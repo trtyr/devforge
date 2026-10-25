@@ -246,6 +246,12 @@ fn collect_markdown(dir: &Path) -> Result<Vec<PathBuf>> {
                 continue;
             }
             if path.is_dir() {
+                // 引擎审计修复 #1：_meta/ 是 SOP 自产元数据（门 0 的清单与词表）——
+                // 词表含全部 Symbol 的 canonical_name，纳入覆盖分母会让 Symbol 在
+                // 单元正文写出前就 100% 假绿（与 duplicate_mentions 的排除口径对齐）。
+                if name == "_meta" {
+                    continue;
+                }
                 stack.push(path);
             } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
                 out.push(path);
@@ -451,6 +457,32 @@ mod tests {
         assert!(!rep.passed());
         assert!(rep.missing.iter().any(|m| m.canonical_name == "orphan_fn"));
         assert!(rep.render().contains("orphan_fn"));
+    }
+
+    /// 引擎审计修复 #1 回归：_meta/glossary.md（门 0 写入全部 Symbol 名）不得计入
+    /// 覆盖分母——错实现形态：词表把每个 Symbol 都 contains 一遍，单元正文零字
+    /// 覆盖就已 100% 假绿。
+    #[test]
+    fn meta_glossary_is_excluded_from_coverage() {
+        let tmp = fixture();
+        // 模拟门 0：_meta/glossary.md 含全部符号名，但没有任何单元正文
+        write_doc(
+            tmp.path(),
+            "_meta/glossary.md",
+            "# 词表\n\n`create_note` 与 `orphan_fn`。\n",
+        );
+        let inv = build_inventory(tmp.path()).unwrap();
+        let rep = coverage(&inv, &tmp.path().join("docs/contexts"), DocLevel::Complete).unwrap();
+        assert!(
+            !rep.passed(),
+            "词表不得充当覆盖证据（单元正文未写出）：{:?}",
+            rep.missing
+        );
+        assert_eq!(
+            rep.missing.len(),
+            rep.required,
+            "全部条目都应视为缺失"
+        );
     }
 
     #[test]
