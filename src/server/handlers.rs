@@ -402,13 +402,10 @@ pub async fn start_task(
             .map_err(ApiError::from)?;
         previous_sop = Some(registered_sop);
     }
-    // 续跑门（plan 010 T003）：fresh 清空该 SOP 的断点；否则按断点存在与否回显 resumed；
-    // 只动该 SOP 自己那份状态，同 task 其他 SOP 不受影响。
-    let decision =
-        crate::runstate::resume::start_gate(&st.plans_root, &project, &task, &sop_name, fresh)
-            .map_err(ApiError::from)?;
     // 渲染闸门（用户裁决 A）：开跑前等「本 run 所需 profile 的 settings.json 落盘」
     // 或「渲染结束」——等的是 awaitable 原语，不占 tokio worker（其它端点照常被处理）。
+    // **必须在准入之前**：客户端在闸门等待期间断开（超时/取消）时，不得留下一个占着
+    // 串行槽、却永远不会开跑的幽灵 run。
     let required = crate::engine::builtin::BuiltinRpcEngine::profiles_for_sop(&sop_name);
     st.render_gate
         .wait_for_profiles(&st.profiles_root, required)
@@ -426,6 +423,30 @@ pub async fn start_task(
                 }
                 return Err(ApiError::from(e));
             }
+        }
+    };
+    // 续跑门（plan 010 T003）：**放在准入之后**——fresh 会删该 SOP 的断点，被拒的 start
+    // 不许先把断点删掉（与下面 change 黑板清理同一条原则）。失败要回滚槽位与 sop 覆盖。
+    let decision = match crate::runstate::resume::start_gate(
+        &st.plans_root,
+        &project,
+        &task,
+        &sop_name,
+        fresh,
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            let mut store = st.store.lock().expect("store 锁");
+            let _ = store.finish_run(
+                &run.id,
+                crate::domain::store::FinishOutcome::Failed {
+                    reason: e.to_string(),
+                },
+            );
+            if let Some(old) = previous_sop.clone() {
+                let _ = store.set_task_sop(&st.registry, &project, &task, old);
+            }
+            return Err(ApiError::from(e));
         }
     };
     // 复验 N1：fresh 完整重置——change 的 current 标记/change-id 黑板一并轮换，
