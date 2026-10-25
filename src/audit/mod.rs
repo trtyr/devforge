@@ -31,10 +31,14 @@ pub struct AuditUnit {
     pub label: String,
 }
 
-/// 切片产物：全部审查单元。
+/// 切片产物：全部审查单元 + 覆盖对账计数（全仓审计 M6）。
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct AuditPlan {
     pub units: Vec<AuditUnit>,
+    /// 盘点到并进入切片的源文件数（去重后）。
+    pub source_files: usize,
+    /// 未进切片的条目数（Config/Data/Behavior 等非源码面）。
+    pub excluded_entries: usize,
 }
 
 /// 每单元文件数上限（CodeCrow：批次按文件数限不按 token——≤7 可预测）。
@@ -49,10 +53,13 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
     let mut groups: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // 全仓审计 M6：非源码面条目（Config/Data/Behavior）不再静默丢弃——计数进报告
+    let mut excluded_entries = 0usize;
     for e in &inventory.entries {
         if e.kind != crate::docgen::inventory::EntryKind::Module
             && e.kind != crate::docgen::inventory::EntryKind::Symbol
         {
+            excluded_entries += 1;
             continue; // 只切源码面（Config/Data/Behavior 条目不是切片对象）
         }
         if !seen.insert(e.path.clone()) {
@@ -108,7 +115,11 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
     for (i, u) in units.iter_mut().enumerate() {
         u.id = format!("unit-{:03}", i + 1);
     }
-    Ok(AuditPlan { units })
+    Ok(AuditPlan {
+        units,
+        source_files: seen.len(),
+        excluded_entries,
+    })
 }
 
 /// M0 骨架入口：盘点 → 切片 → 单元列表落黑板 → Completed。

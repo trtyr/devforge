@@ -91,15 +91,24 @@ impl ReviewSession for RpcReviewSession {
 }
 
 /// Review 会话工厂：每轮用新 spec spawn 全新 pi 进程。
+///
+/// 全仓审计 M3：spec 生成器与序号计数器放到 `Arc<Mutex<…>>` 后面，工厂副本共享它们——
+/// 并行批次派生的多个工厂不会碰撞 session 子目录。
 pub struct RpcReviewFactory {
-    make_spec: Box<dyn FnMut() -> SpawnSpec + Send>,
+    make_spec: std::sync::Arc<std::sync::Mutex<Box<dyn FnMut() -> SpawnSpec + Send>>>,
+}
+
+impl Clone for RpcReviewFactory {
+    fn clone(&self) -> Self {
+        Self { make_spec: self.make_spec.clone() }
+    }
 }
 
 impl RpcReviewFactory {
     /// 每轮调用一次 spec 生成器（session dir / run 细分由生成器决定）。
     pub fn new(make_spec: impl FnMut() -> SpawnSpec + Send + 'static) -> Self {
         Self {
-            make_spec: Box::new(make_spec),
+            make_spec: std::sync::Arc::new(std::sync::Mutex::new(Box::new(make_spec))),
         }
     }
 
@@ -141,7 +150,10 @@ impl RpcReviewFactory {
 
 impl ReviewSessionFactory for RpcReviewFactory {
     fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
-        let spec = (self.make_spec)();
+        let spec = (self
+            .make_spec
+            .lock()
+            .expect("spec 生成器锁"))();
         let role = spec.role.clone();
         let client = RpcClient::spawn(spec)?;
         Ok(Box::new(RpcReviewSession { client, role }))

@@ -129,7 +129,11 @@ impl RunEngine for BuiltinRpcEngine {
             let sop_result = run_with_watchdog(
                 control,
                 run.id.0.clone(),
-                self.idle_ms,
+                // 全仓审计 M4：code-review 长跑批处理——未显式设阈值时给 15 分钟默认值，
+                // 否则挂死的批永远不被收割（M3 的 14h 挂死正是这条路径）。
+                self.idle_ms.or(Some(
+                    crate::audit::runner::DEFAULT_AUDIT_IDLE_MS,
+                )),
                 watch_dirs,
                 move || {
                     crate::audit::runner::run_audit(

@@ -76,11 +76,7 @@ pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
         }
         let lines = line_counts
             .entry(f.path.clone())
-            .or_insert_with(|| {
-                std::fs::read_to_string(workspace.join(&f.path))
-                    .map(|s| s.lines().count())
-                    .ok()
-            });
+            .or_insert_with(|| read_within(workspace, &f.path).map(|s| s.lines().count()));
         let Some(total) = lines else {
             report.dropped.push((
                 format!("{}/{}", f.path, f.line),
@@ -111,6 +107,24 @@ pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
         report.kept.push(f.clone());
     }
     report
+}
+
+/// 全仓审计 m11：仓内读取的符号链接**不得越界**——canonicalize 后必须仍在 workspace 下。
+/// 旧实现只挡绝对路径与 `..`，仓内 `link -> /etc` 仍会被读（只取行数，无内容外泄，
+/// 但核验器不该成为任意路径读盘器）。
+fn read_within(workspace: &Path, rel: &str) -> Option<String> {
+    let root = workspace.canonicalize().ok()?;
+    let target = workspace.join(rel).canonicalize().ok()?;
+    if !target.starts_with(&root) {
+        tracing::warn!(
+            component = "audit-engine",
+            path = %rel,
+            resolved = %target.display(),
+            "核验路径经符号链接越出仓库，拒绝读取"
+        );
+        return None;
+    }
+    std::fs::read_to_string(&target).ok()
 }
 
 /// 证据文本中的 `xx.rs:NN` 引用核验：引用的文件必须存在且行号在界内。

@@ -36,6 +36,10 @@ pub struct CrossAnalysis {
     pub findings: Vec<Finding>,
     /// 对 Stage 0 假设的验证结论（假设 → 结论）。
     pub concern_verdicts: Vec<(String, String)>,
+    /// 全仓审计 m4：被静默丢弃的条目数（单条反序列化失败 / 非二元组 verdict）——
+    /// 旧实现只 `continue`，丢多少不可见；现计数进报告。
+    #[serde(default)]
+    pub parse_errors: usize,
 }
 
 /// 审计会话抽象（假 session 可注入；生产 = RpcReviewFactory 桥）。
@@ -45,15 +49,28 @@ pub trait AuditSession {
 
 pub trait AuditSessionFactory {
     fn open(&mut self) -> Result<Box<dyn AuditSession>>;
+
+    /// 全仓审计 M3：可选派生（并行批次用）。默认 `None` = 该工厂不支持并行，
+    /// 编排层回落串行（测试替身多为脚本队列，天然不适合并发）。
+    fn fork(&self) -> Option<Box<dyn AuditSessionFactory + Send>> {
+        None
+    }
 }
 
 /// 桥：ReviewSessionFactory（decisions/004 血统）→ AuditSessionFactory。
 /// ask = review（同签名不同 trait，适配后编排层不依赖具体桥实现）。
 pub struct AuditSessionFactoryBridge<F: ReviewSessionFactory>(pub F);
 
-impl<F: ReviewSessionFactory> AuditSessionFactory for AuditSessionFactoryBridge<F> {
+impl<F: ReviewSessionFactory + Clone + Send + 'static> AuditSessionFactory
+    for AuditSessionFactoryBridge<F>
+{
     fn open(&mut self) -> Result<Box<dyn AuditSession>> {
         Ok(Box::new(SessionBridge(self.0.open()?)))
+    }
+
+    /// 并行批次：派生共享 spec 生成器的工厂（session 目录序号由原子计数保证唯一）。
+    fn fork(&self) -> Option<Box<dyn AuditSessionFactory + Send>> {
+        Some(Box::new(AuditSessionFactoryBridge(self.0.clone())))
     }
 }
 
@@ -78,10 +95,16 @@ fn extract_json_block(reply: &str) -> Result<&str, String> {
 }
 
 /// Stage 0：元数据规划——只喂切片清单（id/文件数/标签），不喂代码。
+/// 单发入口（测试/兼容）；生产走 runner 的换实例重试包装（全仓审计 M2）。
 pub fn stage0_plan(
     session: &mut dyn AuditSession,
     units: &[AuditUnit],
 ) -> Result<ReviewPlan> {
+    let reply = session.ask(&stage0_instruction(units))?;
+    parse_stage0(&reply)
+}
+
+fn stage0_instruction(units: &[AuditUnit]) -> String {
     let meta: Vec<serde_json::Value> = units
         .iter()
         .map(|u| {
@@ -100,9 +123,13 @@ pub fn stage0_plan(
          （生成物/锁文件/纯声明无逻辑）；cross_concerns = 跨批次的结构性关注假设\n\
          （如「错误处理模式在各 SOP 是否一致」「事件命名是否统一」）。\n\n批次清单：\n{meta:?}"
     );
-    let reply = session.ask(&instruction)?;
+    instruction
+}
+
+/// Stage 0 反应解析（纯函数）：重试只需重开会话，不再重复组装指令。
+pub fn parse_stage0(reply: &str) -> Result<ReviewPlan> {
     let json_text =
-        extract_json_block(&reply).map_err(DevforgeError::Quality)?;
+        extract_json_block(reply).map_err(DevforgeError::Quality)?;
     let v: serde_json::Value =
         serde_json::from_str(json_text).map_err(|e| DevforgeError::Quality(format!("ReviewPlan JSON 非法：{e}")))?;
     let arr = |key: &str| -> Vec<String> {
@@ -131,7 +158,7 @@ pub fn batch_instruction(
     let others: Vec<&String> = all_unit_labels.iter().filter(|l| **l != unit.label).collect();
     format!(
         "审查批次 `{}`，文件：{:?}。\n\
-         引擎确定性预查报告（事实，直接采信）：\n{precheck_report}\n\
+         引擎预查报告（参考计数，非裁决依据——简化扫描含字符串/test 代码命中）：\n{precheck_report}\n\
          其他批次（路径感知，不在本批审查范围）：{others:?}\n\
          按你的角色提示词执行六视角审查并输出 <audit-findings> 协议块。",
         unit.label, unit.files,
@@ -188,6 +215,11 @@ pub fn stage2_cross(
     findings: &[Finding],
     cross_concerns: &[String],
 ) -> Result<CrossAnalysis> {
+    let reply = session.ask(&stage2_instruction(findings, cross_concerns))?;
+    parse_stage2(&reply)
+}
+
+fn stage2_instruction(findings: &[Finding], cross_concerns: &[String]) -> String {
     let slim: Vec<serde_json::Value> = findings
         .iter()
         .map(|f| {
@@ -207,9 +239,13 @@ pub fn stage2_cross(
          \"concern_verdicts\": [[\"假设\", \"结论\"]...]}}。\n\n\
          发现清单：{slim:?}\n\n跨单元假设：{cross_concerns:?}"
     );
-    let reply = session.ask(&instruction)?;
+    instruction
+}
+
+/// Stage 2 反应解析（纯函数）：重试只需重开会话，不再重复组装指令。
+pub fn parse_stage2(reply: &str) -> Result<CrossAnalysis> {
     let json_text =
-        extract_json_block(&reply).map_err(DevforgeError::Quality)?;
+        extract_json_block(reply).map_err(DevforgeError::Quality)?;
     let v: serde_json::Value = serde_json::from_str(json_text)
         .map_err(|e| DevforgeError::Quality(format!("跨单元分析 JSON 非法：{e}")))?;
     let mut out = CrossAnalysis::default();
@@ -217,7 +253,12 @@ pub fn stage2_cross(
         for item in arr {
             let mut f: Finding = match serde_json::from_value(item.clone()) {
                 Ok(f) => f,
-                Err(_) => continue, // 单条坏不拖垮整批（Stage 2 是汇总性质）
+                Err(e) => {
+                    // 单条坏不拖垮整批（Stage 2 是汇总性质），但**要计数留痕**（m4）
+                    tracing::warn!(component = "audit-engine", error = %e, "Stage 2 单条发现解析失败，已跳过");
+                    out.parse_errors += 1;
+                    continue;
+                }
             };
             f.batch = "cross".into();
             out.findings.push(f);
@@ -225,11 +266,16 @@ pub fn stage2_cross(
     }
     if let Some(arr) = v.get("concern_verdicts").and_then(|x| x.as_array()) {
         for pair in arr {
-            if let Some(both) = pair.as_array() {
-                if both.len() == 2 {
-                    if let (Some(a), Some(b)) = (both[0].as_str(), both[1].as_str()) {
-                        out.concern_verdicts.push((a.to_string(), b.to_string()));
-                    }
+            let ok = pair
+                .as_array()
+                .filter(|both| both.len() == 2)
+                .and_then(|both| Some((both[0].as_str()?, both[1].as_str()?)));
+            match ok {
+                Some((a, b)) => out.concern_verdicts.push((a.to_string(), b.to_string())),
+                None => {
+                    // m4：非二元组/非字符串的 verdict 不静默丢——计数入报告
+                    tracing::warn!(component = "audit-engine", item = %pair, "Stage 2 假设结论形态非法，已跳过");
+                    out.parse_errors += 1;
                 }
             }
         }
@@ -243,6 +289,10 @@ pub struct Progress {
     pub stage0_done: bool,
     pub done_batches: Vec<String>,
     pub stage2_done: bool,
+    /// 全仓审计 m13：放弃批次**入断点**——旧实现只活在本次 run 的局部变量，
+    /// 报告里的 abandoned 不反映历史（重跑会重试，口径不完整）。
+    #[serde(default)]
+    pub abandoned: Vec<String>,
 }
 
 impl Progress {

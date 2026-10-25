@@ -45,6 +45,10 @@ pub struct Finding {
     pub batch: String,
 }
 
+/// 单批次发现数上限（全仓审计 m14）：LLM 可返回超大列表，报告层无 cap 会被刷爆。
+/// 超过部分截断并 WARN（不升级为协议违例——截断后的发现仍然可用）。
+pub const MAX_FINDINGS_PER_BATCH: usize = 100;
+
 /// 解析批次审查回复中的 `<audit-findings>` 块（verdict 块家族协议）。
 ///
 /// 返回 `(findings, protocol_error)`：块缺失/JSON 非法/字段非法 → 协议违例。
@@ -61,7 +65,15 @@ pub fn parse_findings(reply: &str) -> Result<Vec<Finding>, String> {
     let raw: Vec<serde_json::Value> =
         serde_json::from_str(body.trim()).map_err(|e| format!("findings JSON 非法：{e}"))?;
     let mut findings = Vec::with_capacity(raw.len());
-    for (i, v) in raw.iter().enumerate() {
+    if raw.len() > MAX_FINDINGS_PER_BATCH {
+        tracing::warn!(
+            component = "audit-engine",
+            total = raw.len(),
+            cap = MAX_FINDINGS_PER_BATCH,
+            "单批次发现数超限，已截断（m14）"
+        );
+    }
+    for (i, v) in raw.iter().take(MAX_FINDINGS_PER_BATCH).enumerate() {
         let obj = v.as_object().ok_or_else(|| format!("第 {i} 条非对象"))?;
         let get_str = |k: &str| -> Result<String, String> {
             obj.get(k)
@@ -73,7 +85,9 @@ pub fn parse_findings(reply: &str) -> Result<Vec<Finding>, String> {
         let line = obj
             .get("line")
             .and_then(|x| x.as_u64())
-            .ok_or_else(|| format!("第 {i} 条缺合法 line"))? as u32;
+            .ok_or_else(|| format!("第 {i} 条缺合法 line"))?;
+        // 全仓审计 m6：`as u32` 会把超大值静默回绕成合法小行号 → 直接拒为协议违例
+        let line = u32::try_from(line).map_err(|_| format!("第 {i} 条 line 越界：{line}"))?;
         let view = serde_json::from_value(
             obj.get("view")
                 .cloned()
@@ -136,5 +150,30 @@ mod tests {
         // 协议层只管结构；「零证据不入」由核验器（M2）执行
         let f = parse_findings(OK_REPLY).unwrap();
         assert!(!f[0].evidence.is_empty());
+    }
+
+    /// 全仓审计 m6：行号超大值不得 `as u32` 静默回绕成合法小行号。
+    #[test]
+    fn oversized_line_is_protocol_violation() {
+        let bad = r#"<audit-findings>
+[{"path":"a.rs","line":4294967296,"view":"correctness","severity":"minor","claim":"c","evidence":"a.rs:1"}]
+</audit-findings>"#;
+        let err = parse_findings(bad).unwrap_err();
+        assert!(err.contains("line 越界"), "{err}");
+    }
+
+    /// 全仓审计 m14：单批发现数上限——超出截断，不得无上限刷爆报告。
+    #[test]
+    fn findings_are_capped_per_batch() {
+        let items: Vec<String> = (0..(MAX_FINDINGS_PER_BATCH + 5))
+            .map(|i| {
+                format!(
+                    r#"{{"path":"a.rs","line":1,"view":"correctness","severity":"nit","claim":"c{i}","evidence":"a.rs:1"}}"#
+                )
+            })
+            .collect();
+        let reply = format!("<audit-findings>[{}]</audit-findings>", items.join(","));
+        let out = parse_findings(&reply).unwrap();
+        assert_eq!(out.len(), MAX_FINDINGS_PER_BATCH, "超限应截断到上限");
     }
 }
