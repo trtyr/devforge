@@ -38,8 +38,16 @@ fn lint_with(docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport>
             check_confidence(&doc, file, &mut report);
         }
         check_mermaid(&doc, file, &mut report);
+        // 全仓审计 #8：只在代码围栏**外**找缺口标记——围栏里的 🔴 是示例/数据，
+        // 不是真缺口（旧实现只看本行是否以 ``` 开头，围栏内的行全被误计）。
+        let mut in_fence = false;
         for (idx, line) in doc.lines.iter().enumerate() {
-            if line.contains('🔴') && !line.trim_start().starts_with("```") {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if !in_fence && line.contains('🔴') {
                 gap_hits.push((file.clone(), idx + 1));
             }
         }

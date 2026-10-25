@@ -361,6 +361,40 @@ fn red_gap_with_gaps_file_passes() {
     assert!(lint_docs(tmp.path()).unwrap().passed());
 }
 
+/// 全仓审计 #8 回归：代码围栏里的 🔴 是示例/数据，不是真缺口——
+/// 错实现形态：只看本行是否以 ``` 开头，围栏内每一行都被当成缺口，
+/// 没写 gaps.md 就误报 FAIL。
+#[test]
+fn red_gap_inside_code_fence_is_not_a_gap() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        "a.md",
+        "---\ntype: internal\n---\n\n# a\n\n示例输出：\n\n```text\n🔴 这是日志里的红点，不是缺口\n```\n",
+    );
+    let report = lint_docs(tmp.path()).unwrap();
+    assert!(
+        !report
+            .failures()
+            .any(|v| v.check == Check::Confidence && v.message.contains("gaps.md")),
+        "围栏内的 🔴 不得计入缺口：{:?}",
+        report.failures().collect::<Vec<_>>()
+    );
+    // 围栏外仍然是真缺口（不能把围栏开关做成一刀切放过）
+    write(
+        tmp.path(),
+        "b.md",
+        "---\ntype: internal\n---\n\n# b\n\n🔴 这里确实没写清。\n",
+    );
+    let report = lint_docs(tmp.path()).unwrap();
+    assert!(
+        report
+            .failures()
+            .any(|v| v.check == Check::Confidence && v.message.contains("gaps.md")),
+        "围栏外的 🔴 仍要报缺口"
+    );
+}
+
 // ===== t9：汇编 / Mermaid / 空节 =====
 
 #[test]
