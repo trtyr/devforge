@@ -60,6 +60,28 @@ impl SpawnLedger {
         serde_json::from_str(&json).ctx("解析台账")
     }
 
+    /// 登记前的装载（引擎审计修复 #6）：文件不存在 = 冷启动静默；存在但损坏 =
+    /// WARN + 坏文件备份 .bak + 空账起底（与 store.json 口径一致）——
+    /// 不许 unwrap_or_default 静默吞掉历史 PID 再覆写成空账。
+    pub fn load_for_record(path: &Path) -> Self {
+        match Self::load(path) {
+            Ok(l) => l,
+            Err(e) => {
+                let backup = path.with_extension("json.bak");
+                let backed_up = std::fs::rename(path, &backup).is_ok();
+                tracing::warn!(
+                    component = "engine-ledger",
+                    path = %path.display(),
+                    backup = %backup.display(),
+                    recovered = backed_up,
+                    error = %e,
+                    "spawn 台账损坏，备份后空账起底（历史 PID 丢失，孤儿对账能力受限）"
+                );
+                Self::default()
+            }
+        }
+    }
+
     /// 重启对账：逐条判定 Ours（孤儿，可杀）/ Foreign（绝不动）/ Dead（清账）。
     /// 双验证：PID 存活 **且** /proc/<pid>/environ 有自家标记。
     pub fn reconcile(&self) -> Vec<Reconciliation> {
@@ -107,6 +129,16 @@ pub fn has_devforge_marker(pid: u32) -> bool {
 /// 红线不破：只按台账精确执行，绝不扫全系统。
 pub fn kill_run_processes(ledger_path: &Path, run_id: &str) -> usize {
     let Ok(ledger) = SpawnLedger::load(ledger_path) else {
+        // 引擎审计修复 #4 消费侧：熔断/对账读不到台账 = 精确收割失效，必须 ERROR 留痕——
+        // 静默返 0 会让「挂死进程杀不到」变成无迹可寻。
+        if ledger_path.exists() {
+            tracing::error!(
+                component = "engine-ledger",
+                path = %ledger_path.display(),
+                run_id = %run_id,
+                "台账存在但不可读，按 run 强杀无法执行（挂死进程将漏杀）"
+            );
+        }
         return 0;
     };
     let mut killed = 0;
@@ -293,5 +325,37 @@ mod tests {
             Reconciliation::Dead(_) => {}
             other => panic!("死 PID 应判 Dead: {other:?}"),
         }
+    }
+
+    /// 引擎审计修复 #6 回归：损坏台账备份 .bak 后空账起底——不许静默 unwrap_or_default
+    /// 把历史 PID 丢成无痕。
+    #[test]
+    fn corrupt_ledger_is_backed_up_and_recovered_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spawn-ledger.json");
+        std::fs::write(&path, "{not-json").unwrap();
+        let ledger = SpawnLedger::load_for_record(&path);
+        assert!(ledger.entries.is_empty(), "损坏后空账起底");
+        let backup = path.with_extension("json.bak");
+        assert!(backup.exists(), "坏文件应备份 .bak");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "{not-json");
+        assert!(!path.exists(), "原路径已让位给新账");
+        // 新登记正常写入（不再被坏文件挡住）
+        let mut ledger = SpawnLedger::default();
+        ledger.record(entry(4242));
+        ledger.save(&path).unwrap();
+        assert_eq!(SpawnLedger::load(&path).unwrap().entries.len(), 1);
+    }
+
+    /// 引擎审计修复 #4 消费侧：台账存在但不可读时强杀安全失败（返 0 不 panic）——
+    /// 真实挂死进程会漏杀，但 ERROR 日志已留痕（日志断言归 f6 域，此处锁行为面）。
+    #[test]
+    fn kill_run_processes_with_unreadable_ledger_returns_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spawn-ledger.json");
+        std::fs::write(&path, "{corrupt").unwrap();
+        assert_eq!(kill_run_processes(&path, "run-x"), 0);
+        // 台账不存在（冷启动）也返 0，但那是静默路径
+        assert_eq!(kill_run_processes(&dir.path().join("nope.json"), "run-x"), 0);
     }
 }

@@ -74,15 +74,26 @@ impl RpcClient {
             .parent()
             .map(|p| p.join("spawn-ledger.json"))
             .unwrap_or_else(|| spec.working_dir.join("spawn-ledger.json"));
-        let mut ledger =
-            crate::engine::ledger::SpawnLedger::load(&ledger_path).unwrap_or_default();
+        let mut ledger = crate::engine::ledger::SpawnLedger::load_for_record(&ledger_path);
         ledger.record(crate::engine::ledger::LedgerEntry {
             pid: child.id(),
             role: spec.role.clone(),
             run_id: spec.run_id.clone(),
             started_at_ms: crate::domain::now_ms(),
         });
-        let _ = ledger.save(&ledger_path);
+        // 引擎审计修复 #4：台账是熔断 SIGKILL 与孤儿对账的事实源（先落盘再打勾铁律）——
+        // 写失败不得静默：ERROR 带路径留痕（spawn 继续不回滚：台账缺失只影响未来收割能力，
+        // 不影响本 run 正确性；上抛反而把可观测降级放大成 run 失败）。
+        if let Err(e) = ledger.save(&ledger_path) {
+            tracing::error!(
+                component = "engine-ledger",
+                path = %ledger_path.display(),
+                pid = child.id(),
+                run_id = %spec.run_id,
+                error = %e,
+                "spawn 台账落盘失败——熔断事实源缺口，本 run 挂死时无法精确收割"
+            );
+        }
     }
         let stdin = child.stdin.take().expect("stdin 已 piped");
         let stdout = child.stdout.take().expect("stdout 已 piped");
