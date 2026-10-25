@@ -1,6 +1,7 @@
 //! ChangeOrchestrator 编排测试（ARC-R6 自 orchestrator.rs mod tests 平移，纯移动）。
 
 use super::*;
+use crate::change::state::load;
 use crate::runstate::StateKey;
 use std::collections::VecDeque;
 
@@ -887,6 +888,62 @@ fn checkpoint_path_is_change_state_on_blackboard() {
         path.display()
     );
     assert!(path.is_file());
+}
+
+/// change 批次 #1 回归：断点已超限（plan_fix_rounds > MAX_PLAN_FIXES）时入口即拒——
+/// testing→plan 回退是「先落盘再比较上限」，超限断点仍停在 Plan；旧实现从入口直接开跑，
+/// 再跑一轮 fix_plan 就能 Pass 进 coding，额度被绕过。
+#[test]
+fn over_limit_plan_fix_rounds_is_rejected_at_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let st = store(tmp.path());
+    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    seeded.phase = ChangePhase::Plan;
+    seeded.plan_fix_rounds = MAX_PLAN_FIXES + 1;
+    seeded.last_plan_issues = s(&["影响面缺调用方"]);
+    save(&st, &seeded).unwrap();
+
+    let mut session = Scripted::new();
+    // 入口不守的话，这一轮 Pass 会直接进 coding
+    session.fix_plans.push_back(PlanTurn::Pass);
+    let mut ui = NoUser;
+    let err = run(
+        cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]),
+        &mut session,
+        &mut ui,
+    )
+    .unwrap_err();
+    assert!(err.is_quality_failure(), "超限是 Quality：{err}");
+    assert!(err.to_string().contains("上限"), "{err}");
+    assert!(
+        session.log.is_empty(),
+        "入口必须拦下，不得调用 fix_plan：{:?}",
+        session.log
+    );
+    let saved = load(&st, "change-20261020-x", "base123");
+    assert_eq!(saved.phase, ChangePhase::Plan, "阶段不得被推进");
+}
+
+/// change 批次 #3 回归：断点损坏时**拒绝冷启动**——旧实现重建 ChangeState，
+/// roundtrips/test_reroutes/plan_fix_rounds 全归零＝三个上限被重置。
+#[test]
+fn corrupt_checkpoint_is_rejected_instead_of_resetting_counters() {
+    let tmp = tempfile::tempdir().unwrap();
+    let st = store(tmp.path());
+    let path = st.path().to_path_buf();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "{not json").unwrap();
+
+    let mut session = Scripted::new();
+    let mut ui = NoUser;
+    let err = run(
+        cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]),
+        &mut session,
+        &mut ui,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("fresh"), "要指路 fresh：{err}");
+    assert!(session.log.is_empty(), "不得开跑：{:?}", session.log);
 }
 
 #[test]

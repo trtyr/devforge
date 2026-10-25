@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{DevforgeError, Result};
 use crate::runstate::{Loaded, RunState, StateStore};
 
 /// change SOP 的注册名（同时是状态目录名）。
@@ -103,21 +103,20 @@ impl ChangeState {
 
     /// 从 `RunState.data` 抠出来（没有就按 change_id/baseline 新建）；
     /// 内层 change 段存在但解析失败时记 WARN（复验 #5：不能静默重置计数）。
-    pub fn from_run(state: &RunState, change_id: &str, baseline: &str) -> Self {
+    pub fn from_run(state: &RunState, change_id: &str, baseline: &str) -> Result<Self> {
         match state.data.get("change") {
-            None => Self::new(change_id, baseline),
-            Some(v) => match serde_json::from_value(v.clone()) {
-                Ok(parsed) => parsed,
-                Err(e) => {
-                    tracing::warn!(
-                        component = "change-orchestrator",
-                        change_id,
-                        error = %e,
-                        "断点内层 change 段解析失败，按冷启动重置（计数将回零）"
-                    );
-                    Self::new(change_id, baseline)
-                }
-            },
+            None => Ok(Self::new(change_id, baseline)),
+            Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
+                tracing::error!(
+                    component = "change-orchestrator",
+                    change_id,
+                    error = %e,
+                    "断点内层 change 段解析失败——拒绝冷启动（计数会被归零、额度被重置）"
+                );
+                DevforgeError::Config(format!(
+                    "change 断点损坏（{e}）；为避免计数被重置、额度被绕过，拒绝冷启动重跑——确需重跑请带 fresh:true"
+                ))
+            }),
         }
     }
 
@@ -170,21 +169,42 @@ impl ChangeState {
     }
 }
 
-/// 读断点（异常按冷启动，与 010 D003 同口径）；Unusable 记 WARN（复验 #5：
-/// 静默重置会让断点损坏无从察觉——冷启动是设计，丢弃原因是缺陷）。
+/// 读断点（**仅测试/展示路径**）：损坏时按冷启动重置。生产入口一律走
+/// [`load_strict`]——change 批次 #3：计数器被重置就等于修复额度被重置。
 pub fn load(store: &StateStore, change_id: &str, baseline: &str) -> ChangeState {
-    match store.load() {
-        Loaded::Found(state) => ChangeState::from_run(&state, change_id, baseline),
-        Loaded::Unusable(reason) => {
+    match load_strict(store, change_id, baseline) {
+        Ok(s) => s,
+        Err(e) => {
             tracing::warn!(
                 component = "change-orchestrator",
                 change_id,
-                %reason,
-                "断点不可用，按冷启动重置（原因见日志）"
+                error = %e,
+                "断点不可用，按冷启动重置（仅测试/展示路径；生产入口走 load_strict）"
             );
             ChangeState::new(change_id, baseline)
         }
-        _ => ChangeState::new(change_id, baseline),
+    }
+}
+
+/// 生产入口读断点。change 批次 #3：**损坏不再按冷启动**——旧实现内层解析失败 /
+/// Unusable 一律 `new(...)`，`roundtrips`/`test_reroutes`/`plan_fix_rounds` 全部归零，
+/// 三个上限就此被重置（上限挂在内存计数器上，一次断点损坏就重新获得额度）。现在：
+/// 文件缺失 = 冷启动（合法）；存在但不可用 = 拒绝继续，要重跑就显式带 `fresh:true`。
+pub fn load_strict(store: &StateStore, change_id: &str, baseline: &str) -> Result<ChangeState> {
+    match store.load() {
+        Loaded::Found(state) => ChangeState::from_run(&state, change_id, baseline),
+        Loaded::Unusable(reason) => {
+            tracing::error!(
+                component = "change-orchestrator",
+                change_id,
+                %reason,
+                "断点不可用——拒绝冷启动（计数会被归零、修复额度被重置）"
+            );
+            Err(DevforgeError::Config(format!(
+                "change 断点不可用（{reason}）；为避免计数被重置、额度被绕过，拒绝冷启动重跑——确需重跑请带 fresh:true"
+            )))
+        }
+        _ => Ok(ChangeState::new(change_id, baseline)),
     }
 }
 

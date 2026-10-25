@@ -12,7 +12,7 @@ use std::path::Path;
 
 use crate::change::boundary::{self, BoundaryVerdict, ImpactGap};
 use crate::change::report::{self, AcceptanceSummary, ChangeReport, summarize_acceptance};
-use crate::change::state::{ChangePhase, ChangeState, TestFailureContext, load, save};
+use crate::change::state::{ChangePhase, ChangeState, TestFailureContext, load_strict, save};
 use crate::error::{DevforgeError, Result};
 use crate::runstate::StateStore;
 use crate::sop::planning::UserLink;
@@ -159,7 +159,7 @@ pub fn run<S: ChangeSession>(
     session: &mut S,
     ui: &mut dyn UserLink,
 ) -> Result<ChangeOutcome> {
-    let mut state = load(run.store, run.change_id, run.baseline_sha);
+    let mut state = crate::change::state::load_strict(run.store, run.change_id, run.baseline_sha)?;
     if state.baseline_sha.is_empty() {
         state.baseline_sha = run.baseline_sha.to_string();
     }
@@ -174,6 +174,14 @@ pub fn run<S: ChangeSession>(
         let mut issues: Vec<String> = state.last_plan_issues.clone();
         // 复验 #9：修复轮计数住断点——重启后不得重新获得修复额度。
         let mut fix_round = state.plan_fix_rounds;
+        // change 批次 #1：入口守卫——testing→plan 回退是「先落盘再比较上限」，超限断点仍停在
+        // Plan；旧实现从入口直接开跑，再跑一轮 fix_plan 就能 Pass 进 coding，额度被绕过。
+        if fix_round > MAX_PLAN_FIXES {
+            return Err(DevforgeError::Quality(format!(
+                "计划修复轮已达上限 {MAX_PLAN_FIXES} 轮（断点 plan_fix_rounds={fix_round}），拒绝继续修复：{}",
+                issues.join("；")
+            )));
+        }
         loop {
             let turn = if fix_round == 0 {
                 session.run_plan(ui, state.roundtrips)?
