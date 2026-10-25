@@ -40,6 +40,61 @@ impl ApiError {
     }
 }
 
+// ---------- 安全小工具（全仓审计 #3/#5/#6） ----------
+
+/// 常量时间字节比较：不按字节早退，避免计时侧信道泄露 token 前缀。
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut diff = (a.len() != b.len()) as u8;
+    let n = a.len().max(b.len());
+    for i in 0..n {
+        diff |= a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0);
+    }
+    diff == 0
+}
+
+/// token 校验：缺失即不匹配（不因“未提供”而短路比较路径）。
+fn token_matches(got: Option<&str>, expected: &str) -> bool {
+    match got {
+        Some(g) => ct_eq(g.as_bytes(), expected.as_bytes()),
+        None => false,
+    }
+}
+
+/// 路径段安全检查：空、`.`/`..`、含分隔符 → 拒（防参数拼路径越界）。
+fn safe_segment(seg: &str) -> bool {
+    !seg.is_empty()
+        && seg != "."
+        && seg != ".."
+        && !seg.contains('/')
+        && !seg.contains('\\')
+        && !seg.contains('\0')
+}
+
+/// local_path 注册校验（全仓审计 #5）：门 0 会在无 `.git` 的目录上 git init +
+/// `add -A` 建基线提交——错形态下路径误填为已有目录（如 home）会把其全部内容
+/// 纳入一次提交。合法形态：不存在（从 0 创建）/ 空目录 / 已是 git 仓。
+fn validate_local_path(path: &std::path::Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if !path.is_dir() {
+        return Err(format!("local_path 存在但不是目录：{}", path.display()));
+    }
+    if path.join(".git").exists() {
+        return Ok(());
+    }
+    let mut entries = std::fs::read_dir(path)
+        .map_err(|e| format!("local_path 不可读 {}：{e}", path.display()))?;
+    if entries.next().is_some() {
+        return Err(format!(
+            "local_path 非空且不是 git 仓：{}——门 0 会在此 git init + add -A 建立基线，\
+             误填已有目录会把其全部内容纳入一次提交。请改用空目录或已初始化的 git 仓",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = json!({"error": self.message});
@@ -79,7 +134,9 @@ pub async fn auth_middleware(
 ) -> Response {
     if let Some(expected) = &st.token {
         let got = req.headers().get("x-devforge-token").and_then(|v| v.to_str().ok());
-        if got != Some(expected.as_str()) {
+        // 全仓审计 #6：常量时间比较（旧写法 `got != Some(expected)` 按字节早退，
+        // 泄露 token 前缀的计时信号）
+        if !token_matches(got, expected) {
             return (StatusCode::UNAUTHORIZED, Json(json!({"error": "token 不匹配"})))
                 .into_response();
         }
@@ -100,6 +157,11 @@ pub async fn create_project(
     State(st): State<SharedState>,
     Json(req): Json<CreateProjectReq>,
 ) -> ApiResult<(StatusCode, Json<Project>)> {
+    // 全仓审计 #5：local_path 注册前置校验——门 0 会在无 .git 的目录上 git init +
+    // add -A 建基线提交，路径误填为已有目录（如 home）即把其全部内容纳入一次提交。
+    if let Err(msg) = validate_local_path(std::path::Path::new(&req.local_path)) {
+        return Err(ApiError::bad_request(msg));
+    }
     let project = Project::new(req.name, req.local_path.into(), crate::domain::now_ms());
     let created = {
         let mut store = st.store.lock().expect("store 锁");
@@ -169,17 +231,25 @@ pub async fn audit_report(
     State(st): State<SharedState>,
     Path((project, task)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    // 全仓审计 #3：路径参数不直接拼文件路径——先按 store 确认项目/任务存在，
+    // 并拒绕路径分隔与 `..` 段；404 文案不回显绝对路径（不泄露主机目录布局）。
+    if !safe_segment(&project) || !safe_segment(&task) {
+        return Err(ApiError::bad_request("项目/任务名含非法路径字符"));
+    }
+    let exists = {
+        let store = st.store.lock().expect("store 锁");
+        store.get_project(&project).is_some() && store.get_task(&project, &task).is_some()
+    };
+    if !exists {
+        return Err(ApiError::not_found(format!("项目或任务不存在：{project}/{task}")));
+    }
     let path = st
         .plans_root
         .join(&project)
         .join(&task)
         .join("audit-report.json");
-    let bytes = std::fs::read(&path).map_err(|_| {
-        ApiError::not_found(format!(
-            "审计报告尚未生成：{}",
-            path.display()
-        ))
-    })?;
+    let bytes = std::fs::read(&path)
+        .map_err(|_| ApiError::not_found(format!("审计报告尚未生成：{project}/{task}/audit-report.json")))?;
     Ok(Json(serde_json::from_slice(&bytes).map_err(|e| {
         ApiError::internal(format!("审计报告损坏：{e}"))
     })?))
