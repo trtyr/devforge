@@ -97,7 +97,10 @@ pub fn snapshot_tracked_changes(
             stderr = %String::from_utf8_lossy(&out.stderr).trim(),
             "产品代码快照不可用——#6 机械门本阶段未生效（待改为 fail-closed）"
         );
-        return Ok(Default::default());
+        return Err(DevforgeError::System(format!(
+            "测试阶段产品代码快照失败（git 基线 {baseline}）：{}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
     }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()

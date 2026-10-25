@@ -186,6 +186,16 @@ pub(super) fn pass_testing() -> TestingTurn {
 pub(super) fn ctx_in(tmp: &Path) -> ChangeCtx {
     let repo = tmp.join("repo");
     std::fs::create_dir_all(repo.join("src")).unwrap();
+    // 真 git 仓 + 真基线 sha：testing 阶段的产品代码快照要能真跑 `git diff <baseline>`，
+    // 假基线（"base123"）会让它直接失败。注意仓里必须先有文件，否则 commit 空仓会失败。
+    std::fs::write(repo.join("src/a.rs"), "fn a() {}\n").unwrap();
+    git(&repo, &["init"]);
+    git(&repo, &["add", "-A"]);
+    git(
+        &repo,
+        &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"],
+    );
+    let baseline = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
     let blackboard = tmp.join("bb");
     std::fs::create_dir_all(&blackboard).unwrap();
     let change_dir = repo.join("docs/plantree/changes/change-20261020-x");
@@ -195,7 +205,7 @@ pub(super) fn ctx_in(tmp: &Path) -> ChangeCtx {
         blackboard,
         change_dir,
         change_id: "change-20261020-x".into(),
-        baseline: "base123".into(),
+        baseline,
         requirement: "改 a".into(),
         doc_level: DocLevel::None,
         contract: None,
