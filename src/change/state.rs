@@ -57,9 +57,6 @@ pub struct ChangeState {
     /// 已发生的 plan↔coding 往返次数（上限 3）。
     #[serde(default)]
     pub roundtrips: usize,
-    /// 已完成的实施步骤号。
-    #[serde(default)]
-    pub impl_steps_done: Vec<u32>,
     /// 已对账通过的验收项。
     #[serde(default)]
     pub acceptance_done: Vec<String>,
@@ -94,7 +91,6 @@ impl ChangeState {
             phase: ChangePhase::Plan,
             baseline_sha: baseline_sha.into(),
             roundtrips: 0,
-            impl_steps_done: Vec::new(),
             acceptance_done: Vec::new(),
             review_rounds: 0,
             test_reroutes: 0,
@@ -138,12 +134,9 @@ impl ChangeState {
         }
     }
 
-    pub fn mark_step_done(&mut self, step: u32) {
-        if !self.impl_steps_done.contains(&step) {
-            self.impl_steps_done.push(step);
-            self.impl_steps_done.sort_unstable();
-        }
-    }
+    // 引擎审计修复 #10：mark_step_done 已删——impl_steps_done 是从未被编排器写入的
+    // 死字段（活体步对账走 git log vs impl-steps.md），旧断点文件里的该键由 serde
+    // 忽略未知字段语义安全兼容。
 
     pub fn mark_acceptance_done(&mut self, criterion: &str) {
         if !self.acceptance_done.iter().any(|c| c == criterion) {
@@ -225,15 +218,12 @@ mod tests {
         let mut st = ChangeState::new("change-20261020-x", "abc123");
         st.phase = ChangePhase::Coding;
         st.bump_roundtrip();
-        st.mark_step_done(2);
-        st.mark_step_done(1);
         st.mark_acceptance_done("x=1 → 2");
         st.bump_review();
         save(&s, &st).unwrap();
 
         let got = load(&s, "change-20261020-x", "abc123");
         assert_eq!(got, st);
-        assert_eq!(got.impl_steps_done, vec![1, 2], "步骤顺序稳定");
     }
 
     #[test]
@@ -285,11 +275,8 @@ mod tests {
     #[test]
     fn counters_are_idempotent() {
         let mut st = ChangeState::new("c1", "sha1");
-        st.mark_step_done(1);
-        st.mark_step_done(1);
         st.mark_acceptance_done("a");
         st.mark_acceptance_done("a");
-        assert_eq!(st.impl_steps_done, vec![1]);
         assert_eq!(st.acceptance_done, vec!["a".to_string()]);
     }
 
@@ -351,7 +338,8 @@ mod tests {
         assert_eq!(got.phase, ChangePhase::Coding, "旧断点不能被冷启动重置");
         assert_eq!(got.roundtrips, 2, "往返计数不能丢");
         assert_eq!(got.test_reroutes, 2, "回注计数不能丢");
-        assert_eq!(got.impl_steps_done, vec![1, 2], "已完成步骤不能丢");
+        // 引擎审计修复 #10：fixture 里的 impl_steps_done 键是旧断点文件的活样本——
+        // serde 忽略未知字段语义下加载成功，字段已删（死状态，活体步对账走 git log）。
         assert_eq!(got.acceptance_done, vec!["x=1 → 2".to_string()]);
     }
 

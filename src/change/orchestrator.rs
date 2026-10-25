@@ -399,7 +399,9 @@ pub fn run<S: ChangeSession>(
     }
 
     // ---- 报告（引擎写）----
-    let diff = report::diff_stats(run.repo, run.baseline_sha).unwrap_or_default();
+    // 引擎审计修复 #7：diff 失败必须 Err（reverify #1 同类）——吞成空统计会让
+    // 报告看起来像一次 no-op 改动，事后无从察觉 git 究竟坏在哪。
+    let diff = report::diff_stats(run.repo, run.baseline_sha)?;
     let acceptance: AcceptanceSummary = summarize_acceptance(&criteria, &acceptance_done);
     let timeline = ChangeReport {
         change_id: run.change_id.to_string(),

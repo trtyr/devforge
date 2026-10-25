@@ -5,6 +5,10 @@ use crate::runstate::StateKey;
 use std::collections::VecDeque;
 
 fn store(root: &Path) -> StateStore {
+    // 引擎审计修复 #7：Done 路径的 diff_stats 不再吞失败——测试环境升级为真 git 仓
+    //（生产 repo 恒为 git 仓，非 git fixture 是人为环境）；基线 sha 落文件供 cfg 读取。
+    let sha = init_git(root);
+    std::fs::write(root.join(".git/head-sha"), &sha).unwrap();
     StateStore::new(
         root,
         StateKey::new("proj", "task", crate::change::state::CHANGE_SOP),
@@ -135,17 +139,55 @@ fn pass_testing() -> TestingTurn {
 }
 
 fn cfg<'a>(store: &'a StateStore, repo: &'a Path, wl: &[&str], criteria: &[&str]) -> ChangeRun<'a> {
+    // 基线 sha 从 init_git 落的文件读（store() 已初始化真 git 仓）；读不到（异常）
+    // 才回退占位——diff_stats 会如实报错。
+    let baseline_sha = std::fs::read_to_string(repo.join(".git/head-sha"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "base123".to_string());
+    let leaked: &'a str = Box::leak(baseline_sha.into_boxed_str());
     ChangeRun {
         store,
         repo,
         change_id: "change-20261020-x",
-        baseline_sha: "base123",
+        baseline_sha: leaked,
         criteria: s(criteria),
         whitelist: s(wl),
         usage: "1,000 tokens（in 900 / out 100）".into(),
         run_id: "run-1".into(),
         wall_secs: 12,
     }
+}
+
+/// 把 dir 初始化成真 git 仓（引擎审计修复 #7：Done 路径的 diff_stats 不再吞失败，
+/// 非 git 仓的测试环境必须升级为真仓才能走到报告）。返回基线 sha。
+fn init_git(dir: &Path) -> String {
+    std::fs::write(dir.join("seed.txt"), "seed\n").unwrap();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} 失败：{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    run(&["init"]);
+    run(&["add", "-A"]);
+    run(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "init",
+    ]);
+    let head = run(&["rev-parse", "HEAD"]);
+    String::from_utf8_lossy(&head.stdout).trim().to_string()
 }
 
 #[test]

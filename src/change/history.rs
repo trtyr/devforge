@@ -26,7 +26,14 @@ pub fn append_roundtrip(
         .map_err(|e| DevforgeError::System(format!("建目录 {} 失败：{e}", dir.display())))?;
 
     let mut text = if path.is_file() {
-        std::fs::read_to_string(&path).unwrap_or_default()
+        // 引擎审计修复 #8：读失败必须 Err——unwrap_or_default 会把不可读的旧历史
+        // 当空串覆盖写，header 跳过、往返轨迹静默清零（审计链断裂）。
+        std::fs::read_to_string(&path).map_err(|e| {
+            DevforgeError::System(format!(
+                "读变更往返历史 {} 失败：{e}（宁可不写也不静默清空既有轨迹）",
+                path.display()
+            ))
+        })?
     } else {
         format!("# 变更往返历史 · {change_id}\n\n| 往返 | 越界文件 | 理由 | 证据 |\n| --- | --- | --- | --- |\n")
     };

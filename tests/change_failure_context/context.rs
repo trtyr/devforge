@@ -524,7 +524,8 @@ pub(super) fn a12_old_checkpoint_without_the_failure_key_still_loads() {
     );
     assert_eq!(loaded.roundtrips, 2, "往返计数不得丢");
     assert_eq!(loaded.test_reroutes, 1, "回注计数不得丢");
-    assert_eq!(loaded.impl_steps_done, vec![1, 2], "已完成步骤不得丢");
+    // 引擎审计修复 #10：impl_steps_done 死字段已删——fixture json 里保留的该键
+    // 由 serde 忽略未知字段语义安全兼容（加载成功即证明）。
     assert_eq!(loaded.acceptance_done, vec!["x=1 → 2"], "已对账验收项不得丢");
     assert_eq!(loaded.review_rounds, 3, "审查轮次不得丢");
 }

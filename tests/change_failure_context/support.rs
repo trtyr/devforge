@@ -75,6 +75,15 @@ pub(super) fn git(root: &Path, args: &[&str]) -> String {
 }
 
 pub(super) fn store(root: &Path) -> StateStore {
+    // 引擎审计修复 #7：Done 路径的 diff_stats 不再吞失败——测试环境升级为真 git 仓，
+    // 基线 sha 落文件供 cfg 读取（与 orchestrator_tests 同方案）。
+    std::fs::write(root.join("seed.txt"), "seed\n").unwrap();
+    git(root, &["init"]);
+    git(root, &["add", "-A"]);
+    git(root, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"]);
+    let sha = git(root, &["rev-parse", "HEAD"]);
+    std::fs::create_dir_all(root.join(".git")).ok();
+    std::fs::write(root.join(".git/head-sha"), sha.trim()).unwrap();
     StateStore::new(root, StateKey::new("proj", "task", CHANGE_SOP))
 }
 
@@ -199,11 +208,16 @@ pub(super) fn cfg<'a>(
     wl: &[&str],
     criteria: &[&str],
 ) -> ChangeRun<'a> {
+    // 引擎审计修复 #7：基线 sha 从 store() 落的文件读（真 git 仓）；读不到才回退占位。
+    let baseline_sha = std::fs::read_to_string(repo.join(".git/head-sha"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "base123".to_string());
+    let leaked: &'a str = Box::leak(baseline_sha.into_boxed_str());
     ChangeRun {
         store,
         repo,
         change_id: "change-20261020-x",
-        baseline_sha: "base123",
+        baseline_sha: leaked,
         criteria: criteria.iter().map(|s| s.to_string()).collect(),
         whitelist: wl.iter().map(|s| s.to_string()).collect(),
         usage: "1,000 tokens（in 900 / out 100）".into(),

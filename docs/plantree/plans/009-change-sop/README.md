@@ -64,8 +64,8 @@ SOP 内部一律 `change-<阶段>-<角色>`：`change-plan-agent` / `change-plan
 
 - Agent 完成一段 → `<stage-complete>N</stage-complete>`；段内多步 N 递增
 - 审查回 `<stage-verdict>PASS|FAIL</stage-verdict>` + `<next>` + `<issues>`
-- change 只多两块：coding 越界申报 `<route>plan</route>` + `<impact-gap>`；testing 回退 `<reroute>coding|plan</reroute>`
-- **无标记重推上限 3 次**（MVP 是零上限）；第 4 次判基础设施故障
+- change 只多两块：coding 越界申报 `<route>plan</route>` + `<impact-gap>`；testing 回退 `<route>coding|plan</route>` + `<issues>`
+- **无标记重推上限 3 次**（MVP 是零上限）；第 4 次（连续 3 次追补仍无标记）判质量失败（Quality，不自动重启——修好后重新启动 run）
 
 ## 为什么“白名单”要引擎侧机械校验
 
