@@ -92,6 +92,14 @@ impl Workspace {
     }
 
     /// 创建 worktree：`git worktree add -b task/{id} <path> <base_rev>`。
+    ///
+    /// worktree 审计（2026-10-25 自审 critical）：`remove()` **保留**任务分支（候选归因要它），
+    /// 而旧实现无条件 `-b` 重建同名分支 → 同一 task 的第二次 run 必报
+    /// "branch already exists"。现在分两种情形：
+    /// - 分支不存在 → 照旧 `-b`；
+    /// - 分支已存在且**仍停在基点**（上一轮没产生提交 / 崩溃回退）→ 直接挂载复用；
+    /// - 分支已存在但已有提交（上一轮候选）→ 明确拒绝并告诉怎么清理，
+    ///   不静默切换基点（否则本轮的 diff 归因会错位）。
     pub fn create(spec: &WorkspaceSpec) -> Result<Workspace> {
         let path = Self::target_path(spec);
         if path.exists() {
@@ -101,14 +109,30 @@ impl Workspace {
             )));
         }
         let branch = format!("task/{}", spec.task_id);
-        git(&spec.repo, &[
-            "worktree",
-            "add",
-            "-b",
-            &branch,
-            &path.to_string_lossy(),
-            &spec.base_rev,
-        ])?;
+        let existing_tip = git_out(&spec.repo, &["rev-parse", "--verify", "--quiet", &branch])
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let path_str = path.to_string_lossy().to_string();
+        match existing_tip {
+            Some(tip) if tip != spec.base_rev => {
+                return Err(DevforgeError::Store(format!(
+                    "任务分支 `{branch}` 已存在且指向 {tip}（上一轮候选保留，不等于本轮基点 {}）——
+                     同一 task 重建工作区请先 `git branch -D {branch}`，或换 task id",
+                    spec.base_rev
+                )));
+            }
+            Some(_) => {
+                // 分支仍在基点上 = 可安全复用（不重建分支，避免丢引用）
+                git(&spec.repo, &["worktree", "add", &path_str, &branch])?;
+            }
+            None => {
+                git(
+                    &spec.repo,
+                    &["worktree", "add", "-b", &branch, &path_str, &spec.base_rev],
+                )?;
+            }
+        }
         let ws = Workspace {
             path,
             branch,
@@ -322,6 +346,46 @@ mod tests {
         assert!(branches.contains(&branch), "分支应保留：{branches}");
         // 注册表摘除
         assert!(scan_orphans(dir.path()).unwrap().is_empty());
+    }
+
+    /// 自审 critical 回归：`remove()` 保留分支，同一 task 的第二次 run **必须能重建**
+    /// （旧实现无条件 `-b` → git 报 branch already exists，第二次 run 必输）。
+    #[test]
+    fn recreate_after_remove_succeeds_when_branch_still_at_base() {
+        let (dir, base) = repo_with_base();
+        let ws = Workspace::create(&spec(dir.path(), &base)).unwrap();
+        ws.remove(dir.path()).unwrap();
+        let again = Workspace::create(&spec(dir.path(), &base)).expect("分支仍在基点，应能复用重建");
+        assert!(again.path.exists());
+        assert_eq!(Workspace::freeze(&again).unwrap(), base);
+    }
+
+    /// 分支上已有候选提交（≠基点）时，重建必须**明确拒绝并指路**，
+    /// 不得静默切基点（否则本轮 diff 归因错位）。
+    #[test]
+    fn recreate_with_advanced_branch_is_rejected_with_actionable_message() {
+        let (dir, base) = repo_with_base();
+        let ws = Workspace::create(&spec(dir.path(), &base)).unwrap();
+        std::fs::write(ws.path.join("candidate.txt"), "x\n").unwrap();
+        git(&ws.path, &["add", "-A"]).unwrap();
+        git(
+            &ws.path,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "candidate",
+            ],
+        )
+        .unwrap();
+        ws.remove(dir.path()).unwrap();
+        let err = Workspace::create(&spec(dir.path(), &base)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("已存在"), "要指明分支已存在：{msg}");
+        assert!(msg.contains("git branch -D"), "要给出清理命令：{msg}");
     }
 
     #[test]
