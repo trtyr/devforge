@@ -244,6 +244,76 @@ pub fn kill_run_processes(ledger_path: &Path, run_id: &str) -> usize {
     killed
 }
 
+/// 启动对账（引擎 #2）：进程重启后扫 `plans/<project>/spawn-ledger.json`，把上一轮遗留的
+/// **自家**子进程（Ours = 存活且带 DEVFORGE_MANAGED 标记）SIGTERM 清场，Dead 条目从台账
+/// 清掉，Foreign 绝不杀（红线）。此前 reconcile/kill_orphan 只在单测里被调，崩溃孤儿会继续
+/// 改目标仓。返回（killed, cleared, foreign）。
+pub fn reconcile_all(plans_root: &Path) -> (usize, usize, usize) {
+    let mut killed = 0usize;
+    let mut cleared = 0usize;
+    let mut foreign = 0usize;
+    let Ok(rd) = std::fs::read_dir(plans_root) else {
+        return (0, 0, 0);
+    };
+    for ent in rd.flatten() {
+        let path = ent.path().join("spawn-ledger.json");
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(ledger) = SpawnLedger::load(&path) else {
+            // 坏台账不在这里重置——spawn 路径的 load_for_record 已做备份起底，
+            // 启动对账只负责活进程，不碰账本格式。
+            tracing::warn!(
+                component = "engine-ledger",
+                path = %path.display(),
+                "启动对账跳过不可读台账"
+            );
+            continue;
+        };
+        let mut kept = SpawnLedger::default();
+        for r in ledger.reconcile() {
+            match r {
+                Reconciliation::Ours(e) => match kill_orphan(e.pid) {
+                    Ok(()) => {
+                        killed += 1;
+                        tracing::warn!(
+                            component = "engine-ledger",
+                            event = "ledger.orphan_killed",
+                            pid = e.pid,
+                            run_id = %e.run_id,
+                            role = %e.role,
+                            "启动对账：上一轮遗留的自家子进程已 SIGTERM"
+                        );
+                    }
+                    Err(err) => {
+                        // 杀不掉就留着——下次启动再试，绝不从台账里删痕迹
+                        kept.record(e);
+                        tracing::error!(
+                            component = "engine-ledger",
+                            error = %err,
+                            "启动对账：孤儿进程 SIGTERM 失败，保留台账条目"
+                        );
+                    }
+                },
+                Reconciliation::Foreign(e) => {
+                    foreign += 1;
+                    kept.record(e);
+                }
+                Reconciliation::Dead(_) => cleared += 1,
+            }
+        }
+        if let Err(e) = kept.save(&path) {
+            tracing::error!(
+                component = "engine-ledger",
+                path = %path.display(),
+                error = %e,
+                "启动对账：回写台账失败"
+            );
+        }
+    }
+    (killed, cleared, foreign)
+}
+
 /// 杀掉自家孤儿（Q005：直接杀，不收养）。SIGTERM。
 pub fn kill_orphan(pid: u32) -> Result<()> {
     // SAFETY: kill(2) 系统调用，仅传 pid 与 SIGTERM，无非空指针参与
@@ -491,6 +561,62 @@ mod tests {
         ledger.record(entry(4242));
         ledger.save(&path).unwrap();
         assert_eq!(SpawnLedger::load(&path).unwrap().entries.len(), 1);
+    }
+
+    /// 引擎 #2 回归：启动对账清死条目、不碰 Foreign（无标记的活进程绝不动）。
+    #[test]
+    fn startup_reconcile_clears_dead_and_spares_foreign() {
+        let plans = tempfile::tempdir().unwrap();
+        let proj = plans.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let path = proj.join("spawn-ledger.json");
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut ledger = SpawnLedger::default();
+        ledger.record(entry(pid)); // 活但无标记 → Foreign
+        ledger.record(entry(u32::MAX - 100)); // 已死 → Dead
+        ledger.save(&path).unwrap();
+
+        let (killed, cleared, foreign) = reconcile_all(plans.path());
+        assert_eq!((killed, cleared, foreign), (0, 1, 1), "Foreign 不死、Dead 清掉");
+        let after = SpawnLedger::load(&path).unwrap();
+        assert_eq!(after.entries.len(), 1, "只留 Foreign：{:?}", after.entries);
+        assert_eq!(after.entries[0].pid, pid);
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    /// 引擎 #2 回归：启动对账把上一轮遗留的**自家**子进程 SIGTERM 掉，并从台账清条目。
+    #[test]
+    fn startup_reconcile_kills_our_orphans() {
+        let plans = tempfile::tempdir().unwrap();
+        let proj = plans.path().join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let path = proj.join("spawn-ledger.json");
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .env(MANAGED_ENV, "run-1")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        assert_eq!(wait_for_marker(pid, 2000).as_deref(), Some("run-1"));
+        let mut ledger = SpawnLedger::default();
+        ledger.record(entry(pid));
+        ledger.save(&path).unwrap();
+
+        let (killed, _, _) = reconcile_all(plans.path());
+        assert_eq!(killed, 1, "自家孤儿必须被杀");
+        let _ = child.wait(); // SIGTERM 后退出，回收防 zombie
+        assert!(!process_alive(pid));
+        assert!(
+            SpawnLedger::load(&path).unwrap().entries.is_empty(),
+            "杀掉后条目必须从台账清掉"
+        );
     }
 
     /// 引擎审计修复 #4 消费侧：台账存在但不可读时强杀安全失败（返 0 不 panic）——

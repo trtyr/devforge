@@ -283,6 +283,20 @@ async fn main() -> anyhow::Result<()> {
             （--token <值> 或 DEVFORGE_TOKEN 环境变量），拒绝裸奔启动"
         );
     }
+    // 引擎 #2：启动对账——上一进程遗留的自家子进程（Ours）直接 SIGTERM 清场，Dead 条目
+    // 从台账清掉，Foreign 绝不动（红线：只认 DEVFORGE_MANAGED 标记）。
+    // 此前 reconcile/kill_orphan 只在单测里被调用，崩溃孤儿会继续改目标仓。
+    let (killed, cleared, foreign) = devforge::engine::ledger::reconcile_all(&state.plans_root);
+    if killed + cleared + foreign > 0 {
+        tracing::warn!(
+            component = "startup",
+            event = "ledger.reconcile",
+            killed,
+            cleared,
+            foreign,
+            "启动对账：清掉遗留子进程与已死条目（Foreign 一律不杀）"
+        );
+    }
     devforge::server::serve(state, addr)
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
