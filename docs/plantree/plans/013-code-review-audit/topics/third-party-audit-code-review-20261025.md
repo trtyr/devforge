@@ -75,3 +75,35 @@ code-review 线在**正常路径**可跑通，但达不到「自审自己」的�
 - M4 与 engine 批次 #9（两条 kill 路径）/ reverify 的 budget-fuse 同族：**有兜底机制但默认不启用**。
 - M6 与 change 批次 #3（changed_files 过滤清单）同族：**分母不透明 = 指标可造假**，这次是「审计自己审了哪些文件」不透明。
 - M3 意味着 P013 的 M3 长跑（9h/87 批）在当前串行实现下不可重复执行——自审流程的天花板在吞吐，不在单条质量。
+
+## 修复状态表（2026-10-25，22/22 全部落地）
+
+> 终验 828 绿 0 failed（lib 718 + integration 19/16/31/43 + doctest 1，TEST_EXIT=0），
+> clippy lib 11 条（比修复前 13 条**降 2**，无新增；CLIPPY_EXIT=0）。单个代码 commit `6134b71`。
+> 新增回归 12 条。
+
+| # | 落地内容 |
+|---|---|
+| M1 | 去重键 = `(path, line, view, 归一化 claim)`（小写+压缩空白）；真重复仍合并但 **severity 取更重**、证据取更长。测试重写为同视角不同主张（旧测试用不同 view 绕开缺陷）+ 新增「critical 不被 nit 顶掉」断言 |
+| M2 | `stage0_plan`/`stage2_cross` 拆出纯解析函数 `parse_stage0`/`parse_stage2`；runner 统一走 `with_stage_retry`（2 次换实例，只重试 Quality，System/Agent 直接上抛）。回归：两阶段各一条格式抖动用例 |
+| M3 | `AuditSessionFactory` 增 `fork()`（默认 None = 测试替身串行）；生产桥用共享 spec 生成器的工厂副本；Stage 1 固定并发（`DEVFORGE_AUDIT_CONCURRENCY`，默认 4，1..=8）工作窃取派发，结果按下标排序落盘；`RpcReviewFactory` 的 spec 生成器与序号计数器下沉 `Arc<Mutex>` 保证 session 目录唯一。回归：并行路径两批全完成 |
+| M4 | code-review 默认失活阈值 `DEFAULT_AUDIT_IDLE_MS = 15min`（agent 流式输出持续刷新 liveness，静默 15 分钟只可能是挂死）；其余 SOP 仍默认不收割。注：病态挂死现在会被 watchdog 收割成 Failed 并由断点续跑接手，**未做单批级 abandon**（需可中断的会话隔离，另立） |
+| M5 | `plan.units.is_empty()` → `Err(System("无可审源码…workspace=…"))`；报告新增 `files_total`/`workspace`/`workspace_sha`。回归：空仓失败 |
+| M6 | 报告新增 `coverage {source_files, sliced_files, excluded_entries, units_total, skipped_units, batches_done, batches_abandoned}`；`AuditPlan` 携带 source_files/excluded_entries；skip 做白名单校验（不存在单元号 WARN 忽略）+ **全量 skip 直接 Quality 拒收**。回归：skip 全量拒收 |
+| M7 | JSON `cross_analysis = {findings: 核验后, dropped_ghosts, concern_verdicts, parse_errors}`——不再写原始集合。回归：JSON 无幽灵 |
+| M8 | 跨层去重一次（deduped + cross_kept）→ 汇总与 MD 都用合并集；`severity_summary_of` 改单集合入参。回归：跨层重复只算一次（major=1）、幽灵不进汇总 |
+| m1 | `read_stage0/read_stage2` 改返回 `Option`（WARN），损坏时清标记重算。回归：损坏 stage0 重算 |
+| m2 | `load_persisted_findings` 返回 `(findings, bad_ids)`，坏批次从 `done_batches` 摘除并重审。回归：损坏发现文件被重审覆盖 |
+| m3 | MD 表格单元转义（`|`→`\|`，换行→空格）、view 用 kebab-case。回归：转义与结构列数 |
+| m4 | `CrossAnalysis.parse_errors` 计数（单条反序列化失败 / 非二元组 verdict）+ WARN + 入报告 |
+| m5 | 预查剔除行尾注释；口径降级为「参考计数」（含字符串与 `#[cfg(test)]` 命中），**提示词与 batch_instruction 同步改为非裁决依据** |
+| m6 | `u32::try_from(line)`，越界即协议违例。回归：4294967296 被拒 |
+| m7 | 提示词改为「协议块必须在正文之前（允许一句总述），取第一个块」——与解析器行为一致 |
+| m8 | Stage 2 输入改 `deduped`（去重后） |
+| m9 | 五段 `set_phase`：audit-slice / audit-plan / audit-batch / audit-cross / audit-report |
+| m10 | 报告带 `workspace` + `workspace_sha`（git HEAD，非 git 仓 = null） |
+| m11 | 核验读取改为 canonicalize 后前缀校验（仓内符号链接越界 → 拒读 + WARN） |
+| m12 | 重复注释与两条语句挤行已清（随 rewrite） |
+| m13 | `Progress.abandoned`（serde default）入断点，报告取历史 + 本次 |
+| m14 | `MAX_FINDINGS_PER_BATCH = 100` 截断 + WARN。回归：超限截断 |
+
