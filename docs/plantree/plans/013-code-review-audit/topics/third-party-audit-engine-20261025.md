@@ -42,6 +42,28 @@
 key 的 success:false 响应 1 次 Failed、0 次重试；spawn IO 失败按文档决定重试与否并有对应
 测试；台账目录只读时 spawn 失败或 ERROR 日志含路径。
 
+## 修复状态表（2026-10-25 第二轮，全部落地）
+
+> 9 条属实项全部修复（#1 上轮已落地），按审计报告建议优先级推进；终验 789 绿 0 failed，
+> clippy 无新增（双 EXIT 原始日志 bg_azchpbhp：TEST_EXIT=0 / CLIPPY_EXIT=0，20 条与修复前持平）。
+
+| # | 修复 commit | 落地内容 |
+|---|---|---|
+| 1 | 24fd918（上一轮） | code-review 控制面（门卫/watchdog/map_intervention/RunControl）——本报告审查基线早于该 commit |
+| 2 | 5e2d2ff | command_failure 配置类改 Config + map_intervention Config 分支（WARN+明确 Failed 不重启）+ 重试层分级扩展（配置类 WARN「（配置类，不重启）」）；回归：1 次尝试 0 重试 |
+| 3 | 52b0e40 | DevforgeError::root_cause 剥包装；is_infra_failure 重写（根因 System\|Io 可重启，决策注释即文档）；client 流 EOF 从 RpcProtocol 改 System（子进程死亡两种表象统一）；f6 断言更新新口径；分类矩阵 8 例回归 |
+| 4 | c6a3142 | spawn 台账 save 失败 ERROR 带路径（事实源缺口可见，不回滚的决策注释即文档）；kill_run_processes 不可读 ERROR 留痕；回归不可读强杀返 0 |
+| 6 | c6a3142 | SpawnLedger::load_for_record：损坏 WARN + .bak 备份 + 空账起底（替换 unwrap_or_default）；回归损坏备份与恢复写入 |
+| 5 | 245d91a | profiles_for_sop 测试锁 code-review 表项（删表项走空切片的门卫放行口子关死） |
+| 7 | 245d91a | client 三处可失败路径 expect 改 RpcProtocol（kill 后发 prompt/UI 应答不 panic） |
+| 8 | 245d91a | decode_line 错误只露 type/id+len 摘要（summarize_line，凭据不入日志） |
+| 10 | 245d91a | preflight_codegraph spawn+截止轮询（10s 超时强杀）+ stderr piped 伴读落 tracing |
+| 9 | 789e43b | 统一杀进程入口 kill_run(ledger_path: Option<&Path>)：台账双验证优先，缺失降级扫盘+WARN；scheduler 熔断与 watchdog cancel/失活两处全换接；回归三断言（命中击杀/缺失降级/无路径扫盘） |
+
+新增回归测试共 9 条：config_failures_not_retried、infra_failure_classification_matrix（8 例）、
+corrupt_ledger_backed_up、kill_run_processes_unreadable_returns_zero、kill_run_hits_ledger_first、
+profiles code-review 断言（并入既有表驱动测试）；f6 runlog 两断言更新到新口径。
+
 ## 核实总评
 
 - 连续第三份外部报告保持高精度：10 条中 9 条属实 0 误报，1 条（#1）是基线时差而非误报
