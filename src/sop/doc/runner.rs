@@ -15,9 +15,14 @@
 
 use std::path::Path;
 
+/// 引擎审计修复 #3：单元快照（相对路径 → (长度, mtime 纳秒) 指纹）。
+type FileSnapshot = std::collections::BTreeMap<String, (u64, u128)>;
+/// unit → (写前基线, 交卷时点)——快照跟单元走，lead=1 下互不冲掉。
+type UnitSnapshots = std::collections::HashMap<String, (FileSnapshot, FileSnapshot)>;
+
 use crate::error::{DevforgeError, Result};
 use crate::runstate::StateStore;
-use crate::sop::doc::evidence::{produced_files, snapshot_files};
+use crate::sop::doc::evidence::snapshot_files;
 use crate::sop::doc::prompts::{
     DOC_REMEDIATION_PREFIX, doc_kickoff, doc_review_instruction,
 };
@@ -165,16 +170,10 @@ where
     let mut active_is_fix = false;
     let mut active_fix_round: Option<u32> = None;
     let mut last_unit: Option<String> = None;
-       // 引擎审计修复 #3：快照跟单元走，且存「写前 + 交卷」两份——lead=1 下写 N+1
+    // 引擎审计修复 #3：快照跟单元走，且存「写前 + 交卷」两份——lead=1 下写 N+1
     // 不能冲掉 N 的基线；Fix 重入时重拍；产出集以交卷时点为准（PASS 可能迟到，
     // 不能拿 PASS 处理时点的全局现状做 diff，否则后续单元的产出混入名单）
-    let mut unit_snapshots: std::collections::HashMap<
-        String,
-        (
-            std::collections::BTreeMap<String, (u64, u128)>,
-            std::collections::BTreeMap<String, (u64, u128)>,
-        ),
-    > = Default::default();
+    let mut unit_snapshots: UnitSnapshots = Default::default();
     let mut resume_note = resume_note;
     let mut first_kickoff_sent = false;
     let mut nudges = 0usize;

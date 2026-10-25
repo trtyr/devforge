@@ -41,6 +41,27 @@
 #3 的 produced_files 语义需要与 #5（一单元一提交）合并考虑——文件名单的错误
 根源是「PASS 认定与文件快照的生命周期错位」。
 
+## 修复状态表（2026-10-25 第二轮，全部落地）
+
+> 10/10 已修复；终验 808 绿 0 failed（TEST_EXIT=0），clippy 本轮新增清零
+> （CLIPPY_EXIT=0，lib 剩 13 条均在 audit/pipeline、report、store、change 域、
+> resume.rs 等非本轮文件；双 EXIT 原始日志 bg_o36w828e 首验 / bg_04byf8cs 终态）。
+> #1+#2 按「分母与拦截缺一不可」捆绑首发；#3+#5 按快照生命周期一体设计
+> （提交名单直接复用 #3 快照对的产出集）。
+
+| # | 修复 commit | 落地内容 |
+|---|---|---|
+| 1 | 66ba19f | collect_markdown 排除 _meta 目录段（门 0 词表含全部 Symbol 名，纳入分母则单元正文零字覆盖已 100% 假绿；对齐 duplicate_mentions 口径，runbook_commands 同源排除无影响）；回归 meta_glossary_is_excluded_from_coverage |
+| 2 | 66ba19f | 引擎按 passed() 真拦：run_pipeline 装载清单+EntityIndex 机械门数据（不可读 WARN 降级），Pass 分支 coverage_for_unit+lint 不达标按 FAIL 同款进 fix 队列（带缺失清单）+断路器兜底不 mark_done；终审 parse 后全量机械门不达标 Quality 拒采信；回归 mechanical_gate_rejects_pass_without_coverage |
+| 3 | 56f0245 | 快照生命周期收口：unit → (写前, 交卷) 快照对跟单元走（lead=1 下互不冲掉）+ Fix 重入重拍 + produced_files_between 两快照 diff（产出集绑交卷时点，PASS 迟到不混入后续单元产出）+ PASS 无快照守卫宁失败不落错名单；回归 pass_uses_own_units_snapshot_not_latest（修复前实测 A 名单混入 b.md） |
+| 4 | 87555de | 门 0 闭包拦截：check_closures findings 非空 run 不开工（Quality 指向 gate0-closures.md，不再放行残清单进滚动）；判定抽 gate0_block 纯函数；回归 gate0_findings_block_the_run + gate0_clean_findings_pass |
+| 6 | 237cbcb | 终审协议重试：final_review_with_retry（连续 MAX_DOC_PROTOCOL_VIOLATIONS=3 次违例换实例重试，耗尽交回违例 verdict 走失败路径、账单留证，对齐单审口径）；运行账单 create/write 从 let _ = 吞错改 tracing::error! 含路径；回归 final_review_retries_protocol_violation + final_review_exhausts_violations_returns_last |
+| 8 | aa96ca5 | 协议位收口：parse_doc_complete 尾部协议位（close 后全空白才算，正文引用示例块不再盖过尾部真标记，change SOP 同款纪律）+ extract_tag（review 三块）改前置 first find（DR-13 裁决块在第一行）；last_block_wins 按新语义改写 first_block_wins；回归 quoted_example_cannot_override_head_verdict + complete_marker_ignores_quoted_examples |
+| 10 | aa96ca5 | runner.rs:12 「零硬限制」注释对齐实现（重推 3/空回复 3/协议违例 3/连续 2 FAIL 断路器；单元数按清单分母无额外上限） |
+| 5 | 2482e74 | 一单元一提交补实现：PASS 后按本单元产出名单（#3 快照对的 files）git add+commit -- pathspec——回归实测逮住 lead=1 裹挟（整目录 add 把后续单元提前落盘的 b.md 卷进 A 的提交）改按名单收窄；非 git 仓/空名单/不可用三路降级 WARN 不阻断；回归 unit_pass_commits_docs_per_unit_in_git_repo（真 git 仓两单元两提交） |
+| 7 | 2482e74 | doc_level 档位接线：DEVFORGE_DOC_LEVEL（默认 complete）经 DocLevel::parse 归一，单元审计注入/run_pipeline/终审机械门四处同口径（原先 parse 与档位只存在于纯函数层零读取点）；回归 doc_level_parse_defaults_to_complete |
+| 9 | 2482e74 | Runbook 引擎代跑立为非目标：P008 README Out 节声明（抽取仅为审查参考文本，「从零 boot」验证交审查官判定与人工复核，引擎不代跑） |
+
 ## 核实总评
 
 - 连续第五份外部报告 0 误报（10/10 实锤）。四批累计 53 条发现 53 条实锤。

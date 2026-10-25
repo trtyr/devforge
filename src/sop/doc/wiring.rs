@@ -13,7 +13,6 @@ use crate::engine::process::SpawnSpec;
 use crate::error::{Context as _, Result};
 use crate::observability::watchdog::run_with_watchdog;
 use crate::server::RelayUserLink;
-use crate::sop::planning::ReviewSessionFactory;
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
 
 use super::{DOCS_DIR, META_DIR};
