@@ -209,16 +209,34 @@ async fn main() -> anyhow::Result<()> {
         devforge::domain::Store::load(&root.join("store.json"))
             .map(|s| s.with_persist(root.join("store.json")))
             .unwrap_or_else(|e| {
-                tracing::warn!(
-                    component = "main",
-                    error = %e,
-                    "store.json 不可用，按空仓冷启动（旧文件已备份为 .bak）"
-                );
-                let _ = std::fs::rename(
-                    root.join("store.json"),
-                    root.join("store.json.bak"),
-                );
-                devforge::domain::Store::new().with_persist(root.join("store.json"))
+                // 地基批次 #3：备份要如实——旧实现先 warn「已备份为 .bak」再 `let _ = rename`，
+                // rename 失败（权限/跨设备）无日志、且文件不存在（首启）也走这条谎言。
+                let path = root.join("store.json");
+                let bak = root.join("store.json.bak");
+                if path.exists() {
+                    match std::fs::rename(&path, &bak) {
+                        Ok(()) => tracing::warn!(
+                            component = "main",
+                            error = %e,
+                            bak = %bak.display(),
+                            "store.json 不可用，已备份为 .bak 后按空仓冷启动"
+                        ),
+                        Err(re) => tracing::error!(
+                            component = "main",
+                            error = %e,
+                            rename_error = %re,
+                            path = %path.display(),
+                            "store.json 不可用且备份失败——坏文件仍在原处，下次启动会再次命中"
+                        ),
+                    }
+                } else {
+                    tracing::warn!(
+                        component = "main",
+                        error = %e,
+                        "store.json 不存在（首次启动），按空仓冷启动"
+                    );
+                }
+                devforge::domain::Store::new().with_persist(path)
             }),
         devforge::domain::sop::SopRegistry::builtin(),
         manifest,

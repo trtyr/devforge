@@ -39,7 +39,7 @@ src/
 ## 运行
 
 ```bash
-cargo run            # 启动 API（默认 127.0.0.1:3000，DEVFORGE_ADDR 可改）
+cargo run            # 启动 API（默认 127.0.0.1:7888，DEVFORGE_ADDR 可改）
 ```
 
 可选环境变量：`DEVFORGE_TOKEN`（启用 `x-devforge-token` 鉴权）、`DEVFORGE_RUN_TIMEOUT_MS`（run 超时）。
