@@ -196,7 +196,9 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             .unwrap_or(TaskStatus::Failed)
     };
 
-    for (project, task_id, status, deps, _exclusive) in snapshot {
+    let mut dispatched_this_tick = 0usize;
+    let mut exclusive_dispatched_this_tick = false;
+    for (project, task_id, status, deps, exclusive) in snapshot {
         if !matches!(status, TaskStatus::Pending | TaskStatus::Blocked) {
             continue;
         }
@@ -222,8 +224,9 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
                 continue; // 依赖未就绪——静默等（非阻塞态）
             }
         }
-        // 独占窗口：任一 exclusive 任务在跑 → 全部停派。
-        if exclusive_running {
+        // 独占窗口：已有独占任务在跑，或本 tick 已派工过独占任务（复验 #3：
+        // running 集合在后台线程 begin_run 前不变，不追踪本 tick 派工就会同 tick 双独占并行）。
+        if exclusive_running || exclusive_dispatched_this_tick {
             let _ = {
                 let mut store = st.store.lock().expect("store 锁");
                 store.set_task_status(&project, &task_id, TaskStatus::Blocked)
@@ -234,10 +237,11 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             ));
             continue;
         }
-        // 容量：running < min(准入上限, store 硬上限)。
+        // 容量：running + 本 tick 已派工（预留）< min(准入上限, store 硬上限)——
+        // begin_run 发生在后台线程，tick 内 running_run_count 不变，必须本地预留。
         let capacity_ok = {
             let store = st.store.lock().expect("store 锁");
-            store.running_run_count()
+            store.running_run_count() + dispatched_this_tick
                 < cfg
                     .max_concurrent_mutation
                     .min(store.max_concurrent_runs.max(1))
@@ -260,6 +264,10 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             };
         }
         report.dispatched.push(format!("{project}/{task_id}"));
+        dispatched_this_tick += 1;
+        if exclusive {
+            exclusive_dispatched_this_tick = true;
+        }
     }
     report
 }
@@ -286,6 +294,12 @@ pub async fn launch(st: &SharedState, project: &str, task_id: &str) {
 
 /// 调度循环：1s 心跳看 kick，30s 周期全量 tick（serve 时 spawn；测试可直接调 tick）。
 pub async fn scheduler_loop(st: SharedState, cfg: SchedulerConfig) {
+    // 启动同步（复验 #3）：store 硬上限 ≥ 准入上限，否则 min() 恒等准入上限被 store 压平，
+    // 并发永不开闸（默认 1×1）。取 max：用户手动调大的配置不被压回。
+    {
+        let mut store = st.store.lock().expect("store 锁");
+        store.max_concurrent_runs = store.max_concurrent_runs.max(cfg.max_concurrent_mutation);
+    }
     let mut last = std::time::Instant::now() - Duration::from_secs(60);
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;

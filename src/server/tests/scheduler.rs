@@ -296,3 +296,65 @@ async fn scheduler_status_endpoint_reports_snapshot() {
     assert_eq!(body["queue"][0]["pending"], 1);
     assert_eq!(body["queue"][0]["needs_repair"], 0, "无冲突时冲突面为 0");
 }
+
+/// 复验 #3 回归：同一 tick 两个就绪的独占任务，最多派工一个（后台 begin_run 前集合不变，
+/// 不追踪本 tick 派工就会双独占并行）。
+#[tokio::test]
+async fn same_tick_double_exclusive_dispatches_at_most_one() {
+    let f = fixture();
+    make_task(
+        &f,
+        "devforge",
+        "ex-a",
+        TaskDeps { depends_on: vec![], exclusive: true },
+    );
+    make_task(
+        &f,
+        "devforge",
+        "ex-b",
+        TaskDeps { depends_on: vec![], exclusive: true },
+    );
+    let cfg = SchedulerConfig::default();
+    let report = tick(&f.state, &cfg);
+    let dispatched_ex = report
+        .dispatched
+        .iter()
+        .filter(|t| t.contains("ex-"))
+        .count();
+    assert_eq!(dispatched_ex, 1, "同 tick 双独占只能派一个：{report:?}");
+    assert!(
+        report
+            .blocked
+            .iter()
+            .any(|(t, r)| t.contains("ex-") && r == "exclusive_window"),
+        "另一个应阻塞在独占窗口：{report:?}"
+    );
+}
+
+/// 复验 #3 回归：容量为 1 且已有一个 run 在跑时，同 tick 不得再派工（预留计数）。
+#[tokio::test]
+async fn capacity_one_with_running_run_dispatches_nothing() {
+    let f = fixture();
+    make_task(&f, "devforge", "busy", TaskDeps::default());
+    make_task(&f, "devforge", "waiting", TaskDeps::default());
+    {
+        let mut store = f.state.store.lock().unwrap();
+        store.max_concurrent_runs = 1;
+        // busy：置 Running（模拟已派工且 begin_run 完成）
+        let run = store.begin_run("devforge", "busy").unwrap();
+        let _ = run;
+    }
+    let cfg = SchedulerConfig::default();
+    let report = tick(&f.state, &cfg);
+    assert!(
+        !report.dispatched.iter().any(|t| t == "devforge/waiting"),
+        "容量 1 已占满，waiting 不得派工：{report:?}"
+    );
+    assert!(
+        report
+            .blocked
+            .iter()
+            .any(|(t, r)| t.contains("waiting") && r == "capacity"),
+        "waiting 应阻塞在容量：{report:?}"
+    );
+}
