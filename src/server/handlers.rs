@@ -311,7 +311,21 @@ pub async fn cancel_task(
             c.cancel();
             // 解阻 dialog 挂起：丢掟全部待答 sender，阻塞中的 ask 立刻失败，
             // SOP 以错误解阻 → 下方 execute 的 is_cancelled 映射为 Failed
-            st.ui.abort_all();
+            let run_id = {
+                let store = st.store.lock().expect("store 锁");
+                store
+                    .get_task(&project, &task)
+                    .and_then(|t| t.current_run.clone())
+            };
+            match run_id {
+                Some(rid) => {
+                    st.ui.abort_run(rid.0.as_str());
+                }
+                // 无归属信息（理论不可达：control 只在 run 期间登记）——退回全局解阻
+                None => {
+                    st.ui.abort_all();
+                }
+            }
             Ok(Json(json!({"ok": true, "cancelled": true})))
         }
         None => Err(ApiError::not_found(format!(

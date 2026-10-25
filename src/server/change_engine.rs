@@ -85,7 +85,17 @@ impl BuiltinRpcEngine {
         impl Drop for WsCleanup<'_> {
             fn drop(&mut self) {
                 if let Some(ws) = self.ws.take() {
-                    let _ = ws.remove(self.repo);
+                    // change 批次 #5：清理失败不得静默——残留的脏 worktree 会被下次 run 的
+                    // create/ensure 复用，表现为「新 run 一开局就带着上一轮的未提交改动」。
+                    if let Err(e) = ws.remove(self.repo) {
+                        tracing::error!(
+                            component = "change-engine",
+                            event = "workspace.cleanup_failed",
+                            repo = %self.repo.display(),
+                            error = %e,
+                            "worktree 清理失败：残留脏 worktree 可能被下次 run 复用"
+                        );
+                    }
                 }
             }
         }

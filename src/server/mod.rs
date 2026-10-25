@@ -41,7 +41,7 @@ use crate::sop::planning::UserLink;
 pub struct UiRelay {
     next_id: AtomicU64,
     bus: std::sync::Arc<EventBus>,
-    pending: Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>,
+    pending: Mutex<HashMap<String, (std::sync::mpsc::Sender<String>, Option<String>)>>,
 }
 
 impl UiRelay {
@@ -58,10 +58,13 @@ impl UiRelay {
     pub fn ask_blocking(&self, question: &str, options: &[&str]) -> Result<String> {
         let id = format!("ui-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let (tx, rx) = std::sync::mpsc::channel();
+        // server #3：记下发起方 run——cancel 只能解阻**自己那个 run** 的待答，
+        // 不能把并发 run（max_concurrent_runs > 1）的 dialog 一起打掉。
+        let owner = crate::observability::current_run_id();
         self.pending
             .lock()
             .expect("pending 锁")
-            .insert(id.clone(), tx);
+            .insert(id.clone(), (tx, owner));
         // 先登记后广播：应答端点在事件可见后仍能命中 pending
         self.bus.emit(json!({
             "type": "ui.request",
@@ -76,7 +79,7 @@ impl UiRelay {
 
     /// 回填应答（POST /ui/{id}/answer 调用）。
     pub fn answer(&self, id: &str, value: impl Into<String>) -> Result<()> {
-        let tx = self
+        let (tx, _owner) = self
             .pending
             .lock()
             .expect("pending 锁")
@@ -102,6 +105,16 @@ impl UiRelay {
         let n = map.len();
         map.clear();
         n
+    }
+
+    /// 中止**指定 run** 的待答（cancel 端点用）：只丢这个 run 的 sender，
+    /// 并发 run 的 dialog 不受影响。无归属信息的历史条目（不在 run 上下文里发起）
+    /// 保持不动——它们不归任何 run 管，宁可不打也不误伤。
+    pub fn abort_run(&self, run_id: &str) -> usize {
+        let mut map = self.pending.lock().expect("pending 锁");
+        let before = map.len();
+        map.retain(|_, (_, owner)| owner.as_deref() != Some(run_id));
+        before - map.len()
     }
 }
 
@@ -317,7 +330,23 @@ pub fn run_in_background(
     };
     let ok = {
         let mut store = state.store.lock().expect("store 锁");
-        store.finish_run(&run.id, finish).is_ok()
+        match store.finish_run(&run.id, finish) {
+            Ok(()) => true,
+            Err(e) => {
+                // server #4：收尾失败不能只吞成一个 ok=false——run 会停在 Running
+                // 继续占着串行槽（准入看 running_run_count），下一个 start 会莫名 409。
+                tracing::error!(
+                    component = "run",
+                    event = "run.finish_failed",
+                    project,
+                    task = task_id,
+                    run_id = %run.id.0,
+                    error = %e,
+                    "run 终态落账失败：该 run 仍为 Running，串行槽被占死，需人工核对 store"
+                );
+                false
+            }
+        }
     };
     state.emit(json!({
         "type": "run.finished",
