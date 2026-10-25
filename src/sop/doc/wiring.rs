@@ -343,10 +343,11 @@ impl BuiltinRpcEngine {
 
                 let mut final_factory =
                     RpcReviewFactory::per_round_in(final_review_root, "doc-review", final_session_root, final_blackboard);
-                let mut session = final_factory.open()?;
-                let final_text = session.review(&crate::sop::doc::prompts::doc_final_instruction(&full))?;
-                drop(session);
-                let verdict = crate::sop::doc::protocol::parse_doc_review(&final_text)?;
+                // 引擎审计修复 #6：终审也吃协议重试（见 final_review_with_retry）
+                let verdict = final_review_with_retry(
+                    &mut final_factory,
+                    &crate::sop::doc::prompts::doc_final_instruction(&full),
+                )?;
                 // 引擎审计修复 #2：终审 PASS 也要过机械门——覆盖与 lint 不达标时
                 // 审查官的 PASS 不被采信（宁可失败让人看，不放过假绿收工）。
                 {
@@ -385,9 +386,18 @@ impl BuiltinRpcEngine {
                     .filter(|e| e.kind == crate::docgen::inventory::EntryKind::Module)
                     .count();
                 let dir = docs.join("_meta/runs").join(&final_run_id);
-                let _ = std::fs::create_dir_all(&dir);
-                let _ = std::fs::write(
-                    dir.join("report.md"),
+                // 引擎审计修复 #6：运行账单是终产物，写失败必须 ERROR 留痕（含路径），不静默吞
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    tracing::error!(
+                        component = "doc-engine",
+                        path = %dir.display(),
+                        error = %e,
+                        "运行账单目录创建失败"
+                    );
+                }
+                let report_path = dir.join("report.md");
+                if let Err(e) = std::fs::write(
+                    &report_path,
                     format!(
                         "# doc-from-zero 运行报告\n\n- run: {}\n- 墙钟: {}s\n- 尝试: {}（1 = 首次；>1 含自动重启）\n- 模块数: {} / 单元数: {}\n- 单元完成: {:?}\n- 审查轮次: {}\n- 累计问题: {}\n- 用量: {}\n- 终审: {:?}\n\n## 终审审计\n\n{}\n",
                         final_run_id,
@@ -402,7 +412,14 @@ impl BuiltinRpcEngine {
                         verdict.verdict,
                         full
                     ),
-                );
+                ) {
+                    tracing::error!(
+                        component = "doc-engine",
+                        path = %report_path.display(),
+                        error = %e,
+                        "运行账单写失败"
+                    );
+                }
 
                 if verdict.protocol_violation {
                     return Err(crate::error::DevforgeError::Quality(format!(
@@ -468,6 +485,37 @@ fn gate0_block(
     )))
 }
 
+/// 引擎审计修复 #6：终审协议重试——复用单审口径（连续 MAX_DOC_PROTOCOL_VIOLATIONS
+/// 次 = 3）：协议违例换实例重试，耗尽时把最后一次违例 verdict 交回调用方走失败路径
+/// （账单留证）；恒 Ok 的解析在缺协议块时也走违例重试而非直接失败。
+fn final_review_with_retry<F: crate::sop::planning::ReviewSessionFactory>(
+    factory: &mut F,
+    instruction: &str,
+) -> Result<crate::sop::doc::protocol::DocReviewReport> {
+    let max = crate::sop::doc::protocol::MAX_DOC_PROTOCOL_VIOLATIONS;
+    for attempt in 0..max {
+        let mut session = factory.open()?;
+        let text = session.review(instruction)?;
+        drop(session);
+        let last_attempt = attempt == max - 1;
+        let verdict = crate::sop::doc::protocol::parse_doc_review(&text)?;
+        if !verdict.protocol_violation {
+            return Ok(verdict);
+        }
+        if last_attempt {
+            return Ok(verdict); // 耗尽：交回违例 verdict，调用方按协议违例失败
+        }
+        tracing::warn!(
+            component = "doc-engine",
+            attempt = attempt + 1,
+            max,
+            issues = ?verdict.issues,
+            "终审协议违例，换实例重试"
+        );
+    }
+    unreachable!("循环必在 last_attempt 分支返回")
+}
+
 #[cfg(test)]
 mod gate0_tests {
     use super::*;
@@ -491,5 +539,52 @@ mod gate0_tests {
     #[test]
     fn gate0_clean_findings_pass() {
         gate0_block(&[], std::path::Path::new("/w/_meta")).unwrap();
+    }
+
+    /// 修复 #6 回归：终审协议违例换实例重试——违例一次后 PASS，open 两次内成功。
+    #[test]
+    fn final_review_retries_protocol_violation() {
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex};
+        let mut factory = crate::sop::doc::mocks::PipeReviewFactory {
+            replies: Arc::new(Mutex::new(VecDeque::from(vec![
+                "我看了看，挺好的".to_string(), // 无协议块 → violation
+                "确实行\n<doc-verdict>PASS</doc-verdict>".to_string(),
+            ]))),
+            instructions: Arc::new(Mutex::new(Vec::new())),
+            gates: crate::sop::doc::mocks::no_gates(),
+        };
+        let v = super::final_review_with_retry(&mut factory, "审").unwrap();
+        assert!(!v.protocol_violation);
+        assert_eq!(
+            factory.instructions.lock().unwrap().len(),
+            2,
+            "违例后应换实例重试一次"
+        );
+    }
+
+    /// 修复 #6 回归：连续违例耗尽上限（3）→ 返回最后一次违例 verdict，
+    /// 不再无限重试（调用方按协议违例失败，账单留证）。
+    #[test]
+    fn final_review_exhausts_violations_returns_last() {
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex};
+        let mut factory = crate::sop::doc::mocks::PipeReviewFactory {
+            replies: Arc::new(Mutex::new(VecDeque::from(vec![
+                "没块".to_string(),
+                "还是没块".to_string(),
+                "依旧没块".to_string(),
+                "不该被取到".to_string(),
+            ]))),
+            instructions: Arc::new(Mutex::new(Vec::new())),
+            gates: crate::sop::doc::mocks::no_gates(),
+        };
+        let v = super::final_review_with_retry(&mut factory, "审").unwrap();
+        assert!(v.protocol_violation, "耗尽应返回违例 verdict");
+        assert_eq!(
+            factory.instructions.lock().unwrap().len(),
+            3,
+            "上限 3 次后不得继续重试"
+        );
     }
 }
