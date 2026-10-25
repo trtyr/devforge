@@ -47,8 +47,9 @@ pub struct Finding {
 
 /// 解析批次审查回复中的 `<audit-findings>` 块（verdict 块家族协议）。
 ///
-/// 返回 `(findings, protocol_error)`：块缺失/JSON 非法/字段非法 → 协议违例
-/// （上抛给 review_with_gate 换实例重审）。
+/// 返回 `(findings, protocol_error)`：块缺失/JSON 非法/字段非法 → 协议违例。
+/// 处置（审计修复 #11，注释对齐实现）：由 `stage1_review_batch` 自制 2 次循环换实例重审，
+/// 再违例放弃该批次——不经 review_with_gate（实例失败保持原分类上抛打断整次，见 #1）。
 pub fn parse_findings(reply: &str) -> Result<Vec<Finding>, String> {
     let start = reply
         .find("<audit-findings>")

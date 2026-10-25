@@ -106,6 +106,8 @@ pub fn run_audit(
         match stage1_review_batch(factory, unit, &unit_labels, &precheck) {
             Ok(fs) => {
                 // 先落盘批次发现，再打勾进度（顺序不可反：进程死在中间也不丢）
+                // 先落盘批次发现，再打勾进度（顺序不可反：进程死在中间也不丢）
+                let batch_n = fs.len();
                 std::fs::write(
                     findings_dir.join(format!("{}.json", unit.id)),
                     serde_json::to_vec_pretty(&fs).ctx("序列化批次发现")?,
@@ -117,7 +119,9 @@ pub fn run_audit(
                 tracing::info!(
                     component = "audit-engine",
                     unit = %unit.id,
-                    batch_findings = findings.len(),
+                    // 审计修复 #12：本批产出（原为 findings.len() 累计值，M3 曾只能靠差值反推）
+                    batch_findings = batch_n,
+                    findings_total = findings.len(),
                     "批次审查完成"
                 );
             }

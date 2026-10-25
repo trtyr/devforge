@@ -88,7 +88,8 @@ pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
             ));
             continue;
         };
-        if *total == 0 || f.line as usize > *total {
+        // 审计修复 #9：line 0 与越界同样丢弃（1-based 约定下 0 必非法，与 evidence 分支对齐）
+        if *total == 0 || f.line == 0 || f.line as usize > *total {
             report.dropped.push((
                 format!("{}/{}", f.path, f.line),
                 format!(
@@ -245,6 +246,15 @@ mod tests {
             assert!(reason.contains("路径越界"), "{loc}: {reason}");
             assert!(!reason.contains("不存在"), "应静态拒绝而非当幽灵：{reason}");
         }
+    }
+
+    /// 审计修复 #9：行号 0 与越界同样丢弃（1-based 约定下 0 必非法）。
+    #[test]
+    fn zero_line_is_dropped() {
+        let r = fixture();
+        let v = verify(r.path(), &[finding("src/real.rs", 0)]);
+        assert!(v.kept.is_empty(), "line=0 不得进 kept");
+        assert!(v.dropped[0].1.contains("行号越界"), "{}", v.dropped[0].1);
     }
 
     /// 审计修复 #4：兑现「零证据不入」——空 evidence 或无 path:line 引用的散文

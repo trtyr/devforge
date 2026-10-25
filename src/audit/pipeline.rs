@@ -247,10 +247,27 @@ pub struct Progress {
 
 impl Progress {
     pub fn load(blackboard: &Path) -> Self {
-        std::fs::read_to_string(blackboard.join("audit-progress.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        match std::fs::read_to_string(blackboard.join("audit-progress.json"))
+            .map_err(|e| e.to_string())
+            .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
+        {
+            Ok(p) => p,
+            Err(e) => {
+                // 审计修复 #8：文件不存在 = 冷启动（静默）；存在但读/解析失败 = 损坏，
+                // 整表重跑代价大，必须 WARN 留痕（与 change::state::load 口径一致，复验 #5 同构）。
+                if std::path::Path::new(blackboard)
+                    .join("audit-progress.json")
+                    .exists()
+                {
+                    tracing::warn!(
+                        component = "audit-engine",
+                        error = %e,
+                        "进度文件损坏，断点作废整表重跑"
+                    );
+                }
+                Self::default()
+            }
+        }
     }
     pub fn save(&self, blackboard: &Path) -> Result<()> {
         std::fs::write(

@@ -85,15 +85,17 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
             .split_once(':')
             .map(|(_, v)| v.to_string())
             .unwrap_or(key.clone());
-        for chunk in files.chunks(MAX_UNIT_FILES) {
+        // 审计修复 #10：分片标签用组内局部序号（全局 seq 当分子会出现「分片 4/2」）
+        let n_chunks = files.len().div_ceil(MAX_UNIT_FILES);
+        for (chunk_i, chunk) in files.chunks(MAX_UNIT_FILES).enumerate() {
             seq += 1;
             units.push(AuditUnit {
                 id: format!("unit-{seq:03}"),
                 files: chunk.to_vec(),
                 label: format!(
                     "{label}{}",
-                    if files.len() > MAX_UNIT_FILES {
-                        format!("（分片 {}/{})", seq, files.len().div_ceil(MAX_UNIT_FILES))
+                    if n_chunks > 1 {
+                        format!("（分片 {}/{})", chunk_i + 1, n_chunks)
                     } else {
                         String::new()
                     }
