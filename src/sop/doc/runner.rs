@@ -163,7 +163,16 @@ where
     let mut active_is_fix = false;
     let mut active_fix_round: Option<u32> = None;
     let mut last_unit: Option<String> = None;
-    let mut unit_before = None;
+       // 引擎审计修复 #3：快照跟单元走，且存「写前 + 交卷」两份——lead=1 下写 N+1
+    // 不能冲掉 N 的基线；Fix 重入时重拍；产出集以交卷时点为准（PASS 可能迟到，
+    // 不能拿 PASS 处理时点的全局现状做 diff，否则后续单元的产出混入名单）
+    let mut unit_snapshots: std::collections::HashMap<
+        String,
+        (
+            std::collections::BTreeMap<String, (u64, u128)>,
+            std::collections::BTreeMap<String, (u64, u128)>,
+        ),
+    > = Default::default();
     let mut resume_note = resume_note;
     let mut first_kickoff_sent = false;
     let mut nudges = 0usize;
@@ -231,10 +240,12 @@ where
                     if !gates_ok {
                         // 机械门不达标：本单元未完成（不 mark_done），等 fix 队列消化
                     } else {
-                    let files = produced_files(
-                        &docs_root,
-                        unit_before.as_ref().expect("写前快照应在"),
-                    );
+                    // 引擎审计修复 #3：produced_files 用本单元自己的「写前→交卷」快照对；
+                    // 无快照 = PASS 先于任何写前到达（只可能是 bug），宁可失败不落错名单
+                    let (before, committed) = unit_snapshots.remove(&$unit).unwrap_or_else(|| {
+                        panic!("PASS 到达但单元 `{}` 无写前快照（引擎审计修复 #3 守卫）", $unit)
+                    });
+                    let files = crate::sop::doc::evidence::produced_files_between(&committed, &before);
                     mark_done(&mut state, &$unit, &files);
                     store.save(&mut state)?;
                     consecutive_fails = 0;
@@ -390,6 +401,9 @@ where
                 active_idx = units.iter().position(|x| *x == u).unwrap_or(active_idx);
                 active_is_fix = true;
                 active_fix_round = Some(fix_round);
+                // 引擎审计修复 #3：Fix 重入重拍快照——旧基线是上一单元写前拍的，
+                // 拿它算 produced_files 会把上一单元的产出与本次 Fix 的产出混记
+                unit_snapshots.insert(u.clone(), (snapshot_files(&docs_root), Default::default()));
                 tracing::info!(
                     component = "doc-sop",
                     event = "fix.start",
@@ -407,7 +421,7 @@ where
                 active = u.clone();
                 active_is_fix = false;
                 active_fix_round = None;
-                unit_before = Some(snapshot_files(&docs_root));
+                unit_snapshots.insert(u.clone(), (snapshot_files(&docs_root), Default::default()));
                 tracing::info!(
                     component = "doc-sop",
                     event = "doc.unit_start",
@@ -500,6 +514,11 @@ where
         }
 
         // ── F. 交卷 → 派审查（占 pending 槽；槽被占则排队，空出时补派）──
+        // 引擎审计修复 #3：交卷时点拍产出快照（PASS 可能迟到到后续单元写完之后）
+        unit_snapshots
+            .entry(active.clone())
+            .or_default()
+            .1 = snapshot_files(&docs_root);
         let round = bump_review(&mut state) as u32;
         tracing::info!(
             component = "doc-sop",

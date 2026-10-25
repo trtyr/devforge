@@ -41,10 +41,19 @@ pub fn produced_files(
     root: &Path,
     before: &std::collections::BTreeMap<String, (u64, u128)>,
 ) -> Vec<String> {
-    snapshot_files(root)
-        .into_iter()
+    produced_files_between(&snapshot_files(root), before)
+}
+
+/// 两快照间的新增/改写文件（引擎审计修复 #3：lead=1 下 PASS 可能迟到，
+/// 产出集必须以交卷时点的快照为准，不能拿 PASS 处理时点的全局现状做 diff）。
+pub fn produced_files_between(
+    after: &std::collections::BTreeMap<String, (u64, u128)>,
+    before: &std::collections::BTreeMap<String, (u64, u128)>,
+) -> Vec<String> {
+    after
+        .iter()
         .filter(|(p, _)| !p.starts_with("_meta/"))
-        .filter(|(p, stamp)| before.get(p) != Some(stamp))
-        .map(|(p, _)| p)
+        .filter(|(p, stamp)| before.get(*p) != Some(*stamp))
+        .map(|(p, _)| p.clone())
         .collect()
 }

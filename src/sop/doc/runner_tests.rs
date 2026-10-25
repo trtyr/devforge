@@ -515,3 +515,107 @@ fn mechanical_gate_rejects_pass_without_coverage() {
         "连续两轮不达标应触发断路器：{msg}"
     );
 }
+
+/// 引擎审计修复 #3 回归：lead=1 下 B 的写不得冲掉 A 的写前快照——A 的 PASS
+/// 迟到（gate 卡到 B 交卷后放行）时，mark_done(A) 的文件名单必须只含 A 的产出。
+/// 错实现形态：unit_before 单变量被 B 覆盖，A 的名单混入 B 的文件。
+#[test]
+fn pass_uses_own_units_snapshot_not_latest() {
+    use crate::sop::doc::state::done_units;
+    use std::collections::VecDeque;
+
+    // converse 时真写文件的 agent：A 写 a.md，B 写 b.md——快照差异可断言
+    struct WritingAgent {
+        turns: VecDeque<String>,
+        docs_root: std::path::PathBuf,
+        received: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    impl crate::sop::planning::PlanAgentSession for WritingAgent {
+        fn converse(
+            &mut self,
+            _message: &str,
+            _ui: &mut dyn crate::sop::planning::UserLink,
+        ) -> crate::error::Result<String> {
+            let marker = self.turns.pop_front().expect("轮次耗尽");
+            let fname = if marker.contains("unit-a") { "a.md" } else { "b.md" };
+            std::fs::write(self.docs_root.join(fname), format!("# {marker}\n")).unwrap();
+            self.received.lock().unwrap().push(marker.clone());
+            Ok(marker)
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let docs_root = tmp.path().join("docs/contexts");
+    std::fs::create_dir_all(&docs_root).unwrap();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let agent = WritingAgent {
+        turns: VecDeque::from(vec![
+            "写A\n<doc-complete>unit-a-01</doc-complete>".into(),
+            "写B\n<doc-complete>unit-b-02</doc-complete>".into(),
+        ]),
+        docs_root: docs_root.clone(),
+        received: received.clone(),
+    };
+
+    // gate 卡住 A 的审查裁决，直到 B 交卷（received.len() == 2）才放行——
+    // 保证「B 的写前快照已覆盖」发生在 A 的 PASS 处理之前
+    let (tx1, rx1) = gate_pair();
+    let received_w = received.clone();
+    let factory = PipeReviewFactory {
+        replies: Arc::new(Mutex::new(
+            [
+                "<doc-verdict>PASS</doc-verdict>",
+                "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        )),
+        instructions: Arc::new(Mutex::new(Vec::new())),
+        gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1]))),
+    };
+    drive_gates(
+        vec![(
+            Box::new(move || received_w.lock().unwrap().len()) as Box<dyn Fn() -> usize + Send>,
+            2,
+        )],
+        vec![tx1],
+    );
+
+    run_pipeline(
+        agent,
+        Arc::new(Mutex::new(factory)),
+        state_path(&tmp),
+        &mut NoUser,
+        tmp.path(),
+        &["unit-a-01".to_string(), "unit-b-02".to_string()],
+        "complete",
+        String::new(),
+        None,
+        None,
+    )
+    .unwrap();
+
+    let saved = state_path(&tmp).load();
+    let state = saved.state().expect("断点应已落盘");
+    assert_eq!(done_units(state).len(), 2);
+    let files = state.data.get("files").expect("files 映射应在");
+    let a_files = files
+        .get("unit-a-01")
+        .and_then(|v| v.as_array())
+        .expect("A 的文件名单应在");
+    let names: Vec<&str> = a_files.iter().filter_map(|v| v.as_str()).collect();
+    assert!(
+        names.contains(&"a.md") && !names.contains(&"b.md"),
+        "A 的名单不得混入 B 的产出（快照被后续单元覆盖）：{names:?}"
+    );
+    let b_files = files
+        .get("unit-b-02")
+        .and_then(|v| v.as_array())
+        .expect("B 的文件名单应在");
+    let b_names: Vec<&str> = b_files.iter().filter_map(|v| v.as_str()).collect();
+    assert!(
+        b_names.contains(&"b.md"),
+        "B 的名单应含自己的产出：{b_names:?}"
+    );
+}
