@@ -55,7 +55,7 @@ key 的 success:false 响应 1 次 Failed、0 次重试；spawn IO 失败按文�
 | 4 | c6a3142 | spawn 台账 save 失败 ERROR 带路径（事实源缺口可见，不回滚的决策注释即文档）；kill_run_processes 不可读 ERROR 留痕；回归不可读强杀返 0 |
 | 6 | c6a3142 | SpawnLedger::load_for_record：损坏 WARN + .bak 备份 + 空账起底（替换 unwrap_or_default）；回归损坏备份与恢复写入 |
 | 5 | 245d91a | profiles_for_sop 测试锁 code-review 表项（删表项走空切片的门卫放行口子关死） |
-| 7 | 245d91a | client 三处可失败路径 expect 改 RpcProtocol（kill 后发 prompt/UI 应答不 panic） |
+| 7 | 245d91a + 38eace3 | client 三处可失败路径 expect 改 RpcProtocol（kill 后发 prompt/UI 应答不 panic）。更正：245d91a 实际只落了 UI 应答两处——批量 edit 整批回滚后 prompt 段丢失未核验，commit 信息与首版本表虚报「三处」；审计员驳回（38eace3）补上 prompt 路径并如实更正，根因=批量 edit 回滚后未重读全批落点（L1 编辑纪律违例实证） |
 | 8 | 245d91a | decode_line 错误只露 type/id+len 摘要（summarize_line，凭据不入日志） |
 | 10 | 245d91a | preflight_codegraph spawn+截止轮询（10s 超时强杀）+ stderr piped 伴读落 tracing |
 | 9 | 789e43b | 统一杀进程入口 kill_run(ledger_path: Option<&Path>)：台账双验证优先，缺失降级扫盘+WARN；scheduler 熔断与 watchdog cancel/失活两处全换接；回归三断言（命中击杀/缺失降级/无路径扫盘） |
