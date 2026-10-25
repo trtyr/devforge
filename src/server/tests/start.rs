@@ -6,6 +6,55 @@ use super::*;
 use super::{crud::*, http::*, observe::*, retry::*};
 
 #[tokio::test]
+async fn rejected_fresh_start_does_not_wipe_the_checkpoint() {
+    // server #1 补正回归：fresh 会删该 SOP 的断点——顺序必须是「准入 → start_gate」，
+    // 否则一次被拒的 start 就把断点删了（现场丢失，且调用方还以为只是冲突）。
+    let f = fixture();
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": "/tmp/ws-fresh"})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t1", "sop": "change"})),
+    )
+    .await;
+
+    // 占满串行槽（同时把任务置为 Running → 后续准入必拒）
+    {
+        let mut store = f.state.store.lock().expect("store 锁");
+        store.max_concurrent_runs = 1;
+        store.begin_run("p", "t1").unwrap();
+    }
+    // 预置一份断点（fresh 会删它——但要在准入通过之后才允许删）
+    let state_path = f.state.plans_root.join("p/t1/change/state.json");
+    std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &state_path,
+        r#"{"schema_version":1,"sop":"change","project":"p","task":"t1","updated_at_ms":1,"attempt":0,"data":{}}"#,
+    )
+    .unwrap();
+
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks/t1/start",
+        Some(json!({"fresh": true})),
+    )
+    .await;
+    assert_eq!(resp.status(), 409, "并发槽已满 → 准入必须当场拒");
+    assert!(
+        state_path.is_file(),
+        "被拒的 start 不得先删断点（fresh 清断点必须在准入之后）"
+    );
+}
+
+#[tokio::test]
 async fn start_sop_override_switches_task_for_cross_sop_chain() {
     // P005 跨 SOP 触发：同任务先规划后编码——start 带可选 sop 覆盖
     let f = fixture();
