@@ -574,6 +574,78 @@ fn second_reroute_overwrites_the_failure_context() {
     assert_eq!(ctx.issues, s(&["新失败"]), "新 issues 覆盖旧的，不追加");
 }
 
+/// 引擎审计修复 #5 回归：testing→plan 回退必须把 issues 写进断点并计入修复额度——
+/// 错实现形态：issues 丢弃 + 无 cap → resume 走 plan_kickoff 重新开局，
+/// Plan→Coding→Testing→Plan 无界循环。
+#[test]
+fn testing_route_plan_persists_issues_and_counts_toward_fix_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    let st = store(tmp.path());
+    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    seeded.phase = ChangePhase::Testing;
+    save(&st, &seeded).unwrap();
+
+    let mut session = Scripted::new();
+    session.testings.push_back(TestingTurn::RoutePlan {
+        failures: s(&["验收标准无法落地：计划承诺了测不了的行为"]),
+    });
+    let mut ui = NoUser;
+    let _ = run(
+        cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]),
+        &mut session,
+        &mut ui,
+    )
+    .unwrap_err();
+
+    let saved = load(&st, "change-20261020-x", "base123");
+    assert_eq!(saved.phase, ChangePhase::Plan, "回退后应回到 Plan 阶段");
+    assert_eq!(
+        saved.last_plan_issues,
+        s(&["验收标准无法落地：计划承诺了测不了的行为"]),
+        "testing→plan 的 issues 必须进断点（resume 走 fix_plan 的依据）"
+    );
+    assert_eq!(
+        saved.plan_fix_rounds, 1,
+        "回退计入计划修复额度（MAX_PLAN_FIXES cap 生效的基础）"
+    );
+}
+
+/// 引擎审计修复 #5 回归：testing→plan 回退后的 resume 必须走 fix_plan(issues)，
+/// 不得重新 plan_kickoff（丢弃上下文重开局）。
+#[test]
+fn resume_after_testing_route_plan_goes_to_fix_plan_not_kickoff() {
+    let tmp = tempfile::tempdir().unwrap();
+    let st = store(tmp.path());
+    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    seeded.phase = ChangePhase::Plan;
+    seeded.plan_fix_rounds = 1;
+    seeded.last_plan_issues = s(&["验收标准无法落地"]);
+    save(&st, &seeded).unwrap();
+
+    let mut session = Scripted::new();
+    session.fix_plans.push_back(PlanTurn::Pass);
+    session.codings.push_back(in_boundary());
+    session.testings.push_back(pass_testing());
+    let mut ui = NoUser;
+    let out = run(
+        cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]),
+        &mut session,
+        &mut ui,
+    )
+    .unwrap();
+    assert_eq!(out.state.phase, ChangePhase::Done);
+    assert!(
+        session.log[0].starts_with("fix(rt=1,issues=1)"),
+        "resume 首步必须是 fix_plan 且带上 issues：{:?}",
+        session.log
+    );
+    assert!(
+        !session.log.iter().any(|l| l.starts_with("plan(rt=0)")),
+        "不得重新 plan_kickoff：{:?}",
+        session.log
+    );
+}
+
 #[test]
 fn testing_pass_clears_the_failure_context() {
     // 错实现形态：run 到 done 不清上下文（收尾留过期状态）→ 本用例必须变红

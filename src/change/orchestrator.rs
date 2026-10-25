@@ -167,7 +167,9 @@ pub fn run<S: ChangeSession>(
     // ---- plan ----
     // 打回-修复循环（对齐 MVP 规划）：审查 FAIL 回注重写重审，有界；超限才 Quality
     if matches!(state.phase, ChangePhase::Plan) {
-        let mut issues: Vec<String> = Vec::new();
+        // 引擎审计修复 #5：issues 初始值从断点读——testing→plan 回退写入的
+        // last_plan_issues 在 resume 后走 fix_plan(issues) 而非重新 kickoff。
+        let mut issues: Vec<String> = state.last_plan_issues.clone();
         // 复验 #9：修复轮计数住断点——重启后不得重新获得修复额度。
         let mut fix_round = state.plan_fix_rounds;
         loop {
@@ -375,8 +377,20 @@ pub fn run<S: ChangeSession>(
             }
             TestingTurn::RoutePlan { failures } => {
                 let msg = crate::change::testing_gate::route_back_message("plan", &failures);
+                // 引擎审计修复 #5：testing→plan 回退与 plan 审查打回同一条额度管线——
+                // issues 持久化进 state（resume 后 plan 循环读它走 fix_plan 而非重新
+                // kickoff），计数复用 plan_fix_rounds（MAX_PLAN_FIXES cap 生效，
+                // 不再无界循环）。
+                state.last_plan_issues = failures.clone();
+                state.plan_fix_rounds += 1;
                 phase_change(&mut state, ChangePhase::Plan);
                 save(run.store, &state)?;
+                if state.plan_fix_rounds > MAX_PLAN_FIXES {
+                    return Err(DevforgeError::Quality(format!(
+                        "testing→plan 回退后计划修复已达上限 {MAX_PLAN_FIXES} 轮：{}",
+                        failures.join("；")
+                    )));
+                }
                 return Err(DevforgeError::Quality(format!(
                     "测试发现计划问题，已回注 plan。{msg}"
                 )));

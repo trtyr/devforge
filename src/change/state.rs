@@ -78,6 +78,10 @@ pub struct ChangeState {
     /// 旧断点文件没有这个键时照样加载成功（计数不丢）。
     #[serde(default)]
     pub last_test_failure: Option<TestFailureContext>,
+    /// testing→plan 回退携带的计划问题（引擎审计修复 #5：issues 入断点——
+    /// resume 后 plan 循环读它走 fix_plan 而非重新 kickoff；旧断点缺键 = 空）。
+    #[serde(default)]
+    pub last_plan_issues: Vec<String>,
     /// 计划审查已用的修复轮数（上限 MAX_PLAN_FIXES）——复验 #9：失败路径也落盘，
     /// 重启后不得重新获得修复额度。
     #[serde(default)]
@@ -96,6 +100,7 @@ impl ChangeState {
             test_reroutes: 0,
             change_id: change_id.into(),
             last_test_failure: None,
+            last_plan_issues: Vec::new(),
             plan_fix_rounds: 0,
         }
     }

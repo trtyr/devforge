@@ -141,29 +141,32 @@ fn normalize_one(f: &str) -> &str {
 
 pub fn classify(changed: &[String], whitelist: &[String], reply: &str) -> BoundaryVerdict {
     let norm_whitelist: Vec<&str> = whitelist.iter().map(|w| normalize_one(w)).collect();
+    let declared_route = parse_route(reply).as_deref() == Some("plan");
     let extra: Vec<String> = changed
         .iter()
         .filter(|f| !norm_whitelist.iter().any(|w| *w == normalize_one(f)))
         .cloned()
         .collect();
+    // 引擎审计修复 #1：route=plan 优先于 extra 判定——agent 请求回规划时无论有无越界
+    // 都走 RoutePlan 分支（回 plan 重新规划），不得借「extra 为空 → InBoundary」
+    // 带着白名单内改动直通 testing（跳过自检/步提交/审查三门）。
+    // 有越界时申报仍须覆盖每个越界文件（不能拿 route token 当万能钥匙）。
+    if declared_route {
+        let gaps = parse_impact_gaps(reply);
+        let covered = extra
+            .iter()
+            .all(|f| gaps.iter().any(|g| normalize_one(&g.file) == normalize_one(f)));
+        if extra.is_empty() || covered {
+            return BoundaryVerdict::RoutePlan { gaps };
+        }
+        return BoundaryVerdict::OutOfBoundary { extra };
+    }
+    // 非 route=plan：维持原语义——extra 空才算干净；非空一律范围膨胀
+    //（申报路线只认 route=plan，其他 route token 或裸 impact-gap 不算申报）。
     if extra.is_empty() {
         return BoundaryVerdict::InBoundary;
     }
-
-    let declared_route = parse_route(reply).as_deref() == Some("plan");
-    let gaps = parse_impact_gaps(reply);
-    if !declared_route || gaps.is_empty() {
-        return BoundaryVerdict::OutOfBoundary { extra };
-    }
-    // 申报必须覆盖每个越界文件（归一化后精确相等），且申报里的文件必须真的越界
-    //（不能拿申报当万能钥匙）。
-    let covered = extra
-        .iter()
-        .all(|f| gaps.iter().any(|g| normalize_one(&g.file) == normalize_one(f)));
-    if !covered {
-        return BoundaryVerdict::OutOfBoundary { extra };
-    }
-    BoundaryVerdict::RoutePlan { gaps }
+    BoundaryVerdict::OutOfBoundary { extra }
 }
 
 /// 第 `n` 次往返是否还允许（n 从 1 开始）。
@@ -223,6 +226,29 @@ mod tests {
             "干完了\n<stage-complete>1</stage-complete>",
         );
         assert_eq!(v, BoundaryVerdict::InBoundary);
+    }
+
+    /// 引擎审计修复 #1 回归：白名单内改动 + route token 必须走 RoutePlan 分支回 plan，
+    /// 不得借「extra 为空 → InBoundary」直通 testing（跳过自检/步提交/审查三门）。
+    #[test]
+    fn route_token_with_inbound_changes_routes_back_to_plan() {
+        let v = classify(
+            &s(&["src/a.rs"]),
+            &s(&["src/a.rs"]),
+            "改着改着发现计划方案不可行\n<route>plan</route>",
+        );
+        assert_eq!(v, BoundaryVerdict::RoutePlan { gaps: Vec::new() });
+    }
+
+    /// 引擎审计修复 #1 回归：纯回规划请求（无改动无申报）同样是 RoutePlan 信号。
+    #[test]
+    fn route_token_with_no_changes_still_routes_back_to_plan() {
+        let v = classify(
+            &s(&[]),
+            &s(&["src/a.rs"]),
+            "计划里的验收标准无法落地\n<route>plan</route>",
+        );
+        assert_eq!(v, BoundaryVerdict::RoutePlan { gaps: Vec::new() });
     }
 
     #[test]
