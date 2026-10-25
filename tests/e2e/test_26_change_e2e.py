@@ -11,7 +11,8 @@ fixture：`textkit` 小 Python 包（stdlib unittest），带 git 基线。
 
 断言：
 - run Settled；
-- 计划落目标仓 `docs/plantree/changes/<id>/change-plan.md`（含六块与白名单）+ baseline.txt；
+- 计划落**台账根** `~/.devforge/plantree/<project>/changes/<id>/change-plan.md`（含六块与白名单）+ baseline.txt
+  ——2026-10-25 反转 D003：台账不进仓，目标仓不再出现 docs/plantree/；
 - git log 出现 `change: <id> step N` 按步提交；
 - `count_words` 真实存在且 unittest 全绿（验收标准兑现）；
 - `report.md` 含验收对账；
@@ -272,16 +273,16 @@ def main() -> int:
         if final != "Settled":
             return r.finish()
 
-        changes_dir = repo / "docs" / "plantree" / "changes"
+        changes_dir = server.home / ".devforge" / "plantree" / project / "changes"
         ids = sorted(p.name for p in changes_dir.iterdir() if p.is_dir()) if changes_dir.is_dir() else []
-        r.check(bool(ids), f"目标仓出现变更目录（{ids}）")
+        r.check(bool(ids), f"台账根出现变更目录（{ids}）")
         if not ids:
             return r.finish()
         cid = ids[0]
         cdir = changes_dir / cid
 
         plan = cdir / "change-plan.md"
-        r.check(plan.exists(), "change-plan.md 落目标仓（D003）")
+        r.check(plan.exists(), "change-plan.md 落台账根（D027：台账不进仓）")
         if plan.exists():
             text = plan.read_text(encoding="utf-8")
             for block in ["需求复述", "影响面", "白名单", "验收标准", "风险"]:
