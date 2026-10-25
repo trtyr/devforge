@@ -75,13 +75,15 @@ impl DevforgeError {
     }
 
     /// 是否为子 Agent 失败（可恢复类，编排器可决策）。
+    /// 地基批次 #1：走 `root_cause()`——`Quality`/`Agent` 被 `.ctx()` 包装后仍要认得出，
+    /// 否则分类口径与 `is_infra_failure` 分裂。
     pub fn is_agent_failure(&self) -> bool {
-        matches!(self, Self::Agent { .. })
+        matches!(self.root_cause(), Self::Agent { .. })
     }
 
-    /// 是否为质量失败（不自动重启，plan 010 D004）。
+    /// 是否为质量失败（不自动重启，plan 010 D004）。同上：剥包装后再判。
     pub fn is_quality_failure(&self) -> bool {
-        matches!(self, Self::Quality(_))
+        matches!(self.root_cause(), Self::Quality(_))
     }
 }
 
@@ -147,5 +149,24 @@ mod tests {
         let q = DevforgeError::Quality("审查连续违例".into());
         assert!(q.is_quality_failure());
         assert!(!q.is_agent_failure());
+    }
+
+    /// 地基批次 #1（与引擎批次 #6 同根）：`.ctx()` 包装后分类仍要认得出——
+    /// 旧实现用 `matches!(self, ...)` 只看顶层，Quality/Agent 一包就变「非质量错误」。
+    #[test]
+    fn classification_survives_context_wrapping() {
+        let q = "审查连续违例".to_string();
+        let wrapped: crate::error::Result<()> = Err(DevforgeError::Quality(q));
+        let e = wrapped.ctx("Plan 对话").unwrap_err();
+        assert!(e.is_quality_failure(), "包装后仍应判质量失败：{e:?}");
+
+        let wrapped: crate::error::Result<()> =
+            Err(DevforgeError::agent("plan-review", "进程异常退出"));
+        let a = wrapped.ctx("Plan 对话").unwrap_err();
+        assert!(a.is_agent_failure(), "包装后仍应判 agent 失败：{a:?}");
+
+        let wrapped: crate::error::Result<()> = Err(DevforgeError::System("台账损坏".into()));
+        let s = wrapped.ctx("写断点").unwrap_err();
+        assert!(!s.is_quality_failure());
     }
 }

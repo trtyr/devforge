@@ -221,7 +221,7 @@ pub fn map_intervention(
         Ok(RunOutcome::Failed {
             reason: "已超时（run 超时，被 watchdog 终止）".into(),
         })
-    } else if let DevforgeError::Quality(msg) = &e {
+    } else if let DevforgeError::Quality(msg) = e.root_cause() {
         // 质量失败（审查打回/协议违例达上限/越界申报）：明确的 Failed，**不进自动重启**（010 D004）
         tracing::warn!(component, reason = %msg, "SOP 质量失败（不重试）");
         // 原始错误全量可见（010 F6 靶 · 需求 1）：质量类失败在生产链路上到不了重试层
@@ -238,7 +238,7 @@ pub fn map_intervention(
         Ok(RunOutcome::Failed {
             reason: msg.clone(),
         })
-    } else if let DevforgeError::Config(msg) = &e {
+    } else if let DevforgeError::Config(msg) = e.root_cause() {
         // 审计修复 #2：配置失败（缺 profile/缺 API key/模型名错误）与质量失败同款处理——
         // 明确的 Failed、不进自动重启（修好配置才有意义，重启只会重复同一失败）。
         tracing::warn!(component, reason = %msg, "SOP 配置失败（不重试，修配置后重启 run）");
