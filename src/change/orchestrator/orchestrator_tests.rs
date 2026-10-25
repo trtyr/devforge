@@ -108,6 +108,16 @@ impl ChangeSession for Scripted {
         self.log.push("testing".into());
         Ok(self.testings.pop_front().expect("testing 脚本耗尽"))
     }
+
+    fn fix_coding(
+        &mut self,
+        _ui: &mut dyn crate::sop::planning::UserLink,
+        issues: &[String],
+        round: usize,
+    ) -> Result<()> {
+        self.log.push(format!("fix_coding(rt={round},issues={})", issues.len()));
+        Ok(())
+    }
 }
 
 fn in_boundary() -> CodingTurn {
@@ -115,6 +125,17 @@ fn in_boundary() -> CodingTurn {
         reply: "干完了\n<stage-complete>1</stage-complete>".into(),
         changed: s(&["src/a.rs"]),
         reviews: 1,
+        review_issues: Vec::new(),
+    }
+}
+
+/// 编码审查 FAIL 的一轮（change #4）：改动在白名单内，但审查给了明细。
+fn coding_review_fail() -> CodingTurn {
+    CodingTurn {
+        reply: "干完了\n<stage-complete>1</stage-complete>".into(),
+        changed: s(&["src/a.rs"]),
+        reviews: 1,
+        review_issues: s(&["无依据改动：src/a.rs:3"]),
     }
 }
 
@@ -129,6 +150,7 @@ fn declared_gap_file(file: &str) -> CodingTurn {
         ),
         changed: s(&["src/a.rs", file]),
         reviews: 0,
+        review_issues: Vec::new(),
     }
 }
 
@@ -327,6 +349,7 @@ fn coding_routes_back_to_plan_then_reenters_coding() {
         reply: "补完了".into(),
         changed: s(&["src/a.rs", "src/extra.rs"]),
         reviews: 0,
+        review_issues: Vec::new(),
     });
     session.testings.push_back(pass_testing());
 
@@ -367,6 +390,7 @@ fn out_of_boundary_without_declaration_fails_and_stays_coding() {
         reply: "顺手改的".into(),
         changed: s(&["src/a.rs", "src/rogue.rs"]),
         reviews: 0,
+        review_issues: Vec::new(),
     });
 
     let mut ui = NoUser;
@@ -944,6 +968,60 @@ fn corrupt_checkpoint_is_rejected_instead_of_resetting_counters() {
     .unwrap_err();
     assert!(err.to_string().contains("fresh"), "要指路 fresh：{err}");
     assert!(session.log.is_empty(), "不得开跑：{:?}", session.log);
+}
+
+/// change #4 回归：编码审查 FAIL → 回注修复（有界），修完重跑 coding 并通关。
+/// 旧实现直接 `Err(Quality)`，一次小毛病就判死整个变更。
+#[test]
+fn coding_review_fail_reroutes_to_the_fix_loop_and_recovers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let st = store(tmp.path());
+    let mut session = Scripted::new();
+    session.plans.push_back(PlanTurn::Pass);
+    session.codings.push_back(coding_review_fail());
+    session.codings.push_back(in_boundary());
+    session.testings.push_back(pass_testing());
+    let mut ui = NoUser;
+    let out = run(
+        cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]),
+        &mut session,
+        &mut ui,
+    )
+    .unwrap();
+    assert_eq!(out.state.phase, ChangePhase::Done, "回注修复后应跑到 done");
+    assert!(
+        session.log.iter().any(|l| l == "fix_coding(rt=1,issues=1)"),
+        "必须把审查明细回注给 agent：{:?}",
+        session.log
+    );
+    assert_eq!(out.state.coding_fix_rounds, 1, "回注轮次必须落盘计数");
+}
+
+/// change #4 回归：编码审查连续 FAIL 超过上限 → Quality（不自动重启）。
+#[test]
+fn coding_review_fail_over_the_limit_is_quality() {
+    let tmp = tempfile::tempdir().unwrap();
+    let st = store(tmp.path());
+    let mut session = Scripted::new();
+    session.plans.push_back(PlanTurn::Pass);
+    for _ in 0..=MAX_CODING_FIXES {
+        session.codings.push_back(coding_review_fail());
+    }
+    let mut ui = NoUser;
+    let err = run(
+        cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]),
+        &mut session,
+        &mut ui,
+    )
+    .unwrap_err();
+    assert!(err.is_quality_failure(), "超限是 Quality：{err}");
+    assert!(err.to_string().contains("上限 3"), "{err}");
+    let saved = load(&st, "change-20261020-x", "base123");
+    assert_eq!(
+        saved.coding_fix_rounds,
+        MAX_CODING_FIXES + 1,
+        "超限轮次也要落盘（重启不得重置额度）"
+    );
 }
 
 #[test]

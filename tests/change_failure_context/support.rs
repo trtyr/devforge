@@ -172,6 +172,7 @@ pub(super) fn in_boundary() -> CodingTurn {
         reply: "干完了\n<stage-complete>1</stage-complete>".into(),
         changed: vec!["src/a.rs".into()],
         reviews: 1,
+        review_issues: Vec::new(),
     }
 }
 

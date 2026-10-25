@@ -424,6 +424,7 @@ impl ChangeSession for ProdChangeSession {
                 reply,
                 changed,
                 reviews: 0,
+                review_issues: Vec::new(),
             });
         }
         reply = require_marker_nudged("change-coding-agent", reply, |m| {
@@ -490,11 +491,16 @@ impl ChangeSession for ProdChangeSession {
                 reply,
                 changed,
                 reviews: instances,
+                review_issues: Vec::new(),
             }),
-            StageVerdict::Fail => Err(DevforgeError::Quality(format!(
-                "变更编码审查未通过：{}",
-                report.issues.join("；")
-            ))),
+            // change #4：审查 FAIL 不再一刀切判 Quality——把明细随 turn 交回编排层，
+            // 由它走有界回注循环（MAX_CODING_FIXES）。
+            StageVerdict::Fail => Ok(CodingTurn {
+                reply,
+                changed,
+                reviews: instances,
+                review_issues: report.issues,
+            }),
         }
     }
 
@@ -576,6 +582,27 @@ impl ChangeSession for ProdChangeSession {
                 report.issues.join("；")
             ))),
         }
+    }
+
+    /// 编码审查打回后的回注（change #4）：只补审查指出的问题，不重跑基线、不重做已完成工作。
+    fn fix_coding(&mut self, ui: &mut dyn UserLink, issues: &[String], round: usize) -> Result<()> {
+        let message = format!(
+            "编码审查第 {round} 轮打回，逐条修复后重交（不要重复已完成的工作，不要扩围）：\n{}\n\n\
+             只改计划白名单内的文件；修完把本轮自证证据（命令 + 退出码）更新到黑板 `{}`，\
+             然后输出 <stage-complete>1</stage-complete>。",
+            issues
+                .iter()
+                .enumerate()
+                .map(|(i, s)| format!("{}. {}", i + 1, s))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            crate::change::coding_gate::SELF_CHECK_LOG
+        );
+        let first = self.coding_agent.converse(&message, ui)?;
+        require_marker_nudged("change-coding-agent（回注轮）", first, |m| {
+            self.coding_agent.converse(m, ui)
+        })?;
+        Ok(())
     }
 
     fn plan_reviews(&self) -> usize {

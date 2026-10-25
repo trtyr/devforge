@@ -83,6 +83,10 @@ pub struct ChangeState {
     /// 重启后不得重新获得修复额度。
     #[serde(default)]
     pub plan_fix_rounds: usize,
+    /// 编码审查已用的回注轮数（上限 MAX_CODING_FIXES）——change #4：编码审查 FAIL
+    /// 不再直接判 Quality，而是回注修复；同样落盘，重启不重置额度。
+    #[serde(default)]
+    pub coding_fix_rounds: usize,
 }
 
 impl ChangeState {
@@ -98,6 +102,7 @@ impl ChangeState {
             last_test_failure: None,
             last_plan_issues: Vec::new(),
             plan_fix_rounds: 0,
+            coding_fix_rounds: 0,
         }
     }
 

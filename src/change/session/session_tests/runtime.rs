@@ -234,7 +234,9 @@ fn route_plan_without_marker_is_accepted() {
 }
 
 #[test]
-fn coding_review_failure_fails_the_stage() {
+fn coding_review_failure_returns_issues_instead_of_failing_the_stage() {
+    // change #4：编码审查 FAIL 不再让 run_coding 直接 Err(Quality)——明细随 turn 交回，
+    // 由编排层走有界回注循环（MAX_CODING_FIXES）。这里钉「会话层交得出明细」。
     let f = fixture(true);
     coding_ready(&f);
     let fail = "<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>\n<issues>\n- 无法从计划找到依据：src/a.rs\n</issues>";
@@ -251,9 +253,13 @@ fn coding_review_failure_fails_the_stage() {
         ctx: f.ctx.clone(),
         plan_review_instances: 0,
     };
-    let err = session.run_coding(&mut NoUser, 0, None).unwrap_err();
-    assert!(err.to_string().contains("变更编码审查未通过"), "{err}");
-    assert!(err.to_string().contains("src/a.rs"), "{err}");
+    let turn = session.run_coding(&mut NoUser, 0, None).unwrap();
+    assert_eq!(turn.reviews, 1, "审查轮次照实计入");
+    assert!(
+        turn.review_issues.iter().any(|s| s.contains("src/a.rs")),
+        "审查明细必须随 turn 交回：{:?}",
+        turn.review_issues
+    );
 }
 
 /// 引擎审计修复 #4：回归证据必须 fresh（mtime ≥ 本轮开始）——fixture 手写的

@@ -564,6 +564,7 @@ impl ChangeSession for ScriptedChangeSession {
             reply: "改完了\n<stage-complete>1</stage-complete>".into(),
             changed: vec![],
             reviews: 1,
+            review_issues: Vec::new(),
         })
     }
     fn run_testing(&mut self, _ui: &mut dyn UserLink) -> Result<TestingTurn> {

@@ -23,6 +23,10 @@ pub const MAX_TEST_REROUTES: usize = 3;
 /// plan 阶段审查打回后的修复上限（对齐 MVP 规划的重审节奏；超限 = 计划质量问题，不自动重启）。
 pub const MAX_PLAN_FIXES: usize = 3;
 
+/// 编码审查打回后的回注修复上限（change #4：旧实现编码审查 FAIL 直接判 Quality，
+/// 与 MVP 的 FAIL→回注→重审节奏不一致；超限才判质量失败，不自动重启）。
+pub const MAX_CODING_FIXES: usize = 3;
+
 /// 阶段转换：写状态 + 落一条里程碑（`phase.change`）+ 把阶段写进观测上下文（心跳随之刷新）。
 ///
 /// 阶段名用 `ChangePhase` 的变体名（plan/coding/testing/done）——与心跳的阶段字段同一套词汇
@@ -67,6 +71,9 @@ pub struct CodingTurn {
     pub changed: Vec<String>,
     /// 本阶段消耗的审查轮次（coding review）。
     pub reviews: usize,
+    /// 编码审查的失败明细（change #4）：非空 = 审查 FAIL，编排层走有界回注循环；
+    /// 空 = 审查通过（或本轮没走到审查，如 `<route>plan</route>`）。
+    pub review_issues: Vec<String>,
 }
 
 /// 测试阶段结果。
@@ -123,6 +130,14 @@ pub trait ChangeSession {
     /// plan 阶段消耗的审查轮次（计入报告；默认 0，脚本化 session 不审）。
     fn plan_reviews(&self) -> usize {
         0
+    }
+
+    /// 编码审查打回后的回注：把审查失败明细交给 coding agent 逐条修复。
+    ///
+    /// 默认空实现（脚本化 session 不审）；生产实现见 `ProdChangeSession`。
+    fn fix_coding(&mut self, ui: &mut dyn UserLink, issues: &[String], round: usize) -> Result<()> {
+        let _ = (ui, issues, round);
+        Ok(())
     }
 }
 
@@ -240,6 +255,36 @@ pub fn run<S: ChangeSession>(
         loop {
             let turn = session.run_coding(ui, state.roundtrips, state.last_test_failure.as_ref())?;
             state.review_rounds += turn.reviews;
+            // change #4：编码审查 FAIL 走有界回注循环（旧实现直接 `Err(Quality)`，
+            // 与 MVP 的 FAIL→回注→重审节奏不一致，一次小毛病就判死整个变更）。
+            let review_issues = turn.review_issues.clone();
+            if !review_issues.is_empty() {
+                let next = state.coding_fix_rounds + 1;
+                state.coding_fix_rounds = next;
+                save(run.store, &state)?;
+                if next > MAX_CODING_FIXES {
+                    return Err(DevforgeError::Quality(format!(
+                        "编码审查连续 {next} 轮未通过（上限 {MAX_CODING_FIXES} 轮修复）：{}",
+                        review_issues.join("；")
+                    )));
+                }
+                fix_step(&state, "coding", next, true);
+                tracing::info!(
+                    component = "change-orchestrator",
+                    event = "fix.start",
+                    round = next,
+                    "编码审查回注开始"
+                );
+                session.fix_coding(ui, &review_issues, next)?;
+                fix_step(&state, "coding", next, false);
+                tracing::info!(
+                    component = "change-orchestrator",
+                    event = "fix.end",
+                    round = next,
+                    "编码审查回注结束"
+                );
+                continue;
+            }
             match boundary::classify(&turn.changed, &whitelist, &turn.reply) {
                 BoundaryVerdict::InBoundary => {
                     // 消费即清：coding 一旦过门，上一轮失败上下文就过期了
