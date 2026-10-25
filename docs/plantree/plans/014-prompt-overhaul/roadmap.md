@@ -8,13 +8,13 @@
 - ☐ T0.1 六块骨架模板 + 四型（分析/生成/验证/编排）适配版定稿（落 assets/prompts/_template.md，不进 manifest）
 - ☐ T0.2 14 条现状基线留档（改造前快照 + token 量，供前后对比）
 
-## M1 · change 规划 + 编码家族 ☐
+## M1 · change 规划 + 编码家族 ✅
 
-- ☐ T1.1 change-plan-agent（60 行：规划官——生成型模板；重入纪律/续编号已在此批改过，保持）
-- ☐ T1.2 change-plan-review（38 行：计划审查官——验证型模板）
-- ☐ T1.3 change-coding-agent（56 行：编码官——生成型；白名单/申报边界/步提交纪律带原因化）
-- ☐ T1.4 change-coding-review（27 行：编码审查官——验证型）
-- 验收：四条过检查表 + manifest pinning 同步 + 全目标绿
+- ✅ T1.1 change-plan-agent（重排六块 + 原因三件套 + 边界段四项；歧义契约逐字保留）
+- ✅ T1.2 change-plan-review（八项判据保留 + 原因 + 边界段含「无法核实」语义）
+- ✅ T1.3 change-coding-agent（基线门/白名单/步提交带原因 + 长时阻塞命令禁令（M3 教训）+ 边界段五项含重入与申报块字面恢复）
+- ✅ T1.4 change-coding-review（对账七项保留 + 「不得以 diff 大小判」带原因 + 边界段三项）
+- 验收：四条过检查表（六块/原因/边界段/契约全勾，各≤1200 token）+ pinning 断言同步（codegraph-first 锚更新 + fixture 重 dump ×2）+ 全目标 776 绿
 
 ## M2 · testing + 审计家族 ☐
 

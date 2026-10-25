@@ -11,7 +11,7 @@ fn change_plan_prompts_carry_six_blocks_and_forbidden_items() {
             "change-plan 提示词缺块：{block}"
         );
     }
-    for anchor in ["codegraph-first", "不写实施顺序", "不写回归命令", "path:line"] {
+    for anchor in ["结构性事实一律走 codegraph", "不写实施顺序", "不写回归命令", "path:line"] {
         assert!(
             CHANGE_PLAN_AGENT_PROMPT.contains(anchor),
             "change-plan 提示词缺纪律：{anchor}"
