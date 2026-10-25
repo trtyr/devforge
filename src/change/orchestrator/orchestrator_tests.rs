@@ -30,6 +30,8 @@ struct Scripted {
     codings: VecDeque<CodingTurn>,
     testings: VecDeque<TestingTurn>,
     coding_error: Option<String>,
+    /// amend_plan 队列耗尽时的替代行为：有值则直接返回 System 错（复验 #9 回归用）。
+    amend_errors: VecDeque<String>,
     plan_review_count: usize,
     /// 每轮 coding 收到的失败上下文（`None` = 无上下文）——送达面的观测点。
     seen_failures: Vec<Option<TestFailureContext>>,
@@ -45,6 +47,7 @@ impl Scripted {
             codings: VecDeque::new(),
             testings: VecDeque::new(),
             coding_error: None,
+            amend_errors: VecDeque::new(),
             plan_review_count: 0,
             seen_failures: Vec::new(),
             log: Vec::new(),
@@ -64,6 +67,9 @@ impl ChangeSession for Scripted {
         rt: usize,
     ) -> Result<PlanTurn> {
         self.log.push(format!("amend(rt={rt},gaps={})", gaps.len()));
+        if let Some(msg) = self.amend_errors.pop_front() {
+            return Err(DevforgeError::System(msg));
+        }
         Ok(self.amends.pop_front().expect("amend 脚本耗尽"))
     }
     fn fix_plan(
@@ -339,6 +345,33 @@ fn fourth_roundtrip_is_refused() {
     assert!(err.is_quality_failure(), "往返超限不该自动重启");
     let saved = load(&st, "change-20261020-x", "base123");
     assert_eq!(saved.roundtrips, 3, "停在第四次之前");
+}
+
+/// 复验 #9 回归：amend_plan 失败（Err 传播）时 roundtrip 计数必须已落盘——
+/// 旧实现只有 Pass 分支 save，Err 路径重启后计数回退、上限可被反复绕过。
+#[test]
+fn roundtrip_count_survives_amend_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let st = store(tmp.path());
+    let mut session = Scripted::new();
+    session.plans.push_back(PlanTurn::Pass);
+    session.codings.push_back(declared_gap_file("src/extra0.rs"));
+    session
+        .amend_errors
+        .push_back("amend 实例基础设施故障".into());
+
+    let mut ui = NoUser;
+    let _ = run(
+        cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]),
+        &mut session,
+        &mut ui,
+    )
+    .unwrap_err();
+    let saved = load(&st, "change-20261020-x", "base123");
+    assert_eq!(
+        saved.roundtrips, 1,
+        "amend 失败时 roundtrip 计数必须已保存（先落盘再 amend）"
+    );
 }
 
 #[test]

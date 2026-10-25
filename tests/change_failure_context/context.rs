@@ -54,10 +54,13 @@ pub(super) fn a1_new_state_has_no_context_and_none_kickoff_is_verbatim_unchanged
         with.starts_with(&kick),
         "有上下文时开工语正文必须逐字保留基座"
     );
-    assert_eq!(
-        with,
-        format!("{kick}\n\n{}", devforge::change::testing_gate::coding_failure_block(&context(1))),
-        "有上下文时开工语 = 基座 + 送达块"
+    // 复验 #6 演进：送达块后允许追加【重入纪律】段——但基座+送达块必须是前缀（只能追加不许改写）
+    let suffix = with
+        [kick.len() + format!("\n\n{}", devforge::change::testing_gate::coding_failure_block(&context(1))).len()..]
+        .trim();
+    assert!(
+        suffix.starts_with("【重入纪律】"),
+        "送达块之后只允许追加重入纪律段：{suffix:?}"
     );
 }
 

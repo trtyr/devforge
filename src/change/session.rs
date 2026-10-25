@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::change::boundary::{parse_route, replan_instruction, ImpactGap};
 use crate::change::coding_gate::{
-    changed_files, check_baseline_log, check_self_check, check_step_commits, parse_baseline_log,
-    read_steps, BASELINE_LOG,
+    changed_files, check_baseline_log_fresh, check_self_check_fresh, check_step_commits,
+    parse_baseline_log, read_steps, BASELINE_LOG,
 };
 use crate::change::gate0::DocLevel;
 use crate::change::orchestrator::{ChangeSession, CodingTurn, PlanTurn, TestingTurn};
@@ -163,7 +163,7 @@ pub fn coding_kickoff(ctx: &ChangeCtx, failure: Option<&TestFailureContext>) -> 
     );
     match failure {
         Some(f) => format!(
-            "{base}\n\n{}",
+            "{base}\n\n{}\n\n【重入纪律】这是回注重写：impl-steps.md 必须**保留已完成步骤、从最后一号 +1 继续编号**，不得从 1 重写（否则步号对账会判「步骤被提交了不止一次」而失败）。",
             crate::change::testing_gate::coding_failure_block(f)
         ),
         None => base,
@@ -384,6 +384,8 @@ impl ChangeSession for ProdChangeSession {
         _roundtrip: usize,
         last_failure: Option<&TestFailureContext>,
     ) -> Result<CodingTurn> {
+        // 本轮开始时间：基线门/自证门的证据 mtime 早于它 = 上一轮残留，拒收（复验 #6）。
+        let turn_started = std::time::SystemTime::now();
         // ① 基线轮：先让 agent 只跑既有测试写证据（此时还没允许改代码）
         let baseline_reply = self.coding_agent.converse(&baseline_kickoff(&self.ctx), ui)?;
         let baseline_reply =
@@ -392,7 +394,7 @@ impl ChangeSession for ProdChangeSession {
             })?;
         // 引擎不自己跑测试，只验证据：红/缺失就在这里拦住（coding 子进程不会再被叫去改代码）
         // 「基线门」里程碑：绿/红都落一条（红时**按字段**带出退出码）
-        let baseline = check_baseline_log(&self.ctx.blackboard);
+        let baseline = check_baseline_log_fresh(&self.ctx.blackboard, turn_started);
         match &baseline {
             Ok(ev) => tracing::info!(
                 component = "change-engine",
@@ -433,7 +435,7 @@ impl ChangeSession for ProdChangeSession {
         })?;
         // 先证后报：自证证据缺失或红 → Quality（不进审查）
         // 「自证门」里程碑：绿/红都落一条
-        let self_check = check_self_check(&self.ctx.blackboard);
+        let self_check = check_self_check_fresh(&self.ctx.blackboard, turn_started);
         match &self_check {
             Ok(ev) => tracing::info!(
                 component = "change-engine",

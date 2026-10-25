@@ -167,6 +167,13 @@ fn red_baseline_blocks_before_coding_turn() {
         "command: cargo test\nexit_code: 1\n",
     )
     .unwrap();
+    // 红证据也要 fresh（mtime 晚于本轮开始）才能走到「基线红」分支而非残留拒收
+    std::fs::File::options()
+        .write(true)
+        .open(f.ctx.blackboard.join("evidence/baseline-test.log"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+        .unwrap();
     // 只给一轮回复：基线轮；若引擎错序，第二轮会被调用则脚本耗尽直接暴露
     let agent = Agent::new(&["跑了，红了\n<stage-complete>1</stage-complete>"]);
     let seen = agent.seen.clone();

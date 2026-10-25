@@ -279,14 +279,13 @@ fn coding_kickoff_with_context_only_appends_the_block() {
     };
     let plain = coding_kickoff(&f.ctx, None);
     let with = coding_kickoff(&f.ctx, Some(&ctx));
-    assert_eq!(
-        with,
-        format!(
-            "{plain}\n\n{}",
-            crate::change::testing_gate::coding_failure_block(&ctx)
-        ),
-        "有上下文时只应在开工语后追加送达块"
+    // 只追加语义：base 不变，追加送达块 + 重入纪律（复验 #6 续编号要求）
+    assert!(with.starts_with(&plain), "开工语本体不得被改写");
+    assert!(
+        with.contains(&crate::change::testing_gate::coding_failure_block(&ctx)),
+        "送达块必须逐字在"
     );
+    assert!(with.contains("重入纪律"), "回注必须带续编号要求");
 }
 
 #[test]

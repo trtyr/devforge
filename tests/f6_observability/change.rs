@@ -57,6 +57,16 @@ pub(super) fn change_fixture() -> ChangeFixture {
         "command: cargo test\nexit_code: 0\n",
     )
     .expect("写自证证据");
+    // 证据 mtime 刷到未来 2s：模拟「agent 本轮实时写入」（证据门拒绝早于本轮开始的残留）
+    for name in ["baseline-test.log", "self-check.log"] {
+        let p = blackboard.join("evidence").join(name);
+        std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .expect("开证据文件")
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+            .expect("刷 mtime");
+    }
     std::fs::write(
         blackboard.join("impl-steps.md"),
         "# 实施步骤\n## 步骤 1 改 a\n",
@@ -215,6 +225,13 @@ pub(super) fn the_baseline_gate_logs_the_green_and_the_red_verdict() {
             "command: cargo test\nexit_code: 1\n",
         )
         .expect("写红基线证据");
+        // 红证据也要 fresh 才能走到「基线红」分支而非残留拒收
+        std::fs::File::options()
+            .write(true)
+            .open(f.ctx.blackboard.join("evidence/baseline-test.log"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+            .unwrap();
         let mut session = coding_session(
             &f,
             &["跑了，红了\n<stage-complete>1</stage-complete>"],
@@ -284,6 +301,13 @@ pub(super) fn the_self_check_gate_logs_the_green_and_the_red_verdict() {
             "command: cargo test\nexit_code: 1\n",
         )
         .expect("写红自证证据");
+        // 红自证也要 fresh 才能走到「自证红」分支而非残留拒收
+        std::fs::File::options()
+            .write(true)
+            .open(f.ctx.blackboard.join("evidence/self-check.log"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+            .unwrap();
         let mut session = coding_session(
             &f,
             &[

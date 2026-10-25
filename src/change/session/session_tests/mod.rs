@@ -168,6 +168,16 @@ fn coding_ready(f: &Fixture) -> usize {
         "command: cargo test\nexit_code: 0\n",
     )
     .unwrap();
+    // 证据 mtime 刷到未来 2s：模拟「agent 本轮实时写入」（证据门拒绝早于本轮开始的残留）
+    for name in ["baseline-test.log", "self-check.log"] {
+        let p = f.ctx.blackboard.join("evidence").join(name);
+        std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+            .unwrap();
+    }
     std::fs::write(
         f.ctx.blackboard.join("impl-steps.md"),
         "# 实施步骤\n## 步骤 1 改 a\n",

@@ -78,6 +78,10 @@ pub struct ChangeState {
     /// 旧断点文件没有这个键时照样加载成功（计数不丢）。
     #[serde(default)]
     pub last_test_failure: Option<TestFailureContext>,
+    /// 计划审查已用的修复轮数（上限 MAX_PLAN_FIXES）——复验 #9：失败路径也落盘，
+    /// 重启后不得重新获得修复额度。
+    #[serde(default)]
+    pub plan_fix_rounds: usize,
 }
 
 impl ChangeState {
@@ -92,6 +96,7 @@ impl ChangeState {
             test_reroutes: 0,
             change_id: change_id.into(),
             last_test_failure: None,
+            plan_fix_rounds: 0,
         }
     }
 

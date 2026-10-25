@@ -168,7 +168,8 @@ pub fn run<S: ChangeSession>(
     // 打回-修复循环（对齐 MVP 规划）：审查 FAIL 回注重写重审，有界；超限才 Quality
     if matches!(state.phase, ChangePhase::Plan) {
         let mut issues: Vec<String> = Vec::new();
-        let mut fix_round = 0usize;
+        // 复验 #9：修复轮计数住断点——重启后不得重新获得修复额度。
+        let mut fix_round = state.plan_fix_rounds;
         loop {
             let turn = if fix_round == 0 {
                 session.run_plan(ui, state.roundtrips)?
@@ -207,6 +208,9 @@ pub fn run<S: ChangeSession>(
                 }
                 PlanTurn::Fail { issues: next } => {
                     fix_round += 1;
+                    // 失败路径也落盘（复验 #9）：重启不得重置修复额度。
+                    state.plan_fix_rounds = fix_round;
+                    save(run.store, &state)?;
                     if fix_round > MAX_PLAN_FIXES {
                         return Err(DevforgeError::Quality(format!(
                             "计划审查连续 {fix_round} 轮未通过（上限 {MAX_PLAN_FIXES} 轮修复）：{}",
@@ -258,6 +262,10 @@ pub fn run<S: ChangeSession>(
                         round = state.roundtrips,
                         "补边界往返开始"
                     );
+                    // 复验 #9（中）：bump+append 后立即落盘——amend 的 Err/Fail 路径
+                    // 不再丢计数（原实现只有 Pass 分支 save，重启后 roundtrips 回退、
+                    // 上限 3 可被反复绕过、history 往返编号重复）。
+                    save(run.store, &state)?;
                     let amend = session.amend_plan(ui, &gaps, state.roundtrips)?;
                     fix_step(&state, "boundary", state.roundtrips, false);
                     tracing::info!(

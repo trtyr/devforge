@@ -107,23 +107,83 @@ pub fn parse_baseline_log(text: &str) -> Result<BaselineEvidence> {
 
 /// 读证据文件并判定基线是否绿。
 pub fn check_baseline_log(blackboard: &Path) -> Result<BaselineEvidence> {
-    let path = blackboard.join(BASELINE_LOG);
+    check_evidence_fresh(
+        blackboard.join(BASELINE_LOG),
+        "缺少基线证据 {}（动手前必须先跑一遍既有测试）",
+        "基线不是绿的",
+        "不许在红基线上动代码",
+        parse_baseline_log,
+        std::time::SystemTime::UNIX_EPOCH,
+    )
+}
+
+/// 基线门（绑定本轮）：证据文件 mtime 早于 `not_before`（本轮开始）视为上一轮残留
+/// （复验 #6：上轮绿色证据不得通过本轮机械门）。
+pub fn check_baseline_log_fresh(
+    blackboard: &Path,
+    not_before: std::time::SystemTime,
+) -> Result<BaselineEvidence> {
+    check_evidence_fresh(
+        blackboard.join(BASELINE_LOG),
+        "缺少基线证据 {}（动手前必须先跑一遍既有测试）",
+        "基线不是绿的",
+        "不许在红基线上动代码",
+        parse_baseline_log,
+        not_before,
+    )
+}
+
+/// 自证门（绑定本轮）：同基线门，残留证据拒收。
+pub fn check_self_check_fresh(
+    blackboard: &Path,
+    not_before: std::time::SystemTime,
+) -> Result<BaselineEvidence> {
+    check_evidence_fresh(
+        blackboard.join(SELF_CHECK_LOG),
+        "缺少自证证据 {}（提交前必须留下命令原文 + 退出码 + 摘要）",
+        "自证不是绿的",
+        "先证后报：证据红着不许提交",
+        |text| parse_evidence_log(&text, SELF_CHECK_LOG, "自证"),
+        not_before,
+    )
+}
+
+/// 证据门通用实现：读文件 → mtime 不早于本轮开始 → 解析 → 退出码必须为 0。
+fn check_evidence_fresh(
+    path: std::path::PathBuf,
+    missing_msg: &str,
+    red_msg: &str,
+    red_hint: &str,
+    parse: fn(&str) -> Result<BaselineEvidence>,
+    not_before: std::time::SystemTime,
+) -> Result<BaselineEvidence> {
     let text = std::fs::read_to_string(&path).map_err(|e| {
         DevforgeError::Quality(format!(
-            "缺少基线证据 {}（动手前必须先跑一遍既有测试）：{e}",
-            path.display()
+            "{}：{e}",
+            missing_msg.replace("{}", &path.display().to_string())
         ))
     })?;
-    let ev = parse_baseline_log(&text)?;
+    let mtime = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    if mtime < not_before {
+        return Err(DevforgeError::Quality(format!(
+            "证据 {} 是上一轮残留（写入时间早于本轮开始）：本轮必须重跑重写，不许沿用旧绿色证据",
+            path.display()
+        )));
+    }
+    let ev = parse(&text)?;
     if ev.exit_code != 0 {
         return Err(DevforgeError::Quality(format!(
-            "基线不是绿的（exit_code={}，命令：{}）——不许在红基线上动代码",
+            "{}（exit_code={}，命令：{}）——{}",
+            red_msg,
             ev.exit_code,
             if ev.command.is_empty() {
                 "未记录".to_string()
             } else {
                 ev.command
-            }
+            },
+            red_hint
         )));
     }
     Ok(ev)
@@ -333,7 +393,9 @@ pub fn check_step_commits(
         }
     }
     declared.sort_unstable();
-    let expected: Vec<u32> = steps.iter().map(|s| s.number).collect();
+    // 复验 #6：expected 同步排序——impl-steps 写成「步骤 2、步骤 1」时不应误报
+    let mut expected: Vec<u32> = steps.iter().map(|s| s.number).collect();
+    expected.sort_unstable();
     if declared != expected {
         return Err(DevforgeError::Quality(format!(
             "实施步骤与提交对不上：impl-steps 有 {expected:?}，提交声明 {declared:?}"
