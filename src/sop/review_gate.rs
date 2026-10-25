@@ -22,6 +22,23 @@ pub const MAX_REVIEW_INSTANCE_FAILURES: usize = 3;
 /// 回注空清单等于让 agent 盲改，可无界空转；连续这么多次还不补 → 质量失败（不自动重启）。
 pub const MAX_EMPTY_ISSUES_NUDGES: usize = 3;
 
+/// 单轮审查墙钟默认值（server #6）：旧实现只调 `review()`，`review_with_deadline`
+/// 对 planning/coding/testing 全是死路径——审查 pi 挂死只能等 15 分钟失活收割。
+/// `DEVFORGE_REVIEW_TIMEOUT_MS` 可调，0 = 不限。
+pub const DEFAULT_REVIEW_TIMEOUT_MS: u64 = 30 * 60 * 1000;
+
+/// 本轮的审查墙钟（每轮现算：一轮一个 deadline）。
+fn review_deadline() -> Option<std::time::Instant> {
+    let ms = std::env::var("DEVFORGE_REVIEW_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_REVIEW_TIMEOUT_MS);
+    if ms == 0 {
+        return None;
+    }
+    Some(std::time::Instant::now() + std::time::Duration::from_millis(ms))
+}
+
 /// 空箱拒收的追补话术（change 测试回注 + MVP testing 循环共用）。
 pub const ISSUES_NUDGE: &str = "\
 你给出的裁决是 FAIL，但没有给出 <issues> 失败明细（每条一行，`- ` 开头）。\
@@ -111,7 +128,7 @@ where
                 continue;
             }
         };
-        let outcome = session.review(&instruction(round));
+        let outcome = session.review_with_deadline(&instruction(round), review_deadline());
         drop(session); // 用完即弃（无论结论），下一轮必是全新实例
         let text = match outcome {
             Ok(t) => t,
@@ -332,5 +349,47 @@ mod tests {
         .unwrap();
         assert_eq!(report, "GOOD");
         assert_eq!(opened, 2, "实例失败后必须换新实例重试");
+    }
+
+    /// 每轮审查必须走 `review_with_deadline` 并带上墙钟（server #6：旧实现只调裸
+    /// `review()`，轮询链路根本没有墙钟——只靠 15 分钟失活收割）。探针在 `review()`
+    /// 里直接 panic：一旦调用方退回裸 review，本用例立刻红。
+    #[test]
+    fn review_rounds_carry_a_wall_clock() {
+        struct Probe(std::sync::Arc<std::sync::Mutex<Vec<Option<std::time::Instant>>>>);
+        impl crate::sop::planning::ReviewSession for Probe {
+            fn review(&mut self, _i: &str) -> Result<String> {
+                panic!("审查轮必须走 review_with_deadline（带墙钟），不得退回裸 review");
+            }
+            fn review_with_deadline(
+                &mut self,
+                _i: &str,
+                deadline: Option<std::time::Instant>,
+            ) -> Result<String> {
+                self.0.lock().unwrap().push(deadline);
+                Ok("通过".into())
+            }
+        }
+        struct ProbeFactory(std::sync::Arc<std::sync::Mutex<Vec<Option<std::time::Instant>>>>);
+        impl crate::sop::planning::ReviewSessionFactory for ProbeFactory {
+            fn open(&mut self) -> Result<Box<dyn crate::sop::planning::ReviewSession>> {
+                Ok(Box::new(Probe(self.0.clone())))
+            }
+        }
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut factory = ProbeFactory(seen.clone());
+        let mut budget = ReviewBudget::default();
+        let (_r, opened) = review_with_gate::<u8, _, _>(
+            &mut factory,
+            0,
+            |_| "审".to_string(),
+            &mut budget,
+            |_| Ok(ReviewOutcome::verdict(1u8)),
+        )
+        .unwrap();
+        assert_eq!(opened, 1);
+        let got = seen.lock().unwrap();
+        assert_eq!(got.len(), 1, "每轮一个墙钟：{got:?}");
+        assert!(got[0].is_some(), "默认必须带墙钟（DEVFORGE_REVIEW_TIMEOUT_MS 未置 0）");
     }
 }
