@@ -64,6 +64,8 @@ impl BuiltinRpcEngine {
             gate.push_str("\n> 以上为机器发现：写文档时逐条取舍，确属不可达/不支持的写进 gaps.md，不得静默忽略。\n");
         }
         std::fs::write(meta_dir.join("gate0-closures.md"), gate).ctx("写门0证据")?;
+        // 引擎审计修复 #4：门 0 是开工前置，拦截判定见 gate0_block
+        gate0_block(&findings, &meta_dir)?;
 
         let mut units: Vec<String> = inv
             .entries
@@ -445,5 +447,49 @@ impl BuiltinRpcEngine {
             }
             Err(e) => crate::engine::policy::map_intervention(control, "doc-engine", e),
         }
+    }
+}
+
+/// 引擎审计修复 #4：门 0 是开工前置——闭包校验有发现时不得带着残清单进滚动
+/// （分母漏项 = 后续单元审只看分母内条目，漏掉的符号永远没人写）。
+/// 证据已落盘 gate0-closures.md，修复后重跑即可通过。
+fn gate0_block(
+    findings: &[crate::docgen::inventory::ClosureFinding],
+    meta_dir: &std::path::Path,
+) -> Result<()> {
+    if findings.is_empty() {
+        return Ok(());
+    }
+    Err(crate::error::DevforgeError::Quality(format!(
+        "门 0 闭包校验发现 {} 项（证据：{}/gate0-closures.md），按规格不开工——先修闭包缺失后重跑；首条：{}",
+        findings.len(),
+        meta_dir.display(),
+        findings[0].message
+    )))
+}
+
+#[cfg(test)]
+mod gate0_tests {
+    use super::*;
+
+    /// 修复 #4 回归：findings 非空 = 不开工（Quality），不再只写证据文件就放行。
+    #[test]
+    fn gate0_findings_block_the_run() {
+        let finding = crate::docgen::inventory::ClosureFinding {
+            closure: crate::docgen::inventory::Closure::FileCoverage,
+            path: "src/stray.py".into(),
+            line: 1,
+            message: "磁盘上的源文件不在清单里".into(),
+        };
+        let err = gate0_block(&[finding], std::path::Path::new("/w/docs/contexts/_meta"))
+            .unwrap_err();
+        assert!(err.is_quality_failure(), "闭包缺失是规格级不开工：{err}");
+        assert!(format!("{err}").contains("gate0-closures.md"), "{err}");
+        assert!(format!("{err}").contains("1 项"), "{err}");
+    }
+
+    #[test]
+    fn gate0_clean_findings_pass() {
+        gate0_block(&[], std::path::Path::new("/w/_meta")).unwrap();
     }
 }
