@@ -41,6 +41,30 @@
 | P2 | #4 空 evidence 过滤 | 兑现「零证据不入」 |
 | P3 | #8-#12 | 断点 WARN/line 0/分片标签/注释/日志字段 |
 
+## 修复状态表（2026-10-25 第二轮，全部落地）
+
+> 12/12 已修复，按审计报告建议的优先级批次推进；终验 784 绿 0 failed，
+> clippy 无新增（双 EXIT 原始日志 bg_gdgf3g7r：TEST_EXIT=0 / CLIPPY_EXIT=0）。
+
+| # | 修复 commit | 落地内容 |
+|---|---|---|
+| 1 | 24fd918 | pipeline ask 失败保持原分类上抛（去 Quality 包装）；runner Err 分流：Quality=协议违例放弃记录继续，System 等=打断整次审计（无「该批放弃整次成功」） |
+| 5 | 24fd918 | run_audit 签名加 &RunControl + check_intervention 单点（入口/Stage0/每批/Stage2 四检查点）；builtin code-review 分支对齐其他六 SOP：require_profile 门卫 + run_with_watchdog（cancel/timeout/idle 收割生效）+ map_intervention |
+| 2 | f27059d | Stage 2 跨单元发现同过 verify：cross_verify.kept 进报告与 severity 统计，dropped 并入 dropped_ghosts（Stage2 夹具幽灵 path 回归） |
+| 6 | f27059d | 预查 T1.4 落地：precheck_report 零 LLM 机检（unwrap/expect/panic/todo/unreachable、let _ = 吞错、tracing 事件数、行数，注释行不计）替换占位串，批次循环内按批注入 |
+| 7 | f27059d | 路径穿越静态拒绝：绝对路径或含 .. 段的发现路径与证据引用路径不读盘直接丢弃（堵 join 整体替换与 ../ 爬出） |
+| 3 | 6f959cd | ScriptFactory LIFO→FIFO + opens 计数断言：违例→成功恰好 2 次 open（空洞测试关死）；无违例 1 次/双违例 2 次后放弃 |
+| 4 | 6f959cd | verify 兑现「零证据不入」：has_evidence_ref 同源启发式，空 evidence/散文无引用在读盘前丢弃计「零证据」 |
+| 8 | 240bd4f | Progress::load 损坏 WARN 留痕（文件不存在静默冷启动；存在但坏 WARN 后作废整表重跑，与 change::state::load 口径一致） |
+| 9 | 240bd4f | verify 行号 0 丢弃（与 evidence 分支对齐，1-based 约定 0 必非法） |
+| 10 | 240bd4f | 分片标签组内局部计数（chunk_i+1/n_chunks），全局 seq 不再出现「分片 4/2」 |
+| 11 | 240bd4f | finding.rs 注释对齐实现（stage1 自制 2 次循环不经 review_with_gate，实例失败原分类上抛） |
+| 12 | 240bd4f | batch_findings 改本批产出值（batch_n），另留 findings_total 累计值——M3 差值反推成历史 |
+
+新增回归测试共 10 条：System 分类保持、实例失败打断整次（无报告假象+无发现落盘）、
+cancel 入口即断不碰 factory、Stage2 幽灵进 dropped、穿越拒绝不读盘、precheck 计数、
+opens 计数 ×2（隐含在重试用例）、零证据/散文无引用丢弃、line 0 丢弃。
+
 ## 核实总评
 
 - 第三方审计 12/12 全中（含一处窄条件 #9），定位精确到行、无一条误报——连续第二次
