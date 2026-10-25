@@ -208,7 +208,10 @@ impl RpcClient {
         let stdin = self
             .stdin
             .as_mut()
-            .expect("stdin 仅在 kill 后不可用");
+            // 引擎审计修复 #7：可失败路径不许 expect（kill 已 take stdin，此处 None 会 panic）
+            .ok_or_else(|| {
+                DevforgeError::RpcProtocol("stdin 已关闭：子进程被杀后无法发送 prompt".into())
+            })?;
         stdin
             .write_all(line.as_bytes())
             .ctx(format!("发送 prompt (id={id})"))?;
