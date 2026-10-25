@@ -231,8 +231,9 @@ pub fn set_step(step: &str) {
     write_heartbeat(&run_id);
 }
 
-/// 当前线程的 run id（无 = 不在这个 run 里）。
-fn current_run_id() -> Option<String> {
+/// 当前线程的 run id（无 = 不在这个 run 里）——引擎构造子会话工厂时用它给
+/// `DEVFORGE_MANAGED` 定父 run（否则审查子进程杀不掉，引擎批次 #1）。
+pub fn current_run_id() -> Option<String> {
     LOCAL.with(|l| l.borrow().run_id.clone())
 }
 

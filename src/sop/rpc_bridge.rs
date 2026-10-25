@@ -124,12 +124,16 @@ impl RpcReviewFactory {
     /// 便捷构造：同一 profile，每轮递增序号的 session 子目录（planning 沿用：cwd=服务器 cwd）。
     pub fn per_round(profile_dir: std::path::PathBuf, session_root: std::path::PathBuf) -> Self {
         let counter = std::sync::atomic::AtomicU32::new(0u32);
+        // 引擎批次 #1（critical）：审查子进程的 `DEVFORGE_MANAGED` 必须是**父 run-id**——
+        // 旧实现每次 spawn 用 `RunId::generate()`，而收割端（ledger）按父 run-id 匹配，
+        // cancel/超时/熔断三条杀路径全部漏杀。这里在**工厂构造时**（= run 线程）取一次。
+        let managed = crate::observability::current_run_id().unwrap_or_else(|| RunId::generate().0);
         Self::new(move || {
             let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             SpawnSpec::new(
                 profile_dir.clone(),
                 "plan-review",
-                RunId::generate().0,
+                managed.clone(),
                 session_root.join(format!("review-{n}")),
             )
         })
@@ -144,12 +148,14 @@ impl RpcReviewFactory {
     ) -> Self {
         let counter = std::sync::atomic::AtomicU32::new(0u32);
         let role = role.into();
+        // 同上：子进程标记跟父 run 走（否则审查 pi 杀不掉）。会话目录仍按 review-{n} 区分。
+        let managed = crate::observability::current_run_id().unwrap_or_else(|| RunId::generate().0);
         Self::new(move || {
             let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             SpawnSpec::new(
                 profile_dir.clone(),
                 role.clone(),
-                RunId::generate().0,
+                managed.clone(),
                 session_root.join(format!("review-{n}")),
             )
             .with_working_dir(working_dir.clone())
