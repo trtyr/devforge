@@ -87,12 +87,9 @@ pub fn run_audit(
         )
     });
 
-    // 确定性预查报告（M0 血统的机检结果，注入每批次）——M1 首版给占位摘要，
-    // V2 unwrap 扫描/V3 埋点缺口比对随 T1.4 落地。
-    let precheck = "（引擎预查：本批次为首批接入，确定性扫描报告将随 T1.4 落地）";
-
-    // 复验事故修复（M3 缺陷①）：每批 findings 即时落黑板——先落盘再打勾，
-    // 断点续跑从黑板回读已完成批次，进程死亡不再丢发现。
+    // 确定性预查报告（审计修复 #6，T1.4 落地）：对批次文件做零 LLM 机检——
+    // 审查官提示词约定「预查是确定性事实，直接采信并逐条验收」，占位串等于 Stage 1 失去静态面。
+    // 文件清单来自切片器（非 LLM 输入），无穿越面；在批次循环内按批生成。
     let findings_dir = blackboard.join("audit-findings");
     std::fs::create_dir_all(&findings_dir).ctx("建 audit-findings 目录")?;
     let mut findings: Vec<Finding> = load_persisted_findings(&findings_dir, &progress.done_batches);
@@ -103,7 +100,10 @@ pub fn run_audit(
             continue;
         }
         check_intervention(control)?;
-        match stage1_review_batch(factory, unit, &unit_labels, precheck) {
+        // 复验事故修复（M3 缺陷①）：每批 findings 即时落黑板——先落盘再打勾，
+        // 断点续跑从黑板回读已完成批次，进程死亡不再丢发现。
+        let precheck = precheck_report(&task.workspace, &unit.files);
+        match stage1_review_batch(factory, unit, &unit_labels, &precheck) {
             Ok(fs) => {
                 // 先落盘批次发现，再打勾进度（顺序不可反：进程死在中间也不丢）
                 std::fs::write(
@@ -151,8 +151,7 @@ pub fn run_audit(
         read_stage2(&blackboard)?
     } else {
         check_intervention(control)?;
-        let mut session = factory.open().ctx("开跨单元会话")?;
-        let out = stage2_cross(session.as_mut(), &verified.kept, &review_plan.cross_concerns)?;
+        let mut session = factory.open().ctx("开跨单元会话")?;        let out = stage2_cross(session.as_mut(), &verified.kept, &review_plan.cross_concerns)?;
         std::fs::write(
             blackboard.join("audit-stage2.json"),
             serde_json::to_vec_pretty(&out).ctx("序列化跨单元分析")?,
@@ -163,6 +162,13 @@ pub fn run_audit(
         out
     };
 
+    // 审计修复 #2：Stage 2 跨单元发现同样过核验——跨单元是 LLM 二次生成 findings 的入口，
+    // 绕过核验等于「无幽灵发现」底线对汇总层失效（RepoAudit：无 validator FP +245%）。
+    let cross_verify = verify(&task.workspace, &cross.findings);
+    let cross_kept = cross_verify.kept.clone();
+    let mut all_dropped = verified.dropped.clone();
+    all_dropped.extend(cross_verify.dropped);
+
     // ---- 报告组装（JSON + MD，M2）----
     let report = serde_json::json!({
         "project": task.project,
@@ -172,10 +178,10 @@ pub fn run_audit(
         "batches_abandoned": abandoned,
         "findings": {
             "kept": deduped,
-            "dropped_ghosts": verified.dropped,
+            "dropped_ghosts": all_dropped,
         },
         "cross_analysis": cross,
-        "severity_summary": severity_summary(&deduped, &cross.findings),
+        "severity_summary": severity_summary(&deduped, &cross_kept),
     });
     std::fs::write(
         blackboard.join("audit-report.json"),
@@ -186,20 +192,69 @@ pub fn run_audit(
         &task.project,
         &task.id,
         &deduped,
-        &cross.findings,
-        &verified.dropped,
+        &cross_kept,
+        &all_dropped,
         &abandoned,
     );
     std::fs::write(blackboard.join("audit-report.md"), md).ctx("写审计报告 MD")?;
     tracing::info!(
         component = "audit-engine",
         kept = verified.kept.len(),
-        dropped = verified.dropped.len(),
-        cross = cross.findings.len(),
+        dropped = all_dropped.len(),
+        cross = cross_kept.len(),
         abandoned = abandoned.len(),
         "全量审计完成"
     );
     Ok(RunOutcome::Completed)
+}
+
+/// 确定性预查报告（审计修复 #6，T1.4）：对批次文件做零 LLM 机检——
+/// V2 unwrap/expect/panic/todo/unreachable 与 let _ = 吞错分布、V3 tracing 事件数、V4 行数。
+/// 事实直接采信（审查官提示词约定）；文件清单来自切片器（非 LLM 输入），无穿越面。
+fn precheck_report(workspace: &Path, files: &[String]) -> String {
+    let mut out = String::from("引擎预查（确定性机检，事实直接采信）：\n");
+    for f in files {
+        let content = match std::fs::read_to_string(workspace.join(f)) {
+            Ok(c) => c,
+            Err(e) => {
+                out.push_str(&format!("- {f}: 读取失败（{e}）\n"));
+                continue;
+            }
+        };
+        let mut unwraps = 0usize;
+        let mut swallowed = 0usize;
+        let mut events = 0usize;
+        for line in content.lines() {
+            let t = line.trim_start();
+            if t.starts_with("//") {
+                continue; // 注释行不计
+            }
+            if line.contains(".unwrap()")
+                || line.contains(".expect(")
+                || line.contains("panic!")
+                || line.contains("todo!")
+                || line.contains("unreachable!")
+            {
+                unwraps += 1;
+            }
+            if line.contains("let _ =") {
+                swallowed += 1;
+            }
+            if line.contains("tracing::info!")
+                || line.contains("tracing::warn!")
+                || line.contains("tracing::error!")
+                || line.contains("tracing::debug!")
+                || line.contains("tracing::trace!")
+            {
+                events += 1;
+            }
+        }
+        out.push_str(&format!(
+            "- {f}: 共 {} 行 / unwrap·expect·panic·todo·unreachable {unwraps} 处 / let _ = 吞错 {swallowed} 处 / tracing 事件 {events} 处\n",
+            content.lines().count()
+        ));
+    }
+    out
 }
 
 fn severity_summary(
@@ -374,5 +429,86 @@ mod tests {
         let mut factory = PanicFactory;
         let err = run_audit(&task, root.path(), &control, &mut factory).unwrap_err();
         assert!(err.to_string().contains("干预"), "应报干预中断：{err:?}");
+    }
+
+    /// 审计修复 #2 回归：Stage 2 跨单元发现（LLM 二次生成）同样过核验——
+    /// 穿越路径进 dropped_ghosts，不进报告 kept；真实跨单元发现照常保留。
+    #[test]
+    fn stage2_findings_pass_verify_ghosts_go_to_dropped() {
+        use super::super::pipeline::{AuditSession, AuditSessionFactory};
+        struct ScriptedSession {
+            replies: std::collections::VecDeque<&'static str>,
+        }
+        impl AuditSession for ScriptedSession {
+            fn ask(&mut self, _: &str) -> crate::error::Result<String> {
+                self.replies
+                    .pop_front()
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| crate::error::DevforgeError::System("回复耗尽".into()))
+            }
+        }
+        /// 按会话序切换脚本：会话 1 = Stage 0，会话 2 = 批次，会话 3 = Stage 2。
+        struct SequencedFactory {
+            scripts: std::collections::VecDeque<std::collections::VecDeque<&'static str>>,
+        }
+        impl AuditSessionFactory for SequencedFactory {
+            fn open(&mut self) -> crate::error::Result<Box<dyn AuditSession>> {
+                let s = self
+                    .scripts
+                    .pop_front()
+                    .ok_or_else(|| crate::error::DevforgeError::System("会话耗尽".into()))?;
+                Ok(Box::new(ScriptedSession { replies: s }))
+            }
+        }
+        const PLAN: &str = "```json\n{\"priority\": [], \"skip\": [], \"cross_concerns\": []}\n```";
+        const FINDINGS: &str = r#"<audit-findings>
+[{"path":"src/a.rs","line":1,"view":"correctness","severity":"major","claim":"c","evidence":"src/a.rs:1"}]
+</audit-findings>"#;
+        const CROSS_GHOST: &str = "```json\n{\"findings\": [\n{\"path\":\"../../etc/passwd\",\"line\":1,\"view\":\"correctness\",\"severity\":\"critical\",\"claim\":\"越界发现\",\"evidence\":\"../../etc/passwd:1\"},\n{\"path\":\"src/a.rs\",\"line\":1,\"view\":\"security\",\"severity\":\"minor\",\"claim\":\"真实跨单元发现\",\"evidence\":\"src/a.rs:1\"}], \"concern_verdicts\": []}\n```";
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("a.rs"), "fn main() {}\n").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut task = crate::domain::task::Task::new("audit-self", "p-audit", "code-review", 1);
+        task.workspace = ws.path().to_path_buf();
+        let control = crate::domain::runner::RunControl::new();
+        let mut factory = SequencedFactory {
+            scripts: [PLAN, FINDINGS, CROSS_GHOST]
+                .into_iter()
+                .map(|s| [s].into_iter().collect())
+                .collect(),
+        };
+        run_audit(&task, root.path(), &control, &mut factory).unwrap();
+        let blackboard = root.path().join("p-audit").join("audit-self");
+        let v: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(blackboard.join("audit-report.json")).unwrap(),
+        )
+        .unwrap();
+        let kept = v["findings"]["kept"].as_array().unwrap();
+        assert!(
+            !kept.iter().any(|f| f["path"].as_str().unwrap().contains("..")),
+            "穿越发现不得进 kept：{kept:?}"
+        );
+        let dropped = v["findings"]["dropped_ghosts"].as_array().unwrap();
+        assert!(
+            dropped.iter().any(|d| d[0].as_str().unwrap().contains("..")),
+            "Stage 2 穿越发现应进 dropped_ghosts：{dropped:?}"
+        );
+    }
+
+    /// 审计修复 #6：预查报告含本批文件的 unwrap/吞错/埋点/行数机检事实。
+    #[test]
+    fn precheck_report_counts_machine_facts() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ws.path().join("a.rs"),
+            "fn f() {\n    let x = vec![1].pop().unwrap(); // 行尾注释不跳过\n    let _ = std::fs::read_to_string(\"x\");\n    tracing::info!(\"hello\");\n}\n",
+        )
+        .unwrap();
+        let report = precheck_report(ws.path(), &["a.rs".to_string()]);
+        assert!(report.contains("a.rs"), "{report}");
+        assert!(report.contains("unreachable 1 处"), "{report}");
+        assert!(report.contains("吞错 1 处"), "{report}");
+        assert!(report.contains("tracing 事件 1 处"), "{report}");
+        assert!(report.contains("共 5 行"), "{report}");
     }
 }

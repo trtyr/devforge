@@ -17,12 +17,27 @@ pub struct VerifyReport {
     pub dropped: Vec<(String, String)>,
 }
 
+/// 路径穿越静态拒绝（审计修复 #7）：绝对路径或含 `..` 段的发现路径不读盘直接丢。
+/// 防 `workspace.join` 对绝对路径的整体替换（`/w".join("/etc/passwd")` = `/etc/passwd`）
+/// 与 `../` 爬出仓库——核验器只做存在性检查，不能被当成任意路径读盘器。
+fn path_traversal(p: &str) -> bool {
+    std::path::Path::new(p).is_absolute() || p.split('/').any(|seg| seg == "..")
+}
+
 /// 对一批发现跑核验：`workspace` = 仓库根（存在性判定的基准）。
 pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
     // 行号缓存：path → 行数（同一文件的多次发现只读一次盘）
     let mut line_counts: BTreeMap<String, Option<usize>> = BTreeMap::new();
     let mut report = VerifyReport::default();
     for f in findings {
+        // 审计修复 #7：路径穿越先拒绝（不读盘）
+        if path_traversal(&f.path) {
+            report.dropped.push((
+                format!("{}/{}", f.path, f.line),
+                format!("路径越界：{} 含 .. 或绝对路径，拒绝读盘", f.path),
+            ));
+            continue;
+        }
         let lines = line_counts
             .entry(f.path.clone())
             .or_insert_with(|| {
@@ -86,6 +101,10 @@ fn evidence_refs_out_of_file(workspace: &Path, evidence: &str) -> Option<String>
         // 启发式过滤：路径段要像文件（含扩展名或目录分隔），行号 ≤ 6 位防时间戳误吞
         if !(path.contains('.') || path.contains('/')) || digits.len() > 6 {
             continue;
+        }
+        // 审计修复 #7：证据引用路径同样拒绝穿越（不读盘，整条丢弃）
+        if path_traversal(path) {
+            return Some(format!("{path}:路径越界（.. 或绝对路径，拒绝读盘）"));
         }
         let full = workspace.join(path);
         let line_no: usize = match digits.parse() {
@@ -175,5 +194,20 @@ mod tests {
         let v = verify(r.path(), &[f]);
         assert!(v.kept.is_empty(), "证据引用幽灵文件应整条丢弃");
         assert!(v.dropped[0].1.contains("文件不存在"), "{}", v.dropped[0].1);
+    }
+
+    /// 审计修复 #7：路径穿越（../ 或绝对路径）不读盘直接丢弃，原因标「越界」非「不存在」
+    /// ——核验器只做存在性检查，不能被当成任意路径读盘器。
+    #[test]
+    fn traversal_paths_are_rejected_without_disk_read() {
+        let r = fixture();
+        let findings = vec![finding("../../etc/passwd", 1), finding("/etc/passwd", 1)];
+        let v = verify(r.path(), &findings);
+        assert!(v.kept.is_empty(), "穿越路径不得进入 kept");
+        assert_eq!(v.dropped.len(), 2);
+        for (loc, reason) in &v.dropped {
+            assert!(reason.contains("路径越界"), "{loc}: {reason}");
+            assert!(!reason.contains("不存在"), "应静态拒绝而非当幽灵：{reason}");
+        }
     }
 }
