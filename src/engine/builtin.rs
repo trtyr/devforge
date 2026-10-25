@@ -73,19 +73,41 @@ impl RunEngine for BuiltinRpcEngine {
             "doc-from-zero" => self.run_doc_from_zero(task, run, control),
         "change" => self.run_change(task, run, control),
         "code-review" => {
+            // F1：spawn 前门卫，缺失即快速失败——先于一切副作用（与其他 SOP 同口径，审计修复 #5）
+            for p in Self::profiles_for_sop("code-review") {
+                self.require_profile(p)?;
+            }
             // P013 M1：四阶段审计（盘点切片→规划→批次审查→跨单元→核验→报告）。
             // 会话桥：RpcReviewFactory（code-review profile，会话落 session_root/code-review）。
-            let mut factory = crate::sop::rpc_bridge::RpcReviewFactory::per_round_in(
+            // 审计修复 #5：与其他 SOP 同口径——run_with_watchdog 包住整次审计
+            // （cancel 端点/墙钟超时/idle 收割全部生效），干预性死亡经 map_intervention
+            // 给出明确 Failed 原因；不再裸调 run_audit。
+            let factory = crate::sop::rpc_bridge::RpcReviewFactory::per_round_in(
                 self.profile_root.join("code-review"),
                 "code-review",
                 self.session_root.join("code-review"),
                 self.plans_root.join(&task.project).join(&task.id),
             );
-            crate::audit::runner::run_audit(
-                task,
-                &self.plans_root,
-                &mut crate::audit::pipeline::AuditSessionFactoryBridge(factory),
-            )
+            let plans_root = self.plans_root.clone();
+            let watch_dirs = vec![self.session_root.join("code-review")];
+            let sop_result = run_with_watchdog(
+                control,
+                run.id.0.clone(),
+                self.idle_ms,
+                watch_dirs,
+                move || {
+                    crate::audit::runner::run_audit(
+                        task,
+                        &plans_root,
+                        control,
+                        &mut crate::audit::pipeline::AuditSessionFactoryBridge(factory),
+                    )
+                },
+            );
+            match sop_result {
+                Ok(outcome) => Ok(outcome),
+                Err(e) => crate::engine::policy::map_intervention(control, "audit-engine", e),
+            }
         }
             other => Err(crate::error::DevforgeError::System(format!(
                 "SOP `{other}` 未接线编排器（注册表与引擎必须同步）"

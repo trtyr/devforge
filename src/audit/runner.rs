@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::domain::runner::RunOutcome;
+use crate::domain::runner::{RunControl, RunOutcome};
 use crate::domain::task::Task;
 use crate::error::{Context as _, Result};
 
@@ -14,12 +14,28 @@ use super::pipeline::{stage0_plan, stage1_review_batch, stage2_cross, AuditSessi
 use super::{build_plan, AuditUnit};
 use super::verify::verify;
 
+/// 干预检查单点（审计修复 #5）：置位即中断——外层 map_intervention 看 control 置位
+/// 给出明确的 Failed 原因（已取消/已失活/已超时），audit 层不重复归因。
+fn check_intervention(control: &RunControl) -> Result<()> {
+    if control.is_cancelled()
+        || control.is_stalled()
+        || control.timed_out(crate::domain::now_ms())
+    {
+        return Err(crate::error::DevforgeError::System(
+            "审计中断：run 已被干预（cancel/stalled/timeout）".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// 全量审计执行（生产入口）。`factory` 每次开新会话（用完即弃）。
 pub fn run_audit(
     task: &Task,
     plans_root: &Path,
+    control: &RunControl,
     factory: &mut dyn AuditSessionFactory,
 ) -> Result<RunOutcome> {
+    check_intervention(control)?;
     let blackboard = plans_root.join(&task.project).join(&task.id);
     std::fs::create_dir_all(&blackboard).ctx("创建黑板目录")?;
     let mut progress = Progress::load(&blackboard);
@@ -38,6 +54,7 @@ pub fn run_audit(
         tracing::info!(component = "audit-engine", "断点：Stage 0 已完成，跳过");
         read_stage0(&blackboard)?
     } else {
+        check_intervention(control)?;
         let mut session = factory.open().ctx("开规划会话")?;
         let plan = stage0_plan(session.as_mut(), &plan.units)?;
         std::fs::write(
@@ -85,6 +102,7 @@ pub fn run_audit(
             tracing::info!(component = "audit-engine", unit = %unit.id, "断点：批次已完成，跳过");
             continue;
         }
+        check_intervention(control)?;
         match stage1_review_batch(factory, unit, &unit_labels, precheck) {
             Ok(fs) => {
                 // 先落盘批次发现，再打勾进度（顺序不可反：进程死在中间也不丢）
@@ -104,9 +122,21 @@ pub fn run_audit(
                 );
             }
             Err(e) => {
-                // 批次放弃不拖垮整审计（诚实失败：记录放弃原因入报告）
-                abandoned.push(format!("{}：{e}", unit.id));
-                tracing::warn!(component = "audit-engine", unit = %unit.id, "批次放弃");
+                // 审计修复 #1：错误分流——协议违例放弃（Quality）= 记录后继续；
+                // 实例失败（System/Agent 等基础设施故障）= 打断整次审计（run 层重试/重启接手），
+                // 不许「该批放弃、整次成功」把故障写成成功审计。
+                if matches!(e, crate::error::DevforgeError::Quality(_)) {
+                    abandoned.push(format!("{}：{e}", unit.id));
+                    tracing::warn!(component = "audit-engine", unit = %unit.id, "批次放弃");
+                } else {
+                    tracing::error!(
+                        component = "audit-engine",
+                        unit = %unit.id,
+                        error = %e,
+                        "批次实例失败，打断整次审计（非质量类错误不伪装成放弃）"
+                    );
+                    return Err(e);
+                }
             }
         }
     }
@@ -120,6 +150,7 @@ pub fn run_audit(
     let cross = if progress.stage2_done {
         read_stage2(&blackboard)?
     } else {
+        check_intervention(control)?;
         let mut session = factory.open().ctx("开跨单元会话")?;
         let out = stage2_cross(session.as_mut(), &verified.kept, &review_plan.cross_concerns)?;
         std::fs::write(
@@ -263,5 +294,85 @@ mod tests {
         );
         assert_eq!(got.len(), 1, "存在的批次回读，缺失的跳过");
         assert_eq!(got[0].batch, "unit-001");
+    }
+
+    // ---------- 审计修复 #1/#5 回归 ----------
+
+    /// Stage 0 成功后，批次会话 ask 失败（System 类）：整次审计必须 Err，
+    /// 错误不得伪装成 Quality，批次发现不落盘、报告不生成（无「成功审计」假象）。
+    #[test]
+    fn batch_instance_failure_aborts_whole_run_not_abandoned() {
+        use std::sync::atomic::Ordering;
+        struct PlanOnlySession;
+        impl super::super::pipeline::AuditSession for PlanOnlySession {
+            fn ask(&mut self, _: &str) -> crate::error::Result<String> {
+                Ok("```json\n{\"priority\": [], \"skip\": [], \"cross_concerns\": []}\n```"
+                    .into())
+            }
+        }
+        struct FailAskSession;
+        impl super::super::pipeline::AuditSession for FailAskSession {
+            fn ask(&mut self, _: &str) -> crate::error::Result<String> {
+                Err(crate::error::DevforgeError::System("RPC 挂死模拟".into()))
+            }
+        }
+        /// 第一次 open 给 Stage 0 会话（成功），之后全部给 ask 失败的批次会话。
+        struct Stage0OkThenFailFactory { opens: usize }
+        impl super::super::pipeline::AuditSessionFactory for Stage0OkThenFailFactory {
+            fn open(&mut self) -> crate::error::Result<Box<dyn super::super::pipeline::AuditSession>> {
+                self.opens += 1;
+                if self.opens == 1 {
+                    Ok(Box::new(PlanOnlySession))
+                } else {
+                    Ok(Box::new(FailAskSession))
+                }
+            }
+        }
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("a.rs"), "fn main() {}\n").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut task = crate::domain::task::Task::new("audit-self", "p-audit", "code-review", 1);
+        task.workspace = ws.path().to_path_buf();
+        let control = crate::domain::runner::RunControl::new();
+        assert!(!control.cancel.load(Ordering::SeqCst));
+        let mut factory = Stage0OkThenFailFactory { opens: 0 };
+        let err = run_audit(&task, root.path(), &control, &mut factory).unwrap_err();
+        assert!(
+            !matches!(err, crate::error::DevforgeError::Quality(_)),
+            "实例失败不得伪装成 Quality：{err:?}"
+        );
+        let blackboard = root.path().join("p-audit").join("audit-self");
+        assert!(
+            !blackboard.join("audit-report.json").exists(),
+            "实例失败打断时不得生成报告（无成功假象）"
+        );
+        let findings_dir = blackboard.join("audit-findings");
+        let leaked: usize = std::fs::read_dir(&findings_dir)
+            .map(|d| d.flatten().count())
+            .unwrap_or(0);
+        assert_eq!(leaked, 0, "被打断的批次不得有发现落盘（abandoned 不含该批的文件面证据）");
+    }
+
+    /// 审计修复 #5：cancel 置位 → run_audit 入口即中断，不碰 factory。
+    #[test]
+    fn cancelled_control_aborts_audit_before_any_session() {
+        struct PanicFactory;
+        impl super::super::pipeline::AuditSessionFactory for PanicFactory {
+            fn open(&mut self) -> crate::error::Result<Box<dyn super::super::pipeline::AuditSession>> {
+                panic!("cancel 置位后不得开任何会话");
+            }
+        }
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("a.rs"), "fn main() {}\n").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut task = crate::domain::task::Task::new("audit-self", "p-audit", "code-review", 1);
+        task.workspace = ws.path().to_path_buf();
+        let control = crate::domain::runner::RunControl::new();
+        control
+            .cancel
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut factory = PanicFactory;
+        let err = run_audit(&task, root.path(), &control, &mut factory).unwrap_err();
+        assert!(err.to_string().contains("干预"), "应报干预中断：{err:?}");
     }
 }

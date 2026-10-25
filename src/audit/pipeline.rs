@@ -151,12 +151,9 @@ pub fn stage1_review_batch(
         let instruction = batch_instruction(unit, all_unit_labels, precheck_report);
         let reply = match session.ask(&instruction) {
             Ok(r) => r,
-            Err(e) => {
-                return Err(DevforgeError::Quality(format!(
-                    "批次 {} 审查实例失败：{e}",
-                    unit.id
-                )));
-            }
+            // 审计修复 #1：ask 失败保持原分类上抛（System/Agent 等基础设施故障）——
+            // 不包 Quality：实例失败该打断整次审计而非伪装成质量失败被放弃。
+            Err(e) => return Err(e),
         };
         drop(session);
         match parse_findings(&reply) {
@@ -339,6 +336,30 @@ mod tests {
             replies: vec![["违例2".into()].into(), ["违例3".into()].into()],
         };
         assert!(stage1_review_batch(&mut factory, &u, &[], "无").is_err());
+    }
+
+    /// 审计修复 #1 回归：ask 失败保持原分类（System）上抛——不包 Quality，
+    /// 否则基础设施故障会被 runner 当成「协议违例放弃」写成成功审计。
+    #[test]
+    fn instance_failure_keeps_original_error_classification() {
+        struct FailSession;
+        impl AuditSession for FailSession {
+            fn ask(&mut self, _: &str) -> Result<String> {
+                Err(DevforgeError::System("RPC 挂死模拟".into()))
+            }
+        }
+        struct FailFactory;
+        impl AuditSessionFactory for FailFactory {
+            fn open(&mut self) -> Result<Box<dyn AuditSession>> {
+                Ok(Box::new(FailSession))
+            }
+        }
+        let mut f = FailFactory;
+        let err = stage1_review_batch(&mut f, &unit("unit-001"), &[], "无").unwrap_err();
+        assert!(
+            matches!(err, DevforgeError::System(_)),
+            "ask 失败应保持 System 分类：{err:?}"
+        );
     }
 
     #[test]
