@@ -206,7 +206,9 @@ pub fn read_steps(blackboard: &Path) -> Result<Vec<Step>> {
     Ok(steps)
 }
 
-/// 相对基线的改动文件（`git diff --name-only <baseline>`，含已提交与未提交、不含未跟踪）。
+/// 相对基线的改动文件（`git diff --name-only <baseline>`，含已提交与未提交；
+/// 并入 `git ls-files --others --exclude-standard` 的未跟踪文件——复验 #2：
+/// 否则新建白名单外文件且不 git add，边界门/步提交对账/报告 diff 三处同时盲区）。
 pub fn changed_files(repo: &Path, baseline: &str) -> Result<Vec<String>> {
     let out = Command::new("git")
         .args(["diff", "--name-only", baseline])
@@ -219,12 +221,33 @@ pub fn changed_files(repo: &Path, baseline: &str) -> Result<Vec<String>> {
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
+    let mut files: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(str::to_string)
-        .collect())
+        .collect();
+    let untracked = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| DevforgeError::System(format!("执行 git ls-files 失败：{e}")))?;
+    if !untracked.status.success() {
+        return Err(DevforgeError::System(format!(
+            "git ls-files --others 失败：{}",
+            String::from_utf8_lossy(&untracked.stderr).trim()
+        )));
+    }
+    for line in String::from_utf8_lossy(&untracked.stdout).lines() {
+        let f = line.trim();
+        if !f.is_empty() && !files.iter().any(|x| x == f) {
+            files.push(f.to_string());
+        }
+    }
+    // 流水线自身产物（计划文档/证据）不算代码改动——与 #10 纪律同口径：它们不进 coding
+    // 提交、也不参与越界判定，否则每轮 run 自己写的 change-plan.md 会永久触发范围膨胀。
+    files.retain(|f| !f.starts_with("docs/plantree/") && !f.starts_with("evidence/"));
+    Ok(files)
 }
 
 /// 基线之后的提交（`git log --format=%s`）。
@@ -373,6 +396,29 @@ mod tests {
             .unwrap();
         let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
         (tmp, sha)
+    }
+
+    /// 复验 #2 回归：白名单外的未跟踪文件必须进入 changed_files（否则门禁三处盲区）。
+    #[test]
+    fn untracked_files_are_included_in_changed_files() {
+        let (tmp, baseline) = repo_with_baseline();
+        std::fs::write(tmp.path().join("outside.txt"), "secret\n").unwrap();
+        let files = changed_files(tmp.path(), &baseline).unwrap();
+        assert!(
+            files.iter().any(|f| f == "outside.txt"),
+            "未跟踪文件必须出现在变更集：{files:?}"
+        );
+    }
+
+    /// 复验 #1 回归：非法基线（git diff 失败）必须 Err，不得静默空数组。
+    #[test]
+    fn invalid_baseline_is_error_not_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q"]);
+        std::fs::write(tmp.path().join("a.txt"), "a\n").unwrap();
+        let err = changed_files(tmp.path(), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
     }
 
     #[test]

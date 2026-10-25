@@ -419,7 +419,9 @@ impl ChangeSession for ProdChangeSession {
             .coding_agent
             .converse(&coding_kickoff(&self.ctx, last_failure), ui)?;
         if parse_route(&reply).as_deref() == Some("plan") {
-            let changed = changed_files(&self.ctx.repo, &self.ctx.baseline).unwrap_or_default();
+            // 复验 #1（高危）：git 失败必须 Err 上抛——unwrap_or_default 会把基线失效/仓库损坏
+            // 伪装成「无改动」，boundary 因 extra 为空直接放行，门禁被静默绕过。
+            let changed = changed_files(&self.ctx.repo, &self.ctx.baseline)?;
             return Ok(CodingTurn {
                 reply,
                 changed,
