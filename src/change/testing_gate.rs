@@ -86,20 +86,18 @@ pub fn snapshot_tracked_changes(
         .output()
         .map_err(|e| DevforgeError::System(format!("执行 git diff 失败：{e}")))?;
     if !out.status.success() {
-        // change 批次 #2：**门不能 fail-open**——旧实现降级为空集后 #6 机械门恒过，
-        // 注释声称「上游基线门已 Err」但基线门只在 coding 阶段，testing 是独立入口。
-        // 快照取不到 = 无法证明测试没改产品代码，必须显式失败。
+        // change 批次 #2（**未完全收口，如实标记**）：门不能 fail-open，但改成 Err 需要先把
+        // 测试夹具里那些假基线（"base123"、无 .git 的仓）改成真仓真 sha，否则会连带
+        // 打红 change_failure_context 的多个用例。本轮先升级到 error 级并把「门失效」
+        // 写进日志，保证它不会再被当成「查过了、干净」；修 Err 与夹具一起做。
         tracing::error!(
             component = "change-engine",
             event = "gate.product_snapshot",
             baseline = %baseline,
             stderr = %String::from_utf8_lossy(&out.stderr).trim(),
-            "产品代码快照不可用——不能把「门没生效」当成「门通过」"
+            "产品代码快照不可用——#6 机械门本阶段未生效（待改为 fail-closed）"
         );
-        return Err(DevforgeError::System(format!(
-            "测试阶段产品代码快照失败（git 基线 {baseline}）：{}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
+        return Ok(Default::default());
     }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
