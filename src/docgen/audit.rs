@@ -485,6 +485,16 @@ mod tests {
         );
     }
 
+    /// 引擎审计修复 #7 回归：档位解析默认 complete（DEVFORGE_DOC_LEVEL 未设/非法值
+    /// 都落 complete——wiring 读环境变量后经此归一，essential/detailed 显式给）。
+    #[test]
+    fn doc_level_parse_defaults_to_complete() {
+        assert!(matches!(DocLevel::parse("nonsense"), DocLevel::Complete));
+        assert!(matches!(DocLevel::parse(""), DocLevel::Complete));
+        assert!(matches!(DocLevel::parse(" essential "), DocLevel::Essential));
+        assert!(matches!(DocLevel::parse("DETAILED"), DocLevel::Detailed));
+    }
+
     #[test]
     fn full_coverage_requires_modules_and_symbols() {
         let tmp = fixture();

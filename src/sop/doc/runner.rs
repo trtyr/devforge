@@ -250,6 +250,70 @@ where
                     let files = crate::sop::doc::evidence::produced_files_between(&committed, &before);
                     mark_done(&mut state, &$unit, &files);
                     store.save(&mut state)?;
+                    // 引擎审计修复 #5：一单元一提交（P008 规格 §单元提交）——PASS 后把
+                    // 本单元自己的产出（#3 快照对算出的名单）落成独立 commit（单元粒度
+                    // 可 revert 的回滚锚点）。只 add 名单内文件：lead=1 下后续单元可能已
+                    // 提前写盘，整目录 add 会裹挟别人的产出。非 git 仓降级 WARN 不阻断。
+                    {
+                        let rels: Vec<String> = files
+                            .iter()
+                            .map(|f| format!("docs/contexts/{f}"))
+                            .collect();
+                        let git = |args: &[&str]| {
+                            std::process::Command::new("git")
+                                .current_dir(repo)
+                                .args(args)
+                                .output()
+                        };
+                        if rels.is_empty() {
+                            tracing::warn!(
+                                component = "doc-sop",
+                                unit = %$unit,
+                                "本单元无产出文件，一单元一提交跳过"
+                            );
+                        } else {
+                            let mut add_args: Vec<&str> = vec!["add", "--"];
+                            add_args.extend(rels.iter().map(|s| s.as_str()));
+                            match git(&add_args) {
+                                Ok(o) if o.status.success() => {
+                                    let msg = format!(
+                                        "docs(doc-from-zero): 单元 {} 产出提交（流水线自动）",
+                                        $unit
+                                    );
+                                    let mut commit_args: Vec<&str> =
+                                        vec!["commit", "-m", &msg, "--"];
+                                    commit_args.extend(rels.iter().map(|s| s.as_str()));
+                                    match git(&commit_args) {
+                                        Ok(o) if o.status.success() => {}
+                                        Ok(o) => tracing::warn!(
+                                            component = "doc-sop",
+                                            unit = %$unit,
+                                            stderr = %String::from_utf8_lossy(&o.stderr),
+                                            "单元提交失败（不阻断，产出已落盘）"
+                                        ),
+                                        Err(e) => tracing::warn!(
+                                            component = "doc-sop",
+                                            unit = %$unit,
+                                            error = %e,
+                                            "git commit 调用失败（不阻断）"
+                                        ),
+                                    }
+                                }
+                                Ok(o) => tracing::warn!(
+                                    component = "doc-sop",
+                                    unit = %$unit,
+                                    stderr = %String::from_utf8_lossy(&o.stderr),
+                                    "git add 失败，一单元一提交降级跳过（不阻断）"
+                                ),
+                                Err(e) => tracing::warn!(
+                                    component = "doc-sop",
+                                    unit = %$unit,
+                                    error = %e,
+                                    "git 不可用，一单元一提交降级跳过（不阻断）"
+                                ),
+                            }
+                        }
+                    }
                     consecutive_fails = 0;
                     tracing::info!(
                         component = "doc-sop",

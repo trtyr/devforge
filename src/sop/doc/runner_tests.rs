@@ -516,6 +516,27 @@ fn mechanical_gate_rejects_pass_without_coverage() {
     );
 }
 
+/// converse 时真写文件的 agent：A 写 a.md，B 写 b.md——快照差异可断言
+/// （引擎审计修复 #3/#5 的两个回归共用）。
+struct WritingAgent {
+    turns: VecDeque<String>,
+    docs_root: std::path::PathBuf,
+    received: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+impl crate::sop::planning::PlanAgentSession for WritingAgent {
+    fn converse(
+        &mut self,
+        _message: &str,
+        _ui: &mut dyn crate::sop::planning::UserLink,
+    ) -> crate::error::Result<String> {
+        let marker = self.turns.pop_front().expect("轮次耗尽");
+        let fname = if marker.contains("unit-a") { "a.md" } else { "b.md" };
+        std::fs::write(self.docs_root.join(fname), format!("# {marker}\n")).unwrap();
+        self.received.lock().unwrap().push(marker.clone());
+        Ok(marker)
+    }
+}
+
 /// 引擎审计修复 #3 回归：lead=1 下 B 的写不得冲掉 A 的写前快照——A 的 PASS
 /// 迟到（gate 卡到 B 交卷后放行）时，mark_done(A) 的文件名单必须只含 A 的产出。
 /// 错实现形态：unit_before 单变量被 B 覆盖，A 的名单混入 B 的文件。
@@ -523,26 +544,6 @@ fn mechanical_gate_rejects_pass_without_coverage() {
 fn pass_uses_own_units_snapshot_not_latest() {
     use crate::sop::doc::state::done_units;
     use std::collections::VecDeque;
-
-    // converse 时真写文件的 agent：A 写 a.md，B 写 b.md——快照差异可断言
-    struct WritingAgent {
-        turns: VecDeque<String>,
-        docs_root: std::path::PathBuf,
-        received: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    }
-    impl crate::sop::planning::PlanAgentSession for WritingAgent {
-        fn converse(
-            &mut self,
-            _message: &str,
-            _ui: &mut dyn crate::sop::planning::UserLink,
-        ) -> crate::error::Result<String> {
-            let marker = self.turns.pop_front().expect("轮次耗尽");
-            let fname = if marker.contains("unit-a") { "a.md" } else { "b.md" };
-            std::fs::write(self.docs_root.join(fname), format!("# {marker}\n")).unwrap();
-            self.received.lock().unwrap().push(marker.clone());
-            Ok(marker)
-        }
-    }
 
     let tmp = tempfile::tempdir().unwrap();
     let docs_root = tmp.path().join("docs/contexts");
@@ -618,4 +619,47 @@ fn pass_uses_own_units_snapshot_not_latest() {
         b_names.contains(&"b.md"),
         "B 的名单应含自己的产出：{b_names:?}"
     );
+}
+
+/// 引擎审计修复 #5 回归：一单元一提交——真 git 仓里单元 PASS 后 docs/contexts
+/// 产出落成独立 commit（每单元一条）；非 git 仓降级 WARN 不阻断（其余用例即降级路径）。
+#[test]
+fn unit_pass_commits_docs_per_unit_in_git_repo() {
+    use std::collections::VecDeque;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let docs_root = tmp.path().join("docs/contexts");
+    std::fs::create_dir_all(&docs_root).unwrap();
+    let run = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(tmp.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init", "-q"]).status.success());
+    assert!(run(&["config", "user.email", "t@t"]).status.success());
+    assert!(run(&["config", "user.name", "t"]).status.success());
+
+    let agent = WritingAgent {
+        turns: VecDeque::from(vec![
+            "写A\n<doc-complete>unit-a-01</doc-complete>".into(),
+            "写B\n<doc-complete>unit-b-02</doc-complete>".into(),
+        ]),
+        docs_root: docs_root.clone(),
+        received: Arc::new(Mutex::new(Vec::new())),
+    };
+    let f = pipe_factory(&[
+        "<doc-verdict>PASS</doc-verdict>",
+        "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
+    ]);
+    let units = vec!["unit-a-01".to_string(), "unit-b-02".to_string()];
+    let rep = run_pipe!(agent, f, tmp, units).unwrap();
+    let log = String::from_utf8(run(&["log", "--format=%s"]).stdout).unwrap();
+    assert!(
+        log.contains("unit-a-01") && log.contains("unit-b-02"),
+        "每单元应有独立提交：{log}"
+    );
+    let count = log.lines().filter(|l| l.contains("doc-from-zero")).count();
+    assert_eq!(count, 2, "两单元应正好两条自动提交：{log}");
 }

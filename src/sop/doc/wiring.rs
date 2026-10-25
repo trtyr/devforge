@@ -226,13 +226,18 @@ impl BuiltinRpcEngine {
         }
 
         let final_index = audit_index.clone();
+        // 引擎审计修复 #7：doc_level 档位接线——DEVFORGE_DOC_LEVEL=essential|complete|detailed
+        // （默认 complete），单元审计注入 / run_pipeline / 终审机械门四处同口径。
+        let doc_level_str =
+            std::env::var("DEVFORGE_DOC_LEVEL").unwrap_or_else(|_| "complete".to_string());
+        let doc_level_for_audit = doc_level_str.clone();
         let audit: Box<dyn Fn(&str) -> String + Send> = Box::new(move |unit: &str| {
             let mut out = String::new();
             let docs = audit_ws.join(DOCS_DIR);
             if let Ok(cov) = crate::docgen::audit::coverage_for_unit(
                 &audit_inv,
                 &docs,
-                crate::docgen::audit::DocLevel::Complete,
+                crate::docgen::audit::DocLevel::parse(&doc_level_for_audit),
                 unit,
             ) {
                 out.push_str(&cov.render());
@@ -283,7 +288,7 @@ impl BuiltinRpcEngine {
                     &mut user,
                     &workspace,
                     &run_units,
-                    "complete",
+                    doc_level_str.as_str(),
                     resume_note,
                     Some(audit),
                     None,
@@ -295,7 +300,7 @@ impl BuiltinRpcEngine {
                 if let Ok(cov) = crate::docgen::audit::coverage(
                     &final_inv,
                     &docs,
-                    crate::docgen::audit::DocLevel::Complete,
+                    crate::docgen::audit::DocLevel::parse(&doc_level_str),
                 ) {
                     full.push_str(&cov.render());
                     full.push('\n');
@@ -354,7 +359,7 @@ impl BuiltinRpcEngine {
                     let cov = crate::docgen::audit::coverage(
                         &final_inv,
                         &docs,
-                        crate::docgen::audit::DocLevel::Complete,
+                        crate::docgen::audit::DocLevel::parse(&doc_level_str),
                     )?;
                     let lint = crate::docgen::lint::lint_docs_with_entities(&docs, &final_index)?;
                     if !cov.passed() || !lint.passed() {

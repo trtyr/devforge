@@ -127,5 +127,6 @@ devforge doc-audit <repo>/docs/contexts --repo <repo>
 
 **Out：**
 - 改写现有 `doc-init` skill——**已拍板退役（D001）**，不并行维护两套
+- **Runbook 命令的引擎侧自动执行（非目标，2026-10-25 第三方审计 #9 核实后立牌）**：引擎只把 Runbook 里的 bash/sh 代码块抽取成审查参考文本，「从零 boot」的执行验证交给审查官判定与人工复核——引擎不代跑 boot 命令
 - 文档的长期维护/过期检测（见 Q013）
 - 非代码资产（设计稿/数据库 dump）的文档化
