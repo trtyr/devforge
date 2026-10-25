@@ -382,6 +382,14 @@ impl RpcClient {
             error = %detail,
             "agent 命令失败（快速失败，不等 settled）"
         );
+        // 引擎 #7：先分流——瞬态上游/限流/连接中断归 System（可重启重试），
+        // 其余才归 Config。旧实现一律 Config，一次 502 就判成「配置永不修好」。
+        if Self::transient_failure(&detail) {
+            return DevforgeError::System(format!(
+                "agent[{}] 命令 {} 失败：{}（瞬态上游/限流故障，按基础设施错误重试）",
+                self.spec.role, r.command, detail
+            ));
+        }
         // 审计修复 #2：配置类命令失败用 Config（非 System）——is_infra_failure 只认裸 System，
         // 用 System 会盲重启 4 次（退避 10s/30s/90s）；配置问题重启永远不会变好，
         // require_profile 的「配置问题用 Config」口径在此对齐。
@@ -390,6 +398,35 @@ impl RpcClient {
             self.spec.role, r.command, detail
         ))
     }
+
+/// 瞬态故障判定（引擎 #7）：只看错误文本里**明确的**瞬态标记，认不出的仍归配置问题
+/// （保守方向：宁可按配置失败让人看一眼，也不把真配置问题拖进 4 次盲重启）。
+fn transient_failure(detail: &str) -> bool {
+    let d = detail.to_ascii_lowercase();
+    // 状态码按「独立数字」匹配，避开 500000 tokens 这类误命中
+    const CODES: [&str; 5] = ["429", "500", "502", "503", "504"];
+    if d
+        .split(|c: char| !c.is_ascii_digit())
+        .any(|t| CODES.contains(&t))
+    {
+        return true;
+    }
+    const MARKS: [&str; 12] = [
+        "rate limit",
+        "ratelimit",
+        "too many requests",
+        "overloaded",
+        "timed out",
+        "timeout",
+        "econnreset",
+        "econnrefused",
+        "etimedout",
+        "connection reset",
+        "service unavailable",
+        "temporarily unavailable",
+    ];
+    MARKS.iter().any(|m| d.contains(m))
+}
 
 /// P012 · path-guard 否决判定：RPC 事件的 tool_execution_end 是否为插件拦截。
 /// 约定：isError=true 且 result 文本含 `[path-guard] ` 前缀（插件 block reason 的固定前缀）。
@@ -535,6 +572,21 @@ mod client_tests;
 mod tests {
     use super::*;
     use crate::engine::protocol::EventRecord;
+
+    /// 引擎 #7 回归：瞬态上游/限流错误归 System（可重启），配置类归 Config；
+    /// 旧实现一律 Config，一次 502 就判成「配置永不修好」。
+    #[test]
+    fn command_failure_splits_transient_from_config() {
+        assert!(RpcClient::transient_failure("upstream 502 Bad Gateway"));
+        assert!(RpcClient::transient_failure("HTTP 429: too many requests"));
+        assert!(RpcClient::transient_failure("read ECONNRESET"));
+        assert!(RpcClient::transient_failure("request timed out after 30s"));
+        // 配置类（缺 key / 模型名错）不得被当成瞬态
+        assert!(!RpcClient::transient_failure("missing api key"));
+        assert!(!RpcClient::transient_failure("unknown model `foo`"));
+        // 「500000 tokens」里的数字不算状态码
+        assert!(!RpcClient::transient_failure("context window 500000 tokens"));
+    }
 
     fn tool_end_event(is_error: bool, result_text: &str) -> EventRecord {
         serde_json::from_value(serde_json::json!({
