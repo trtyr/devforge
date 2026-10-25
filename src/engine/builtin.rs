@@ -113,6 +113,17 @@ impl RunEngine for BuiltinRpcEngine {
             for p in Self::profiles_for_sop("code-review") {
                 self.require_profile(p)?;
             }
+            // 第三方 r2 M2：空工作区门卫 + codegraph 预检——两侧其余代码类 SOP
+            // （coding/testing/doc-fix/doc-from-zero/change）都做了，本支漏做：
+            // 无工作区时切片器盘出零单元（带 m1 后会报「无可审源码」而非“成功”），
+            // 但报错语义错位；而 V5 一致性视角依赖 codegraph，索引不在则只能拿旧图审。
+            if task.workspace.as_os_str().is_empty() {
+                return Err(crate::error::DevforgeError::Store(format!(
+                    "任务 `{}/{}` 无代码工作区，code-review 需要项目地址（切片与审查都从仓读源码）",
+                    task.project, task.id
+                )));
+            }
+            preflight_codegraph(&task.workspace, &self.codegraph_bin);
             // P013 M1：四阶段审计（盘点切片→规划→批次审查→跨单元→核验→报告）。
             // 会话桥：RpcReviewFactory（code-review profile，会话落 session_root/code-review）。
             // 审计修复 #5：与其他 SOP 同口径——run_with_watchdog 包住整次审计

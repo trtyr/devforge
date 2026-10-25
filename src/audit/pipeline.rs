@@ -149,25 +149,35 @@ pub fn parse_stage0(reply: &str) -> Result<ReviewPlan> {
     })
 }
 
-/// Stage 1 单批次指令（六视角检查清单 + 预查报告 + 跨批次路径）。
+/// Stage 1 单批次指令（工作区路径 + 六视角检查清单 + 预查报告 + 跨批次路径）。
+///
+/// 第三方 r2 C1：审查会话的 cwd 是**黑板**（`builtin.rs` 把 `working_dir` 设为 task 目录），
+/// 不是被审仓——旧指令只给仓内相对路径，审查官无法定位源码（只能猜行号）。
+/// 口径对齐 `sop::doc::fix::doc_review_instruction`：「黑板 = 当前目录；代码工作区 = 绝对路径」。
 pub fn batch_instruction(
+    workspace: &Path,
     unit: &AuditUnit,
     all_unit_labels: &[String],
     precheck_report: &str,
 ) -> String {
     let others: Vec<&String> = all_unit_labels.iter().filter(|l| **l != unit.label).collect();
     format!(
-        "审查批次 `{}`，文件：{:?}。\n\
+        "代码工作区（绝对路径）= {}；当前目录是共享黑板（两者不同）。\n\
+         读源码请用工作区路径拼下面列出的相对路径；你输出的 `path:line` 里的 path 也是相对工作区的。\n\
+         审查批次 `{}`，文件：{:?}。\n\
          引擎预查报告（参考计数，非裁决依据——简化扫描含字符串/test 代码命中）：\n{precheck_report}\n\
          其他批次（路径感知，不在本批审查范围）：{others:?}\n\
          按你的角色提示词执行六视角审查并输出 <audit-findings> 协议块。",
-        unit.label, unit.files,
+        workspace.display(),
+        unit.label,
+        unit.files,
     )
 }
 
 /// Stage 1 执行：单批次审查 + 协议解析（协议违例重开一次，再违例放弃该批次）。
 pub fn stage1_review_batch(
     factory: &mut dyn AuditSessionFactory,
+    workspace: &Path,
     unit: &AuditUnit,
     all_unit_labels: &[String],
     precheck_report: &str,
@@ -175,7 +185,7 @@ pub fn stage1_review_batch(
     let mut last_err = String::new();
     for attempt in 0..2 {
         let mut session = factory.open().ctx("开审计会话")?;
-        let instruction = batch_instruction(unit, all_unit_labels, precheck_report);
+        let instruction = batch_instruction(workspace, unit, all_unit_labels, precheck_report);
         let reply = match session.ask(&instruction) {
             Ok(r) => r,
             // 审计修复 #1：ask 失败保持原分类上抛（System/Agent 等基础设施故障）——
@@ -377,6 +387,26 @@ mod tests {
         }
     }
 
+    /// 第三方 r2 C1：指令必须携带工作区**绝对路径**——审查会话 cwd 是黑板，
+    /// 只给仓内相对路径时审查官无法定位源码（旧版就死在里）。
+    #[test]
+    fn batch_instruction_carries_workspace_absolute_path() {
+        let ins = batch_instruction(
+            Path::new("/home/u/proj"),
+            &unit("unit-001"),
+            &["label-unit-001".to_string()],
+            "预查：无",
+        );
+        assert!(
+            ins.contains("代码工作区（绝对路径）= /home/u/proj"),
+            "指令必须带工作区绝对路径：{ins}"
+        );
+        assert!(
+            ins.contains("相对工作区"),
+            "还需声明 path:line 的基准是工作区：{ins}"
+        );
+    }
+
     #[test]
     fn stage0_plans_from_metadata_only() {
         let mut s = ScriptSession { replies: RefCell::new([PLAN_REPLY].into()) };
@@ -390,7 +420,14 @@ mod tests {
     fn stage1_reviews_batch_and_tags_batch_id() {
         let mut factory = ScriptFactory { replies: std::collections::VecDeque::from([[FINDINGS_REPLY].into()]), opens: 0 };
         let u = unit("unit-009");
-        let findings = stage1_review_batch(&mut factory, &u, &["l1".to_string()], "预查：无").unwrap();
+        let findings = stage1_review_batch(
+            &mut factory,
+            Path::new("/ws"),
+            &u,
+            &["l1".to_string()],
+            "预查：无",
+        )
+        .unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].batch, "unit-009", "发现应带批次溯源");
         assert_eq!(factory.opens, 1, "无违例应只开一次会话");
@@ -405,7 +442,7 @@ mod tests {
             opens: 0,
         };
         let u = unit("unit-001");
-        let f = stage1_review_batch(&mut factory, &u, &[], "无").unwrap();
+        let f = stage1_review_batch(&mut factory, Path::new("/ws"), &u, &[], "无").unwrap();
         assert_eq!(f.len(), 1, "第一次违例重开后成功");
         assert_eq!(factory.opens, 2, "违例→成功必须恰好开两次会话（换实例）");
         // 两次全违例 → 放弃
@@ -413,7 +450,7 @@ mod tests {
             replies: std::collections::VecDeque::from([["违例2".into()].into(), ["违例3".into()].into()]),
             opens: 0,
         };
-        assert!(stage1_review_batch(&mut factory, &u, &[], "无").is_err());
+        assert!(stage1_review_batch(&mut factory, Path::new("/ws"), &u, &[], "无").is_err());
         assert_eq!(factory.opens, 2, "两次违例恰好开两次会话后放弃");
     }
 
@@ -434,7 +471,7 @@ mod tests {
             }
         }
         let mut f = FailFactory;
-        let err = stage1_review_batch(&mut f, &unit("unit-001"), &[], "无").unwrap_err();
+        let err = stage1_review_batch(&mut f, Path::new("/ws"), &unit("unit-001"), &[], "无").unwrap_err();
         assert!(
             matches!(err, DevforgeError::System(_)),
             "ask 失败应保持 System 分类：{err:?}"

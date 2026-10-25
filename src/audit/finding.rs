@@ -145,11 +145,18 @@ mod tests {
         assert!(parse_findings(bad).unwrap_err().contains("view 非法"));
     }
 
+    /// 协议层与核验层的职责边界：空 evidence **可解析**（结构合法），但核验层会丢弃；
+    /// 丢弃行为的回归在 `verify::tests::empty_or_referenceless_evidence_is_dropped`。
+    /// 第三方 r2 m6：旧版本叫这个名字却拿带证据的 OK_REPLY 断言 `!evidence.is_empty()`——
+    /// 零证据样本从未构造，删掉被测行为测试仍绿（空测试）。
     #[test]
-    fn zero_evidence_entries_still_parse_but_are_filtered_downstream() {
-        // 协议层只管结构；「零证据不入」由核验器（M2）执行
-        let f = parse_findings(OK_REPLY).unwrap();
-        assert!(!f[0].evidence.is_empty());
+    fn zero_evidence_parses_at_protocol_layer() {
+        let reply = r#"<audit-findings>
+[{"path":"a.rs","line":1,"view":"correctness","severity":"minor","claim":"x","evidence":""}]
+</audit-findings>"#;
+        let f = parse_findings(reply).expect("协议层不因空 evidence 拒收（结构合法）");
+        assert_eq!(f.len(), 1, "零证据样本必须真能解析出一条");
+        assert!(f[0].evidence.is_empty(), "样本本身必须真的是零证据");
     }
 
     /// 全仓审计 m6：行号超大值不得 `as u32` 静默回绕成合法小行号。

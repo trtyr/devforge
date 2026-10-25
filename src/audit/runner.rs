@@ -49,6 +49,9 @@ pub fn run_audit(
     // ---- 盘点 + 切片（确定性零 LLM）----
     crate::observability::set_phase("audit-slice");
     let plan = build_plan(&task.workspace)?;
+    // 第三方 r2 m7：批次文件清单落盘——报告只有分母计数，没有「哪批审了哪些文件」，
+    // 事后无法重建审查面。此产物是 M6「coverage 可对账」的分子。
+    crate::audit::write_units_file(&blackboard, &plan)?;
     // 全仓审计 M5：空盘 = 假成功——指向错目录/空仓时旧实现 Stage 0 空规划→循环 0 次
     // → Ok(Completed) + 0 条发现，最难排查。这里显式失败，不交一个「审了 0 文件」的成功。
     if plan.units.is_empty() {
@@ -196,7 +199,7 @@ pub fn run_audit(
             // 复验事故修复（M3 缺陷①）：每批 findings 即时落黑板——先落盘再打勾，
             // 断点续跑从黑板回读已完成批次，进程死亡不再丢发现。
             let precheck = precheck_report(&task.workspace, &unit.files);
-            let res = stage1_review_batch(factory, unit, &unit_labels, &precheck);
+            let res = stage1_review_batch(factory, &task.workspace, unit, &unit_labels, &precheck);
             persist_batch_result(
                 unit,
                 res,
@@ -276,6 +279,7 @@ pub fn run_audit(
             "sliced_files": plan.units.iter().map(|u| u.files.len()).sum::<usize>(),
             "excluded_entries": plan.excluded_entries,
             "units_total": plan.units.len(),
+            "units_file": "audit-units.json",
             "skipped_units": skipped_units,
             "batches_done": progress.done_batches.len(),
             "batches_abandoned": abandoned.len(),
@@ -412,7 +416,7 @@ fn run_stage1_parallel(
                         break;
                     }
                     let precheck = precheck_report(workspace, &unit.files);
-                    let res = stage1_review_batch(fork.as_mut(), unit, labels, &precheck);
+                    let res = stage1_review_batch(fork.as_mut(), workspace, unit, labels, &precheck);
                     local.push((idx, res));
                 }
                 local
@@ -456,7 +460,7 @@ fn workspace_sha(workspace: &Path) -> Option<String> {
 /// 行首/行尾注释已剔，但字符串字面量与 `#[cfg(test)]` 代码仍会计入。
 /// 审查官提示词已同步降级为「参考值」（不得当裁决依据，不得据它反驳实际代码）。
 fn precheck_report(workspace: &Path, files: &[String]) -> String {
-    let mut out = String::from("引擎预查（确定性机检，事实直接采信）：\n");
+    let mut out = String::from("引擎预查（参考计数，非裁决依据）：\n");
     for f in files {
         let content = match std::fs::read_to_string(workspace.join(f)) {
             Ok(c) => c,

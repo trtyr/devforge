@@ -281,6 +281,26 @@ fn testing_start_requires_workspace_after_profile_gate() {
     );
 }
 
+/// 第三方 r2 M2：code-review 空工作区闸——与其他代码类 SOP 同口径（spawn 前快速失败）。
+#[test]
+fn code_review_start_requires_workspace_after_profile_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles = dir.path().join("profiles");
+    std::fs::create_dir_all(profiles.join("code-review")).unwrap();
+    std::fs::write(profiles.join("code-review/settings.json"), "{}").unwrap();
+    let plans = dir.path().join("plans");
+    let mut engine = f1_engine(profiles, plans.clone());
+    let task = Task::new("t", "p", "code-review", 1); // workspace 默认空
+    let run = Run::new("p", "t");
+    let control = RunControl::new();
+    let err = engine.execute(&task, &run, &control).unwrap_err();
+    assert!(err.to_string().contains("无代码工作区"), "应报 workspace 门: {err}");
+    assert!(
+        !plans.join("p").join("t").exists(),
+        "workspace 门也应先于黑板创建"
+    );
+}
+
 // ---------- 010 F6 靶：per-SOP profile 表（门卫与闸门的唯一事实源） ----------
 
 #[test]

@@ -104,6 +104,23 @@
 7. **m6 重写测试**：构造真·零证据回复断言「可解析且 evidence 为空」，另加一条「零证据在核验
    阶段被丢弃并计入噪声」的端到端断言。
 
+## 修复状态表（2026-10-25，7/7 全部落地）
+
+> 终验 831 绿 0 failed（lib 721 + integration 19/16/31/43 + doctest 1，TEST_EXIT=0），
+> clippy lib 11 条**与修复前持平**（CLIPPY_EXIT=0，日志 `bg_rbwkyonb`）。新增回归 4 条。
+
+| # | 落地内容 |
+|---|---|
+| C1 | `batch_instruction()` 增 `workspace: &Path`，首行写「代码工作区（绝对路径）= …；当前目录是共享黑板」，并声明 `path:line` 以工作区为基准；`stage1_review_batch` 两个调用点（串行/并行）传 `&task.workspace` / `workspace`；prompt 新增硬约束「只报读过的代码……没打开过文件就不报」。回归：`batch_instruction_carries_workspace_absolute_path` |
+| M2 | code-review 分支补空工作区 `Err(Store)` + `preflight_codegraph`；回归：`code_review_start_requires_workspace_after_profile_gate`（并断言门卫先于黑板创建）。注：codegraph MCP 是否带仓路径未动（那是全仓共用的 MCP 配置面，需单独拍板） |
+| M3 | 切片改为双预算：`MAX_UNIT_FILES = 7` + 新增 `MAX_UNIT_LINES = 800`，`split_by_budget()` 顺序切批（不重排，同批仍同目录）；单文件自身超限就独占一批。回归：`line_budget_splits_same_directory_big_files`（3×600 行同目录 → ≥3 批） |
+| m4 | `runner.rs` 预查正文标题改「引擎预查（参考计数，非裁决依据）」——与 prompt / batch_instruction 三处口径一致 |
+| m5 | `evidence_refs_out_of_file` 改走 `read_within`（符号链接越界同样拒读）；失败文案改为「文件不存在或经符号链接越出仓库」 |
+| m6 | 测试重写为 `zero_evidence_parses_at_protocol_layer`（真·零证据样本 + 断言 evidence 为空）；核验层的丢弃行为原本就有真测试（`verify::tests::empty_or_referenceless_evidence_is_dropped`），两份不再重复声称 |
+| m7 | 新增 `write_units_file()`，`run_audit` 切片后即落 `audit-units.json`；报告 `coverage` 增 `units_file`；**`run_skeleton` 已删**（生产零调用方，清单产物从未生成过） |
+
+未动（记录在案）：codegraph MCP 配置不带仓路径（M2 连带项，属全仓 MCP 配置面）；真 LLM e2e 验收未做。
+
 ## 与本档前几份的关系
 
 - 2026-10-25 第一轮 22 条（M1-M8 + m1-m14）已全部落地（commit `6134b71`，状态表在

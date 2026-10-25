@@ -44,6 +44,39 @@ pub struct AuditPlan {
 /// 每单元文件数上限（CodeCrow：批次按文件数限不按 token——≤7 可预测）。
 pub const MAX_UNIT_FILES: usize = 7;
 
+/// 每单元源码行数上限（第三方 r2 M3）：文件数上限挡不住同目录多个大文件——
+/// 本仓 src/audit 六个源文件（含 1073 行 runner.rs）会整包成一批 ≈2300 行，
+/// 超出单会话能可靠审查的量。超限按顺序切批；单文件自身超限独占一批（文件不可再分）。
+pub const MAX_UNIT_LINES: usize = 800;
+
+fn line_count(workspace: &Path, rel: &str) -> usize {
+    std::fs::read_to_string(workspace.join(rel))
+        .map(|c| c.lines().count())
+        .unwrap_or(0)
+}
+
+/// 按双预算顺序切批（不重排：同批文件语义仍连贯）。
+fn split_by_budget(workspace: &Path, files: &[String]) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    let mut cur: Vec<String> = Vec::new();
+    let mut cur_lines = 0usize;
+    for f in files {
+        let n = line_count(workspace, f);
+        let full = cur.len() >= MAX_UNIT_FILES
+            || (!cur.is_empty() && cur_lines + n > MAX_UNIT_LINES);
+        if full {
+            out.push(std::mem::take(&mut cur));
+            cur_lines = 0;
+        }
+        cur.push(f.clone());
+        cur_lines += n;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// 盘点 + 切片（M0 核心，确定性零 LLM）：inventory 盘仓 → 按既有 unit_id /
 /// 目录聚类 → 超限单元再二分。
 pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
@@ -83,7 +116,8 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
         groups.entry(key).or_default().push(e.path.clone());
     }
 
-    // 超限二分：MAX_UNIT_FILES 一刀切分（顺序保持，M1 再升级依赖感知聚合）。
+    // 超限切分：文件数（MAX_UNIT_FILES）+ 行数（MAX_UNIT_LINES）双预算——
+    // 只按文件数挡不住「同目录多个大文件」（第三方 r2 M3）。
     let mut units: Vec<AuditUnit> = Vec::new();
     let mut seq = 0usize;
     for (key, mut files) in groups {
@@ -93,12 +127,13 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
             .map(|(_, v)| v.to_string())
             .unwrap_or(key.clone());
         // 审计修复 #10：分片标签用组内局部序号（全局 seq 当分子会出现「分片 4/2」）
-        let n_chunks = files.len().div_ceil(MAX_UNIT_FILES);
-        for (chunk_i, chunk) in files.chunks(MAX_UNIT_FILES).enumerate() {
+        let chunks = split_by_budget(workspace, &files);
+        let n_chunks = chunks.len();
+        for (chunk_i, chunk) in chunks.into_iter().enumerate() {
             seq += 1;
             units.push(AuditUnit {
                 id: format!("unit-{seq:03}"),
-                files: chunk.to_vec(),
+                files: chunk,
                 label: format!(
                     "{label}{}",
                     if n_chunks > 1 {
@@ -122,19 +157,13 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
     })
 }
 
-/// M0 骨架入口：盘点 → 切片 → 单元列表落黑板 → Completed。
-/// M1 在 Stage 1-3 就位后延长为完整四阶段编排。
-pub fn run_skeleton(
-    task: &crate::domain::task::Task,
-    plans_root: &Path,
-) -> Result<crate::domain::runner::RunOutcome> {
-    let blackboard = plans_root.join(&task.project).join(&task.id);
-    std::fs::create_dir_all(&blackboard).ctx("创建黑板目录")?;
-    let plan = build_plan(&task.workspace)?;
+/// 批次文件清单落黑板（第三方 r2 m7）：报告只有 coverage 计数，没有「哪批审了哪些文件」，
+/// 分母不可重建。run_audit 在切片后调用（旧的 run_skeleton 只在 M0 骨架期用过，生产无调用方，已删）。
+pub fn write_units_file(blackboard: &Path, plan: &AuditPlan) -> Result<()> {
     let path = blackboard.join("audit-units.json");
     std::fs::write(
         &path,
-        serde_json::to_vec_pretty(&plan).ctx("序列化审计单元")?,
+        serde_json::to_vec_pretty(plan).ctx("序列化审计单元")?,
     )
     .ctx(format!("写 {}", path.display()))?;
     tracing::info!(
@@ -143,7 +172,7 @@ pub fn run_skeleton(
         files = plan.units.iter().map(|u| u.files.len()).sum::<usize>(),
         "全量审计切片完成"
     );
-    Ok(crate::domain::runner::RunOutcome::Completed)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -180,6 +209,39 @@ mod tests {
                 Path::new(f).parent().unwrap().to_string_lossy().to_string()
             }).collect();
             assert_eq!(dirs.len(), 1, "同单元不应跨目录（M0 目录聚合语义）：{u:?}");
+        }
+    }
+
+    /// 第三方 r2 M3：同目录大文件不得整包进同一批——行数预算必须生效。
+    #[test]
+    fn line_budget_splits_same_directory_big_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/audit")).unwrap();
+        // 三个各 600 行的同目录文件：总 1800 行 > MAX_UNIT_LINES(800) → 必切 ≥3 批
+        for i in 1..=3 {
+            let body: String = (0..600).map(|n| format!("// line {n}\n")).collect();
+            std::fs::write(
+                tmp.path().join(format!("src/audit/m{i}.rs")),
+                format!("{body}pub fn f{i}() {{}}\n"),
+            )
+            .unwrap();
+        }
+        let plan = build_plan(tmp.path()).unwrap();
+        assert!(
+            plan.units.len() >= 3,
+            "行数预算未生效（应 ≥3 批）：{:?}",
+            plan.units
+                .iter()
+                .map(|u| u.files.clone())
+                .collect::<Vec<_>>()
+        );
+        for u in &plan.units {
+            let lines: usize = u.files.iter().map(|f| line_count(tmp.path(), f)).sum();
+            assert!(
+                lines <= MAX_UNIT_LINES || u.files.len() == 1,
+                "单元行数超限且非单文件：{} 行 {u:?}",
+                lines
+            );
         }
     }
 

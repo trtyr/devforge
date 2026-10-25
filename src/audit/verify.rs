@@ -157,13 +157,14 @@ fn evidence_refs_out_of_file(workspace: &Path, evidence: &str) -> Option<String>
         if path_traversal(path) {
             return Some(format!("{path}:路径越界（.. 或绝对路径，拒绝读盘）"));
         }
-        let full = workspace.join(path);
         let line_no: usize = match digits.parse() {
             Ok(n) => n,
             Err(_) => continue,
         };
-        match std::fs::read_to_string(&full) {
-            Ok(content) => {
+        // 第三方 r2 m5：证据引用读盘也走 read_within——旧实现只拦绝对路径与 `..`，
+        // 仓内符号链接指向仓外仍会打开（主 path 已是前缀狱，这里漏了）。
+        match read_within(workspace, path) {
+            Some(content) => {
                 let total = content.lines().count();
                 if line_no == 0 || line_no > total {
                     return Some(format!(
@@ -171,8 +172,10 @@ fn evidence_refs_out_of_file(workspace: &Path, evidence: &str) -> Option<String>
                     ));
                 }
             }
-            Err(_) => {
-                return Some(format!("{path}:{line_no}（文件不存在）"));
+            None => {
+                return Some(format!(
+                    "{path}:{line_no}（文件不存在或经符号链接越出仓库，拒绝读取）"
+                ));
             }
         }
         let _ = bytes;
