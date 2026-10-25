@@ -474,11 +474,16 @@ fn the_quality_warning_of_a_later_attempt_carries_that_attempts_number() {
 fn testing_watch_dirs_cover_handoff_sessions() {
     // D011：testing run 的活性监视覆盖移交会话（doc-fix/doc-reviews 同 run 活性整体）
     let engine = f1_engine(PathBuf::from("/tmp/profiles"), PathBuf::from("/tmp"));
-    let dirs = engine.testing_watch_dirs();
+    let dirs = engine.testing_watch_dirs("run-x");
     let names: Vec<_> = dirs.iter().map(|p| p.file_name().unwrap().to_str().unwrap()).collect();
     assert_eq!(names, vec!["testing", "testing-reviews", "doc-fix", "doc-reviews"]);
+    // 引擎批次 #4：会话按 run-id 隔离，监视目录里必须带同一个 run-id
+    assert!(
+        dirs.iter().all(|p| p.parent().unwrap().file_name().unwrap() == "run-x"),
+        "监视目录必须落在 sessions/<run-id>/：{dirs:?}"
+    );
     let names = engine
-        .docfix_watch_dirs()
+        .docfix_watch_dirs("run-x")
         .iter()
         .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
         .collect::<Vec<_>>();

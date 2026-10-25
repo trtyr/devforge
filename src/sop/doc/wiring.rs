@@ -82,12 +82,14 @@ impl BuiltinRpcEngine {
             ));
         }
 
+        // 引擎批次 #4：doc-from-zero 的会话也按 run-id 隔离
+        let sessions = self.session_root.join(&run.id.0);
         let agent_client = RpcClient::spawn(
             SpawnSpec::new(
                 self.profile_root.join("doc-agent"),
                 "doc-agent",
                 run.id.0.clone(),
-                self.session_root.join("doc"),
+                sessions.join("doc"),
             )
             .with_working_dir(blackboard.clone()),
         )?;
@@ -95,7 +97,7 @@ impl BuiltinRpcEngine {
         let factory = RpcReviewFactory::per_round_in(
             self.profile_root.join("doc-review"),
             "doc-review",
-            self.session_root.join("doc-reviews"),
+            sessions.join("doc-reviews"),
             blackboard,
         );
         let mut user = RelayUserLink {
@@ -265,12 +267,14 @@ impl BuiltinRpcEngine {
         let run_id = run.id.0.clone();
         // 终审（t11）：同一 profile、新实例；捕获所需路径（闭包外先克隆）
         let final_review_root = self.profile_root.join("doc-review");
-        let final_session_root = self.session_root.join("doc-reviews");
+        // 引擎批次 #4：终审会话与监视目录同样按 run-id 隔离
+        let run_sessions = self.session_root.join(&run.id.0);
+        let final_session_root = run_sessions.join("doc-reviews");
         let final_blackboard = self.plans_root.join(&task.project).join(&task.id);
         let final_ws = workspace.clone();
         let final_inv = inv.clone();
         let final_run_id = run.id.0.clone();
-        let session_root = self.session_root.clone();
+        let session_root = run_sessions.clone();
         let sop_result = run_with_watchdog(
             control,
             run_id,

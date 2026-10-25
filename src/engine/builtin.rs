@@ -129,14 +129,17 @@ impl RunEngine for BuiltinRpcEngine {
             // 审计修复 #5：与其他 SOP 同口径——run_with_watchdog 包住整次审计
             // （cancel 端点/墙钟超时/idle 收割全部生效），干预性死亡经 map_intervention
             // 给出明确 Failed 原因；不再裸调 run_audit。
+            // 引擎批次 #4：会话存档按 run-id 隔离——README 一直声称按 run-id 组织，
+            // 实现却是按角色共享（sessions/code-review），两个 run 的存档互相覆盖。
+            let sessions = self.session_root.join(&run.id.0);
             let factory = crate::sop::rpc_bridge::RpcReviewFactory::per_round_in(
                 self.profile_root.join("code-review"),
                 "code-review",
-                self.session_root.join("code-review"),
+                sessions.join("code-review"),
                 self.plans_root.join(&task.project).join(&task.id),
             );
             let plans_root = self.plans_root.clone();
-            let watch_dirs = vec![self.session_root.join("code-review")];
+            let watch_dirs = vec![sessions.join("code-review")];
             let sop_result = run_with_watchdog(
                 control,
                 run.id.0.clone(),
@@ -214,19 +217,21 @@ impl BuiltinRpcEngine {
         let working_dir = self.plans_root.join(&task.project).join(&task.id);
         std::fs::create_dir_all(&working_dir).ctx("创建 plan root 目录")?;
 
+        // 引擎批次 #4：本 run 的会话根（与 README 口径一致：按 run-id 归档）
+        let sessions = self.session_root.join(&run.id.0);
         let plan_client = RpcClient::spawn(
             SpawnSpec::new(
                 self.profile_root.join("plan-agent"),
                 "plan-agent",
                 run.id.0.clone(),
-                self.session_root.join("plan"),
+                sessions.join("plan"),
             )
             .with_working_dir(working_dir),
         )?;
         let plan = RpcPlanSession::new(plan_client);
         let factory = RpcReviewFactory::per_round(
             self.profile_root.join("plan-review"),
-            self.session_root.join("reviews"),
+            sessions.join("reviews"),
         );
         let mut user = RelayUserLink {
             relay: self.ui.clone(),
@@ -242,7 +247,7 @@ impl BuiltinRpcEngine {
             control,
             run_id.clone(),
             self.idle_ms,
-            vec![self.session_root.join("plan"), self.session_root.join("reviews")],
+            vec![sessions.join("plan"), sessions.join("reviews")],
             || {
                 let mut sop_loop = PlanningLoop::new(plan, factory);
                 sop_loop.run(&mut user)
@@ -285,12 +290,13 @@ impl BuiltinRpcEngine {
         // decisions/013：引擎预检 init（agent 不自行 init）
         preflight_codegraph(&task.workspace, &self.codegraph_bin);
 
+        let sessions = self.session_root.join(&run.id.0);
         let agent_client = RpcClient::spawn(
             SpawnSpec::new(
                 self.profile_root.join("coding-agent"),
                 "coding-agent",
                 run.id.0.clone(),
-                self.session_root.join("coding"),
+                sessions.join("coding"),
             )
             .with_working_dir(blackboard.clone()),
         )?;
@@ -298,7 +304,7 @@ impl BuiltinRpcEngine {
         let factory = RpcReviewFactory::per_round_in(
             self.profile_root.join("coding-review"),
             "coding-review",
-            self.session_root.join("coding-reviews"),
+            sessions.join("coding-reviews"),
             blackboard,
         );
         let mut user = RelayUserLink {
@@ -313,10 +319,7 @@ impl BuiltinRpcEngine {
             control,
             run_id,
             self.idle_ms,
-            vec![
-                self.session_root.join("coding"),
-                self.session_root.join("coding-reviews"),
-            ],
+            vec![sessions.join("coding"), sessions.join("coding-reviews")],
             || {
                 let mut sop_loop = CodingSopLoop::new(agent, factory);
                 sop_loop.run(&mut user, &workspace, &project, &task_id)
@@ -339,21 +342,21 @@ impl BuiltinRpcEngine {
     }
 
     /// testing run 的活性监视目录（含 doc-fix 移交会话——同 run 的活性整体，D011）。
-    pub(crate) fn testing_watch_dirs(&self) -> Vec<PathBuf> {
+    /// 引擎批次 #4：会话按 run-id 隔离后，监视目录必须按同一个 run 算。
+    pub(crate) fn testing_watch_dirs(&self, run_id: &str) -> Vec<PathBuf> {
+        let s = self.session_root.join(run_id);
         vec![
-            self.session_root.join("testing"),
-            self.session_root.join("testing-reviews"),
-            self.session_root.join("doc-fix"),
-            self.session_root.join("doc-reviews"),
+            s.join("testing"),
+            s.join("testing-reviews"),
+            s.join("doc-fix"),
+            s.join("doc-reviews"),
         ]
     }
 
     /// 独立 doc-fix run 的活性监视目录。
-    pub(crate) fn docfix_watch_dirs(&self) -> Vec<PathBuf> {
-        vec![
-            self.session_root.join("doc-fix"),
-            self.session_root.join("doc-reviews"),
-        ]
+    pub(crate) fn docfix_watch_dirs(&self, run_id: &str) -> Vec<PathBuf> {
+        let s = self.session_root.join(run_id);
+        vec![s.join("doc-fix"), s.join("doc-reviews")]
     }
 
     /// 测试 SOP（P007）：testing/ 骨架 + TestingSopLoop（doc-side 移交时编排 doc-fix 子 SOP，D004）。
@@ -373,12 +376,13 @@ impl BuiltinRpcEngine {
         crate::sop::testing_protocol::create_testing_skeleton(&blackboard).ctx("建 testing 骨架")?;
         // 无 codegraph 预检——测试 Agent 不配代码事实层（D007），不需要索引
 
+        let sessions = self.session_root.join(&run.id.0);
         let agent_client = RpcClient::spawn(
             SpawnSpec::new(
                 self.profile_root.join("test-agent"),
                 "test-agent",
                 run.id.0.clone(),
-                self.session_root.join("testing"),
+                sessions.join("testing"),
             )
             .with_working_dir(blackboard.clone()),
         )?;
@@ -386,7 +390,7 @@ impl BuiltinRpcEngine {
         let test_review_factory = RpcReviewFactory::per_round_in(
             self.profile_root.join("test-review"),
             "test-review",
-            self.session_root.join("testing-reviews"),
+            sessions.join("testing-reviews"),
             blackboard.clone(),
         );
         let mut user = RelayUserLink {
@@ -399,9 +403,9 @@ impl BuiltinRpcEngine {
         let task_id = task.id.clone();
         let docfix_profile = self.profile_root.join("doc-fix");
         let doc_review_profile = self.profile_root.join("doc-review");
-        let docfix_sessions = self.session_root.join("doc-fix");
-        let doc_review_sessions = self.session_root.join("doc-reviews");
-        let watch_dirs = self.testing_watch_dirs();
+        let docfix_sessions = sessions.join("doc-fix");
+        let doc_review_sessions = sessions.join("doc-reviews");
+        let watch_dirs = self.testing_watch_dirs(&run.id.0);
 
         let sop_result = run_with_watchdog(
             control,
@@ -508,12 +512,13 @@ impl BuiltinRpcEngine {
         std::fs::create_dir_all(&blackboard).ctx("创建黑板目录")?;
         crate::sop::testing_protocol::create_testing_skeleton(&blackboard).ctx("建 testing 骨架")?;
 
+        let sessions = self.session_root.join(&run.id.0);
         let agent_client = RpcClient::spawn(
             SpawnSpec::new(
                 self.profile_root.join("doc-fix"),
                 "doc-fix",
                 run.id.0.clone(),
-                self.session_root.join("doc-fix"),
+                sessions.join("doc-fix"),
             )
             .with_working_dir(blackboard.clone()),
         )?;
@@ -521,7 +526,7 @@ impl BuiltinRpcEngine {
         let factory = RpcReviewFactory::per_round_in(
             self.profile_root.join("doc-review"),
             "doc-review",
-            self.session_root.join("doc-reviews"),
+            sessions.join("doc-reviews"),
             blackboard,
         );
         let mut user = RelayUserLink {
@@ -532,7 +537,7 @@ impl BuiltinRpcEngine {
         let workspace = task.workspace.clone();
         let project = task.project.clone();
         let task_id = task.id.clone();
-        let watch_dirs = self.docfix_watch_dirs();
+        let watch_dirs = self.docfix_watch_dirs(&run.id.0);
 
         let sop_result = run_with_watchdog(
             control,

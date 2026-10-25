@@ -796,6 +796,7 @@ fn mock_chain_produces_report_and_done_state() {
     let finalized = crate::server::change_engine::finalize(
         &mut out,
         &tmp.path().join("sessions"),
+        "run-t",
         tmp.path(),
         std::time::Instant::now(),
     )

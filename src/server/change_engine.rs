@@ -47,10 +47,11 @@ pub struct Finalized {
 pub fn finalize(
     outcome: &mut crate::change::orchestrator::ChangeOutcome,
     session_root: &std::path::Path,
+    run_id: &str,
     workspace: &std::path::Path,
     started: std::time::Instant,
 ) -> Result<Finalized> {
-    let usage = crate::docgen::usage::from_session_dirs(&session_dirs(session_root));
+    let usage = crate::docgen::usage::from_session_dirs(&session_dirs(session_root, run_id));
     outcome.report.usage = usage.render();
     outcome.report.wall_secs = started.elapsed().as_secs();
     let report_path = write_report(workspace, &outcome.report.change_id, &outcome.report)?;
@@ -189,19 +190,21 @@ impl BuiltinRpcEngine {
 
         // 会话装配：三个干活（长驻）+ 三个审查（每轮新实例，用完即弃）
         let run_id = run.id.0.clone();
+        // 引擎批次 #4：change 的六个角色会话也按 run-id 隔离
+        let sessions = self.session_root.join(&run_id);
         let plan_agent = RpcPlanSession::new(RpcClient::spawn(
             SpawnSpec::new(
                 self.profile_root.join("change-plan-agent"),
                 "change-plan-agent",
                 run_id.clone(),
-                self.session_root.join("change-plan"),
+                sessions.join("change-plan"),
             )
             .with_working_dir(blackboard.clone()),
         )?);
         let plan_review = RpcReviewFactory::per_round_in(
             self.profile_root.join("change-plan-review"),
             "change-plan-review",
-            self.session_root.join("change-plan-reviews"),
+            sessions.join("change-plan-reviews"),
             blackboard.clone(),
         );
         let coding_agent = RpcPlanSession::new(RpcClient::spawn(
@@ -209,14 +212,14 @@ impl BuiltinRpcEngine {
                 self.profile_root.join("change-coding-agent"),
                 "change-coding-agent",
                 run_id.clone(),
-                self.session_root.join("change-coding"),
+                sessions.join("change-coding"),
             )
             .with_working_dir(blackboard.clone()),
         )?);
         let coding_review = RpcReviewFactory::per_round_in(
             self.profile_root.join("change-coding-review"),
             "change-coding-review",
-            self.session_root.join("change-coding-reviews"),
+            sessions.join("change-coding-reviews"),
             blackboard.clone(),
         );
         let test_agent = RpcPlanSession::new(RpcClient::spawn(
@@ -224,14 +227,14 @@ impl BuiltinRpcEngine {
                 self.profile_root.join("change-test-agent"),
                 "change-test-agent",
                 run_id.clone(),
-                self.session_root.join("change-testing"),
+                sessions.join("change-testing"),
             )
             .with_working_dir(blackboard.clone()),
         )?);
         let test_review = RpcReviewFactory::per_round_in(
             self.profile_root.join("change-test-review"),
             "change-test-review",
-            self.session_root.join("change-test-reviews"),
+            sessions.join("change-test-reviews"),
             blackboard.clone(),
         );
 
@@ -255,7 +258,7 @@ impl BuiltinRpcEngine {
         let workspace = run_ws.clone();
         let change_id = prep.change_id.clone();
         let baseline = prep.baseline.sha.clone();
-        let watch_dirs = session_dirs(&self.session_root).to_vec();
+        let watch_dirs = session_dirs(&self.session_root, &run_id).to_vec();
 
         // 取消/超时/失活与其他 SOP 同口径：跑在 watchdog 里，不然 cancel 端点停不下来
         let sop_result = super::run_with_watchdog(
@@ -285,7 +288,7 @@ impl BuiltinRpcEngine {
 
         match sop_result {
             Ok(mut outcome) => {
-                let finalized = finalize(&mut outcome, &session_root, &workspace, started)?;
+                let finalized = finalize(&mut outcome, &session_root, &run_id, &workspace, started)?;
                 // P012 M1 · T1.1：候选冻结 commit 落黑板（diff 归因锚点）；随后 guard 清 worktree（分支保留）
                 if let Some(ws) = &ws_guard.ws {
                     let frozen = ws.freeze()?;
@@ -343,14 +346,16 @@ fn today_parts() -> (i32, u32, u32) {
 }
 
 /// 供测试/调用方构造会话目录（避免路径拼写在两处漂移）。
-pub fn session_dirs(session_root: &std::path::Path) -> [PathBuf; 6] {
+/// 引擎批次 #4：会话按 run-id 隔离，所以目录根是 `sessions/<run-id>/`。
+pub fn session_dirs(session_root: &std::path::Path, run_id: &str) -> [PathBuf; 6] {
+    let base = session_root.join(run_id);
     [
-        session_root.join("change-plan"),
-        session_root.join("change-plan-reviews"),
-        session_root.join("change-coding"),
-        session_root.join("change-coding-reviews"),
-        session_root.join("change-testing"),
-        session_root.join("change-test-reviews"),
+        base.join("change-plan"),
+        base.join("change-plan-reviews"),
+        base.join("change-coding"),
+        base.join("change-coding-reviews"),
+        base.join("change-testing"),
+        base.join("change-test-reviews"),
     ]
 }
 
@@ -426,8 +431,14 @@ mod tests {
     fn finalize_writes_report_with_usage_and_wall_clock() {
         let tmp = tempfile::tempdir().unwrap();
         let mut out = outcome();
-        let f = finalize(&mut out, &tmp.path().join("sessions"), tmp.path(), std::time::Instant::now())
-            .unwrap();
+        let f = finalize(
+            &mut out,
+            &tmp.path().join("sessions"),
+            "run-t",
+            tmp.path(),
+            std::time::Instant::now(),
+        )
+        .unwrap();
         assert!(f.report_path.is_file());
         let text = std::fs::read_to_string(&f.report_path).unwrap();
         assert!(text.contains("用量:"), "{text}");
@@ -439,7 +450,7 @@ mod tests {
 
     #[test]
     fn session_dirs_cover_all_six_profiles() {
-        let dirs = session_dirs(std::path::Path::new("/s"));
+        let dirs = session_dirs(std::path::Path::new("/s"), "run-x");
         let names: Vec<String> = dirs
             .iter()
             .map(|d| d.file_name().unwrap().to_string_lossy().to_string())
@@ -455,5 +466,10 @@ mod tests {
         ] {
             assert!(names.contains(&n.to_string()), "缺会话目录 {n}");
         }
+        // 引擎批次 #4：会话必须先落在 sessions/<run-id>/ 下
+        assert!(
+            dirs.iter().all(|d| d.parent().unwrap().file_name().unwrap() == "run-x"),
+            "会话目录必须按 run-id 隔离：{dirs:?}"
+        );
     }
 }
