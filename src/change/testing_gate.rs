@@ -73,44 +73,6 @@ pub fn parse_acceptance_table(text: &str) -> Vec<AcceptanceMatch> {
     out
 }
 
-/// 逐条对账：计划里每条验收标准都要在表里出现，且映射到具体测试引用。
-pub fn reconcile_acceptance(criteria: &[String], table: &[AcceptanceMatch]) -> Result<usize> {
-    if criteria.is_empty() {
-        return Err(DevforgeError::Quality(
-            "计划里没有验收标准，无从对账（计划阶段就该写出来）".into(),
-        ));
-    }
-    let mut missing: Vec<String> = Vec::new();
-    for c in criteria {
-        let hit = table
-            .iter()
-            .any(|m| m.criterion == *c || m.criterion.contains(c.as_str()) || c.contains(m.criterion.as_str()));
-        if !hit {
-            missing.push(c.clone());
-        }
-    }
-    if !missing.is_empty() {
-        return Err(DevforgeError::Quality(format!(
-            "验收对账缺 {} 条（缺一条即零覆盖）：{}",
-            missing.len(),
-            missing.join("；")
-        )));
-    }
-    // 对到空引用（写了标准但没指测试）同样算没覆盖
-    let empty_refs: Vec<String> = table
-        .iter()
-        .filter(|m| m.test_ref.trim().is_empty())
-        .map(|m| m.criterion.clone())
-        .collect();
-    if !empty_refs.is_empty() {
-        return Err(DevforgeError::Quality(format!(
-            "验收项没有指到测试 path:line：{}",
-            empty_refs.join("；")
-        )));
-    }
-    Ok(criteria.len())
-}
-
 /// 生成回注给 coding/plan 的消息：失败明细**逐条原文**（含 `path:line`）。
 ///
 /// `target` 只影响措辞（`coding` / `plan`），两个目标同口径：明细同源
@@ -188,29 +150,6 @@ mod tests {
         assert_eq!(table.len(), 2);
         assert_eq!(table[0].test_ref, "tests/test_a.py:12");
         assert_eq!(table[1].criterion, "空输入报错");
-    }
-
-    #[test]
-    fn one_missing_criterion_is_zero_coverage() {
-        let criteria = vec!["给定 x=1 返回 2".to_string(), "空输入报错".to_string()];
-        let table = parse_acceptance_table("- 给定 x=1 返回 2 → tests/test_a.py:12\n");
-        let err = reconcile_acceptance(&criteria, &table).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("缺 1 条"), "{msg}");
-        assert!(msg.contains("空输入报错"), "{msg}");
-    }
-
-    #[test]
-    fn full_reconciliation_passes() {
-        let criteria = vec!["给定 x=1 返回 2".to_string()];
-        let table = parse_acceptance_table("- 给定 x=1 返回 2 → tests/test_a.py:12\n");
-        assert_eq!(reconcile_acceptance(&criteria, &table).unwrap(), 1);
-    }
-
-    #[test]
-    fn empty_criteria_is_rejected() {
-        let err = reconcile_acceptance(&[], &[]).unwrap_err();
-        assert!(err.to_string().contains("没有验收标准"), "{err}");
     }
 
     #[test]

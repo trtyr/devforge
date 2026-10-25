@@ -100,13 +100,24 @@ impl ChangeState {
         }
     }
 
-    /// 从 `RunState.data` 抠出来（没有就按 change_id/baseline 新建）。
+    /// 从 `RunState.data` 抠出来（没有就按 change_id/baseline 新建）；
+    /// 内层 change 段存在但解析失败时记 WARN（复验 #5：不能静默重置计数）。
     pub fn from_run(state: &RunState, change_id: &str, baseline: &str) -> Self {
-        state
-            .data
-            .get("change")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_else(|| Self::new(change_id, baseline))
+        match state.data.get("change") {
+            None => Self::new(change_id, baseline),
+            Some(v) => match serde_json::from_value(v.clone()) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    tracing::warn!(
+                        component = "change-orchestrator",
+                        change_id,
+                        error = %e,
+                        "断点内层 change 段解析失败，按冷启动重置（计数将回零）"
+                    );
+                    Self::new(change_id, baseline)
+                }
+            },
+        }
     }
 
     /// 写回 `RunState.data`。
@@ -161,10 +172,20 @@ impl ChangeState {
     }
 }
 
-/// 读断点（异常按冷启动，与 010 D003 同口径）。
+/// 读断点（异常按冷启动，与 010 D003 同口径）；Unusable 记 WARN（复验 #5：
+/// 静默重置会让断点损坏无从察觉——冷启动是设计，丢弃原因是缺陷）。
 pub fn load(store: &StateStore, change_id: &str, baseline: &str) -> ChangeState {
     match store.load() {
         Loaded::Found(state) => ChangeState::from_run(&state, change_id, baseline),
+        Loaded::Unusable(reason) => {
+            tracing::warn!(
+                component = "change-orchestrator",
+                change_id,
+                %reason,
+                "断点不可用，按冷启动重置（原因见日志）"
+            );
+            ChangeState::new(change_id, baseline)
+        }
         _ => ChangeState::new(change_id, baseline),
     }
 }

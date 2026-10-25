@@ -42,5 +42,4 @@ pub use session::{ChangeCtx, ProdChangeSession};
 pub use state::{CHANGE_SOP, ChangePhase, ChangeState, TestFailureContext};
 pub use testing_gate::{
     AcceptanceMatch, FAILURE_BLOCK_TITLE, check_regression_claim, check_regression_log,
-    coding_failure_block, failure_details, reconcile_acceptance, route_back_message,
 };

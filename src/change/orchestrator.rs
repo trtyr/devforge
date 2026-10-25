@@ -314,6 +314,15 @@ pub fn run<S: ChangeSession>(
                     state.mark_acceptance_done(&c);
                 }
                 acceptance_done = state.acceptance_done.clone();
+                // 复验 N3：criteria 为空（计划用表格写验收标准，plan_facts 只认列表项）时
+                // 独立报错，不再产生「缺 0 条」的误导性对账输出。
+                if criteria.is_empty() {
+                    return Err(DevforgeError::Quality(
+                        "计划里没有可对账的验收标准——plan_facts 只认「验收标准」块里的列表项，\
+                         用表格/段落写法会抽不到，请改用列表并在 plan 阶段重新过审"
+                            .into(),
+                    ));
+                }
                 let summary = summarize_acceptance(&criteria, &acceptance_done);
                 if !summary.passed() {
                     return Err(DevforgeError::Quality(format!(

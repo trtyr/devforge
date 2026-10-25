@@ -130,10 +130,20 @@ pub fn parse_impact_gaps(text: &str) -> Vec<ImpactGap> {
 /// 判定一次 coding 产出的边界情况。
 ///
 /// `changed` 来自 `git diff --name-only <baseline>`；`whitelist` 来自计划。
+/// 比对前两侧先归一化（复验 #7：去 `./` 前缀 + 迁移表换算），白名单匹配
+/// 与申报覆盖都按归一化后的精确路径相等——不再子串包含（`src/a.rs.bak`
+/// 不得覆盖 `src/a.rs`）。
+/// 归一化单路径：去 `./` 前缀 + 迁移表换算（比对前两侧同处理，复验 #7）。
+fn normalize_one(f: &str) -> &str {
+    let stripped = f.strip_prefix("./").unwrap_or(f);
+    crate::change::plan_audit::normalize_path(stripped)
+}
+
 pub fn classify(changed: &[String], whitelist: &[String], reply: &str) -> BoundaryVerdict {
+    let norm_whitelist: Vec<&str> = whitelist.iter().map(|w| normalize_one(w)).collect();
     let extra: Vec<String> = changed
         .iter()
-        .filter(|f| !whitelist.iter().any(|w| w == *f))
+        .filter(|f| !norm_whitelist.iter().any(|w| *w == normalize_one(f)))
         .cloned()
         .collect();
     if extra.is_empty() {
@@ -145,10 +155,11 @@ pub fn classify(changed: &[String], whitelist: &[String], reply: &str) -> Bounda
     if !declared_route || gaps.is_empty() {
         return BoundaryVerdict::OutOfBoundary { extra };
     }
-    // 申报必须覆盖每个越界文件，且申报里的文件必须真的越界（不能拿申报当万能钥匙）
+    // 申报必须覆盖每个越界文件（归一化后精确相等），且申报里的文件必须真的越界
+    //（不能拿申报当万能钥匙）。
     let covered = extra
         .iter()
-        .all(|f| gaps.iter().any(|g| g.file == *f || g.file.contains(f.as_str())));
+        .all(|f| gaps.iter().any(|g| normalize_one(&g.file) == normalize_one(f)));
     if !covered {
         return BoundaryVerdict::OutOfBoundary { extra };
     }

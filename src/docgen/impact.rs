@@ -131,8 +131,11 @@ pub fn parse_porcelain(text: &str) -> Vec<ChangedFile> {
 
 /// 取 `base..HEAD` 的变更集，并并入未提交改动。
 pub fn changed_since(repo: &Path, base: &str) -> Result<Vec<ChangedFile>> {
-    let diff = run_git(repo, &["diff", "--name-status", base, "HEAD"])?;
-    let status = run_git(repo, &["status", "--porcelain"])?;
+    let diff = run_git(
+        repo,
+        &["-c", "core.quotePath=false", "diff", "--name-status", base, "HEAD"],
+    )?;
+    let status = run_git(repo, &["-c", "core.quotePath=false", "status", "--porcelain"])?;
     let mut seen: BTreeMap<String, ChangedFile> = BTreeMap::new();
     for f in parse_name_status(&diff).into_iter().chain(parse_porcelain(&status)) {
         seen.insert(f.path.clone(), f);

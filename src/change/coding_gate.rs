@@ -271,7 +271,7 @@ pub fn read_steps(blackboard: &Path) -> Result<Vec<Step>> {
 /// 否则新建白名单外文件且不 git add，边界门/步提交对账/报告 diff 三处同时盲区）。
 pub fn changed_files(repo: &Path, baseline: &str) -> Result<Vec<String>> {
     let out = Command::new("git")
-        .args(["diff", "--name-only", baseline])
+        .args(["-c", "core.quotePath=false", "diff", "--name-only", baseline])
         .current_dir(repo)
         .output()
         .map_err(|e| DevforgeError::System(format!("执行 git diff 失败：{e}")))?;
@@ -288,7 +288,13 @@ pub fn changed_files(repo: &Path, baseline: &str) -> Result<Vec<String>> {
         .map(str::to_string)
         .collect();
     let untracked = Command::new("git")
-        .args(["ls-files", "--others", "--exclude-standard"])
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+        ])
         .current_dir(repo)
         .output()
         .map_err(|e| DevforgeError::System(format!("执行 git ls-files 失败：{e}")))?;
@@ -469,6 +475,18 @@ mod tests {
         assert!(
             files.iter().any(|f| f == "outside.txt"),
             "未跟踪文件必须出现在变更集：{files:?}"
+        );
+    }
+
+    /// 复验 N4 回归：非 ASCII 文件名不被 quotePath 转义，白名单能精确匹配。
+    #[test]
+    fn non_ascii_paths_are_not_escaped() {
+        let (tmp, baseline) = repo_with_baseline();
+        std::fs::write(tmp.path().join("caf\u{e9}.txt"), "x\n").unwrap();
+        let files = changed_files(tmp.path(), &baseline).unwrap();
+        assert!(
+            files.iter().any(|f| f == "caf\u{e9}.txt"),
+            "非 ASCII 路径不得带 C 引号转义：{files:?}"
         );
     }
 
