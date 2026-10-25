@@ -28,11 +28,11 @@
 - ✅ T3.2 doc-fix（第三方可测标准/冲突升级/findings 回写带原因 + 边界段四项含「finding 本身判错」诚实路径）；doc-review（DR-12 不读代码与裁决前置保持 + 五项审查面带原因 + 边界段三项含摘要造假加重）
 - 验收：三条过检查表 + pinning 同步 + 全目标 776 绿
 
-## M4 · change 测试 + coding 家族 ☐
+## M4 · change 测试 + coding 家族 ✅
 
-- ☐ T4.1 change-test-agent / change-test-review（35/23 行）
-- ☐ T4.2 coding-agent / coding-review（66/42 行：MVP 编码官 + 编码审查官）
-- 验收：同 M1
+- ✅ T4.1 change-test-agent / change-test-review（两条证明目标/对照表机械契约/反向验证保留 + 原因三件套 + 边界段四/三项；粗体挡断言的字面教训：锚短语去粗体）
+- ✅ T4.2 coding-agent / coding-review（预审四条事故教训/plan 偏差协议/刚需四条/从零 boot 门禁/九项审查面全保留重排 + 边界段四/四项；「自己跑一遍」回补 + 「完全基于文档写测试」跨行断开修复）
+- 验收：四条过检查表 + pinning 同步（锚修复 ×3 + fixture 重 dump） + 全目标 776 绿
 
 ## M5 · pi 侧系统提示词（pi-config 仓） ☐
 
