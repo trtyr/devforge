@@ -6,3 +6,7 @@
 # python bytecode
 __pycache__/
 *.pyc
+
+# 运行时产物（预算熔断台账，属本机状态）
+spawn-ledger.json
+spawn-ledger.json.bak
