@@ -310,9 +310,16 @@ pub fn changed_files(repo: &Path, baseline: &str) -> Result<Vec<String>> {
             files.push(f.to_string());
         }
     }
-    // 流水线自身产物（计划文档/证据）不算代码改动——与 #10 纪律同口径：它们不进 coding
+    // 流水线自身产物（计划文档/证据/文档域）不算代码改动——与 #10 纪律同口径：它们不进 coding
     // 提交、也不参与越界判定，否则每轮 run 自己写的 change-plan.md 会永久触发范围膨胀。
-    files.retain(|f| !f.starts_with("docs/plantree/") && !f.starts_with("evidence/"));
+    // 引擎审计修复 #3：docs/contexts/（含 essential 档的 _meta 盘点/词汇表）同样是 SOP
+    // 自产文档域——已有 git 仓基线只记 HEAD 不提交，这些 untracked 文件会让每次
+    // doc_level≠none 的 change 必踩范围膨胀 FAIL。
+    files.retain(|f| {
+        !f.starts_with("docs/plantree/")
+            && !f.starts_with("docs/contexts/")
+            && !f.starts_with("evidence/")
+    });
     Ok(files)
 }
 
@@ -475,6 +482,31 @@ mod tests {
         assert!(
             files.iter().any(|f| f == "outside.txt"),
             "未跟踪文件必须出现在变更集：{files:?}"
+        );
+    }
+
+    /// 引擎审计修复 #3 回归：已有 git 仓 + doc_level=essential 的 untracked 文档
+    /// （docs/contexts/_meta/*）是 SOP 自产产物，不得进变更集触发范围膨胀 FAIL——
+    /// 错实现形态：过滤清单只有 docs/plantree/ 与 evidence/，每次带文档档位的
+    /// change 必踩 OutOfBoundary。
+    #[test]
+    fn essential_doc_artifacts_are_excluded_from_changed_files() {
+        let (tmp, baseline) = repo_with_baseline();
+        std::fs::create_dir_all(tmp.path().join("docs/contexts/_meta")).unwrap();
+        std::fs::write(
+            tmp.path().join("docs/contexts/_meta/inventory.json"),
+            "{\"meta\":{}}",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("docs/contexts/glossary.md"),
+            "# 词汇表\n",
+        )
+        .unwrap();
+        let files = changed_files(tmp.path(), &baseline).unwrap();
+        assert!(
+            !files.iter().any(|f| f.starts_with("docs/contexts/")),
+            "SOP 自产文档域不得进变更集：{files:?}"
         );
     }
 
