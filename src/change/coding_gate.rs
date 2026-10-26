@@ -109,17 +109,6 @@ pub fn parse_baseline_log(text: &str) -> Result<BaselineEvidence> {
 ///
 /// 自审 major（unit-011）：弱化版不再 pub——它传 UNIX_EPOCH 等于关掉新鲜度，
 /// 生产只能用 `_fresh` 版；保留为测试底座，未来调用方拿不到（防再犯）。
-#[cfg(test)]
-pub fn check_baseline_log(blackboard: &Path) -> Result<BaselineEvidence> {
-    check_evidence_fresh(
-        blackboard.join(BASELINE_LOG),
-        "缺少基线证据 {}（动手前必须先跑一遍既有测试）",
-        "基线不是绿的",
-        "不许在红基线上动代码",
-        parse_baseline_log,
-        std::time::SystemTime::UNIX_EPOCH,
-    )
-}
 
 /// 基线门（绑定本轮）：证据文件 mtime 早于 `not_before`（本轮开始）视为上一轮残留
 /// （复验 #6：上轮绿色证据不得通过本轮机械门）。
@@ -197,29 +186,6 @@ fn check_evidence_fresh(
 ///
 /// 与基线门同策略：失败即 Quality，不自动重问 Agent（证据红着 = 没证明）。
 /// 自审 major（unit-011）：同基线门，弱化版收进测试底座，生产只用 `_fresh` 版。
-#[cfg(test)]
-pub fn check_self_check(blackboard: &Path) -> Result<BaselineEvidence> {
-    let path = blackboard.join(SELF_CHECK_LOG);
-    let text = std::fs::read_to_string(&path).map_err(|e| {
-        DevforgeError::Quality(format!(
-            "缺少自证证据 {}（提交前必须留下命令原文 + 退出码 + 摘要）：{e}",
-            path.display()
-        ))
-    })?;
-    let ev = parse_evidence_log(&text, SELF_CHECK_LOG, "自证")?;
-    if ev.exit_code != 0 {
-        return Err(DevforgeError::Quality(format!(
-            "自证不是绿的（exit_code={}，命令：{}）——先证后报：证据红着不许提交",
-            ev.exit_code,
-            if ev.command.is_empty() {
-                "未记录".to_string()
-            } else {
-                ev.command
-            }
-        )));
-    }
-    Ok(ev)
-}
 
 /// `impl-steps.md` 里的步骤（形如 `## 步骤 1` / `### 步骤 2`，也接受 `## Step 3`）。
 #[derive(Debug, Clone, PartialEq, Eq)]

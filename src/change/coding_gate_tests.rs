@@ -1,6 +1,42 @@
 //! （2026-10-26 测试分离：自 src/change/coding_gate.rs 内联平移，纯移动零改动。）
 use super::*;
 
+/// （自生产文件迁入：cfg(test) 专用帮手，消费方全在测试。）
+#[cfg(test)]
+pub fn check_baseline_log(blackboard: &Path) -> Result<BaselineEvidence> {
+    check_evidence_fresh(
+        blackboard.join(BASELINE_LOG),
+        "缺少基线证据 {}（动手前必须先跑一遍既有测试）",
+        "基线不是绿的",
+        "不许在红基线上动代码",
+        parse_baseline_log,
+        std::time::SystemTime::UNIX_EPOCH,
+    )
+}
+
+#[cfg(test)]
+pub fn check_self_check(blackboard: &Path) -> Result<BaselineEvidence> {
+    let path = blackboard.join(SELF_CHECK_LOG);
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        DevforgeError::Quality(format!(
+            "缺少自证证据 {}（提交前必须留下命令原文 + 退出码 + 摘要）：{e}",
+            path.display()
+        ))
+    })?;
+    let ev = parse_evidence_log(&text, SELF_CHECK_LOG, "自证")?;
+    if ev.exit_code != 0 {
+        return Err(DevforgeError::Quality(format!(
+            "自证不是绿的（exit_code={}，命令：{}）——先证后报：证据红着不许提交",
+            ev.exit_code,
+            if ev.command.is_empty() {
+                "未记录".to_string()
+            } else {
+                ev.command
+            }
+        )));
+    }
+    Ok(ev)
+}
 fn git(repo: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(args)
