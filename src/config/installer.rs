@@ -35,10 +35,77 @@ fn install_failure_error(pkg: &str, output: &std::process::Output) -> DevforgeEr
     } else {
         trimmed.to_string()
     };
-    DevforgeError::Config(format!(
+    // 自审 major：安装失败归 System（可重试）而非 Config——网络抖动/ENOSPC 是
+    // 环境瞬时故障，与仓库自身「瞬时故障归 System 可重试」的约定一致。
+    DevforgeError::System(format!(
         "pi install {pkg} 失败（exit: {}）\nstderr 尾部: {tail}",
         output.status
     ))
+}
+
+/// 带超时的子进程运行（自审 major：pi install 无超时 = 一次网络挂死永久占住
+/// 渲染线程，完成通知永不发出）。轮询 try_wait + 后台线程排空管道（防管道满
+/// 阻塞子进程）。超时上限可用 `DEVFORGE_INSTALL_TIMEOUT_MS` 调整，0 = 不限时
+///（零硬限制哲学）；默认每包 10 分钟。
+fn run_with_timeout(mut cmd: Command, pkg: &str) -> Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let timeout_ms: u64 = std::env::var("DEVFORGE_INSTALL_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600_000);
+    if timeout_ms == 0 {
+        return cmd
+            .output()
+            .ctx(format!("执行 pi install {pkg}"));
+    }
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ctx(format!("执行 pi install {pkg}"))?;
+    let mut stdout_pipe = child.stdout.take().expect("stdout 已 piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr 已 piped");
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stdout_pipe.read_to_string(&mut buf);
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stderr_pipe.read_to_string(&mut buf);
+        buf
+    });
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = stdout_thread.join().unwrap_or_default();
+                let stderr = stderr_thread.join().unwrap_or_default();
+                return Ok(std::process::Output {
+                    status,
+                    stdout: stdout.into_bytes(),
+                    stderr: stderr.into_bytes(),
+                });
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(DevforgeError::System(format!(
+                        "pi install {pkg} 超时（{timeout_ms}ms，DEVFORGE_INSTALL_TIMEOUT_MS 可调，0=不限）——进程已强杀"
+                    )));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(DevforgeError::System(format!(
+                    "pi install {pkg} 等待失败：{e}"
+                )));
+            }
+        }
+    }
 }
 
 /// 包安装器抽象。真桥 = [`PiInstallBridge`]；测试 = fake（模拟双记录）。
@@ -53,13 +120,33 @@ pub struct PiInstallBridge;
 
 impl PackageInstaller for PiInstallBridge {
     fn install(&self, profile_dir: &Path, packages: &[String]) -> Result<()> {
+        // 自审 major：安装段全链路最慢（e2e 实测 8 profile 602s）且失败率最高，
+        // 零埋点 = 事件时间线里完全隐身。逐包落 info/失败 WARN。
+        tracing::info!(
+            component = "installer",
+            profile = %profile_dir.display(),
+            packages = packages.len(),
+            "开始安装 profile 扩展包"
+        );
         for pkg in packages {
-            let output = build_install_command(profile_dir, pkg)
-                .output()
-                .ctx(format!("执行 pi install {pkg}"))?;
+            let output = run_with_timeout(build_install_command(profile_dir, pkg), pkg)?;
             if !output.status.success() {
-                return Err(install_failure_error(pkg, &output));
+                let err = install_failure_error(pkg, &output);
+                tracing::warn!(
+                    component = "installer",
+                    package = %pkg,
+                    profile = %profile_dir.display(),
+                    error = %err,
+                    "扩展包安装失败"
+                );
+                return Err(err);
             }
+            tracing::info!(
+                component = "installer",
+                package = %pkg,
+                profile = %profile_dir.display(),
+                "扩展包安装成功"
+            );
         }
         Ok(())
     }
@@ -129,6 +216,28 @@ mod tests {
         assert_eq!(env.1, Some(Path::new("/profiles/plan-agent").as_os_str()));
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(args, vec!["install", "npm:pi-blackhole"]);
+    }
+
+    /// 自审 major 回归：超时强杀 + 快命令不受影响（合并为单测：env 是进程全局，
+    /// 拆两个会自竞态）。
+    #[test]
+    fn install_timeout_kills_but_fast_completes() {
+        // SAFETY: 测试进程内独占该变量（无并发读者），edition 2024 下 set_var 为 unsafe
+        // 超时路径：挂死进程被强杀，不再永久占住渲染线程
+        let mut slow = Command::new("sleep");
+        slow.arg("30");
+        unsafe { std::env::set_var("DEVFORGE_INSTALL_TIMEOUT_MS", "300") };
+        let err = run_with_timeout(slow, "sleep").unwrap_err();
+        assert!(err.to_string().contains("超时"), "{err}");
+        assert!(err.to_string().contains("强杀"), "{err}");
+        // 快路径：输出完整回收
+        let mut fast = Command::new("echo");
+        fast.arg("hello");
+        unsafe { std::env::set_var("DEVFORGE_INSTALL_TIMEOUT_MS", "10000") };
+        let out = run_with_timeout(fast, "echo").unwrap();
+        unsafe { std::env::remove_var("DEVFORGE_INSTALL_TIMEOUT_MS") };
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
     }
 
     #[test]
