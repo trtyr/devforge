@@ -14,6 +14,7 @@ use std::path::Path;
 
 use crate::error::Result;
 use crate::sop::coding_protocol::StageVerdict;
+use crate::sop::doc::protocol::MAX_DOC_FIX_FAILS;
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
 use crate::sop::testing_protocol::{parse_doc_review_report, FINDINGS_DIR};
 
@@ -87,6 +88,9 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocFixSopLoop<P, F> {
 
         // 审查循环：PASS 出口，FAIL 打回（回注问题清单）后重审
         let mut violations = 0usize;
+        // 自审 critical：FAIL 轮上限——doc-review 判 FAIL 但不带 <issues> 时，回注的
+        // 是空问题清单，打回无上限 = run 无限空转（每圈真烧两次 LLM）。
+        let mut fail_rounds = 0usize;
         loop {
             report.review_rounds += 1;
             // 「审查开庭」里程碑：在**发起**那一刻落
@@ -99,8 +103,12 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocFixSopLoop<P, F> {
                 "审查开庭"
             );
             let mut session = self.review_factory.open()?;
-            let review_text =
-                session.review(&doc_review_instruction(workspace, report.review_rounds))?;
+            // 自审 critical：审查走墙钟——裸 review() 绕过仓内统一墙钟，doc SOP 默认
+            // 无失活收割，审查实例挂死 = run 永挂并占住串行槽（server #6 同款）。
+            let review_text = session.review_with_deadline(
+                &doc_review_instruction(workspace, report.review_rounds),
+                crate::sop::review_gate::review_deadline(),
+            )?;
             drop(session);
 
             let parsed = parse_doc_review_report(&review_text);
@@ -119,6 +127,13 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocFixSopLoop<P, F> {
             match parsed.verdict {
                 StageVerdict::Pass => return Ok(report),
                 StageVerdict::Fail => {
+                    fail_rounds += 1;
+                    if fail_rounds > MAX_DOC_FIX_FAILS {
+                        return Err(crate::error::DevforgeError::Quality(format!(
+                            "文档审查连续 {fail_rounds} 轮 FAIL（上限 {MAX_DOC_FIX_FAILS}，末轮 issues {} 条），判定为质量失败（不自动重启），停止 run",
+                            parsed.issues.len()
+                        )));
+                    }
                     report.issues_total += parsed.issues.len();
                     let remediation = format!(
                         "{DOC_FIX_REMEDIATION_PREFIX}\n{}",
@@ -189,6 +204,7 @@ mod tests {
         reply: &'static str,
         closed: Rc<Cell<bool>>,
         expect_round: usize,
+        deadlines: Rc<RefCell<Vec<Option<std::time::Instant>>>>,
     }
     impl ReviewSession for MockReview {
         fn review(&mut self, instruction: &str) -> Result<String> {
@@ -198,6 +214,14 @@ mod tests {
                 self.expect_round
             );
             Ok(self.reply.into())
+        }
+        fn review_with_deadline(
+            &mut self,
+            instruction: &str,
+            deadline: Option<std::time::Instant>,
+        ) -> Result<String> {
+            self.deadlines.borrow_mut().push(deadline);
+            self.review(instruction)
         }
     }
     impl Drop for MockReview {
@@ -209,12 +233,14 @@ mod tests {
     struct MockReviewFactory {
         replies: VecDeque<&'static str>,
         opened: Vec<Rc<Cell<bool>>>,
+        deadlines: Rc<RefCell<Vec<Option<std::time::Instant>>>>,
     }
     impl MockReviewFactory {
         fn new(replies: &[&'static str]) -> Self {
             Self {
                 replies: replies.iter().copied().collect(),
                 opened: Vec::new(),
+                deadlines: Default::default(),
             }
         }
     }
@@ -227,6 +253,7 @@ mod tests {
                 reply: self.replies.pop_front().expect("Review 回复耗尽"),
                 closed,
                 expect_round: round,
+                deadlines: self.deadlines.clone(),
             }))
         }
     }
@@ -261,6 +288,42 @@ mod tests {
         assert_eq!(report.review_rounds, 1);
         assert_eq!(report.issues_total, 0);
         assert!(factory.opened.iter().all(|c| c.get()));
+    }
+
+    /// 自审 critical 回归：doc-fix 审查必须走墙钟——裸 review() 在 doc SOP
+    /// （默认无失活收割）下挂死即永挂并占住串行槽（server #6 同款）。
+    #[test]
+    fn review_carries_a_wall_clock() {
+        let agent = MockAgent::new(&["补完文档了。"]);
+        let mut factory = MockReviewFactory::new(&[REVIEW_PASS]);
+        let deadlines = factory.deadlines.clone();
+        let mut user = NoUser;
+        DocFixSopLoop::new(agent, &mut factory)
+            .run(&mut user, Path::new("/w"), "p", "t")
+            .unwrap();
+        let d = deadlines.borrow();
+        assert_eq!(d.len(), 1);
+        assert!(d[0].is_some(), "审查必须带 deadline（Some）");
+    }
+
+    /// 自审 critical 回归：FAIL 不带 <issues> → 回注空清单，无上限 = run 无限空转
+    /// （每圈真烧两次 LLM）。修复后连续 FAIL 有上限，Quality 收场。
+    #[test]
+    fn fail_without_issues_is_capped_not_infinite() {
+        const FAIL_NO_ISSUES: &str = "<stage-verdict>FAIL</stage-verdict>";
+        let agent = MockAgent::new(&["改", "改", "改", "改"]);
+        let mut factory = MockReviewFactory::new(&[
+            FAIL_NO_ISSUES,
+            FAIL_NO_ISSUES,
+            FAIL_NO_ISSUES,
+            FAIL_NO_ISSUES,
+        ]);
+        let mut user = NoUser;
+        let err = DocFixSopLoop::new(agent, &mut factory)
+            .run(&mut user, Path::new("/w"), "p", "t")
+            .unwrap_err();
+        assert!(err.is_quality_failure(), "FAIL 空转是质量失败：{err}");
+        assert!(format!("{err}").contains("上限"), "{err}");
     }
 
     #[test]

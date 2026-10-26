@@ -563,8 +563,16 @@ where
                 continue;
             };
             if done_unit != active {
+                // 自审 critical：错号重问也必须计入上限——旧实现不计 nudges，
+                // agent 持续错号 = 无界死循环（每圈真调一次 LLM）。
+                nudges += 1;
+                if nudges > MAX_DOC_CONTINUE_NUDGES {
+                    return Err(DevforgeError::Quality(format!(
+                        "单元 `{active}` 连续 {nudges} 次未确认当前单元号（错号/缺标记），判定为质量失败（agent 不配合，重启也无意义）"
+                    )));
+                }
                 message = format!(
-                    "你输出的是 `{done_unit}`，但当前单元是 `{active}`。请确认编号（不得自行改号）并重新输出 <doc-complete>{active}</doc-complete>。"
+                    "你输出的是 `{done_unit}`，但当前单元是 `{active}`（第 {nudges} 次错号）。请确认编号（不得自行改号）并重新输出 <doc-complete>{active}</doc-complete>。"
                 );
                 continue;
             }

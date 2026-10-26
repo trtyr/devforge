@@ -82,6 +82,26 @@ fn missing_marker_is_bounded_not_infinite() {
 }
 
 #[test]
+fn wrong_unit_number_is_bounded_not_infinite() {
+    // 自审 critical（2026-10-26）：错号重问分支不计上限 = 无界死循环（每圈真调一次 LLM）。
+    // 修复后错号计入 nudges，同款上限兜底。
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = MockAgent::new(&[
+        "A\n<doc-complete>unit-zzz</doc-complete>",
+        "B\n<doc-complete>unit-zzz</doc-complete>",
+        "C\n<doc-complete>unit-zzz</doc-complete>",
+        "D\n<doc-complete>unit-zzz</doc-complete>",
+    ]);
+    let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>"]);
+    let err = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap_err();
+    assert!(
+        err.is_quality_failure(),
+        "错号空转是 agent 不配合 → Quality：{err}"
+    );
+    assert!(format!("{err}").contains("单元号"), "{err}");
+}
+
+#[test]
 fn first_unit_overdue_warns_exactly_once() {        // DR-4：开跑超阈值仍无任何单元完成 → doc.first_unit_overdue 告警一次
     // （模拟假活：deadline 注入 0；agent 永不交卷）
     let tmp = tempfile::tempdir().unwrap();

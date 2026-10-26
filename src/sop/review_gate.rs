@@ -28,7 +28,7 @@ pub const MAX_EMPTY_ISSUES_NUDGES: usize = 3;
 pub const DEFAULT_REVIEW_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 
 /// 本轮的审查墙钟（每轮现算：一轮一个 deadline）。
-fn review_deadline() -> Option<std::time::Instant> {
+pub(crate) fn review_deadline() -> Option<std::time::Instant> {
     let ms = std::env::var("DEVFORGE_REVIEW_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())

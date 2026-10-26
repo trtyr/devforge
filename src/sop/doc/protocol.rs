@@ -23,6 +23,10 @@ pub const MAX_DOC_EMPTY_REPLIES: usize = 3;
 /// 审查空回复 / 进程异常的重试上限（2026-10-20 实测：doc-review 静默死亡）。
 pub const MAX_DOC_REVIEW_RETRIES: usize = 3;
 
+/// doc-fix 审查 FAIL 连续上限（自审 critical 2026-10-26）：doc-review 判 FAIL 但
+/// 不带 <issues> 时回注的是空问题清单，打回路径无上限 = run 无限空转。
+pub const MAX_DOC_FIX_FAILS: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocVerdict {
     Pass,

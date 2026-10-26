@@ -66,12 +66,29 @@ pub fn resolve_imports(lang: Lang, rel: &str, text: &str, root: &Path) -> Vec<St
                 }
             }
             Lang::TsJs => {
-                if let Some(pos) = line.find("from '").or_else(|| line.find("from \"")) {
-                    let rest = &line[pos + 6..];
-                    let quote = if rest.starts_with('\'') { '\'' } else { '"' };
-                    let end = rest[1..].find(quote).map(|i| i + 1).unwrap_or(rest.len());
-                    let spec = &rest[..end].trim_matches(|c| c == ' ').trim_matches(quote);
-                    add_relative(&mut out, dir, spec, &candidate);
+                // 自审 critical（unit-034 修正）：旧实现 needle "from '" 含引号，
+                // pos+6 落在引号**后**——引号判定恒错：单引号 import 全部解析成带
+                // `';` 尾巴的垃圾 spec（整条边丢失）；模块路径以多字节字符开头时
+                // rest[1..] 切在字符中间直接 panic（门 0 崩溃）。现在先找 from，
+                // 再从引号本身开始切，rest[0] 恒为 ASCII 引号，切屑安全。
+                let rest = if let Some(pos) = line.find("from '") {
+                    Some(&line[pos + 5..])
+                } else if let Some(pos) = line.find("from \"") {
+                    Some(&line[pos + 5..])
+                } else if let Some(pos) = line.find("from ") {
+                    Some(line[pos + 5..].trim_start())
+                } else {
+                    None
+                };
+                if let Some(rest) = rest {
+                    match rest.chars().next() {
+                        Some(q @ ('\'' | '"')) => {
+                            let end = rest[1..].find(q).map(|i| i + 1).unwrap_or(rest.len());
+                            let spec = rest[..end].trim_matches(q).trim();
+                            add_relative(&mut out, dir, spec, &candidate);
+                        }
+                        _ => {} // 非字符串字面量形态（import x = require 等由 require 分支接）
+                    }
                 } else if let Some(pos) = line.find("require(") {
                     let rest = &line[pos + 8..];
                     let spec: String = rest
@@ -181,6 +198,79 @@ fn resolve_by_suffix(root: &Path, spec: &str) -> Option<String> {
 }
 
 pub(super) fn norm(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "/")
+    // 自审 critical：必须词法归一 `.`/`..` 分量——相对 import 解出的 base 带 `./`
+    //（dir.join("./helper") = "src/./helper"），不归一则与盘扫路径永不相等，
+    // TS/JS 相对依赖的边全部悬空（图连不起来）。
+    let mut parts: Vec<String> = Vec::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            other => parts.push(other.as_os_str().to_string_lossy().into_owned()),
+        }
+    }
+    parts.join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 自审 critical 回归：相对 import 解出的边必须与盘扫路径逐字一致——
+    /// 旧实现 `src/./helper.ts` 带 `.` 分量，与清单里的 `src/helper.ts` 永不相等，
+    /// TS/JS 相对依赖的边全部悬空（TS/JS 分支此前零用例，本用例兼补）。
+    #[test]
+    fn ts_js_relative_import_edges_are_normalized() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/helper.ts"), "export const x = 1;\n").unwrap();
+        std::fs::write(
+            tmp.path().join("src/main.ts"),
+            "import { x } from './helper';\nconsole.log(x);\n",
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(tmp.path().join("src/main.ts")).unwrap();
+        let deps = resolve_imports(Lang::TsJs, "src/main.ts", &text, tmp.path());
+        assert_eq!(
+            deps,
+            vec!["src/helper.ts".to_string()],
+            "单引号 ESM 边必须无 . 分量、无 '; 尾巴，与盘扫路径一致"
+        );
+    }
+
+    /// 自审 critical 回归：模块路径以多字节字符开头时，旧实现 rest[1..] 切在
+    /// 字符中间直接 panic（门 0 崩溃）。
+    #[test]
+    fn ts_js_multibyte_module_path_does_not_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/工具")).unwrap();
+        std::fs::write(tmp.path().join("src/工具/数量.ts"), "export const n = 1;\n").unwrap();
+        std::fs::write(
+            tmp.path().join("src/main.ts"),
+            "import { n } from './工具/数量';\nconsole.log(n);\n",
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(tmp.path().join("src/main.ts")).unwrap();
+        let deps = resolve_imports(Lang::TsJs, "src/main.ts", &text, tmp.path());
+        assert_eq!(deps, vec!["src/工具/数量.ts".to_string()], "多字节路径边应可解析");
+    }
+
+    /// 双引号 ESM 不回归（旧实现对双引号碰巧能用，重写后必须仍然可用）。
+    #[test]
+    fn ts_js_double_quoted_import_still_resolves() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/helper.ts"), "export const x = 1;\n").unwrap();
+        std::fs::write(
+            tmp.path().join("src/main.ts"),
+            "import { x } from \"./helper\";\n",
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(tmp.path().join("src/main.ts")).unwrap();
+        let deps = resolve_imports(Lang::TsJs, "src/main.ts", &text, tmp.path());
+        assert_eq!(deps, vec!["src/helper.ts".to_string()]);
+    }
 }
 
