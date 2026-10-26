@@ -287,7 +287,14 @@ impl ParsedDoc {
             let end = end + 1;
             for line in &lines[1..end] {
                 if let Some(rest) = line.trim().strip_prefix("type:") {
-                    entry_type = EntryType::parse(rest);
+                    match EntryType::parse(rest) {
+                        Some(t) => entry_type = Some(t),
+                        None => tracing::warn!(
+                            component = "doc-engine",
+                            type_value = %rest.trim(),
+                            "frontmatter type 值未知——该文档的全部条目类型门禁将静默失效"
+                        ),
+                    }
                 }
             }
             body_start = end + 1;

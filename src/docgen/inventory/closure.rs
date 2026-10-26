@@ -65,6 +65,13 @@ pub fn check_closures(root: &Path, inv: &Inventory) -> Result<Vec<ClosureFinding
         while let Some(cur) = queue.pop_front() {
             let abs = root.join(&cur);
             let Ok(text) = std::fs::read_to_string(&abs) else {
+                // 自审 major：读失败不再静默——基础设施故障伪装成「文件不可达」
+                // 的质量结论，可达性审计从此有暗洞。
+                tracing::warn!(
+                    component = "doc-engine",
+                    path = %abs.display(),
+                    "闭包 BFS 跳过不可读文件（可达性判定可能失真）"
+                );
                 continue;
             };
             let Some(lang) = Lang::from_path(Path::new(&cur)) else {

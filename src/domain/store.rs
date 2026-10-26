@@ -502,6 +502,9 @@ impl Store {
         for t in &store.tasks {
             Self::validate_path_name(&t.id)?;
             Self::validate_path_name(&t.project)?;
+            // 自审 major：task.sop 同样被拼进 plans_root 下的路径段（SOP 状态目录），
+            // 篡改过的 store.json 不得借它越界。
+            Self::validate_path_name(&t.sop)?;
         }
         Ok(store)
     }

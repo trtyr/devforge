@@ -143,8 +143,17 @@ impl<'a> Renderer<'a> {
                             if let Some(parent) = f.parent() {
                                 fs::create_dir_all(parent).ctx("建 skill 子目录")?;
                             }
-                            fs::write(f, body)
+                            fs::write(&f, body)
                                 .ctx(format!("写内置 skill {skill}/{name}"))?;
+                            // 自审 major：内嵌资产不带可执行位——ci.sh 这类脚手架
+                            // 落盘 0644，skill 自述的 ./ci.sh 唯一门禁入口必然
+                            // Permission denied。脚本类文件补 0755。
+                            #[cfg(unix)]
+                            if name.ends_with(".sh") {
+                                use std::os::unix::fs::PermissionsExt;
+                                fs::set_permissions(&f, fs::Permissions::from_mode(0o755))
+                                    .ctx(format!("补可执行位 {skill}/{name}"))?;
+                            }
                         }
                     }
                     None => {

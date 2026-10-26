@@ -96,6 +96,11 @@ pub fn make_targets(text: &str) -> Vec<(usize, String)> {
 /// 构建/启动命令（T002）：package.json 的 scripts 名。
 pub fn package_scripts(text: &str) -> Vec<(usize, String)> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        // 自审 major：解析失败不再静默——构建/启动命令条目整体消失且无痕。
+        tracing::warn!(
+            component = "doc-engine",
+            "package.json 解析失败，构建/启动命令条目缺失（清单将无 T002 条目）"
+        );
         return Vec::new();
     };
     let Some(scripts) = v.get("scripts").and_then(|s| s.as_object()) else {

@@ -63,6 +63,10 @@ pub fn prepare(
             repo.display()
         )));
     }
+    // 自审 major：公开 API 入口补名字安检（域层已有现成校验但此前未被调用）——
+    // project/task 直接拼进 plans_root 路径并建目录写文件。
+    crate::domain::store::Store::validate_path_name(project)?;
+    crate::domain::store::Store::validate_path_name(task)?;
     let level = DocLevel::parse_strict(doc_level)?;
     let date = date_segment(today.0, today.1, today.2);
 

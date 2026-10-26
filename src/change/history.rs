@@ -42,8 +42,24 @@ pub fn append_roundtrip(
             roundtrip, g.file, g.reason, g.evidence
         ));
     }
-    std::fs::write(&path, text)
-        .map_err(|e| DevforgeError::System(format!("写 {} 失败：{e}", path.display())))?;
+    // 自审 major：truncate+write 非原子——崩溃留下半截文件，既有往返轨迹清零，
+    // 与本文件「宁可不写也不静默清空」不变量自相矛盾。唯一临时名 + rename。
+    let tmp = path.with_extension(format!("md.{}.tmp", std::process::id()));
+    (|| -> Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)
+            .map_err(|e| DevforgeError::System(format!("建临时文件失败：{e}")))?;
+        f.write_all(text.as_bytes())
+            .map_err(|e| DevforgeError::System(format!("写临时文件失败：{e}")))?;
+        f.sync_all()
+            .map_err(|e| DevforgeError::System(format!("刷临时文件失败：{e}")))?;
+        std::fs::rename(&tmp, &path)
+            .map_err(|e| DevforgeError::System(format!("原子替换 {} 失败：{e}", path.display())))?;
+        Ok(())
+    })()
+    .inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
     Ok(path)
 }
 

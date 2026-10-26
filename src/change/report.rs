@@ -118,6 +118,32 @@ pub fn diff_stats(repo: &Path, baseline: &str) -> Result<DiffStats> {
         stats.insertions += add.parse::<usize>().unwrap_or(0);
         stats.deletions += del.parse::<usize>().unwrap_or(0);
     }
+    // 自审 major：numstat 不含未跟踪文件——coding 产出的新文件曾让报告写成
+    // 「diff: 0 个文件（+0 / -0）」。untracked（豁免目录外）逐个计入，行数按实读计。
+    let out = Command::new("git")
+        .args(["-c", "core.quotePath=false", "status", "--porcelain", "-uall"])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| DevforgeError::System(format!("执行 git status 失败：{e}")))?;
+    if !out.status.success() {
+        return Err(DevforgeError::System(format!(
+            "git status 失败：{}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some(rest) = line.strip_prefix("?? ") else {
+            continue;
+        };
+        let path = rest.trim();
+        if path.starts_with("tests/") || path.starts_with("docs/") || path.starts_with("evidence/") {
+            continue;
+        }
+        stats.files += 1;
+        stats.insertions += std::fs::read_to_string(repo.join(path))
+            .map(|t| t.lines().count())
+            .unwrap_or(0);
+    }
     Ok(stats)
 }
 
