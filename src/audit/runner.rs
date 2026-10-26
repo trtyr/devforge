@@ -722,6 +722,9 @@ fn severity_summary_of(findings: &[Finding]) -> serde_json::Value {
 /// 全仓审计 M2：Stage 0/2 的换实例重试（口径同 Stage 1：2 次）——
 /// 只重试**输出不合规**（Quality）：实例/基础设施故障（System/Agent）直接上抛，
 /// 不伪装成格式问题反复重开。
+/// 2026-10-26 补丁：单阶段**空回复**（provider 软断粮：HTTP 200 + 零正文，如 MiniMax
+/// Token Plan 到量）与批次同层——转 Quality 走换实例重试，重试耗尽按 Quality 收场，
+/// 不再以 System 触发 run 级 4 连重启（每次重启重过切片+对账，纯烧时间）。
 fn with_stage_retry<T>(
     factory: &mut dyn AuditSessionFactory,
     label: &str,
@@ -730,7 +733,22 @@ fn with_stage_retry<T>(
     let mut last = String::new();
     for attempt in 0..2 {
         let mut session = factory.open().ctx(format!("开{label}会话"))?;
-        match run(session.as_mut()) {
+        let outcome = run(session.as_mut()).map_err(|e| {
+            if e.to_string().contains("未产出一字") {
+                tracing::warn!(
+                    component = "audit-engine",
+                    stage = label,
+                    attempt = attempt + 1,
+                    "{label}会话空回复（provider 软断粮），按不合规重试"
+                );
+                crate::error::DevforgeError::Quality(format!(
+                    "{label} 会话空回复（进程正常结束但未产出一字）"
+                ))
+            } else {
+                e
+            }
+        });
+        match outcome {
             Ok(v) => return Ok(v),
             Err(crate::error::DevforgeError::Quality(msg)) => {
                 last = msg;
