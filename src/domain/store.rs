@@ -323,17 +323,14 @@ impl Store {
         let task = self.get_task_mut(project, task_id)?;
         if !task.can_begin_run() {
             let status = task.status;
-            let deps = task.depends_on.clone();
-            drop(task);
             return Err(DevforgeError::Store(format!(
                 "任务 `{project}/{task_id}` 状态为 {status:?}，不可发起 run"
             )));
         }
         // 自审 major：DAG 契约在领域层强制——依赖未就绪（非 Completed）直接拒，
         // 不再依赖调度器自觉（绕过调度器的直接 start 路径也能守住不变量）。
-        // 先取走依赖清单再查状态，避免同时借 tasks。
+        // 依赖清单取走后 task 借用即终结（NLL），后续查 tasks 无冲突。
         let deps = task.depends_on.clone();
-        drop(task);
         for dep in &deps {
             let ready = self
                 .tasks
