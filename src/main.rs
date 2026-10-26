@@ -253,6 +253,20 @@ async fn main() -> anyhow::Result<()> {
         .manifest_path
         .lock()
         .expect("manifest_path 锁") = Some(manifest_path);
+    // 自审 critical：启动对账 store 里的僵尸 Running——进程崩溃/被杀后遗留的 Running
+    // run 会永久占死并发槽、任务停在 Running 无法再发起，无自愈即整机拒绝服务。
+    let zombies = state
+        .store
+        .lock()
+        .expect("store 锁")
+        .reconcile_zombie_runs();
+    if zombies > 0 {
+        tracing::warn!(
+            component = "server",
+            zombies,
+            "启动对账：中断遗留的 Running run/任务已按失败收场，并发槽已释放"
+        );
+    }
     // P3-ISSUE-03 修复：token 配置入口（CLI --token > DEVFORGE_TOKEN 环境变量；
     // 未设即放行，Q003）+ run 超时（P8-ISSUE-01）：默认不限时（零硬限制），
     // DEVFORGE_RUN_TIMEOUT_MS 显式开启（两者在 Arc 分享前经 get_mut 注入）

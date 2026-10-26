@@ -357,6 +357,36 @@ impl Store {
         Ok(())
     }
 
+    /// 启动对账（自审 critical）：进程崩溃/被杀后 store 里遗留的 Running run 会永久
+    /// 占死并发槽（running_run_count 只认终态），任务也停在 Running 无法再发起 run
+    /// ——无自愈即整机拒绝服务，只能手改 store.json。load 后调用一次：Running run
+    /// 判中断失败、Running 任务复位为 Failed，让下一次 begin_run 正常走。
+    /// 返回对账条数（供启动日志汇总；0 表示无需对账也不落盘）。
+    pub fn reconcile_zombie_runs(&mut self) -> usize {
+        let mut n = 0;
+        for run in self
+            .runs
+            .iter_mut()
+            .filter(|r| r.status == RunStatus::Running)
+        {
+            run.status = RunStatus::Failed;
+            run.ended_at_ms = Some(now_ms());
+            n += 1;
+        }
+        for task in self
+            .tasks
+            .iter_mut()
+            .filter(|t| t.status == TaskStatus::Running)
+        {
+            task.status = TaskStatus::Failed;
+            n += 1;
+        }
+        if n > 0 {
+            self.persist();
+        }
+        n
+    }
+
     pub fn get_run(&self, run_id: &RunId) -> Option<&Run> {
         self.runs.iter().find(|r| &r.id == run_id)
     }
@@ -604,6 +634,37 @@ mod tests {
         assert_eq!(s2.tasks.len(), 1, "任务应持久化");
         assert_eq!(s2.runs.len(), 1, "run 应持久化");
         assert_eq!(s2.tasks[0].status, TaskStatus::Failed, "终态应持久化");
+    }
+
+    #[test]
+    fn zombie_running_run_released_by_startup_reconcile() {
+        // 自审 critical 回归：崩溃后遗留的 Running run 占死并发槽、任务停在 Running
+        // ——启动对账后必须能再次 begin_run（无自愈即整机拒绝服务）。
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.json");
+        let mut s = Store::new().with_persist(path.clone());
+        s.create_project(Project::new("p", std::path::PathBuf::from("/x"), 1))
+            .unwrap();
+        s.create_task(
+            &SopRegistry::builtin(),
+            "p",
+            "t",
+            "planning",
+            None,
+            TaskDeps::default(),
+        )
+        .unwrap();
+        let run = s.begin_run("p", "t").unwrap();
+        drop(s); // 模拟崩溃：不 finish_run 直接丢掉进程
+        let mut s2 = Store::load(&path).unwrap();
+        assert_eq!(s2.running_run_count(), 1, "崩溃现场：run 留在 Running");
+        assert_eq!(s2.reconcile_zombie_runs(), 2, "run + 任务各对账一条");
+        assert_eq!(s2.running_run_count(), 0, "对账后并发槽应释放");
+        let again = s2.begin_run("p", "t").expect("对账后必须能再次发起 run");
+        assert_ne!(again.id, run.id, "重跑 = 新 run");
+        // 对账必须落盘：重开一份不再看到僵尸
+        let s3 = Store::load(&path).unwrap();
+        assert_eq!(s3.running_run_count(), 1, "只有新 run 在跑");
     }
 
     #[test]
