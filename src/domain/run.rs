@@ -32,6 +32,10 @@ pub struct Run {
     pub status: RunStatus,
     pub started_at_ms: u64,
     pub ended_at_ms: Option<u64>,
+    /// 失败原因（自审 major：旧实现收下 FinishOutcome 的 reason 后只落状态，
+    /// 原因既不落库也不进日志，重启后无法复盘）。serde default = 旧记录兼容。
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 impl Run {
@@ -43,6 +47,7 @@ impl Run {
             status: RunStatus::Running,
             started_at_ms: now_ms(),
             ended_at_ms: None,
+            reason: None,
         }
     }
 }

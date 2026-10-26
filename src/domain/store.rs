@@ -322,10 +322,30 @@ impl Store {
         }
         let task = self.get_task_mut(project, task_id)?;
         if !task.can_begin_run() {
+            let status = task.status;
+            let deps = task.depends_on.clone();
+            drop(task);
             return Err(DevforgeError::Store(format!(
-                "任务 `{project}/{task_id}` 状态为 {:?}，不可发起 run",
-                task.status
+                "任务 `{project}/{task_id}` 状态为 {status:?}，不可发起 run"
             )));
+        }
+        // 自审 major：DAG 契约在领域层强制——依赖未就绪（非 Completed）直接拒，
+        // 不再依赖调度器自觉（绕过调度器的直接 start 路径也能守住不变量）。
+        // 先取走依赖清单再查状态，避免同时借 tasks。
+        let deps = task.depends_on.clone();
+        drop(task);
+        for dep in &deps {
+            let ready = self
+                .tasks
+                .iter()
+                .find(|t| t.project == project && t.id == *dep)
+                .map(|t| t.status == TaskStatus::Completed)
+                .unwrap_or(false);
+            if !ready {
+                return Err(DevforgeError::Store(format!(
+                    "任务 `{project}/{task_id}` 的依赖 `{dep}` 未就绪（未完成），不可发起 run"
+                )));
+            }
         }
         let run = Run::new(project, task_id);
         let run_id = run.id.clone();
@@ -344,33 +364,46 @@ impl Store {
 
     /// 收尾 run：更新 run 终态与任务状态。
     pub fn finish_run(&mut self, run_id: &RunId, outcome: FinishOutcome) -> Result<()> {
-        let run = self
-            .runs
-            .iter_mut()
-            .find(|r| &r.id == run_id)
-            .ok_or_else(|| DevforgeError::Store(format!("run `{}` 不存在", run_id.0)))?;
-        if run.status != RunStatus::Running {
-            return Err(DevforgeError::Store(format!(
-                "run `{}` 状态为 {:?}，不可收尾",
-                run_id.0, run.status
-            )));
-        }
-        run.status = match outcome {
-            FinishOutcome::Completed => RunStatus::Settled,
-            FinishOutcome::Failed { .. } => RunStatus::Failed,
+        // 自审 major：先在作用域内改 run 终态并取出任务坐标，落下借用后再 persist
+        // 与改任务——旧结构 run 借用跨 persist，任务查不到时还会跳过落盘。
+        let (task_project, task_id) = {
+            let run = self
+                .runs
+                .iter_mut()
+                .find(|r| &r.id == run_id)
+                .ok_or_else(|| DevforgeError::Store(format!("run `{}` 不存在", run_id.0)))?;
+            if run.status != RunStatus::Running {
+                return Err(DevforgeError::Store(format!(
+                    "run `{}` 状态为 {:?}，不可收尾",
+                    run_id.0, run.status
+                )));
+            }
+            run.status = match outcome {
+                FinishOutcome::Completed => RunStatus::Settled,
+                FinishOutcome::Failed { .. } => RunStatus::Failed,
+            };
+            run.ended_at_ms = Some(now_ms());
+            // 自审 major：失败原因落进 run 记录（旧实现收下 FinishOutcome 的 reason
+            // 只落状态，原因既不落库也不进日志，重启后无法复盘）。
+            if let FinishOutcome::Failed { reason } = &outcome {
+                run.reason = Some(reason.clone());
+            }
+            (run.task_project.clone(), run.task_id.clone())
         };
-        run.ended_at_ms = Some(now_ms());
+
+        // 先落盘：即使任务随后查不到，run 终态也已在盘（两边不再分歧）。
+        self.persist();
 
         let task = self
             .tasks
             .iter_mut()
-            .find(|t| t.project == run.task_project && t.id == run.task_id)
-            .ok_or_else(|| {
-                DevforgeError::Store(format!(
-                    "run `{}` 的任务 `{}/{}` 不存在",
-                    run_id.0, run.task_project, run.task_id
-                ))
-            })?;
+            .find(|t| t.project == task_project && t.id == task_id);
+        let Some(task) = task else {
+            return Err(DevforgeError::Store(format!(
+                "run `{}` 的任务 `{task_project}/{task_id}` 不存在（run 终态已落盘，任务状态未动）",
+                run_id.0
+            )));
+        };
         task.status = match outcome {
             FinishOutcome::Completed => TaskStatus::Completed,
             FinishOutcome::Failed { .. } => TaskStatus::Failed,
@@ -437,13 +470,43 @@ impl Store {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ctx("创建 store 目录")?;
         }
-        std::fs::write(path, json).ctx(format!("写入 store {}", path.display()))
+        // 自审 major：原子写（tmp + sync + rename，同 runstate::StateStore 口径）——
+        // 旧实现截断式 write，崩溃/掉电产出半截 store.json，下次启动静默冷启动
+        // 丢全部三层对象。临时名按写者唯一（多进程同根时互不踩踏）。
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_extension(format!(
+            "json.{}.{seq}.tmp",
+            std::process::id()
+        ));
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)
+                .ctx(format!("建 store 临时文件 {}", tmp.display()))?;
+            f.write_all(json.as_bytes()).ctx("写 store 临时文件")?;
+            f.sync_all().ctx("刷盘 store")?;
+        }
+        let renamed = std::fs::rename(&tmp, path).ctx(format!("落盘 store {}", path.display()));
+        if renamed.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        renamed
     }
 
     pub fn load(path: &Path) -> Result<Self> {
         let json = std::fs::read_to_string(path)
             .ctx(format!("读取 store {}", path.display()))?;
-        serde_json::from_str(&json).ctx("解析 store")
+        let store: Store = serde_json::from_str(&json).ctx("解析 store")?;
+        // 自审 major：加载路径同样过名字安檢——域层「唯一入口」断言不能被
+        // 被篡改/损坏的 store.json 绕过（穿越名经 load 直接进内存）。
+        for p in &store.projects {
+            Self::validate_path_name(&p.name)?;
+        }
+        for t in &store.tasks {
+            Self::validate_path_name(&t.id)?;
+            Self::validate_path_name(&t.project)?;
+        }
+        Ok(store)
     }
 }
 
@@ -714,6 +777,98 @@ mod tests {
                 .unwrap_err();
             assert!(err.to_string().contains("非法路径字符"), "{bad} 应拒：{err}");
         }
+    }
+
+    /// 自审 major 回归：DAG 契约在领域层强制——依赖未完成时 begin_run 必须拒，
+    /// 不再依赖调度器自觉；依赖完成后放行。
+    #[test]
+    fn begin_run_requires_dependencies_completed() {
+        let mut s = setup();
+        s.create_task(
+            &SopRegistry::builtin(),
+            "devforge",
+            "dep",
+            "planning",
+            None,
+            TaskDeps::default(),
+        )
+        .unwrap();
+        s.create_task(
+            &SopRegistry::builtin(),
+            "devforge",
+            "worker",
+            "planning",
+            None,
+            TaskDeps {
+                depends_on: vec!["dep".into()],
+                exclusive: false,
+            },
+        )
+        .unwrap();
+        let err = s.begin_run("devforge", "worker").unwrap_err();
+        assert!(
+            err.to_string().contains("未就绪"),
+            "依赖未完成必须拒：{err}"
+        );
+        // 依赖跑完（Completed）→ 放行
+        let dep_run = s.begin_run("devforge", "dep").unwrap();
+        s.finish_run(&dep_run.id, FinishOutcome::Completed).unwrap();
+        s.begin_run("devforge", "worker").expect("依赖完成后应放行");
+    }
+
+    /// 自审 major 回归：失败原因必须落进 run 记录（重启后可复盘）。
+    #[test]
+    fn finish_run_persists_the_failure_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.json");
+        let mut s = Store::new().with_persist(path.clone());
+        s.create_project(Project::new("p", std::path::PathBuf::from("/x"), 1))
+            .unwrap();
+        s.create_task(
+            &SopRegistry::builtin(),
+            "p",
+            "t",
+            "planning",
+            None,
+            TaskDeps::default(),
+        )
+        .unwrap();
+        let run = s.begin_run("p", "t").unwrap();
+        s.finish_run(
+            &run.id,
+            FinishOutcome::Failed {
+                reason: "终审未通过".into(),
+            },
+        )
+        .unwrap();
+        let s2 = Store::load(&path).unwrap();
+        assert_eq!(
+            s2.get_run(&run.id).unwrap().reason.as_deref(),
+            Some("终审未通过"),
+            "失败原因必须落库"
+        );
+    }
+
+    /// 自审 major 回归：任务状态机守卫——Running/Archived 拒，Pending/Failed 放。
+    #[test]
+    fn begin_run_state_machine_guard_is_enforced() {
+        let mut s = setup();
+        s.max_concurrent_runs = 5; // 绕开并发上限，让状态机守卫当拦路人
+        s.create_task(
+            &SopRegistry::builtin(),
+            "devforge",
+            "t",
+            "planning",
+            None,
+            TaskDeps::default(),
+        )
+        .unwrap();
+        let run = s.begin_run("devforge", "t").unwrap();
+        let err = s.begin_run("devforge", "t").unwrap_err();
+        assert!(err.to_string().contains("不可发起"), "Running 必须拒：{err}");
+        s.finish_run(&run.id, FinishOutcome::Failed { reason: "x".into() })
+            .unwrap();
+        s.begin_run("devforge", "t").expect("Failed 可重跑");
     }
 
     #[test]
