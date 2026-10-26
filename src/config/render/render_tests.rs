@@ -132,6 +132,58 @@ impl PackageInstaller for FailingInstaller {
     }
 }
 
+/// 自审 major 回归：render_all 的并发契约必须有真断言——旧「parallel」测试
+/// 只验顺序与计数，把 render_all 改成串行实现 27 个测试仍全绿。
+/// 会合点设计：4 路各等 in_flight 达到 4 再放行——真并发恰好 4、串行实现
+/// 等不到（3s 超时放行让用例失败而非挂死）。
+#[test]
+fn render_all_actually_runs_concurrently_up_to_cap() {
+    use std::time::{Duration, Instant};
+
+    struct RendezvousInstaller {
+        in_flight: std::sync::atomic::AtomicUsize,
+        max_in_flight: std::sync::atomic::AtomicUsize,
+        inner: FakeInstaller,
+    }
+    impl PackageInstaller for RendezvousInstaller {
+        fn install(&self, profile_dir: &Path, packages: &[String]) -> Result<()> {
+            let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+            // 数字 4 对应 render.rs 的 MAX_RENDER_CONCURRENCY=4（私有常量，改动时同步）
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while self.in_flight.load(Ordering::SeqCst) < 4 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let r = self.inner.install(profile_dir, packages);
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            r
+        }
+    }
+
+    let manifest = ConfigManifest::builtin();
+    assert!(
+        manifest.agents.len() >= 4,
+        "内置 agent 数须 ≥ 并发上限，本测试前提不成立"
+    );
+    let root = tempfile::tempdir().unwrap();
+    let inst = RendezvousInstaller {
+        in_flight: std::sync::atomic::AtomicUsize::new(0),
+        max_in_flight: std::sync::atomic::AtomicUsize::new(0),
+        inner: FakeInstaller,
+    };
+    let r = Renderer {
+        manifest: &manifest,
+        installer: &inst,
+        skills_source: None,
+    };
+    r.render_all(root.path()).unwrap();
+    let max = inst.max_in_flight.load(Ordering::SeqCst);
+    assert_eq!(
+        max, 4,
+        "render_all 必须真并发到上限（实测峰值在飞 {max}）——CAL-19-RENDER"
+    );
+}
+
 #[test]
 fn render_all_parallel_preserves_manifest_order() {
     let manifest = ConfigManifest::builtin();
