@@ -71,6 +71,25 @@ async fn create_project_accepts_empty_dir_and_git_repo() {
     assert_eq!(resp.status(), 201, "不存在的路径应可注册（从 0 创建）");
 }
 
+/// 自审 major 回归：审计报告端点的路径穿越守卫 safe_segment 必须有负向覆盖——
+/// project/task 含穿越段时 400，删掉守卫本用例变红。
+#[tokio::test]
+async fn audit_report_rejects_path_traversal_segments() {
+    let f = fixture();
+    // 注：裸 "a/b" 在路由层就拆成两段匹配不到 {name}（404），到不了 handler；
+    // 真正能打到 safe_segment 的是 ".." 与 URL 编码的 %2F。
+    for evil in ["..", "a%2Fb"] {
+        let url = format!("/api/v1/projects/{evil}/tasks/t/audit-report");
+        let resp = send(&f.router, "GET", &url, None).await;
+        assert_eq!(
+            resp.status(),
+            400,
+            "穿越段 {evil} 必须被 safe_segment 拦下（400），实际 {}",
+            resp.status()
+        );
+    }
+}
+
 /// 全仓审计 #3：审计报告端点先按 store 校验存在性，且 404 不回显绝对路径。
 #[tokio::test]
 async fn audit_report_404_does_not_leak_absolute_path() {

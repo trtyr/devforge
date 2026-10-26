@@ -46,7 +46,9 @@ async fn projects_crud_with_local_dir_creation() {
 #[tokio::test]
 async fn task_creation_validates() {
     let f = fixture();
-    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+        // 自审 major：不用机器全局 /tmp/p——锚定在本用例的临时目录，不依赖宿主状态、不遗留
+    let repo_p = f.state.plans_root.parent().unwrap().join("repo-p");
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": repo_p.to_string_lossy()}))).await;
 
     // 未知 SOP → 400（P005：coding 已入注册表，改用 ghost）
     let resp = send(
@@ -103,7 +105,9 @@ async fn task_creation_validates() {
 async fn start_doc_from_zero_sop_returns_202() {
     // P008 T006：新 SOP 注册后能被 API 触发（引擎 mock，立即完成）
     let f = fixture();
-    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+        // 自审 major：不用机器全局 /tmp/p——锚定在本用例的临时目录，不依赖宿主状态、不遗留
+    let repo_p = f.state.plans_root.parent().unwrap().join("repo-p");
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": repo_p.to_string_lossy()}))).await;
     send(&f.router, "POST", "/api/v1/projects/p/tasks", Some(json!({"id": "d", "sop": "doc-from-zero"}))).await;
 
     let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/d/start", None).await;
@@ -128,7 +132,9 @@ async fn start_doc_from_zero_sop_returns_202() {
 async fn start_change_sop_returns_202() {
     // P009 接线：change 已注册，start 应受理（引擎是 mock，不等真 pi）
     let f = fixture();
-    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+        // 自审 major：不用机器全局 /tmp/p——锚定在本用例的临时目录，不依赖宿主状态、不遗留
+    let repo_p = f.state.plans_root.parent().unwrap().join("repo-p");
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": repo_p.to_string_lossy()}))).await;
     send(
         &f.router,
         "POST",
@@ -152,7 +158,9 @@ async fn start_change_sop_returns_202() {
 async fn start_change_resumes_from_blackboard_and_fresh_clears_it() {
     // task-6：change 的 start 续跑/fresh 与 010 同一套语义（按 SOP 分文件）
     let f = fixture();
-    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+        // 自审 major：不用机器全局 /tmp/p——锚定在本用例的临时目录，不依赖宿主状态、不遗留
+    let repo_p = f.state.plans_root.parent().unwrap().join("repo-p");
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": repo_p.to_string_lossy()}))).await;
     send(
         &f.router,
         "POST",
@@ -195,7 +203,9 @@ async fn start_change_resumes_from_blackboard_and_fresh_clears_it() {
 async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
     // plan 010 T003：start 默认续跑、fresh 只清该 SOP 的断点
     let f = fixture();
-    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+        // 自审 major：不用机器全局 /tmp/p——锚定在本用例的临时目录，不依赖宿主状态、不遗留
+    let repo_p = f.state.plans_root.parent().unwrap().join("repo-p");
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": repo_p.to_string_lossy()}))).await;
     send(
         &f.router,
         "POST",
@@ -229,20 +239,24 @@ async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
     // 3) fresh → 回冷启动且断点被清；另一个 SOP 的断点不受影响
     // F18：status=Settled 与串行槽真正释放之间有收尾窗口（end_run 终态写等），
     // 偶发 409 会淹没断言本体 → 409 有界重试，其余状态照常断言
-    let mut resp;
-    loop {
-        resp = send(
+    // 自审 major：无界 loop 在服务端持续 409 时永久挂起（注释声称「有界」实为无界）。
+    // 100 次 × 20ms = 2s 上限，超限直接失败而非挂死 CI。
+    let mut resp = None;
+    for _ in 0..100 {
+        let r = send(
             &f.router,
             "POST",
             "/api/v1/projects/p/tasks/d/start",
             Some(json!({"fresh": true})),
         )
         .await;
-        if resp.status() != 409 {
+        if r.status() != 409 {
+            resp = Some(r);
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+    let resp = resp.expect("fresh start 在 2s 内持续 409（串行槽未释放）——超出有界重试上限");
     assert_eq!(resp.status(), 202);
     let body = body_json(resp).await;
     assert_eq!(body["resumed"], false, "fresh 必须冷启动：{body}");
