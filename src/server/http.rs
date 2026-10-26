@@ -8,6 +8,8 @@ use crate::server::handlers;
 use crate::server::SharedState;
 
 /// 从启动参数解析 `--token <v>` / `--token=<v>`（首个命中生效；无则 None）。
+/// 自审 major：空格形的下一个参数若以 `--` 开头，视为缺值——否则 `--token --port`
+/// 会把 `--port` 当密钥吞掉（公开常量成了实际生效的共享密钥，还顶掉 env 里的真 token）。
 pub fn parse_token_flag(args: &[String]) -> Option<String> {
     let mut iter = args.iter();
     while let Some(a) = iter.next() {
@@ -15,16 +17,24 @@ pub fn parse_token_flag(args: &[String]) -> Option<String> {
             return Some(v.to_string());
         }
         if a == "--token" {
-            return iter.next().cloned();
+            match iter.next() {
+                Some(v) if !v.starts_with("--") => return Some(v.clone()),
+                _ => return None, // 缺值或紧跟另一个 flag：不猜，交给 env
+            }
         }
     }
     None
 }
 
 /// 启动 token 解析：CLI > env > 无；空串视为未设置（防空 token 锁死）。
+/// 自审 major：返回值归一化 trim——「 abc 」当密钥收下但客户端只发 abc，
+/// 服务永久 401 且启动期无任何报错。
 pub fn resolve_startup_token(cli: Option<String>, env: Option<String>) -> Option<String> {
-    let non_empty = |s: String| (!s.trim().is_empty()).then_some(s);
-    cli.and_then(non_empty).or_else(|| env.and_then(non_empty))
+    let normalized = |s: String| {
+        let t = s.trim().to_string();
+        (!t.is_empty()).then_some(t)
+    };
+    cli.and_then(normalized).or_else(|| env.and_then(normalized))
 }
 
 pub fn build_router(state: SharedState) -> Router {
@@ -88,10 +98,21 @@ pub async fn serve(state: SharedState, addr: std::net::SocketAddr) -> std::io::R
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(component = "server", %addr, "devforge API 就绪");
     // P012 M4：调度循环常驻（30s 周期 + run 收尾 kick 即时）。
-    tokio::spawn(crate::server::scheduler::scheduler_loop(
+    // 自审 major：JoinHandle 不再裸丢——调度循环只会在 panic/异常时结束，
+    // 静默丢弃 = 队列永不派工而 HTTP 面看起来健康。监督任务负责留痕。
+    let scheduler = tokio::spawn(crate::server::scheduler::scheduler_loop(
         state.clone(),
         crate::server::scheduler::SchedulerConfig::default(),
     ));
+    tokio::spawn(async move {
+        if let Err(err) = scheduler.await {
+            tracing::error!(
+                component = "server",
+                error = %err,
+                "调度循环已退出（panic 或异常）——队列不再派工，需重启进程"
+            );
+        }
+    });
     axum::serve(listener, build_router(state)).await
 }
 
@@ -123,6 +144,26 @@ mod startup_token_tests {
     fn token_flag_dangling_value_is_none() {
         // `--token` 无后继值 → None（不 panic）
         assert_eq!(parse_token_flag(&args(&["--token"])), None);
+    }
+
+    /// 自审 major 回归：`--token` 紧跟另一个 flag → 不猜值（否则 --port 之类
+    /// 公开常量被当密钥吞掉）。
+    #[test]
+    fn token_flag_followed_by_another_flag_is_none() {
+        assert_eq!(
+            parse_token_flag(&args(&["--token", "--port", "7888"])),
+            None
+        );
+    }
+
+    /// 自审 major 回归：带空白的 token 归一化 trim——否则服务永久 401 无声锁死。
+    #[test]
+    fn startup_token_is_trimmed() {
+        assert_eq!(
+            resolve_startup_token(Some("  abc  ".into()), None),
+            Some("abc".into())
+        );
+        assert_eq!(resolve_startup_token(Some("   ".into()), Some("env".into())), Some("env".into()));
     }
 
     #[test]
