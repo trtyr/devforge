@@ -347,7 +347,6 @@ fn prune_npm_dependencies(dir: &Path, desired: &[String]) -> Result<()> {
     let before = deps.len();
     deps.retain(|k, _| desired.iter().any(|p| p == k));
     let pruned = before - deps.len();
-    drop(deps);
     if pruned == 0 {
         return Ok(());
     }
