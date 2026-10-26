@@ -216,18 +216,34 @@ pub fn run_audit(
     // 文件清单来自切片器（非 LLM 输入），无穿越面；在批次循环内按批生成。
     let findings_dir = blackboard.join("audit-findings");
     std::fs::create_dir_all(&findings_dir).ctx("建 audit-findings 目录")?;
-    // 全仓审计 m2：发现文件缺失/损坏的批次必须**摘掉打勾重审**（旧实现只 WARN 跳过，
-    // done_batches 仍含该批 → 它的发现永久丢失且永不重审）。
-    let (mut findings, bad_batches) =
-        load_persisted_findings(&findings_dir, &progress.done_batches);
-    if !bad_batches.is_empty() {
-        progress.done_batches.retain(|id| !bad_batches.contains(id));
-        progress.save(&blackboard)?;
-        tracing::warn!(
-            component = "audit-engine",
-            bad = ?bad_batches,
-            "断点批次发现文件不可用，已从已完成列表摘除并将重审"
-        );
+    // 2026-10-25 事故拍板方案：**findings 文件 = 完成事实**——打勾曾是并行 join 后
+    // 主线程才写，22:29 的重启把 24 个「文件在盘、勾没打」的批次全部重审（约 40
+    // 分钟白烧）。对账以盘上产物为准：可解析 = 已完成；损坏 = 摘出重审；缺失 =
+    // 未完成。done_batches 按此重算，有变化才落盘。
+    let (mut findings, recovered, bad_batches) =
+        load_persisted_findings(&findings_dir, &ordered);
+    {
+        let recomputed: std::collections::BTreeSet<String> = recovered.iter().cloned().collect();
+        let old: std::collections::BTreeSet<String> =
+            progress.done_batches.iter().cloned().collect();
+        if recomputed != old {
+            progress.done_batches = recovered.clone();
+            progress.save(&blackboard)?;
+        }
+        if !bad_batches.is_empty() {
+            tracing::warn!(
+                component = "audit-engine",
+                bad = ?bad_batches,
+                "断点批次发现文件损坏，已摘出并将重审"
+            );
+        }
+        if !recovered.is_empty() {
+            tracing::info!(
+                component = "audit-engine",
+                recovered = recovered.len(),
+                "断点对账：以盘上 findings 文件为完成事实"
+            );
+        }
     }
 
     // 全仓审计 M3：批次间无共享状态（每批独立会话）→ 可并行；
@@ -733,39 +749,40 @@ fn with_stage_retry<T>(
     )))
 }
 
-/// 断点回读：进度里已完成的批次，发现从黑板加载。缺文件/坏文件的批次跳过
-/// （进度打了勾但发现丢了 = 历史遗留数据，如实少记不崩，WARN 留痕）。
+/// 断点对账：**盘上 findings 文件 = 完成事实**（2026-10-25 拍板）。对每个切片单元
+/// 查 `{id}.json`：可解析 → 发现入库、记入 recovered；损坏 → 记入 bad（将重审）；
+/// 缺失 → 未完成（正常首次态，不告警）。旧实现按 done_batches 打勾回读——打勾
+/// 曾在并行 join 后才写，崩溃后「文件在盘、勾没打」的批次被整批重审。
 fn load_persisted_findings(
     dir: &Path,
-    done_batches: &[String],
-) -> (Vec<Finding>, Vec<String>) {
+    units: &[&AuditUnit],
+) -> (Vec<Finding>, Vec<String>, Vec<String>) {
     let mut out = Vec::new();
+    let mut recovered: Vec<String> = Vec::new();
     let mut bad: Vec<String> = Vec::new();
-    for id in done_batches {
+    for u in units {
+        let id = &u.id;
         let p = dir.join(format!("{id}.json"));
         let Ok(bytes) = std::fs::read(&p) else {
-            tracing::warn!(
-                component = "audit-engine",
-                unit = %id,
-                "断点批次的发现文件缺失，将重审（m2）"
-            );
-            bad.push(id.clone());
-            continue;
+            continue; // 未完成：正常首次态
         };
         match serde_json::from_slice::<Vec<Finding>>(&bytes) {
-            Ok(fs) => out.extend(fs),
+            Ok(fs) => {
+                out.extend(fs);
+                recovered.push(id.clone());
+            }
             Err(e) => {
                 tracing::warn!(
                     component = "audit-engine",
                     unit = %id,
                     error = %e,
-                    "断点批次发现反序列化失败，将重审（m2）"
+                    "断点批次发现反序列化失败，将重审"
                 );
                 bad.push(id.clone());
             }
         }
     }
-    (out, bad)
+    (out, recovered, bad)
 }
 
 fn read_stage0(blackboard: &Path) -> Option<super::pipeline::ReviewPlan> {
@@ -808,12 +825,8 @@ mod tests {
 
     /// 复验 M3 缺陷①回归：断点续跑时已落盘的 findings 从黑板回读，
     /// 不随进程死亡丢失；进度里但文件缺失的历史批次跳过不崩。
-    #[test]
-    fn persisted_findings_are_read_back_on_resume() {
-        let dir = tempfile::tempdir().unwrap();
-        let findings_dir = dir.path().join("audit-findings");
-        std::fs::create_dir_all(&findings_dir).unwrap();
-        let f = Finding {
+    fn sample_finding() -> Finding {
+        Finding {
             path: "src/x.rs".into(),
             line: 1,
             view: crate::audit::finding::View::Correctness,
@@ -821,19 +834,62 @@ mod tests {
             claim: "测试发现".into(),
             evidence: "src/x.rs:1".into(),
             batch: "unit-001".into(),
-        };
+        }
+    }
+
+    fn unit(id: &str) -> AuditUnit {
+        AuditUnit {
+            id: id.into(),
+            files: vec!["src/a.rs".into()],
+            label: format!("label-{id}"),
+            focus: Vec::new(),
+            focus_range: None,
+        }
+    }
+
+    #[test]
+    fn persisted_findings_are_read_back_on_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let findings_dir = dir.path().join("audit-findings");
+        std::fs::create_dir_all(&findings_dir).unwrap();
+        let f = sample_finding();
         std::fs::write(
             findings_dir.join("unit-001.json"),
             serde_json::to_vec_pretty(&vec![f]).unwrap(),
         )
         .unwrap();
-        let (got, bad) = load_persisted_findings(
-            &findings_dir,
-            &["unit-001".to_string(), "unit-002".to_string()],
-        );
-        assert_eq!(got.len(), 1, "存在的批次回读，缺失的进重审名单");
+        let u1 = unit("unit-001");
+        let u2 = unit("unit-002");
+        let units = vec![&u1, &u2];
+        let (got, recovered, bad) = load_persisted_findings(&findings_dir, &units);
+        assert_eq!(got.len(), 1, "盘上有文件的批次回读");
         assert_eq!(got[0].batch, "unit-001");
-        assert_eq!(bad, vec!["unit-002".to_string()], "缺失批次必须重审（m2）");
+        assert_eq!(recovered, vec!["unit-001".to_string()], "文件 = 完成事实");
+        assert!(bad.is_empty(), "缺失 = 未完成，不是坏");
+    }
+
+    /// 2026-10-25 事故回归：done 打勾丢失（崩溃在 join 前）但 findings 文件在盘
+    /// ——对账必须以文件为准恢复完成态，不得把已完成批次重审一遍（当时白烧 40 分钟）。
+    #[test]
+    fn findings_file_without_done_mark_is_recovered_not_rereviewed() {
+        let dir = tempfile::tempdir().unwrap();
+        let findings_dir = dir.path().join("audit-findings");
+        std::fs::create_dir_all(&findings_dir).unwrap();
+        let mut f = sample_finding();
+        f.line = 2;
+        f.claim = "已审完但打勾丢了".into();
+        f.evidence = "src/x.rs:2".into();
+        std::fs::write(
+            findings_dir.join("unit-001.json"),
+            serde_json::to_vec_pretty(&vec![f]).unwrap(),
+        )
+        .unwrap();
+        let u1 = unit("unit-001");
+        let units = vec![&u1];
+        let (got, recovered, bad) = load_persisted_findings(&findings_dir, &units);
+        assert_eq!(recovered, vec!["unit-001".to_string()], "文件在盘 = 已完成");
+        assert_eq!(got.len(), 1);
+        assert!(bad.is_empty());
     }
 
     // ---------- 审计修复 #1/#5 回归 ----------
