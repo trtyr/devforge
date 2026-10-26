@@ -848,7 +848,8 @@ pub async fn events(
 // ---------- 配置管理 ----------
 
 pub async fn get_manifest(State(st): State<SharedState>) -> Json<ConfigManifest> {
-    Json(st.manifest.lock().expect("manifest 锁").clone())
+    // 自审 critical：api_key 明文不回传（脱敏占位；PUT 见占位保持原值）
+    Json(st.manifest.lock().expect("manifest 锁").redacted())
 }
 
 /// 整份替换清单（P002；P7-ISSUE-03 修复：渲染异步化——同步只做真源落盘与内存生效，
@@ -858,8 +859,35 @@ pub async fn put_manifest(
     State(st): State<SharedState>,
     Json(manifest): Json<ConfigManifest>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    let mut manifest = manifest;
+    // 自审 critical：GET 回传的是脱敏占位——PUT 见占位 = 保持现有 Key（往返不丢凭据）。
+    // 服务端没有可保留的 Key 却收到占位 = 客户端凭空构造，拒收防止占位字面量落盘。
+    if manifest.api_key.as_deref() == Some(crate::config::manifest::REDACTED_API_KEY) {
+        let existing = st.manifest.lock().expect("manifest 锁").api_key.clone();
+        if existing.is_none() {
+            return Err(ApiError::bad_request(
+                "api_key 为脱敏占位但服务端没有可保留的原值——请显式提供真实 Key 或置 null",
+            ));
+        }
+        manifest.api_key = existing;
+    }
     // P3-ISSUE-01：同步验证客户端输入（模型/provider 引用可解析），配置错误 fail fast 400
     for agent in &manifest.agents {
+        // 自审 critical：name/skills 会被渲染器 join 进 profiles_root 并在目录内落
+        // 明文 Key 的 auth.json——路径段不安全 = 任意路径写 + 凭据外泄，必须在此拒收。
+        if !safe_segment(&agent.name) {
+            return Err(ApiError::bad_request(format!(
+                "agent 名 `{}` 含非法路径字符（不可为空/./..，不可含分隔符）",
+                agent.name
+            )));
+        }
+        for skill in &agent.skills {
+            if !safe_segment(skill) {
+                return Err(ApiError::bad_request(format!(
+                    "skill 名 `{skill}` 含非法路径字符（不可为空/./..，不可含分隔符）"
+                )));
+            }
+        }
         manifest.resolve_model(agent).map_err(ApiError::from)?;
         manifest.resolve_provider(agent).map_err(ApiError::from)?;
     }
@@ -1038,6 +1066,11 @@ pub async fn enqueue_candidate(
     Path(project): Path<String>,
     Json(req): Json<EnqueueCandidateReq>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    // 自审 critical：project 直接 join 进 plans_root/integrations/<project>/queue.json
+    //（本文件既有防护模式），不过 safe_segment = 路径穿越 + 任意目录创建/覆写。
+    if !safe_segment(&project) {
+        return Err(ApiError::bad_request("项目名含非法路径字符"));
+    }
     let mut q = crate::integration::MergeQueue::load(&st.plans_root, &project)?;
     let cand = crate::integration::Candidate {
         task_id: req.task_id.clone(),
@@ -1065,6 +1098,10 @@ pub async fn get_integration_queue(
     State(st): State<SharedState>,
     Path(project): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    // 自审 critical：同 enqueue_candidate——project 不过 safe_segment 不落地。
+    if !safe_segment(&project) {
+        return Err(ApiError::bad_request("项目名含非法路径字符"));
+    }
     let q = crate::integration::MergeQueue::load(&st.plans_root, &project)?;
     Ok(Json(json!({
         "project": project,

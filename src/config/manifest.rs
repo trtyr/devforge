@@ -179,6 +179,11 @@ pub struct ConfigManifest {
     pub api_key: Option<String>,
 }
 
+/// GET /config/manifest 的 api_key 脱敏占位（自审 critical）：明文 Key 不再经 HTTP
+/// 回传——默认部署（回环 + token 未设即放行）下任意本机进程都能 GET 走上游凭证。
+/// PUT 侧见到此占位 = 「保持现有 Key」，GET→改→PUT 往返不丢凭据。
+pub const REDACTED_API_KEY: &str = "__redacted__";
+
 /// Change Plan Agent 提示词（P009 T006/D005-D017）：把需求落到代码上，产出六块计划。
 pub const CHANGE_PLAN_AGENT_PROMPT: &str = include_str!("../../assets/prompts/change-plan-agent.md");
 
@@ -198,6 +203,17 @@ pub const CHANGE_TEST_AGENT_PROMPT: &str = include_str!("../../assets/prompts/ch
 pub const CHANGE_TEST_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/change-test-review.md");
 
 impl ConfigManifest {
+    /// HTTP 出口脱敏视图（自审 critical）：api_key 有值时替换为 [`REDACTED_API_KEY`]
+    /// 占位。磁盘真源不动——decisions/001 明文不设防管的是落盘形态；这里堵的是
+    /// 「任意本机进程经 HTTP 读走凭证」的面。
+    pub fn redacted(&self) -> Self {
+        let mut m = self.clone();
+        if m.api_key.as_deref().is_some_and(|k| !k.is_empty()) {
+            m.api_key = Some(REDACTED_API_KEY.into());
+        }
+        m
+    }
+
     /// 内置默认清单：规划+编码四 Agent + 固定模型池（2026-10-17 用户拍板固定死：
     /// 审查类 Agent → Grok 4.7，编码/规划 Agent → DeepSeek flash；真实 id 经 P1-CAL-01 校准）。
     pub fn builtin() -> Self {

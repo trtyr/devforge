@@ -139,3 +139,77 @@ async fn token_gate_still_rejects_wrong_token() {
         .unwrap();
     assert_eq!(resp.status(), 404, "正确 token 应通过鉴权（404 = 项目不存在）");
 }
+
+/// 自审 critical：GET /config/manifest 不得回传明文 api_key；PUT 见脱敏占位 = 保持
+/// 原值（GET→改→PUT 往返不丢凭据）。
+#[tokio::test]
+async fn get_manifest_masks_api_key_and_roundtrip_keeps_it() {
+    let f = fixture();
+    let mut m = serde_json::to_value(ConfigManifest::builtin()).unwrap();
+    m["api_key"] = json!("sk-secret-123");
+    let resp = send(&f.router, "PUT", "/api/v1/config/manifest", Some(m)).await;
+    assert_eq!(resp.status(), 202);
+
+    let body = body_json(send(&f.router, "GET", "/api/v1/config/manifest", None).await).await;
+    assert_eq!(
+        body["api_key"], "__redacted__",
+        "GET 必须回脱敏占位：{body}"
+    );
+    assert!(
+        !body.to_string().contains("sk-secret-123"),
+        "明文 Key 不得出现在响应里"
+    );
+
+    // 往返：把 GET 到的 body 原样 PUT 回去 → 服务端仍持有真值
+    let resp = send(&f.router, "PUT", "/api/v1/config/manifest", Some(body)).await;
+    assert_eq!(resp.status(), 202, "占位往返必须放行");
+    assert_eq!(
+        f.state.manifest.lock().expect("manifest 锁").api_key,
+        Some("sk-secret-123".into()),
+        "占位 PUT 后真值必须保留"
+    );
+}
+
+/// 自审 critical：agent 名 / skill 名会被渲染器 join 进 profiles_root 并落明文 Key
+/// 的 auth.json——路径段不安全必须 400 拒收，不得走到渲染。
+#[tokio::test]
+async fn put_manifest_rejects_unsafe_agent_name_and_skill() {
+    let f = fixture();
+    let mut m = serde_json::to_value(ConfigManifest::builtin()).unwrap();
+    let name0 = m["agents"][0]["name"].as_str().unwrap().to_string();
+    m["agents"][0]["name"] = json!("../../evil");
+    let resp = send(&f.router, "PUT", "/api/v1/config/manifest", Some(m.clone())).await;
+    assert_eq!(resp.status(), 400, "穿越 agent 名应 400");
+
+    m["agents"][0]["name"] = json!(name0);
+    m["agents"][0]["skills"] = json!(["legit", "../escape"]);
+    let resp = send(&f.router, "PUT", "/api/v1/config/manifest", Some(m)).await;
+    assert_eq!(resp.status(), 400, "穿越 skill 名应 400");
+}
+
+/// 自审 critical：集成队列的 project 段直接 join 进 plans_root/integrations/，
+/// 不过 safe_segment = 路径穿越 + 任意目录创建/覆写。
+#[tokio::test]
+async fn integration_queue_rejects_path_traversal_project() {
+    let f = fixture();
+    // %2e%2e = ".."，axum Path 解码后交给 handler 的是穿越段
+    let resp = send(
+        &f.router,
+        "GET",
+        "/api/v1/projects/%2e%2e%2fevil/integration/queue",
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), 400, "穿越 project 应 400");
+
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/%2e%2e%2fevil/integration/queue",
+        Some(json!({"task_id": "t", "frozen_sha": "abc", "base_rev": "def"})),
+    )
+    .await;
+    assert_eq!(resp.status(), 400, "入队同样要拒");
+    // 不得在 plans_root 下留下穿越目录
+    assert!(!f.state.plans_root.join("evil").exists(), "穿越目录不得被创建");
+}

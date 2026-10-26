@@ -21,7 +21,6 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::sync::atomic::AtomicU64;
 
 use crate::error::DevforgeError;
 
