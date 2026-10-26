@@ -106,6 +106,10 @@ pub fn parse_baseline_log(text: &str) -> Result<BaselineEvidence> {
 }
 
 /// 读证据文件并判定基线是否绿。
+///
+/// 自审 major（unit-011）：弱化版不再 pub——它传 UNIX_EPOCH 等于关掉新鲜度，
+/// 生产只能用 `_fresh` 版；保留为测试底座，未来调用方拿不到（防再犯）。
+#[cfg(test)]
 pub fn check_baseline_log(blackboard: &Path) -> Result<BaselineEvidence> {
     check_evidence_fresh(
         blackboard.join(BASELINE_LOG),
@@ -192,6 +196,8 @@ fn check_evidence_fresh(
 /// 读自证证据文件并判定「先证后报」是否兑现（证据存在 + 退出码为 0）。
 ///
 /// 与基线门同策略：失败即 Quality，不自动重问 Agent（证据红着 = 没证明）。
+/// 自审 major（unit-011）：同基线门，弱化版收进测试底座，生产只用 `_fresh` 版。
+#[cfg(test)]
 pub fn check_self_check(blackboard: &Path) -> Result<BaselineEvidence> {
     let path = blackboard.join(SELF_CHECK_LOG);
     let text = std::fs::read_to_string(&path).map_err(|e| {
@@ -333,7 +339,9 @@ pub fn commits_since(repo: &Path, baseline: &str) -> Result<Vec<String>> {
         .output()
         .map_err(|e| DevforgeError::System(format!("执行 git log 失败：{e}")))?;
     if !out.status.success() {
-        return Err(DevforgeError::Quality(format!(
+        // 自审 major：与 changed_files 的 git 失败分类对齐（System 可重启）——
+        // 基线 SHA 被外部 rebase 吹掉是基础设施态，不是 agent 的质量失败。
+        return Err(DevforgeError::System(format!(
             "git log {baseline}..HEAD 失败：{}",
             String::from_utf8_lossy(&out.stderr).trim()
         )));
@@ -398,6 +406,14 @@ pub fn check_step_commits(
                 "提交「{subject}」没写步骤号（应含 `step N`）"
             )));
         }
+        // 自审 major：一歩一提交是模块文档承诺的不变量——一个提交声明多个步号
+        //（"step 1 步骤 2"）会绕过对账，必须硬门拒绝。
+        if nums.len() > 1 {
+            return Err(DevforgeError::Quality(format!(
+                "提交「{subject}」声明了 {} 个步号（{nums:?}）——一歩一提交，一次只声明一个步骤",
+                nums.len()
+            )));
+        }
         for n in nums {
             if declared.contains(&n) {
                 return Err(DevforgeError::Quality(format!(
@@ -416,7 +432,9 @@ pub fn check_step_commits(
             "实施步骤与提交对不上：impl-steps 有 {expected:?}，提交声明 {declared:?}"
         )));
     }
-    Ok(declared.len())
+    // 自审 major：返回**提交数**而非声明步号数——消费方把它当提交数记事件，
+    // 声明数恒等于步数，实际提交数永远不可观测。
+    Ok(commits.len())
 }
 
 /// 黑板与实现步骤的路径（编排层用）。
@@ -723,6 +741,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "依赖本机台账（~/.devforge/plantree），换机器/CI 必红——需要时手动跑"]
     fn decision_ledger_registers_d023() {
         // 决策台账同步（D023）：纪律供给口径 + change 路径的先证后报机械门 + 门只落 change 路径。
         // 放在本文件：白名单内不得新增测试文件，而本变更的门与该决策同源。
@@ -780,6 +799,62 @@ mod tests {
         ];
         let n = check_step_commits(tmp.path(), &sha, "change-20261020-x", &steps).unwrap();
         assert_eq!(n, 2);
+    }
+
+    /// 自审 major 回归：一歩一提交是文档承诺的不变量——单个提交声明两个步号
+    /// 必须硬门拒绝（旧实现只比对集合，声明多号照样过）。
+    #[test]
+    fn one_commit_declaring_two_steps_is_rejected() {
+        let (tmp, sha) = repo_with_baseline();
+        std::fs::write(tmp.path().join("a.txt"), "a2\n").unwrap();
+        commit(tmp.path(), "change: change-20261020-x step 1 step 2");
+        let steps = vec![
+            Step { number: 1, title: "one".into() },
+            Step { number: 2, title: "two".into() },
+        ];
+        let err = check_step_commits(tmp.path(), &sha, "change-20261020-x", &steps).unwrap_err();
+        assert!(err.to_string().contains("一歩一提交"), "{err}");
+    }
+
+    /// 自审 major 回归：git 故障分类对齐——基线 SHA 失效（git log 非零退出）
+    /// 是基础设施态，必须 System 可重启，不得 Quality 判死。
+    #[test]
+    fn broken_baseline_sha_is_system_not_quality() {
+        let (tmp, _sha) = repo_with_baseline();
+        std::fs::write(tmp.path().join("a.txt"), "a2\n").unwrap();
+        commit(tmp.path(), "change: change-20261020-x step 1");
+        let steps = vec![Step { number: 1, title: "one".into() }];
+        let err =
+            check_step_commits(tmp.path(), "deadbeef0000000", "change-20261020-x", &steps)
+                .unwrap_err();
+        assert!(
+            !err.is_quality_failure(),
+            "基线 SHA 失效应是 System 可重启：{err}"
+        );
+    }
+
+    /// 自审 major 回归：新鲜度硬门此前零覆盖——上轮残留证据（mtime 早于本轮开始）
+    /// 必须被 _fresh 门拒收，弱化门传 UNIX_EPOCH 恒放行的形态不得在生产面出现。
+    #[test]
+    fn fresh_gates_reject_stale_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("evidence")).unwrap();
+        std::fs::write(
+            tmp.path().join(BASELINE_LOG),
+            "command: cargo test\nexit_code: 0\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join(SELF_CHECK_LOG),
+            "command: cargo test\nexit_code: 0\n",
+        )
+        .unwrap();
+        // not_before = 写入之后 → 现有文件必然是「上一轮残留」
+        let not_before = std::time::SystemTime::now();
+        let err = check_baseline_log_fresh(tmp.path(), not_before).unwrap_err();
+        assert!(err.to_string().contains("上一轮残留"), "{err}");
+        let err = check_self_check_fresh(tmp.path(), not_before).unwrap_err();
+        assert!(err.to_string().contains("上一轮残留"), "{err}");
     }
 
     #[test]

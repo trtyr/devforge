@@ -97,21 +97,29 @@ pub fn parse_porcelain(text: &str) -> Vec<ChangedFile> {
         if line.len() < 4 {
             continue;
         }
-        let status = &line[..2];
-        let path = line[3..].trim();
+        // 自审 major：diff --name-status 的重命名行是 `R100\told\tnew`（状态长度可变 +
+        // TAB 分隔），旧实现按 porcelain 的 `XY old -> new` 硬切——重命名条目从来
+        // 解析不出来（old_path 恒丢）。现在按首个空白切状态，rename 按两种分隔符都认。
+        let (status, path) = match line.split_once('\t') {
+            Some((s, p)) => (s.to_string(), p.to_string()),
+            None => (line[..2].to_string(), line[3..].trim().to_string()),
+        };
         if path.is_empty() {
             continue;
         }
-        // 重命名/复制：`R  old -> new`
-        if (status.contains('R') || status.contains('C'))
-            && let Some((old, new)) = path.split_once(" -> ")
-        {
-            out.push(ChangedFile {
-                kind: 'R',
-                path: new.to_string(),
-                old_path: Some(old.to_string()),
-            });
-            continue;
+        // 重命名/复制：diff 形态 `R100\told\tnew`；porcelain 形态 `R  old -> new`
+        if status.contains('R') || status.contains('C') {
+            if let Some((old, new)) = path
+                .split_once('\t')
+                .or_else(|| path.split_once(" -> "))
+            {
+                out.push(ChangedFile {
+                    kind: 'R',
+                    path: new.to_string(),
+                    old_path: Some(old.to_string()),
+                });
+                continue;
+            }
         }
         let kind = if status.contains('A') || status.contains('?') {
             'A'
@@ -133,12 +141,41 @@ pub fn parse_porcelain(text: &str) -> Vec<ChangedFile> {
 pub fn changed_since(repo: &Path, base: &str) -> Result<Vec<ChangedFile>> {
     let diff = run_git(
         repo,
-        &["-c", "core.quotePath=false", "diff", "--name-status", base, "HEAD"],
+        &[
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--name-status",
+            base,
+            "HEAD",
+        ],
     )?;
-    let status = run_git(repo, &["-c", "core.quotePath=false", "status", "--porcelain"])?;
+    // 自审 major：未加 -uall 时新目录里的未跟踪文件被折叠成 `?? dir/`，
+    // 新文件的单元永远不会进影响面。展开到每个文件。
+    let status = run_git(
+        repo,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain",
+            "-uall",
+        ],
+    )?;
     let mut seen: BTreeMap<String, ChangedFile> = BTreeMap::new();
+    // 自审 major：porcelain 条目不再整体覆盖 diff 条目——同名时只补 old_path，
+    // 否则「已提交的重命名 + 未提交的再修改」会把 R 的 old_path 丢掉。
     for f in parse_name_status(&diff).into_iter().chain(parse_porcelain(&status)) {
-        seen.insert(f.path.clone(), f);
+        match seen.get_mut(&f.path) {
+            Some(existing) => {
+                if existing.old_path.is_none() {
+                    existing.old_path = f.old_path.clone();
+                }
+            }
+            None => {
+                seen.insert(f.path.clone(), f);
+            }
+        }
     }
     Ok(seen.into_values().collect())
 }
@@ -273,6 +310,12 @@ fn walk(
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&p) else {
+            // 自审 major：读失败/非 UTF-8 不再静默——漏算零线索比多算一条日志更贵。
+            tracing::warn!(
+                component = "doc-engine",
+                path = %p.display(),
+                "影响面扫描跳过不可读/非 UTF-8 文件"
+            );
             continue;
         };
         let rel = p
@@ -286,11 +329,12 @@ fn walk(
 }
 
 fn is_source_ext(ext: &str) -> bool {
-    matches!(
-        ext,
-        "rs" | "py" | "ts" | "tsx" | "js" | "jsx" | "go" | "java" | "kt" | "c" | "h" | "cc"
-            | "cpp" | "hpp" | "cs" | "rb" | "php" | "swift" | "m" | "mm" | "scala" | "sh" | "lua"
-    )
+    // 自审 major：扩展名单以前在本文件与 inventory 双份维护且已漂移——
+    // 现在单一事实源 = inventory::SOURCE_EXTENSIONS，扫描覆盖与清单覆盖天然对齐
+    //（语义变化：inventory 不支持的语言不再进影响面扫描，它们本就进不了清单）。
+    crate::docgen::inventory::SOURCE_EXTENSIONS
+        .iter()
+        .any(|(e, _)| *e == ext)
 }
 
 /// 汇总影响面。
@@ -303,9 +347,9 @@ pub fn impacted(
 ) -> Result<Impact> {
     let mut notes = Vec::new();
     let mut units = units_touching(new_inv, files);
-    if units.is_empty() {
-        units = units_touching(old_inv, files);
-    }
+    // 自审 major：旧清单兜底改为**并集**而非「非空才回退」——混合变更下
+    // 被删除文件的单元只存在于旧清单，「新命中非空」会把它整段漏掉。
+    units.extend(units_touching(old_inv, files));
 
     let names = vanished_names(old_inv, new_inv, files);
     for rel in reference_files(repo, &names)? {
@@ -340,7 +384,9 @@ fn assembly_pages_mentioning(
     names: &BTreeSet<String>,
 ) -> Vec<String> {
     let mut out = Vec::new();
-    // 单元 → 它产出的模块文档路径片段（`unit-core-auth-07` → `core-auth`）
+    // 注意：单元 → 汇编页引用 token 的真实约定尚未锚定（docs 汇编页还未有真实产物），
+    // 当前 slug 展开形态（`unit-src-01` → `src/01`）是占位实现；等 doc-from-zero 首次
+    // 全量跑通后按真实页面引用形态重写（gaps.md 已登记）。
     let unit_tokens: Vec<String> = units
         .iter()
         .map(|u| u.trim_start_matches("unit-").replace('-', "/"))
@@ -487,7 +533,16 @@ mod tests {
             .unwrap()
             .unit_id
             .clone();
-        let token = unit.trim_start_matches("unit-").replace('-', "/");
+        // 自审 major：不用实现的同款表达式算 token（同义反复测不出形态错）——
+        // 手写预期字面串，把变换本身钉住。
+        let token = unit
+            .trim_start_matches("unit-")
+            .replace('-', "/");
+        let token = match token.as_str() {
+            // 手写预期：夹具 repo 的组名是 core，单元号是 01
+            "core/01" => "core/01".to_string(),
+            other => panic!("夹具单元形态变了（{other}），请手写更新本用例的字面串"),
+        };
         fs::write(docs.join("README.md"), format!("见 `{token}`\n")).unwrap();
         fs::write(docs.join("01-architecture.md"), "无关\n").unwrap();
         let files = vec![ChangedFile {
@@ -511,5 +566,135 @@ mod tests {
         }];
         let err = plan_impact(tmp.path(), &docs, &files).unwrap_err();
         assert!(err.to_string().contains("inventory.json"), "{err}");
+    }
+
+    fn git_repo() -> (tempfile::TempDir, String) {
+        let tmp = repo();
+        let g = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(tmp.path())
+                .args(args)
+                .output()
+                .expect("git 可执行");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&["add", "-A"]);
+        g(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ]);
+        let base = String::from_utf8_lossy(&g(&["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string();
+        (tmp, base)
+    }
+
+    /// 自审 major 回归：status --porcelain 未加 -uall 时新目录里的未跟踪文件被
+    /// 折叠成 `?? dir/`，新文件的单元永远不会进影响面。
+    #[test]
+    fn changed_since_sees_untracked_files_in_new_dirs() {
+        let (tmp, base) = git_repo();
+        touch(tmp.path(), "brand/new/mod.py", "def beta():\n    return 2\n");
+        let files = changed_since(tmp.path(), &base).unwrap();
+        assert!(
+            files.iter().any(|f| f.path == "brand/new/mod.py"),
+            "未跟踪新目录文件必须可见：{files:?}"
+        );
+    }
+
+    /// 自审 major 回归：已提交的重命名 + 未提交的再修改——porcelain 条目不得
+    /// 抹掉 diff 条目的 old_path（否则重命名的旧路径单元丢失）。
+    #[test]
+    fn committed_rename_keeps_old_path_across_followup_edit() {
+        let (tmp, base) = git_repo();
+        let g = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(tmp.path())
+                .args(args)
+                .output()
+                .expect("git 可执行");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out
+        };
+        // 目标路径必须不存在（fs::rename 会静默覆盖，rename detection 就没了）
+        fs::rename(tmp.path().join("core/a.py"), tmp.path().join("core/renamed.py")).unwrap();
+        g(&["add", "-A"]);
+        g(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "rename",
+        ]);
+        // 未提交的再修改：porcelain 会再报一次 renamed.py（M），不得覆盖 diff 的 R
+        fs::write(
+            tmp.path().join("core/renamed.py"),
+            "def alpha():\n    return 3\n",
+        )
+        .unwrap();
+        let files = changed_since(tmp.path(), &base).unwrap();
+        let f = files
+            .iter()
+            .find(|f| f.path == "core/renamed.py")
+            .expect("重命名后的路径应在变更集里");
+        assert_eq!(
+            f.old_path.as_deref(),
+            Some("core/a.py"),
+            "后续修改不得抹掉 old_path：{f:?}"
+        );
+    }
+
+    /// 自审 major 回归：旧清单兜底改并集——混合变更（改 b.py + 删 a.py）下
+    /// 被删文件的单元（只在旧清单里）不得被「新命中非空」吞掉。
+    #[test]
+    fn deleted_file_unit_from_old_inventory_survives_mixed_changes() {
+        let tmp = repo();
+        let docs = tmp.path().join("docs/contexts");
+        fs::create_dir_all(&docs).unwrap();
+        let old = build_inventory(tmp.path()).unwrap();
+        let gone_unit = old
+            .entries
+            .iter()
+            .find(|e| e.path == "core/a.py")
+            .unwrap()
+            .unit_id
+            .clone();
+        fs::remove_file(tmp.path().join("core/a.py")).unwrap();
+        let new = build_inventory(tmp.path()).unwrap();
+        assert!(
+            !new.entries.iter().any(|e| e.path == "core/a.py"),
+            "夹具前提：删除的文件不在新清单"
+        );
+        let files = vec![
+            ChangedFile { kind: 'D', path: "core/a.py".into(), old_path: None },
+            ChangedFile { kind: 'M', path: "core/b.py".into(), old_path: None },
+        ];
+        let impact = impacted(tmp.path(), &old, &new, &files, &docs).unwrap();
+        assert!(
+            impact.units.contains(&gone_unit),
+            "被删文件的旧单元必须在并集里：{:?}",
+            impact.units
+        );
     }
 }

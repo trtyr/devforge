@@ -51,7 +51,9 @@ pub fn build_inventory(root: &Path) -> Result<Inventory> {    let root = root
                 }
                 for (line, name) in config_keys(*lang, &text) {
                     entries.push(InventoryEntry {
-                        id: format!("cfg:{rel}:{name}"),
+                        // 自审 major：id 带行号——同一文件同一配置键出现多次时
+                        // 不再产生重复 id（分母被重复计数）。
+                        id: format!("cfg:{rel}:{line}:{name}"),
                         kind: EntryKind::Config,
                         path: rel.clone(),
                         line,
@@ -99,6 +101,12 @@ pub fn build_inventory(root: &Path) -> Result<Inventory> {    let root = root
     for rel in scan_support_files(&root)? {
         let abs = root.join(&rel);
         let Ok(text) = std::fs::read_to_string(&abs) else {
+            // 自审 major：支持文件读失败不再静默（同上：分母完整性与截断可区分）。
+            tracing::warn!(
+                component = "doc-engine",
+                path = %abs.display(),
+                "清单扫描跳过不可读支持文件"
+            );
             continue;
         };
         let file = Path::new(&rel)
@@ -139,6 +147,19 @@ pub fn build_inventory(root: &Path) -> Result<Inventory> {    let root = root
             }
         }
     }
+
+    // 自审 major：测试函数同进「公开符号」与「行为条目」→ 分母重复计数
+    //（如 Python 测试文件的 def test_x 同时是 sym: 与 spec:）。spec: 条目是
+    // T003 正身（测试即可执行规格），重复的 sym: 条目让位。
+    let spec_keys: BTreeSet<(String, String)> = entries
+        .iter()
+        .filter(|e| e.kind == EntryKind::Behavior)
+        .map(|e| (e.path.clone(), e.canonical_name.clone()))
+        .collect();
+    entries.retain(|e| {
+        e.kind != EntryKind::Symbol
+            || !spec_keys.contains(&(e.path.clone(), e.canonical_name.clone()))
+    });
 
     let mut inv = Inventory {
         meta: InventoryMeta {
@@ -181,10 +202,25 @@ pub fn scan_source_files(root: &Path) -> Result<Vec<(String, Lang)>> {
     while let Some(cur) = stack.pop() {
         let rd = match std::fs::read_dir(&cur) {
             Ok(rd) => rd,
-            Err(_) => continue,
+            Err(e) => {
+                // 自审 major：目录读失败不再静默——清单分母悄悄变短且闭包守卫
+                // 对同一失败模式是瞎的，事后无法区分「完整」与「被截断」。
+                tracing::warn!(
+                    component = "doc-engine",
+                    dir = %cur.display(),
+                    error = %e,
+                    "清单扫描跳过不可读目录"
+                );
+                continue;
+            }
         };
         for entry in rd.flatten() {
             let path = entry.path();
+            // 自审 major：符号链接不当真实路径遍历——否则同一真实文件在清单里
+            // 被记成多份幽灵模块（链接路径 + 真实路径各一份）。
+            if entry.file_type().map(|t| t.is_symlink()).unwrap_or(false) {
+                continue;
+            }
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') {
                 continue;
@@ -330,7 +366,9 @@ pub fn public_symbols(lang: Lang, text: &str) -> Vec<(usize, String)> {
     out
 }
 
-/// 单元粒度上限：一个单元最多包含多少模块。
+/// 单元粒度上限：一个单元最多包含多少**条目**（Module/Config/Data/Behavior 合并计，
+/// 非文档口径的「模块数」——自审 major：口径已按实现对齐；「零模块单元」的问题
+/// （纯 Behavior/Config 切片）登记在 gaps.md，随下一次清单结构设计一起解。
 ///
 /// 为什么需要：单元原来按顶层目录分组，大仓的 `src/` 再大也只是一个单元——
 /// 滚动、检查点、逐单元审查全部退化成“一次大活”，跟不分单元的差别只剩文件名。
