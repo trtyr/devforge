@@ -288,7 +288,12 @@ impl BuiltinRpcEngine {
 
         match sop_result {
             Ok(mut outcome) => {
-                let finalized = finalize(&mut outcome, &session_root, &run_id, &workspace, started)?;
+                // 自审 critical：报告必须落在目标主仓，不是 worktree——worktree 隔离下
+                // 旧实现把 report.md 写进 worktree，随后 ws_guard 的 Drop 连目录一起删
+                // （git worktree remove --force），run 报 Completed 但 report_path 指向
+                // 不存在的文件。非 worktree 模式两者同路径，行为不变。
+                let finalized =
+                    finalize(&mut outcome, &session_root, &run_id, &task.workspace, started)?;
                 // P012 M1 · T1.1：候选冻结 commit 落黑板（diff 归因锚点）；随后 guard 清 worktree（分支保留）
                 if let Some(ws) = &ws_guard.ws {
                     let frozen = ws.freeze()?;
