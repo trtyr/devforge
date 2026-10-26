@@ -448,3 +448,65 @@ fn summary_reports_counts() {
     let report = lint_docs(tmp.path()).unwrap();
     assert!(report.summary().contains("0 个失败"));
 }
+
+/// 自审 major 回归：陈年/无关的 gaps.md 不再静音新缺口——登记文件存在
+/// 但没提到标记所在文件时，该 🔴 仍必须 FAIL。
+#[test]
+fn unrelated_gaps_registry_does_not_silence_new_gaps() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        "a.md",
+        "---\ntype: internal\n---\n\n# a\n\n🔴 新缺口没入册。\n",
+    );
+    write(tmp.path(), "_meta/gaps.md", "# 缺口\n\n- 陈年缺口（other.md）\n");
+    let report = lint_docs(tmp.path()).unwrap();
+    let v: Vec<_> = report
+        .failures()
+        .filter(|v| v.check == Check::Confidence)
+        .collect();
+    assert!(
+        v.iter().any(|x| x.message.contains("未登记本文件")),
+        "登记文件存在但未提本文件，必须 FAIL：{v:?}"
+    );
+}
+
+/// 自审 major 回归：波浪线围栏里的示例链接不检查（与三反引号同权），
+/// 围栏外的死链照报。
+#[test]
+fn tilde_fence_example_links_are_not_dead_links() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        "readme.md",
+        "# 说明\n\n~~~markdown\n见 [示例](ghost.md)。\n~~~\n\n见 [真死链](missing.md)。\n",
+    );
+    let report = lint_docs(tmp.path()).unwrap();
+    let links: Vec<_> = report
+        .failures()
+        .filter(|v| v.check == Check::Link)
+        .collect();
+    assert_eq!(links.len(), 1, "围栏内示例不查，围栏外死链要报：{links:?}");
+    assert!(links[0].message.contains("missing.md"));
+}
+
+/// 自审 major 回归：现代 Mermaid 图型（requirementDiagram 等）不再被
+/// 白名单误伤。
+#[test]
+fn modern_mermaid_kinds_pass() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(
+        tmp.path(),
+        "diagram.md",
+        "# 图\n\n```mermaid\nrequirementDiagram\nrequirement test_req {\n  id: 1\n  text: x\n  risk: low\n  verifymethod: test\n}\n```\n",
+    );
+    let report = lint_docs(tmp.path()).unwrap();
+    assert!(
+        !report
+            .violations()
+            .iter()
+            .any(|v| v.check == Check::Mermaid),
+        "合法 requirementDiagram 不得报错：{:?}",
+        report.violations()
+    );
+}

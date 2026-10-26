@@ -55,13 +55,21 @@ fn lint_with(docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport>
             check_runbook(&doc, file, &mut report);
         }
     }
-    // 🔴 缺口必须有 gaps.md 登记（D013：不许静默缺口）
+    // 🔴 缺口必须有 gaps.md 登记（D013：不许静默缺口）。
+    // 自审 major（unit-073）：登记文件存在 ≠ 缺口已登记——旧实现任一 gaps 文件
+    // 存在就放行全部 🔴，空文件/陈年旧登记都能静音新缺口（fail-open）。现在要求
+    // 登记文件里出现标记所在文件的名字，否则对该文件逐行 FAIL。
     if !gap_hits.is_empty() {
         let candidates = [
             docs_dir.join("gaps.md"),
             docs_dir.join("_meta/gaps.md"),
         ];
-        if !candidates.iter().any(|p| p.exists()) {
+        let registry = candidates
+            .iter()
+            .find(|p| p.exists())
+            .map(|p| std::fs::read_to_string(p).unwrap_or_default())
+            .unwrap_or_default();
+        if registry.is_empty() {
             for (file, line) in &gap_hits {
                 report.fail(
                     file,
@@ -69,6 +77,23 @@ fn lint_with(docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport>
                     Check::Confidence,
                     "标 🔴 GAP 但缺 gaps.md 登记（缺口必须写成问题，不许静默）",
                 );
+            }
+        } else {
+            for (file, line) in &gap_hits {
+                let fname = file
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !fname.is_empty() && !registry.contains(&fname) {
+                    report.fail(
+                        file,
+                        *line,
+                        Check::Confidence,
+                        format!(
+                            "标 🔴 GAP 但 gaps.md 未登记本文件（{fname}）——缺口必须逐条入册，不许靠陈年登记静音"
+                        ),
+                    );
+                }
             }
         }
     }
@@ -82,7 +107,7 @@ fn lint_with(docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport>
 fn check_confidence(doc: &ParsedDoc, file: &Path, report: &mut LintReport) {
     let mut in_fence = false;
     for (idx, line) in doc.lines.iter().enumerate() {
-        if line.trim_start().starts_with("```") {
+        if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
             in_fence = !in_fence;
             continue;
         }
@@ -126,6 +151,16 @@ fn check_mermaid(doc: &ParsedDoc, file: &Path, report: &mut LintReport) {
         "timeline",
         "journey",
         "gitGraph",
+        // 自审 major：白名单补齐现代图型——合法的 requirementDiagram/C4/sankey
+        // 等不再被误报「无法解析」。
+        "requirementDiagram",
+        "zenuml",
+        "sankey-beta",
+        "xychart-beta",
+        "quadrantChart",
+        "info",
+        "C4Context",
+        "C4Container",
     ];
     let mut fence_start: Option<usize> = None;
     let mut first_line: Option<String> = None;
@@ -187,7 +222,17 @@ fn collect_markdown(dir: &Path) -> Result<Vec<PathBuf>> {
     while let Some(cur) = stack.pop() {
         let rd = match std::fs::read_dir(&cur) {
             Ok(rd) => rd,
-            Err(_) => continue,
+            // 自审 major：读失败不再静默——整个子树的文档被排除在 lint 之外
+            // 会造成假绿（lint 通过 = 全树检查过，实际少扫了一片）。
+            Err(e) => {
+                tracing::warn!(
+                    component = "doc-engine",
+                    path = %cur.display(),
+                    error = %e,
+                    "lint 跳过不可读目录"
+                );
+                continue;
+            }
         };
         for entry in rd.flatten() {
             let path = entry.path();
@@ -351,7 +396,18 @@ fn check_required_sections(doc: &ParsedDoc, file: &Path, report: &mut LintReport
 
 fn check_links(doc: &ParsedDoc, file: &Path, report: &mut LintReport) {
     let base = file.parent().unwrap_or_else(|| Path::new("."));
+    // 自审 major：围栏里的示例链接不检查——README/文档常在代码块里示范链接
+    // 语法，旧实现全行扫描把示例当死链误报（``` 与 ~~~ 双支持）。
+    let mut in_fence = false;
     for (idx, line) in doc.lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
         for target in markdown_link_targets(line) {
             let target = target.trim();
             if target.is_empty()
