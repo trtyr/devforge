@@ -197,9 +197,17 @@ pub(super) fn check_entities(doc: &ParsedDoc, file: &Path, index: &EntityIndex, 
 }
 
 /// 占位符（不是实体）：`N/A`、`N`、`TODO` 类。
+///
+/// 已知局限（自审 major 登记，不修）：全大写词一律当占位符跳过，全大写命名的
+/// 真实实体永不被检查（漏报）——收紧会重新引入占位符误报，两害取其轻。
 fn is_placeholder(token: &str) -> bool {
     matches!(token, "N/A" | "N" | "n/a")
         || token.chars().all(|c| c.is_ascii_uppercase() || c == '/')
+}
+
+/// 路径逃逸（绝对路径或含 .. 段）：文档路径引用只允许仓内相对路径。
+fn path_escapes(rel: &str) -> bool {
+    std::path::Path::new(rel).is_absolute() || rel.split(['/', '\\']).any(|seg| seg == "..")
 }
 
 /// 从文档所在目录逐级向上找目标文件（文档里的相对路径以文档为锚）。
@@ -248,8 +256,13 @@ fn path_line_in_range(doc_file: &Path, path: &str, n: usize) -> bool {
     let mut base = doc_file.parent();
     while let Some(dir) = base {
         let candidate = dir.join(path);
-        if let Ok(text) = std::fs::read_to_string(&candidate) {
-            return text.lines().count() >= n.max(1);
+        // 自审 major：目录/非 UTF-8 目标不可读 → 行号检查不适用（不算越界）——
+        // 旧实现 read 失败一律 false，被误报成「行号超出范围」的质量失败。
+        if candidate.is_file() {
+            if let Ok(text) = std::fs::read_to_string(&candidate) {
+                return text.lines().count() >= n.max(1);
+            }
+            return true;
         }
         base = dir.parent();
     }
