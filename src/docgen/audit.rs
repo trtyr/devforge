@@ -172,6 +172,11 @@ pub fn coverage(inv: &Inventory, docs_dir: &Path, level: DocLevel) -> Result<Cov
 }
 
 /// 单单元覆盖（只算该单元的条目），供逐单元审查使用。
+///
+/// 自审 major 登记（IO 相乘，不修）：每次调用重读全部文档——这是**故意的**：
+/// doc SOP 的流水线在审查单元 N 的同时 lead 在写 N+1，文档树是活的；
+/// 一次装载的语料快照会让后审单元拿到陈旧覆盖（假缺失）。文档量级是 KB，
+/// 新鲜度优先于 IO。
 pub fn coverage_for_unit(
     inv: &Inventory,
     docs_dir: &Path,
@@ -249,20 +254,56 @@ fn entry_covered(docs: &[DocFile], e: &InventoryEntry) -> bool {
     match e.kind {
         EntryKind::Module => {
             docs.iter().any(|d| {
-                let names_it = d.text.contains(&e.path) || d.text.contains(&e.canonical_name);
+                // 自审 major（unit-0xx）：词边界匹配——`log` 不得命中 `login`/`catalog`；
+                // 标题同名判定同口径（「Authorization Guide」不算 auth 的模块文档标题）。
+                let names_it = d.text.contains(&e.path) || mentions_name(&d.text, &e.canonical_name);
                 let self_declared = matches!(d.ty.as_deref(), Some("module") | Some("模块"));
                 let titled = d
                     .heading
                     .as_deref()
-                    .map(|h| h.contains(&e.canonical_name) || h.contains(&e.path))
+                    .map(|h| h.contains(&e.path) || mentions_name(h.trim(), &e.canonical_name))
                     .unwrap_or(false);
                 names_it && (self_declared || titled)
             }) || docs
                 .iter()
                 .any(|d| d.text.contains(&format!("]({}", e.path)))
         }
-        _ => docs.iter().any(|d| d.text.contains(&e.canonical_name)),
+        _ => docs.iter().any(|d| mentions_name(&d.text, &e.canonical_name)),
     }
+}
+
+/// 自审 major：词边界匹配——`log` 不得命中 `login`/`catalog`。
+/// 边界字符 = 非 ASCII 字母数字且非 `_`；中日韩等非 ASCII 字符视为边界
+///（代码标识符是 ASCII 的，中文文档直接嵌入标识符是常态）。
+fn mentions_name(haystack: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut rest = haystack;
+    while let Some(pos) = rest.find(name) {
+        let before_ok = pos == 0
+            || rest[..pos]
+                .chars()
+                .next_back()
+                .map(|c| !is_word_char(c))
+                .unwrap_or(true);
+        let after_start = pos + name.len();
+        let after_ok = after_start >= rest.len()
+            || rest[after_start..]
+                .chars()
+                .next()
+                .map(|c| !is_word_char(c))
+                .unwrap_or(true);
+        if before_ok && after_ok {
+            return true;
+        }
+        rest = &rest[pos + name.len()..];
+    }
+    false
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
 }
 
 fn collect_markdown(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -274,7 +315,16 @@ fn collect_markdown(dir: &Path) -> Result<Vec<PathBuf>> {
     while let Some(cur) = stack.pop() {
         let rd = match std::fs::read_dir(&cur) {
             Ok(rd) => rd,
-            Err(_) => continue,
+            // 自审 major：读失败不再静默——整子树文档被排除出覆盖分母 = 假绿。
+            Err(err) => {
+                tracing::warn!(
+                    component = "doc-engine",
+                    path = %cur.display(),
+                    error = %err,
+                    "覆盖对账跳过不可读目录"
+                );
+                continue;
+            }
         };
         for entry in rd.flatten() {
             let path = entry.path();
@@ -681,4 +731,69 @@ mod tests {
         assert_eq!(DocLevel::parse("essential"), DocLevel::Essential);
         assert_eq!(DocLevel::parse("detailed"), DocLevel::Detailed);
     }
+
+/// 自审 major 回归：词边界——`log` 不得被 `login`/`catalog` 命中；
+/// 中文直接嵌入（「使用 log 模块」）照常算覆盖。
+#[test]
+fn name_matches_require_word_boundaries() {
+    let tmp = fixture();
+    // 符号 create_note 的邻居：只出现 login_note（包含 create_note? 否——
+    // 用「含目标名为子串的更长标识符」直接验证边界）
+    write_doc(
+        tmp.path(),
+        "boundary.md",
+        "# 边界\n\n`recreate_notex` 不是 `create_note`。中文里直接写 create_note 算命中。\n",
+    );
+    let inv = build_inventory(tmp.path()).unwrap();
+    let rep = coverage(&inv, &tmp.path().join("docs/contexts"), DocLevel::Complete).unwrap();
+    let create_note_missing = rep
+        .missing
+        .iter()
+        .any(|m| m.canonical_name == "create_note");
+    assert!(
+        !create_note_missing,
+        "词边界内的真命中要算覆盖；边界外的 recreate_notex 不得命中：{:?}",
+        rep.missing
+    );
+}
+
+/// 模块覆盖规则回归：正文提到路径但既无 type: module 声明也无同名标题
+/// → 不得判覆盖；补上 frontmatter 声明 → 覆盖。
+#[test]
+fn module_coverage_requires_self_declared_or_titled() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(tmp.path().join("src/auth.py"), "def login():\n    pass\n").unwrap();
+    let docs = tmp.path().join("docs/contexts");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(
+        docs.join("guide.md"),
+        "# 指南\n\n源码在 `src/auth.py`，使用时先初始化。\n",
+    )
+    .unwrap();
+    let inv = build_inventory(tmp.path()).unwrap();
+    let rep = coverage(&inv, &docs, DocLevel::Complete).unwrap();
+    assert!(
+        rep.missing
+            .iter()
+            .any(|m| m.kind == EntryKind::Module && m.path == "src/auth.py"),
+        "正文提路径但无声明无同名标题，不得假覆盖：{:?}",
+        rep.missing
+    );
+
+    std::fs::write(
+        docs.join("guide.md"),
+        "---\ntype: module\n---\n\n# 指南\n\n源码在 `src/auth.py`，使用时先初始化。\n",
+    )
+    .unwrap();
+    let rep = coverage(&inv, &docs, DocLevel::Complete).unwrap();
+    assert!(
+        !rep
+            .missing
+            .iter()
+            .any(|m| m.kind == EntryKind::Module && m.path == "src/auth.py"),
+        "type: module 声明后要算覆盖：{:?}",
+        rep.missing
+    );
+}
 }
