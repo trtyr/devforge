@@ -91,6 +91,8 @@ async fn start_sop_override_switches_task_for_cross_sop_chain() {
     // F18：等第一个 run 落定再继续——后续断言管的是 sop 切换语义，不是串行槽竞态
     // （mock 引擎完成与下一个 start 是纯时序竞态，偶发 409 会淹没断言本体；
     // resume6h 基线取证：本用例在 20 连跑里仍复发 1 次）
+    // 自审 major：只认 Settled 的等待是竞态源——终态有 Settled/Failed 两种，
+    // 本用例断言的是 sop 切换语义，任一终态都解除串行槽占用。
     let mut settled = false;
     for _ in 0..200 {
         let body = body_json(
@@ -98,14 +100,14 @@ async fn start_sop_override_switches_task_for_cross_sop_chain() {
         )
         .await;
         if body["runs"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
-            && body["runs"][0]["status"] == "Settled"
+            && (body["runs"][0]["status"] == "Settled" || body["runs"][0]["status"] == "Failed")
         {
             settled = true;
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(settled, "第一个 run 应在超时前 Settled");
+    assert!(settled, "第一个 run 应在超时前落终态");
 
     // 未知 sop → 400（注册表校验，先于任何 run 状态检查——无竞态）
     let resp = send(
@@ -118,8 +120,97 @@ async fn start_sop_override_switches_task_for_cross_sop_chain() {
     assert_eq!(resp.status(), 400);
 
     // 无 body 的 start → 沿用任务注册的 sop（不报错）
-    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t1/start", None).await;
+    // 自审 major：收尾窗口（终态已写、串行槽未放）仍可能 409——同款有界重试，
+    // 200 次 × 20ms = 4s 上限，超限失败而非挂死。
+    let mut resp = None;
+    for _ in 0..200 {
+        let r = send(&f.router, "POST", "/api/v1/projects/p/tasks/t1/start", None).await;
+        if r.status() != 409 {
+            resp = Some(r);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let resp = resp.expect("收尾 start 在 4s 内持续 409——串行槽未释放");
     assert_eq!(resp.status(), 202);
+}
+
+/// 自审 major 回归：引擎审计修复的排序不变量承诺「准入被拒 → 回滚任务身份」
+/// （sop 覆盖先落、准入后行）——此前零覆盖。长 run 占住串行槽 → 带 sop 覆盖的
+/// start 必须 409，且任务的 sop 保持原值（不得先切后拒）。
+#[tokio::test]
+async fn rejected_start_with_sop_override_restores_the_previous_sop() {
+    let f = fixture_with_engine(60_000, None, None); // 长 run 稳占串行槽
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": "/tmp/ws-p"})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t0", "sop": "planning"})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({"id": "t1", "sop": "planning"})),
+    )
+    .await;
+
+    // t0 占槽（hang 60s，收尾前 cancel 释放）
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t0/start", None).await;
+    assert_eq!(resp.status(), 202, "t0 应正常开跑占槽");
+
+    // t1 带 sop 覆盖 → 槽满 409
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks/t1/start",
+        Some(json!({"sop": "coding"})),
+    )
+    .await;
+    assert_eq!(resp.status(), 409, "串行槽被占必须拒");
+
+    // 关键断言：被拒的 sop 覆盖必须已回滚——t1 仍是 planning
+    let body = body_json(
+        send(&f.router, "GET", "/api/v1/projects/p/tasks", None).await,
+    )
+    .await;
+    let t1 = body["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "t1")
+        .expect("t1 应在列表");
+    assert_eq!(
+        t1["sop"], "planning",
+        "被拒的 start 不得留下 sop 覆盖（先切后拒=身份被污染）：{t1}"
+    );
+
+    // 清理：cancel 释放长 run（hang 引擎响应取消）
+    // 自审纠偏：control 在 run 线程内登记，202 返回与登记之间有窗口——有界重试。
+    let mut cancelled = false;
+    for _ in 0..100 {
+        let resp = send(
+            &f.router,
+            "POST",
+            "/api/v1/projects/p/tasks/t0/cancel",
+            None,
+        )
+        .await;
+        if resp.status() == 200 {
+            cancelled = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(cancelled, "t0 应在 2s 内可取消（control 登记）");
 }
 
 #[tokio::test]
@@ -314,21 +405,12 @@ async fn two_concurrent_starts_while_the_gate_waits_run_at_most_one() {
         Some(1),
         "只能有一个 run 真正开跑：{body}"
     );
-    // 引擎只被调用一次：赢家的后台线程与输家的 run.error 事件是并发关系，
-    // 事件先到不代表调用已发生（全量跑下偶发读到 0）→ 有界等待后再计数
-    let calls = {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        loop {
-            let n = f.calls.lock().unwrap().clone();
-            if !n.is_empty() || std::time::Instant::now() > deadline {
-                break n;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    };
-    assert_eq!(calls.len(), 1, "引擎只能被调用一次：{calls:?}");
-
+    // 自审 major：先等 run 落定再计数——旧口径在落定前取样，3s 内读到 1 次
+    // 也可能是双跑的第二笔还没落账（有界等待只保证读到 ≥1）。落定后计数是
+    // 终局事实。
     wait_settled(&f, "p", "t1").await;
+    let calls = f.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1, "引擎只能被调用一次：{calls:?}");
 }
 
 
