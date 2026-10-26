@@ -536,6 +536,17 @@ impl ChangeSession for ProdChangeSession {
             }
         };
         if let Some(route) = route {
+            // 自审 major：回注路径同样过产品代码门——否则测试 agent 自选回注
+            // 即可绕门，且本轮的产品改动会被下一轮入口快照吸收成既成事实。
+            // （回归证据门仍是 Pass 路径专属：回注 = 承认没跑绿，无证据可验。）
+            let tracked_after = crate::change::testing_gate::snapshot_tracked_changes(
+                &self.ctx.repo,
+                &self.ctx.baseline,
+            )?;
+            crate::change::testing_gate::check_no_product_code_edits(
+                &tracked_before,
+                &tracked_after,
+            )?;
             return Ok(match route.as_str() {
                 "coding" => TestingTurn::RouteCoding { failures },
                 _ => TestingTurn::RoutePlan { failures },

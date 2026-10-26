@@ -73,41 +73,103 @@ pub fn check_regression_log(
     check_regression_claim(&text, claims_green)
 }
 
-/// 测试阶段入口快照：基线以来 tracked 文件的改动集（引擎审计修复 #6）。
-/// 只看 tracked（git diff --name-only baseline）——untracked 的依赖环境/临时产物
-/// 是黑盒测试的合法噪音，不纳入。
+/// 测试阶段入口快照：基线以来 tracked 文件的改动集 + 未跟踪的新产品文件。
+///
+/// 自审 major：旧口径只看 `git diff baseline`——测试 agent 新建且未 git add 的
+/// 产品源文件完全逃过「不改产品代码」门（与 coding 侧复验 #2 同款盲区）。
+/// 现在并入 untracked 扫描：带源码扩展名、不在 tests/ docs/ evidence/ 豁免前缀、
+/// 不在常见构建产物目录里的新文件也算改动集（源码扩展名单与 inventory 同源）。
 pub fn snapshot_tracked_changes(
     repo: &Path,
     baseline: &str,
 ) -> Result<std::collections::BTreeSet<String>> {
+    // 自审 major：baseline 先过形状门（hex）再进 git 参数——防参数注入/垃圾锚点。
+    let well_formed = baseline.len() >= 7
+        && baseline.len() <= 64
+        && baseline.chars().all(|c| c.is_ascii_hexdigit());
+    if !well_formed {
+        return Err(DevforgeError::System(format!(
+            "基线 sha 形状非法（{baseline:?}）——拒绝当作 git 参数"
+        )));
+    }
+    let mut set = std::collections::BTreeSet::new();
     let out = std::process::Command::new("git")
-        .args(["-c", "core.quotePath=false", "diff", "--name-only", baseline])
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--name-only",
+            baseline,
+            "--",
+        ])
         .current_dir(repo)
         .output()
         .map_err(|e| DevforgeError::System(format!("执行 git diff 失败：{e}")))?;
     if !out.status.success() {
-        // change 批次 #2（**未完全收口，如实标记**）：门不能 fail-open，但改成 Err 需要先把
-        // 测试夹具里那些假基线（"base123"、无 .git 的仓）改成真仓真 sha，否则会连带
-        // 打红 change_failure_context 的多个用例。本轮先升级到 error 级并把「门失效」
-        // 写进日志，保证它不会再被当成「查过了、干净」；修 Err 与夹具一起做。
-        tracing::error!(
-            component = "change-engine",
-            event = "gate.product_snapshot",
-            baseline = %baseline,
-            stderr = %String::from_utf8_lossy(&out.stderr).trim(),
-            "产品代码快照不可用——#6 机械门本阶段未生效（待改为 fail-closed）"
-        );
+        // fail-closed（change 批次 #2 收口）：快照失败 = 本阶段机械门未生效，
+        // 必须 Err 让本轮测试作废，绝不把「查不了」当「查过、干净」。
         return Err(DevforgeError::System(format!(
             "测试阶段产品代码快照失败（git 基线 {baseline}）：{}",
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect())
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let t = line.trim();
+        if !t.is_empty() {
+            set.insert(t.to_string());
+        }
+    }
+    // untracked 产品源文件（未 add 的新文件不进 diff）
+    let out = std::process::Command::new("git")
+        .args(["-c", "core.quotePath=false", "status", "--porcelain", "-uall"])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| DevforgeError::System(format!("执行 git status 失败：{e}")))?;
+    if !out.status.success() {
+        return Err(DevforgeError::System(format!(
+            "测试阶段产品代码快照失败（git status）：{}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some(rest) = line.strip_prefix("?? ") else {
+            continue;
+        };
+        let path = rest.trim();
+        if is_exempt_or_junk(path) {
+            continue;
+        }
+        set.insert(path.to_string());
+    }
+    Ok(set)
+}
+
+/// 豁免前缀（tests/ docs/ evidence/）+ 常见构建/缓存产物目录。
+fn is_exempt_or_junk(path: &str) -> bool {
+    const EXEMPT: [&str; 3] = ["tests/", "docs/", "evidence/"];
+    const JUNK_DIRS: [&str; 6] = [
+        "node_modules/",
+        "target/",
+        "dist/",
+        "__pycache__/",
+        ".pytest_cache/",
+        ".venv/",
+    ];
+    if EXEMPT.iter().any(|p| path.starts_with(p)) {
+        return true;
+    }
+    if JUNK_DIRS
+        .iter()
+        .any(|p| path.contains(&format!("{p}")))
+    {
+        return true;
+    }
+    // 带源码扩展名 = 产品代码 → 不豁免（进快照）；无源码扩展名（report.html、
+    // .log 之类的运行产物）→ 当噪音跳过。
+    // 注意：SOURCE_EXTENSIONS 存裸扩展名（无点），必须补点比对。
+    !crate::docgen::inventory::SOURCE_EXTENSIONS
+        .iter()
+        .any(|(e, _)| path.ends_with(&format!(".{e}")))
 }
 
 /// 测试阶段出口校验（引擎审计修复 #6）：测试期间新增的产品代码改动 = Quality。
@@ -129,6 +191,26 @@ pub fn check_no_product_code_edits(
         return Err(DevforgeError::Quality(format!(
             "测试阶段修改了产品代码（测试 Agent 只准写测试）：{}——发现 bug 回注，不自己修",
             new_edits
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("、")
+        )));
+    }
+    // 自审 major：还原检测——入口快照里有、出口没了的产品路径 = 测试阶段把
+    // coding 的成果 checkout 回基线/删掉。旧口径只看「新增项」，回退完全隐形。
+    let vanished: Vec<&String> = before
+        .difference(after)
+        .filter(|f| {
+            !f.starts_with("tests/")
+                && !f.starts_with("docs/")
+                && !f.starts_with("evidence/")
+        })
+        .collect();
+    if !vanished.is_empty() {
+        return Err(DevforgeError::Quality(format!(
+            "测试阶段删除/还原了产品代码（coding 的改动不得被测试阶段抹掉）：{}——发现 bug 回注，不自己修",
+            vanished
                 .iter()
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>()
@@ -226,6 +308,71 @@ mod tests {
         let err =
             check_regression_log(tmp.path(), true, std::time::SystemTime::UNIX_EPOCH).unwrap_err();
         assert!(err.to_string().contains("缺少回归证据"), "{err}");
+    }
+
+    /// 自审 major 回归：未跟踪的新产品源文件必须进快照（旧口径只看 tracked diff，
+    /// 测试 agent 不 git add 就能逃门）。
+    #[test]
+    fn untracked_product_source_file_enters_the_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@l", "commit", "--allow-empty", "-q", "-m", "b"]);
+        let baseline = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        // 测试 agent 新建产品源文件，不 git add
+        std::fs::write(repo.join("src/hack.py"), "x\n").unwrap();
+        std::fs::create_dir_all(repo.join("tests")).unwrap();
+        std::fs::write(repo.join("tests/new_test.py"), "x\n").unwrap();
+        let snap = snapshot_tracked_changes(&repo, &baseline).unwrap();
+        assert!(
+            snap.contains("src/hack.py"),
+            "未 add 的产品源文件必须进快照：{snap:?}"
+        );
+        assert!(
+            !snap.contains("tests/new_test.py"),
+            "tests/ 豁免：{snap:?}"
+        );
+    }
+
+    /// 自审 major 回归：垃圾 baseline（非 hex）拒绝进 git 参数。
+    #[test]
+    fn garbage_baseline_sha_is_rejected_before_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = snapshot_tracked_changes(tmp.path(), "--output=/tmp/evil").unwrap_err();
+        assert!(err.to_string().contains("形状非法"), "{err}");
+    }
+
+    /// 自审 major 回归：入口有、出口没了的产品路径 = 还原/删除，必须 Quality——
+    /// 旧口径只看新增项，把 coding 成果 checkout 回基线完全隐形。
+    #[test]
+    fn reverted_product_code_is_quality_failure() {
+        let before = std::collections::BTreeSet::from([
+            "src/feature.rs".to_string(),
+            "tests/t.py".to_string(),
+        ]);
+        let after = std::collections::BTreeSet::from(["tests/t.py".to_string()]);
+        let err = check_no_product_code_edits(&before, &after).unwrap_err();
+        assert!(err.to_string().contains("删除/还原"), "{err}");
     }
 
     /// 引擎审计修复 #4 回归：上一轮残留的绿 log（mtime 早于本轮开始）必须拒收——
