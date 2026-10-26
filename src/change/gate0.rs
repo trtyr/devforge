@@ -40,20 +40,73 @@ pub fn ensure_baseline(repo: &Path, out_dir: &Path) -> Result<Baseline> {
         )));
     }
     let record = out_dir.join(BASELINE_FILE);
-    if let Ok(text) = std::fs::read_to_string(&record) {
-        let sha = text.trim().to_string();
-        if !sha.is_empty() {
-            return Ok(Baseline {
-                sha,
-                created_repo: false,
-            });
+    match std::fs::read_to_string(&record) {
+        Ok(text) => {
+            let sha = text.trim().to_string();
+            if !sha.is_empty() {
+                // 自审 major：锚点内容先过形状门（commit id = 7-64 位 hex）——
+                // 旧口径原样当 diff 锚点，垃圾内容潜伏到远处门禁层才炸。
+                let well_formed = sha.len() >= 7
+                    && sha.len() <= 64
+                    && sha.chars().all(|c| c.is_ascii_hexdigit());
+                if !well_formed {
+                    return Err(DevforgeError::System(format!(
+                        "基线锚点 {} 内容不是合法 commit id（{sha:?}）——不静默重锚（t26 自锁防线）；人工修复或删除该文件",
+                        record.display()
+                    )));
+                }
+                // 锚点还活着吗：cat-file 快验存在性——死锚点（被 GC/rebase 吹掉）
+                // 现在就炸，不留给远处门禁；也不静默重锚（重记=打开自锁路径）。
+                let out = Command::new("git")
+                    .args(["cat-file", "-e", &format!("{sha}^{{commit}}")])
+                    .current_dir(repo)
+                    .output()
+                    .map_err(|e| DevforgeError::System(format!("执行 git cat-file 失败：{e}")))?;
+                if !out.status.success() {
+                    return Err(DevforgeError::System(format!(
+                        "基线锚点 {sha} 在目标仓已不存在（被 GC/rebase 吹掉）——不静默重锚；确认后删除 {} 可重建基线",
+                        record.display()
+                    )));
+                }
+                tracing::info!(
+                    component = "change-gate0",
+                    event = "baseline.reused",
+                    sha = %sha,
+                    "复用已记录的基线锚点"
+                );
+                return Ok(Baseline {
+                    sha,
+                    created_repo: false,
+                });
+            }
+            // 空文件：原子写后 crash 不会再产生；多半是人为残留——显式留痕后重记。
+            tracing::warn!(
+                component = "change-gate0",
+                path = %record.display(),
+                "基线锚点文件为空，重记基线"
+            );
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        // 自审 major：读失败（权限等）不再被当「无记录」静默重锚——
+        // 基线是自锁防线，读不动就该炸，不能悄悄换锚。
+        Err(e) => {
+            return Err(DevforgeError::System(format!(
+                "读基线锚点 {} 失败：{e}——不静默重锚，先修复文件权限",
+                record.display()
+            )));
         }
     }
     let git_dir = repo.join(".git");
     if git_dir.exists() {
-        match head_sha(repo) {
+        match head_sha(repo)? {
             Some(sha) => {
                 write_baseline(out_dir, &sha)?;
+                tracing::info!(
+                    component = "change-gate0",
+                    event = "baseline.recorded",
+                    sha = %sha,
+                    "记录当前 HEAD 为基线"
+                );
                 return Ok(Baseline {
                     sha,
                     created_repo: false,
@@ -63,6 +116,12 @@ pub fn ensure_baseline(repo: &Path, out_dir: &Path) -> Result<Baseline> {
                 // 有 .git 但没有提交：补一个基线提交（否则无法 diff）
                 let sha = create_baseline_commit(repo)?;
                 write_baseline(out_dir, &sha)?;
+                tracing::info!(
+                    component = "change-gate0",
+                    event = "baseline.created",
+                    sha = %sha,
+                    "空仓：新建基线提交"
+                );
                 return Ok(Baseline {
                     sha,
                     created_repo: false,
@@ -74,6 +133,12 @@ pub fn ensure_baseline(repo: &Path, out_dir: &Path) -> Result<Baseline> {
     run_git(repo, &["init", "-q"])?;
     let sha = create_baseline_commit(repo)?;
     write_baseline(out_dir, &sha)?;
+    tracing::info!(
+        component = "change-gate0",
+        event = "baseline.repo_initialized",
+        sha = %sha,
+        "无 .git：git init 并新建基线提交"
+    );
     Ok(Baseline {
         sha,
         created_repo: true,
@@ -104,21 +169,33 @@ fn create_baseline_commit(repo: &Path) -> Result<String> {
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    head_sha(repo)
-        .ok_or_else(|| DevforgeError::System("基线提交后仍取不到 HEAD".into()))
+    head_sha(repo)?.ok_or_else(|| DevforgeError::System("基线提交后仍取不到 HEAD".into()))
 }
 
-fn head_sha(repo: &Path) -> Option<String> {
+/// 取 HEAD sha。Ok(None) = 空仓（unborn HEAD，有资格走补基线提交路径）；
+/// 其它 git 失败 = 基础设施错误（自审 major：旧口径用 Option 抹掉失败原因，
+/// 非 unborn 的 git 故障被静默当「空仓」处理，还顺手建了基线提交）。
+fn head_sha(repo: &Path) -> Result<Option<String>> {
     let out = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(repo)
         .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+        .map_err(|e| DevforgeError::System(format!("执行 git rev-parse 失败：{e}")))?;
+    if out.status.success() {
+        let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return Ok((!sha.is_empty()).then_some(sha));
     }
-    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!sha.is_empty()).then_some(sha)
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("unknown revision")
+        || stderr.contains("ambiguous argument")
+        || stderr.contains("Failed to resolve")
+    {
+        return Ok(None);
+    }
+    Err(DevforgeError::System(format!(
+        "git rev-parse HEAD 失败：{}",
+        stderr.trim()
+    )))
 }
 
 fn run_git(repo: &Path, args: &[&str]) -> Result<()> {
@@ -144,9 +221,25 @@ fn write_baseline(out_dir: &Path, sha: &str) -> Result<()> {
         DevforgeError::System(format!("建目录 {} 失败：{e}", out_dir.display()))
     })?;
     let path = out_dir.join(BASELINE_FILE);
-    std::fs::write(&path, format!("{sha}\n"))
-        .map_err(|e| DevforgeError::System(format!("写 {} 失败：{e}", path.display())))?;
-    Ok(())
+    // 自审 major：原子写（唯一临时名 + rename）——truncate+write 崩溃留下空文件，
+    // 下次读空走「无记录」重记，恰好打开本模块声明要防的 t26 自锁路径。
+    let tmp = out_dir.join(format!("{BASELINE_FILE}.{}.tmp", std::process::id()));
+    let body = format!("{sha}\n");
+    (|| -> Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)
+            .map_err(|e| DevforgeError::System(format!("建临时文件失败：{e}")))?;
+        f.write_all(body.as_bytes())
+            .map_err(|e| DevforgeError::System(format!("写临时文件失败：{e}")))?;
+        f.sync_all()
+            .map_err(|e| DevforgeError::System(format!("刷临时文件失败：{e}")))?;
+        std::fs::rename(&tmp, &path)
+            .map_err(|e| DevforgeError::System(format!("原子替换 {} 失败：{e}", path.display())))?;
+        Ok(())
+    })()
+    .inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 #[cfg(test)]
@@ -238,6 +331,63 @@ mod tests {
         let recorded = std::fs::read_to_string(out.join("baseline.txt")).unwrap();
         assert_eq!(recorded.trim(), b.sha);
         assert_eq!(b.sha, git(&repo, &["rev-parse", "HEAD"]));
+    }
+
+    /// 自审 major 回归：垃圾锚点（非 hex）不静默重锚也不当 diff 锚点，直接报错。
+    #[test]
+    fn corrupt_baseline_record_is_rejected_not_reanchored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+        ensure_baseline(&repo, &tmp.path().join("changes/c1")).unwrap();
+        // 头文件写坏
+        std::fs::write(
+            tmp.path().join("changes/c1/baseline.txt"),
+            "not-a-sha-at-all!!\n",
+        )
+        .unwrap();
+        let err = ensure_baseline(&repo, &tmp.path().join("changes/c1")).unwrap_err();
+        assert!(err.to_string().contains("不是合法 commit id"), "{err}");
+    }
+
+    /// 自审 major 回归：死锚点（sha 在仓里已不存在）当场报错，不留给远处门禁，
+    /// 也不静默重锚。
+    #[test]
+    fn dangling_baseline_anchor_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+        let out = tmp.path().join("changes/c1");
+        ensure_baseline(&repo, &out).unwrap();
+        // 形状合法但对象不存在（40 个 hex 的 0）
+        std::fs::write(out.join("baseline.txt"), format!("{}\n", "0".repeat(40))).unwrap();
+        let err = ensure_baseline(&repo, &out).unwrap_err();
+        assert!(err.to_string().contains("已不存在"), "{err}");
+    }
+
+    /// 自审 major 回归：锚点文件存在但不可读，不得当「无记录」静默重锚。
+    #[test]
+    fn unreadable_baseline_record_is_an_error_not_a_reanchor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+        let out = tmp.path().join("changes/c1");
+        let first = ensure_baseline(&repo, &out).unwrap();
+        let record = out.join("baseline.txt");
+        let mut perm = std::fs::metadata(&record).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perm.set_mode(0o000);
+        std::fs::set_permissions(&record, perm).unwrap();
+        let err = ensure_baseline(&repo, &out).unwrap_err();
+        assert!(err.to_string().contains("读基线锚点"), "{err}");
+        // 恢复权限清理临时目录
+        let mut perm = std::fs::metadata(&record).unwrap().permissions();
+        perm.set_mode(0o644);
+        std::fs::set_permissions(&record, perm).unwrap();
+        let _ = first;
     }
 
     #[test]
