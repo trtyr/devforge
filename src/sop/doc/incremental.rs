@@ -229,6 +229,13 @@ fn path_refs(text: &str) -> Vec<String> {
 fn resolve_ref(repo: &Path, r: &str) -> Result<(), String> {
     let (path, line) = r.rsplit_once(':').ok_or("不是 path:line")?;
     let line: usize = line.parse().map_err(|_| "行号不是数字")?;
+    // 自审 major：路径逃逸拒绝——绝对路径/.. 段可读仓外任意文件（整文件进内存，
+    // 设备/超大文件可致 OOM），且引用解析只应面向仓内相对路径。
+    if std::path::Path::new(path).is_absolute()
+        || path.split('/').any(|seg| seg == "..")
+    {
+        return Err(format!("引用路径越界（绝对路径或含 .. 段）：{path}"));
+    }
     let abs = repo.join(path);
     let text = std::fs::read_to_string(&abs).map_err(|_| "文件不存在/不可读")?;
     let total = text.lines().count();
