@@ -36,24 +36,13 @@ async fn quality_failure_path_is_not_retried_end_to_end() {
 }
 
 /// 源码守卫：协议违例上限 / 终审不通过不得再被当成基础设施故障。
+///
+/// 自审 major 纠偏：旧守卫的三条 stale 断言（coding/testing/doc-runner 的
+/// 「stage-verdoc 块）判定为基础设施故障」旧文案）早已在目标源码中不存在——
+/// `!contains` 恒真，整段删掉仍全绿（hollow）。文案随 D026 迁入共享门后，
+/// 活守卫只保留仍命中真实源码的部分（doc_fix / review_gate / doc_wiring）。
 #[test]
 fn quality_failure_sites_do_not_use_system_error() {
-    // 逐条比对旧文本片段，而不是泛搜「基础设施故障」——审查空回复属于真基础设施故障，保留 System 是对的
-    let stale = [
-        ("coding", include_str!("../../sop/coding.rs"), "stage-verdict/next 块），判定为基础设施故障"),
-        ("testing", include_str!("../../sop/testing.rs"), "stage-verdict/next），判定为基础设施故障"),
-        (
-            "doc_from_zero",
-            include_str!("../../sop/doc/runner.rs"),
-            "doc-verdict/route 块），判定为基础设施故障",
-        ),
-    ];
-    for (name, src, needle) in stale {
-        assert!(
-            !src.contains(needle),
-            "{name} 的协议违例上限仍走 System，会被自动重启"
-        );
-    }
     let doc_fix = include_str!("../../sop/doc/fix.rs");
     let at = doc_fix
         .find("缺 stage-verdict），判定为")

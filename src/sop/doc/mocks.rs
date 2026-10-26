@@ -46,6 +46,7 @@ pub fn pipe_factory(replies: &[&str]) -> PipeReviewFactory {
             replies.iter().map(|s| s.to_string()).collect(),
         )),
         instructions: Arc::new(Mutex::new(Vec::new())),
+        opens: Arc::new(Mutex::new(0)),
         gates: no_gates(),
     }
 }
@@ -107,11 +108,15 @@ impl PlanAgentSession for PipeAgent {
 pub struct PipeReviewFactory {
     pub replies: Arc<Mutex<VecDeque<String>>>,
     pub instructions: Arc<Mutex<Vec<String>>>,
+    /// 自审 major：open() 次数——「空回复重试必须换新实例」的契约此前无任何
+    /// 断言观测（instructions 记在 review()，同实例调两次也一样是 2）。
+    pub opens: Arc<Mutex<usize>>,
     // 闸门：每个审查会话开庭后等放行再出裁决（模拟真实审查耗时，测试才能确定性断言重叠）
     pub gates: Arc<Mutex<VecDeque<std::sync::mpsc::Receiver<()>>>>,
 }
 impl ReviewSessionFactory for PipeReviewFactory {
     fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
+        *self.opens.lock().unwrap() += 1;
         Ok(Box::new(PipeReviewSession {
             replies: self.replies.clone(),
             instructions: self.instructions.clone(),

@@ -56,9 +56,12 @@ fn empty_review_reply_is_retried_with_fresh_instance() {
     let agent = MockAgent::new(&["写完了\n<doc-complete>unit-a-01</doc-complete>"]);
     let f = pipe_factory(&["", "<doc-verdict>PASS</doc-verdict>"]);
     let instructions = f.instructions.clone();
+    let opens = f.opens.clone();
     let rep = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
     assert_eq!(rep.units_done, vec!["unit-a-01"]);
     assert_eq!(instructions.lock().unwrap().len(), 2, "空回复应换实例重试一次");
+    // 自审 major：重试契约必须观测 open() 次数——review 调两次不等于换了实例。
+    assert_eq!(*opens.lock().unwrap(), 2, "空回复重试必须 open 新实例（恰好一次重试）");
 }
 
 #[test]
@@ -189,6 +192,7 @@ fn pipeline_runs_units_with_overlapped_reviews() {
             .collect(),
         )),
         instructions: Arc::new(Mutex::new(Vec::new())),
+        opens: Arc::new(Mutex::new(0)),
         gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1]))),
     };
     drive_gates(
@@ -245,6 +249,7 @@ fn pipeline_fix_round_requeues_failed_unit() {
             "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>".to_string(),
         ]))),
         instructions: instructions.clone(),
+        opens: Arc::new(Mutex::new(0)),
         gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1, rx2, rx3]))),
     };
     drive_gates(
@@ -317,6 +322,7 @@ fn pipeline_breaker_stops_after_two_consecutive_fails() {
                 .to_string(),
         ]))),
         instructions: Arc::new(Mutex::new(Vec::new())),
+        opens: Arc::new(Mutex::new(0)),
         gates: no_gates(),
     };
     let err = run_pipeline(
@@ -407,8 +413,15 @@ fn review_open_fix_round_and_unit_advance_are_logged_as_milestones() {
         "里程碑的 target 必须是发出它的模块：{}",
         opens[0]
     );
-    // 全部里程碑条目：级别 INFO + 带 component 字段（计划 §5）
-    for line in text.lines().filter(|l| l.contains("\"event\":")) {
+    // 里程碑条目：级别 INFO + 带 component 字段（计划 §5）。
+    // 自审 major：不得对任意 "event" 行断言形状——WARN 级事件（如 agent.stall，
+    // 受 DEVFORGE_STALL_WARN_MS 影响）也走 event 字段，宽口径断言随环境抖动。
+    for line in text.lines().filter(|l| {
+        l.contains("\"event\":\"review.open\"")
+            || l.contains("\"event\":\"fix.start\"")
+            || l.contains("\"event\":\"fix.end\"")
+            || l.contains("\"event\":\"phase.change\"")
+    }) {
         crate::observability::test_support::assert_milestone_shape(line);
     }
 
@@ -593,6 +606,7 @@ fn pass_uses_own_units_snapshot_not_latest() {
             .collect(),
         )),
         instructions: Arc::new(Mutex::new(Vec::new())),
+        opens: Arc::new(Mutex::new(0)),
         gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1]))),
     };
     drive_gates(

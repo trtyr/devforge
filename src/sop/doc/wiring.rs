@@ -577,6 +577,7 @@ mod gate0_tests {
                 "确实行\n<doc-verdict>PASS</doc-verdict>".to_string(),
             ]))),
             instructions: Arc::new(Mutex::new(Vec::new())),
+            opens: Arc::new(Mutex::new(0)),
             gates: crate::sop::doc::mocks::no_gates(),
         };
         let v = super::final_review_with_retry(&mut factory, "审").unwrap();
@@ -602,6 +603,7 @@ mod gate0_tests {
                 "不该被取到".to_string(),
             ]))),
             instructions: Arc::new(Mutex::new(Vec::new())),
+            opens: Arc::new(Mutex::new(0)),
             gates: crate::sop::doc::mocks::no_gates(),
         };
         let v = super::final_review_with_retry(&mut factory, "审").unwrap();
