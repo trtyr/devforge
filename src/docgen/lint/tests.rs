@@ -282,17 +282,48 @@ fn alias_usage_is_warning_not_failure() {
 
 #[test]
 fn fenced_code_is_not_entity_checked() {
+    // 自审 major 纠偏：夹具必须有 frontmatter（实体检查只对声明条目类型的文档生效，
+    // 无 type 时整篇跳过 → 本用例曾空洞：删掉围栏逻辑仍全绿）。
     let repo = fixture_repo();
     let docs = repo.path().join("docs/contexts");
     std::fs::create_dir_all(&docs).unwrap();
     std::fs::write(
         docs.join("code.md"),
-        "# code\n\n```bash\ncurl -X POST `ghost_thing`\n```\n",
+        "---\ntype: internal\n---\n\n# code\n\n```bash\ncurl -X POST `ghost_thing`\n```\n",
     )
     .unwrap();
     let index = EntityIndex::build(repo.path(), None).unwrap();
     let report = lint_docs_with_entities(&docs, &index).unwrap();
     assert!(report.passed(), "代码块内不查实体: {:?}", report.violations());
+
+    // 对照组：同一实体在围栏外必须被报（证明上面靠的是围栏不是跳过）
+    std::fs::write(
+        docs.join("code2.md"),
+        "---\ntype: internal\n---\n\n# code2\n\n正文提及 `ghost_thing`。\n",
+    )
+    .unwrap();
+    let report = lint_docs_with_entities(&docs, &index).unwrap();
+    assert!(
+        !report.passed(),
+        "围栏外的幽灵实体必须报：{:?}",
+        report.violations()
+    );
+}
+
+/// 自审 major 回归：~~~ 围栏与三反引号同权（缺口扫描早已双支持，实体检查曾单支持）。
+#[test]
+fn tilde_fenced_code_is_not_entity_checked() {
+    let repo = fixture_repo();
+    let docs = repo.path().join("docs/contexts");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(
+        docs.join("code.md"),
+        "---\ntype: internal\n---\n\n# code\n\n~~~bash\ncurl -X POST `ghost_thing`\n~~~\n",
+    )
+    .unwrap();
+    let index = EntityIndex::build(repo.path(), None).unwrap();
+    let report = lint_docs_with_entities(&docs, &index).unwrap();
+    assert!(report.passed(), "波浪线围栏内不查实体: {:?}", report.violations());
 }
 
 // ===== t8：置信度诚实性 / 缺口登记 =====

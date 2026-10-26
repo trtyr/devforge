@@ -444,12 +444,18 @@ fn roundtrip_count_survives_amend_failure() {
         .push_back("amend 实例基础设施故障".into());
 
     let mut ui = NoUser;
-    let _ = run(
+    let err = run(
         cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]),
         &mut session,
         &mut ui,
     )
     .unwrap_err();
+    // 自审 major：错误分类必须钉死——amend 实例故障是 System（可自动重启），
+    // 改判 Quality（不可重启）后此用例必须变红。
+    assert!(
+        matches!(err, DevforgeError::System(_)),
+        "amend 基础设施故障必须分类 System：{err}"
+    );
     let saved = load(&st, "change-20261020-x", "base123");
     assert_eq!(
         saved.roundtrips, 1,
@@ -585,8 +591,14 @@ fn failure_context_survives_across_sessions() {
         failures: s(&["tests/change_ask_ring.rs:557 断言失败"]),
     });
     let mut ui = NoUser;
-    let _ = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+    let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
         .unwrap_err();
+    // 自审 major：回注结束必须是 Quality（不可自动重启）——误判成 System 会被
+    // 重试层白烧四次重启。
+    assert!(
+        matches!(err, DevforgeError::Quality(_)),
+        "测试回注必须分类 Quality：{err}"
+    );
 
     // 新会话：同一黑板路径重新加载
     let st2 = StateStore::new(
@@ -622,8 +634,14 @@ fn coding_success_clears_the_failure_context() {
         failures: s(&["计划问题"]),
     });
     let mut ui = NoUser;
-    let _ = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+    let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
         .unwrap_err();
+    // 自审 major：回注结束必须是 Quality（不可自动重启）——误判成 System 会被
+    // 重试层白烧四次重启。
+    assert!(
+        matches!(err, DevforgeError::Quality(_)),
+        "测试回注必须分类 Quality：{err}"
+    );
 
     let saved = load(&st, "change-20261020-x", "base123");
     assert_eq!(
@@ -648,8 +666,14 @@ fn second_reroute_overwrites_the_failure_context() {
         failures: s(&["新失败"]),
     });
     let mut ui = NoUser;
-    let _ = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
+    let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
         .unwrap_err();
+    // 自审 major：回注结束必须是 Quality（不可自动重启）——误判成 System 会被
+    // 重试层白烧四次重启。
+    assert!(
+        matches!(err, DevforgeError::Quality(_)),
+        "测试回注必须分类 Quality：{err}"
+    );
 
     let saved = load(&st, "change-20261020-x", "base123");
     let ctx = saved.last_test_failure.expect("应有上下文");
@@ -673,12 +697,16 @@ fn testing_route_plan_persists_issues_and_counts_toward_fix_budget() {
         failures: s(&["验收标准无法落地：计划承诺了测不了的行为"]),
     });
     let mut ui = NoUser;
-    let _ = run(
+    let err = run(
         cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]),
         &mut session,
         &mut ui,
     )
     .unwrap_err();
+    assert!(
+        matches!(err, DevforgeError::Quality(_)),
+        "testing→plan 回退必须分类 Quality：{err}"
+    );
 
     let saved = load(&st, "change-20261020-x", "base123");
     assert_eq!(saved.phase, ChangePhase::Plan, "回退后应回到 Plan 阶段");

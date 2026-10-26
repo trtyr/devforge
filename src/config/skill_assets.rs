@@ -220,9 +220,20 @@ mod tests {
         let ts = builtin_language_files("ts-js-best-practices").unwrap();
         assert_eq!(ts.len(), 2, "SKILL.md(TS) + javascript-strict.md");
         let py = builtin_language_files("python-best-practices").unwrap();
-        assert!(py.iter().any(|(n, _)| *n == "SKILL.md"));
-        assert!(py.iter().any(|(n, _)| *n == "references/standard.md"));
-        assert!(py.iter().any(|(n, _)| n.starts_with("scripts/")), "scaffold/验收脚本随 skill 分发");
+        // 自审 major：抽查改全量对账——内嵌清单是手写常量，删一项测试曾照样全绿
+        //（资产静默漏发无守卫）。三处硬数字 + 名字唯一性。
+        assert_eq!(rust.len(), 1, "rust 应恰好 1 个文件");
+        assert_eq!(go.len(), 1, "go 应恰好 1 个文件");
+        assert_eq!(ts.len(), 2, "ts 应恰好 2 个文件");
+        assert_eq!(py.len(), 36, "python 应恰好 36 个文件（对账 assets 目录）");
+        let mut names: Vec<_> = py.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
+        let uniq = names.len();
+        names.dedup();
+        assert_eq!(names.len(), uniq, "文件名不得重复：{names:?}");
+        assert!(names.contains(&"SKILL.md"));
+        assert!(names.contains(&"references/standard.md"));
+        assert!(names.iter().any(|n| n.starts_with("scripts/")), "scaffold/验收脚本随 skill 分发");
         // 原样入库：frontmatter 保留（pi 按 description 触发）
         assert!(rust[0].1.starts_with("---"));
     }
