@@ -554,4 +554,5 @@ impl ConfigManifest {
 }
 
 #[cfg(test)]
+#[path = "manifest_tests.rs"]
 mod manifest_tests;

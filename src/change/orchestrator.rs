@@ -508,4 +508,5 @@ pub fn run<S: ChangeSession>(
 }
 
 #[cfg(test)]
+#[path = "orchestrator_tests.rs"]
 mod orchestrator_tests;

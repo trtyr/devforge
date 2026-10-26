@@ -382,4 +382,5 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
+#[path = "render_tests.rs"]
 mod render_tests;
