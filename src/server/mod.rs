@@ -56,6 +56,26 @@ impl UiRelay {
 
     /// 阻塞等待用户应答（在引擎的同步线程里调用）。
     pub fn ask_blocking(&self, question: &str, options: &[&str]) -> Result<String> {
+        // 自审 critical：显式墙钟旋钮（0/未设 = 不限，零硬限制哲学）；干预面
+        // （cancel 端点 / 墙钟超时 / 失活收割）由 watchdog 的解阻钩子兜底。
+        let timeout_ms = std::env::var("DEVFORGE_UI_ASK_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|ms| *ms > 0);
+        self.ask_blocking_with_timeout(
+            question,
+            options,
+            timeout_ms.map(std::time::Duration::from_millis),
+        )
+    }
+
+    /// 内层实现（超时注入便于测试）：见 [`Self::ask_blocking`]。
+    pub(crate) fn ask_blocking_with_timeout(
+        &self,
+        question: &str,
+        options: &[&str],
+        timeout: Option<std::time::Duration>,
+    ) -> Result<String> {
         let id = format!("ui-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let (tx, rx) = std::sync::mpsc::channel();
         // server #3：记下发起方 run——cancel 只能解阻**自己那个 run** 的待答，
@@ -72,9 +92,28 @@ impl UiRelay {
             "question": question,
             "options": options
         }));
-        rx.recv().map_err(|e| {
-            crate::error::DevforgeError::System(format!("等待 UI 应答: {e}"))
-        })
+        // 自审 critical：无超时的 recv 会把 run 线程永久挂在无人应答的问题上——
+        // run 永不落终态、串行槽占死、后续 start 一律 409。
+        let outcome = match timeout {
+            Some(d) => rx.recv_timeout(d).map_err(|e| match e {
+                std::sync::mpsc::RecvTimeoutError::Timeout => {
+                    crate::error::DevforgeError::System(format!(
+                        "UI 应答超时——问题 {id} 已失效，run 按干预收场"
+                    ))
+                }
+                std::sync::mpsc::RecvTimeoutError::Disconnected => crate::error::DevforgeError::System(
+                    "等待 UI 应答: 应答通道已关闭（被中止）".into(),
+                ),
+            }),
+            None => rx
+                .recv()
+                .map_err(|e| crate::error::DevforgeError::System(format!("等待 UI 应答: {e}"))),
+        };
+        if outcome.is_err() {
+            // 超时路径清残条目：迟到应答拿到干净的「无此待答」，不会悄悄发进虚空
+            self.pending.lock().expect("pending 锁").remove(&id);
+        }
+        outcome
     }
 
     /// 回填应答（POST /ui/{id}/answer 调用）。

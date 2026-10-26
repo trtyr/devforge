@@ -280,6 +280,7 @@ impl BuiltinRpcEngine {
             run_id,
             self.idle_ms,
             vec![session_root.join("doc"), session_root.join("doc-reviews")],
+            Some(self.unblock_hook()),
             || {
                 // DR-14/ARC-R1：pipeline 是唯一 runner（审查(N) 与 写作(N+1) 重叠）；
                 // 工厂经 Arc<Mutex> 共享给审查线程。

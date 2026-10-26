@@ -52,11 +52,18 @@ fn session_fingerprint(dirs: &[PathBuf]) -> u64 {
 /// 失活收割（006 decisions/002）：`idle_ms` 为 Some 时，监控 `watch_dirs` 的会话文件指纹；
 /// 任一变化即刷新进展时钟，平线超过阈值 → mark_stalled + 杀自家 pi——只杀「真死」的 run，
 /// 慢而活着的 run（含长流式生成中的增长）永不误伤；None = 不做活性收割。
+/// 干预解阻钩子（自审 critical）：看门狗在杀进程路径（取消/墙钟超时/失活收割）上
+/// 调用——run 线程可能正阻塞在 UiRelay::ask_blocking 的 recv() 上，只杀 pi 子进程
+/// 解不了它；钩子把该 run 的待答请求丢掉（abort_run），recv 才会返回、run 才能落
+/// 终态释放串行槽。由引擎调用方注入（传 UiRelay::abort_run 的闭包）。
+pub type UnblockHook = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
 pub(crate) fn run_with_watchdog<T>(
     control: &RunControl,
     run_id: String,
     idle_ms: Option<u64>,
     watch_dirs: Vec<PathBuf>,
+    on_intervention: Option<UnblockHook>,
     f: impl FnOnce() -> T,
 ) -> T {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -108,6 +115,10 @@ pub(crate) fn run_with_watchdog<T>(
                             "watchdog 已清场（取消或超时）"
                         );
                     }
+                    // 自审 critical：杀进程不解阻 recv() 中的 ask_blocking——丢待答，run 线程才能收场
+                    if let Some(hook) = &on_intervention {
+                        hook(&run_id);
+                    }
                     return;
                 }
                 if let Some(idle) = idle_ms {
@@ -132,6 +143,10 @@ pub(crate) fn run_with_watchdog<T>(
                                 killed,
                                 "失活收割：SIGKILL 自家 run 进程"
                             );
+                        }
+                        // 自审 critical：同取消路径——收割也要解阻待答
+                        if let Some(hook) = &on_intervention {
+                            hook(&run_id);
                         }
                         return;
                     }
@@ -171,7 +186,7 @@ mod tests {
         // 回归（verdict 后挂起）：f 正常返回后 scope join 必须解锁（旧实现此处死锁）
         let control = RunControl::new();
         let start = Instant::now();
-        let out = run_with_watchdog(&control, "watchdog-regression".into(), None, vec![], || {
+        let out = run_with_watchdog(&control, "watchdog-regression".into(), None, vec![], None, || {
             std::thread::sleep(Duration::from_millis(400));
             42
         });
@@ -214,7 +229,7 @@ mod tests {
         let control = RunControl::new();
         // 停 1.6s：心跳节流 1s → watchdog 的第 5 跳（~1.2s）必须落在观察窗**内**
         // （停在 1.2s 会与那一跳撞在同一毫秒 → 偶发读不到刷新）
-        run_with_watchdog(&control, run_id.into(), None, vec![], || {
+        run_with_watchdog(&control, run_id.into(), None, vec![], None, || {
             std::thread::sleep(Duration::from_millis(1600));
         });
         let after = crate::observability::heartbeat::read(dir.path(), run_id)
@@ -233,7 +248,7 @@ mod tests {
         let control = RunControl::new();
         control.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         let start = Instant::now();
-        let out = run_with_watchdog(&control, "watchdog-cancel".into(), None, vec![], || 7);
+        let out = run_with_watchdog(&control, "watchdog-cancel".into(), None, vec![], None, || 7);
         assert_eq!(out, 7);
         assert!(start.elapsed() < Duration::from_secs(5));
     }
@@ -284,6 +299,7 @@ mod tests {
             "liveness-growth".into(),
             Some(600),
             vec![watch],
+            None,
             || std::thread::sleep(Duration::from_millis(1200)),
         );
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -303,6 +319,7 @@ mod tests {
             "liveness-flatline".into(),
             Some(400),
             vec![watch],
+            None,
             || std::thread::sleep(Duration::from_millis(1500)),
         );
         assert!(control.is_stalled(), "平线超阈应被失活收割");
@@ -320,6 +337,7 @@ mod tests {
             "liveness-off".into(),
             None,
             vec![watch],
+            None,
             || std::thread::sleep(Duration::from_millis(900)),
         );
         assert!(!control.is_stalled(), "未配置闲置阈值时永不失活收割");

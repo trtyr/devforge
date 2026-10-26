@@ -100,6 +100,7 @@ pub struct BuiltinRpcEngine {
 }
 
 impl RunEngine for BuiltinRpcEngine {
+
     fn execute(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
         match task.sop.as_str() {
             "planning" => self.run_planning(task, run, control),
@@ -149,6 +150,7 @@ impl RunEngine for BuiltinRpcEngine {
                     crate::audit::runner::DEFAULT_AUDIT_IDLE_MS,
                 )),
                 watch_dirs,
+                Some(self.unblock_hook()),
                 move || {
                     crate::audit::runner::run_audit(
                         task,
@@ -171,6 +173,15 @@ impl RunEngine for BuiltinRpcEngine {
 }
 
 impl BuiltinRpcEngine {
+    /// 自审 critical：看门狗干预路径（取消/墙钟超时/失活收割）解阻本 run 待答的钩子——
+    /// 只杀 pi 子进程解不了阻塞在 ask_blocking recv() 上的 run 线程，串行槽会占死。
+    pub(crate) fn unblock_hook(&self) -> crate::observability::watchdog::UnblockHook {
+        let ui = self.ui.clone();
+        std::sync::Arc::new(move |run_id: &str| {
+            ui.abort_run(run_id);
+        })
+    }
+
     /// 每个 SOP 需要的 profile（**唯一事实源**：门卫与渲染闸门读同一张表——清单只有一份，不会漂移）。
     ///
     /// change 一项**引用** `change_engine::CHANGE_PROFILES`（那个文件不属本变更、不进白名单，
@@ -248,6 +259,7 @@ impl BuiltinRpcEngine {
             run_id.clone(),
             self.idle_ms,
             vec![sessions.join("plan"), sessions.join("reviews")],
+            Some(self.unblock_hook()),
             || {
                 let mut sop_loop = PlanningLoop::new(plan, factory);
                 sop_loop.run(&mut user)
@@ -320,6 +332,7 @@ impl BuiltinRpcEngine {
             run_id,
             self.idle_ms,
             vec![sessions.join("coding"), sessions.join("coding-reviews")],
+            Some(self.unblock_hook()),
             || {
                 let mut sop_loop = CodingSopLoop::new(agent, factory);
                 sop_loop.run(&mut user, &workspace, &project, &task_id)
@@ -412,6 +425,7 @@ impl BuiltinRpcEngine {
             run_id.clone(),
             self.idle_ms,
             watch_dirs,
+            Some(self.unblock_hook()),
             move || {
                 let mut sop_loop = TestingSopLoop::new(agent, test_review_factory);
                 let mut outcome = sop_loop.run(&mut user, &workspace, &project, &task_id)?;
@@ -544,6 +558,7 @@ impl BuiltinRpcEngine {
             run_id,
             self.idle_ms,
             watch_dirs,
+            Some(self.unblock_hook()),
             move || {
                 let mut sop_loop = DocFixSopLoop::new(agent, factory);
                 sop_loop.run(&mut user, &workspace, &project, &task_id)

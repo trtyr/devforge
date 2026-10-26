@@ -266,6 +266,7 @@ impl BuiltinRpcEngine {
             run_id.clone(),
             self.idle_ms,
             watch_dirs,
+            Some(self.unblock_hook()),
             || {
                 run_orchestrator(
                     ChangeRun {

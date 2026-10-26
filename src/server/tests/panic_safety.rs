@@ -47,3 +47,84 @@ async fn engine_panic_ends_run_failed_and_frees_the_slot() {
     assert!(ran_twice, "第二次 start 应真的跑到引擎（槽位未释放）");
     wait_settled(&f, "p", "t").await;
 }
+
+/// 自审 critical 回归：看门狗干预路径（取消/超时/失活收割）必须解阻待答——
+/// run 线程阻塞在 ask_blocking 的 recv() 上时，只杀 pi 子进程解不了它；钩子丢待答
+/// 后 run 才能落终态释放串行槽（否则所有后续 start 一律 409）。
+#[test]
+fn watchdog_intervention_unblocks_pending_ask() {
+    let bus = std::sync::Arc::new(crate::server::EventBus::new());
+    let relay = std::sync::Arc::new(UiRelay::new(bus));
+    let control = RunControl::new();
+    control.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // 在 run 上下文里发问（生产路径：引擎线程在 run 内，owner 才归 abort_run 管）；
+    // run 上下文是 thread_local，必须在 asker 线程内置位。
+    let run_id = "unblock-reg".to_string();
+    let obs_root = std::env::temp_dir().join(format!("devforge-unblock-reg-{run_id}"));
+    let asker = {
+        let relay = relay.clone();
+        let run_id = run_id.clone();
+        let obs_root = obs_root.clone();
+        std::thread::spawn(move || {
+            crate::observability::begin_run_in_deferred(obs_root, &run_id, "plan");
+            let r = relay.ask_blocking("继续吗", &["是", "否"]);
+            crate::observability::end_run(&run_id);
+            r
+        })
+    };
+    // 等 ask 登记进 pending（轮询，不固定 sleep）
+    for _ in 0..200 {
+        if relay.pending_count() == 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(relay.pending_count(), 1, "ask 应已登记");
+
+    let hook: crate::observability::watchdog::UnblockHook = {
+        let relay = relay.clone();
+        std::sync::Arc::new(move |rid: &str| {
+            relay.abort_run(rid);
+        })
+    };
+    let start = std::time::Instant::now();
+    let _out = crate::observability::watchdog::run_with_watchdog(
+        &control,
+        run_id.into(),
+        None,
+        vec![],
+        Some(hook),
+        || std::thread::sleep(std::time::Duration::from_millis(1500)),
+    );
+    let answer = asker.join().expect("ask 线程不得挂死");
+    assert!(answer.is_err(), "干预必须解阻待答（recv 返回 Err）");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "run 线程必须及时收场，实际 {:?}",
+        start.elapsed()
+    );
+    assert_eq!(relay.pending_count(), 0, "待答条目应被清掉");
+}
+
+/// 自审 critical 回归：ask_blocking 的显式墙钟——无人应答时按超时解阻，待答条目
+/// 被清掉（迟到应答拿到干净的「无此待答」，不会发进虚空）。
+#[test]
+fn ask_blocking_timeout_expires_and_cleans_the_pending_entry() {
+    let bus = std::sync::Arc::new(crate::server::EventBus::new());
+    let relay = UiRelay::new(bus);
+    let start = std::time::Instant::now();
+    let out = relay.ask_blocking_with_timeout(
+        "没人应答的问题",
+        &["a"],
+        Some(std::time::Duration::from_millis(80)),
+    );
+    assert!(out.is_err(), "超时应返回 Err");
+    assert!(
+        start.elapsed() >= std::time::Duration::from_millis(70),
+        "应真的等满超时窗，实际 {:?}",
+        start.elapsed()
+    );
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert_eq!(relay.pending_count(), 0, "超时后待答条目应被清掉");
+}
