@@ -141,7 +141,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let home = std::env::var("HOME").context("读取 HOME 环境变量")?;
-    let root = std::path::Path::new(&home).join(".devforge");
+    // 自审 major：root 推导与 default_plantree_root 同源（DEVFORGE_HOME 优先，
+    // 否则 HOME/.devforge）——旧口径只认 HOME，设了 DEVFORGE_HOME 时 plans 与
+    // plantree 两套推导指向不同根，台账与运行状态分家。
+    let root = std::env::var_os("DEVFORGE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(&home).join(".devforge"));
 
     devforge::logging::init(&root.join("logs"), "devforge")
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;

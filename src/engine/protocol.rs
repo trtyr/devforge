@@ -109,8 +109,15 @@ fn summarize_line(line: &str) -> String {
 
 /// 解码一行 JSONL（不含 LF）。
 pub fn decode_line(line: &str) -> Result<Inbound> {
-    let v: serde_json::Value = serde_json::from_str(line)
-        .ctx(format!("解析 RPC 记录失败: {}", summarize_line(line)))?;
+    // 自审 major：解码失败归 System（对端失能口径，与 client.rs 的 EOF 归一
+    // 同一条先例：记录损坏/流异常是基础设施故障，可重启）——旧口径 Json/RpcProtocol
+    // 各奔东西，都不进重试策略，run 一次即判死。
+    let v: serde_json::Value = serde_json::from_str(line).map_err(|e| {
+        DevforgeError::System(format!(
+            "解析 RPC 记录失败（对端失能）: {} · {e}",
+            summarize_line(line)
+        ))
+    })?;
     let r#type = v
         .get("type")
         .and_then(|t| t.as_str())

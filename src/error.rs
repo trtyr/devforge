@@ -18,7 +18,12 @@ pub enum DevforgeError {
     #[error("agent 失败 [{role}]: {message}")]
     Agent { role: String, message: String },
 
-    /// 编排器自身故障（不可恢复类）。
+    /// 基础设施/环境故障（外部瞬时故障）。
+    ///
+    /// 可恢复：唯一会被 engine::policy 自动重启的类（plan 010 D004）——
+    /// 质量失败重启只会得到同一个结论，System 重启赌的是环境恢复。
+    /// 自审 major：旧标签「编排器自身故障（不可恢复类）」与 6 行之隔的 Quality
+    /// 文档、policy 的实际恢复策略两头矛盾，新人按标签会用反。
     #[error("系统错误: {0}")]
     System(String),
 

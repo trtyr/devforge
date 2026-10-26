@@ -327,6 +327,10 @@ pub fn run<S: ChangeSession>(
                     let next = state.roundtrips + 1;
                     boundary::check_roundtrip(next)?;
                     state.bump_roundtrip();
+                    // 自审 major：先持久化计数再写历史——旧行序里历史写失败会让
+                    // Err 抢在 save 之前上抛，往返计数丢失，MAX_ROUNDTRIPS 上限
+                    // 可被自动重启绕过。计数落盘后历史写失败仍 Err（审计链不静默）。
+                    save(run.store, &state)?;
                     // 每次回退都落历史（T013：事后能看出边界是怎么被撑大的）
                     crate::change::history::append_roundtrip(
                         run.change_dir,

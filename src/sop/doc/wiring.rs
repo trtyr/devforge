@@ -178,7 +178,7 @@ impl BuiltinRpcEngine {
         let mut run_units = plan.to_run.clone();
         // T009：报告要记录尝试次数（run_with_retry 在重启前把 rs.attempt 落盘；首次为 1）
         let attempt_now = loaded.state().map(|s| s.attempt).unwrap_or(0).max(1);
-        if let crate::sop::doc::incremental::Mode::Incremental { base } = &mode {
+        if let crate::sop::doc::incremental::Mode::Incremental { base, .. } = &mode {
             match crate::docgen::impact::changed_since(&workspace, base) {
                 Ok(changes) if changes.is_empty() => {
                     run_units = Vec::new();
@@ -467,8 +467,16 @@ impl BuiltinRpcEngine {
 
         match sop_result {
             Ok(report) => {
-                // 基线只在成功后推进（D021）：失败保留旧值，下次仍按同一批变更重算
-                let head = crate::sop::doc::incremental::head_sha(&workspace);
+                // 基线只在成功后推进（D021）：失败保留旧值，下次仍按同一批变更重算。
+                // 自审 major：增量模式的推进边界 = 规划时刻的 HEAD（Mode 里带回），
+                // 不是运行结束时的 HEAD——后者会越过本轮实际未覆盖的提交。
+                let planned_head = match &mode {
+                    crate::sop::doc::incremental::Mode::Incremental { head, .. } => {
+                        Some(head.clone())
+                    }
+                    _ => crate::sop::doc::incremental::head_sha(&workspace),
+                };
+                let head = planned_head;
                 if let crate::runstate::Loaded::Found(mut st) = store_final.load()
                     && crate::sop::doc::incremental::advance_base(&mut st, head.as_deref(), true)
                 {

@@ -24,7 +24,11 @@ pub enum Mode {
     /// 全量（附原因，进日志）。
     Full { reason: String },
     /// 只跑受影响单元。
-    Incremental { base: String },
+    ///
+    /// `head` = 规划时刻的 HEAD。自审 major：基线推进（advance_base）必须以它
+    /// 为界——旧口径把它丢弃，推进写到运行结束时的 HEAD，会越过本轮实际未
+    /// 覆盖的提交（下轮 diff 把没覆盖的当成已覆盖）。
+    Incremental { base: String, head: String },
 }
 
 /// 读环境变量：`DEVFORGE_DOC_INCREMENTAL=1` 开启，`DEVFORGE_DOC_BASE=<sha>` 覆盖基线。
@@ -67,8 +71,10 @@ pub fn decide_mode(
             reason: "取不到 git HEAD".into(),
         };
     };
-    let _ = head;
-    Mode::Incremental { base }
+    Mode::Incremental {
+        base,
+        head: head.to_string(),
+    }
 }
 
 /// 状态里的基线。
@@ -315,7 +321,8 @@ mod tests {
         assert_eq!(
             decide_mode(Some(&st), Some("head"), Some("given"), true),
             Mode::Incremental {
-                base: "given".into()
+                base: "given".into(),
+                head: "head".into(),
             }
         );
     }
