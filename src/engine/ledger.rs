@@ -349,7 +349,7 @@ pub fn reconcile_all(plans_root: &Path) -> (usize, usize, usize) {
         // 直接拿盘上旧账并集会把本已清掉的 Dead 条目复活。
         let known: std::collections::BTreeSet<u32> =
             ledger.entries.iter().map(|e| e.pid).collect();
-        let saved = crate::engine::ledger::SpawnLedger::with_file_lock(&path, || {
+        if let Err(e) = crate::engine::ledger::SpawnLedger::with_file_lock(&path, || {
             let mut merged = kept.clone();
             if let Ok(later) = SpawnLedger::load(&path) {
                 for e in later.entries {
@@ -360,7 +360,14 @@ pub fn reconcile_all(plans_root: &Path) -> (usize, usize, usize) {
                 }
             }
             merged.save(&path)
-        });
+        }) {
+            tracing::error!(
+                component = "engine-ledger",
+                path = %path.display(),
+                error = %e,
+                "启动对账：回写台账失败"
+            );
+        }
     }
     (killed, cleared, foreign)
 }

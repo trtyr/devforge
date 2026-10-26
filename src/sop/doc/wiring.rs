@@ -122,7 +122,7 @@ impl BuiltinRpcEngine {
         let resume_index = audit_index.clone();
         let resume_docs = workspace.join(DOCS_DIR);
         let resume = crate::sop::doc::resume::DocResume::new(resume_docs.clone()).with_lint(
-            move |state: &crate::runstate::RunState| {
+            move |_state: &crate::runstate::RunState| {
                 // 自审 major：lint 失败不再吞原因——Err 带回原因供 resume 落埋点。
                 crate::docgen::lint::lint_docs_with_entities(&resume_docs, &resume_index)
                     .map(|r| r.violations().to_vec())

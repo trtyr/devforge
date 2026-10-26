@@ -69,6 +69,13 @@ impl EntityIndex {
                         names.insert(token.to_string());
                     }
                 }
+            } else {
+                // 自审 major：读失败不再静默——索引残缺会让幽灵实体检查误报。
+                tracing::warn!(
+                    component = "doc-engine",
+                    path = %root.join(rel).display(),
+                    "实体索引跳过不可读源文件"
+                );
             }
         }
         let mut aliases = std::collections::BTreeMap::new();
@@ -111,7 +118,9 @@ pub(super) fn check_entities(doc: &ParsedDoc, file: &Path, index: &EntityIndex, 
     let mut in_fence = false;
     for (idx, line) in doc.lines.iter().enumerate() {
         let no = idx + 1;
-        if line.trim_start().starts_with("```") {
+        if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
+            // 自审 major：~~~ 围栏也是合法 Markdown 围栏——旧实现只认三反引号，
+            // ~~~ 围栏内的示例代码被当实体引用误报 FAIL（与缺口扫描的双支持不一致）。
             in_fence = !in_fence;
             continue;
         }
@@ -139,6 +148,18 @@ pub(super) fn check_entities(doc: &ParsedDoc, file: &Path, index: &EntityIndex, 
                 continue;
             }
             if let Some((path, line_ref)) = split_path_line(cleaned) {
+                // 自审 major：路径逃逸拒绝——绝对路径或含 .. 段的引用不做存在性检查
+                // （dir.join(绝对路径) 整体替换、.. 爬出仓库：幽灵路径检查可被绕过
+                // 且能探仓外任意文件）。
+                if path_escapes(path) {
+                    report.fail(
+                        file,
+                        no,
+                        Check::Entity,
+                        format!("路径越界：{path} 是绝对路径或含 .. 段，拒绝检查"),
+                    );
+                    continue;
+                }
                 if find_existing(file, path).is_none() {
                     report.fail(
                         file,
@@ -161,6 +182,15 @@ pub(super) fn check_entities(doc: &ParsedDoc, file: &Path, index: &EntityIndex, 
                 continue;
             }
             if looks_like_path(cleaned) {
+                if path_escapes(cleaned) {
+                    report.fail(
+                        file,
+                        no,
+                        Check::Entity,
+                        format!("路径越界：{cleaned} 是绝对路径或含 .. 段，拒绝检查"),
+                    );
+                    continue;
+                }
                 if find_existing(file, cleaned).is_none() {
                     report.fail(
                         file,
