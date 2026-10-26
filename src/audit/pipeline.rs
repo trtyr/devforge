@@ -255,9 +255,25 @@ pub fn stage1_review_batch_with_deadline(
         let instruction = batch_instruction(workspace, unit, all_unit_labels, precheck_report);
         let reply = match session.ask_deadline(&instruction, deadline) {
             Ok(r) => r,
-            // 审计修复 #1：ask 失败保持原分类上抛（System/Agent 等基础设施故障）——
-            // 不包 Quality：实例失败该打断整次审计而非伪装成质量失败被放弃。
-            Err(e) => return Err(e),
+            Err(e) => {
+                // 2026-10-25 拍板：单批**空回复**（会话正常结束但未产出一字）与墙钟
+                // 超时同层——换实例重试一次后按该批放弃，一次会话闪失不得打断整场
+                // 审计（它昨晚干掉过一次整场）。其余实例/基础设施故障仍保持原分类
+                // 上抛（审计修复 #1 不回退：真故障该打断，不伪装成质量失败）。
+                if e.to_string().contains("未产出一字") {
+                    last_err = format!("第 {} 次空回复（会话正常结束但未产出一字）", attempt + 1);
+                    tracing::warn!(
+                        component = "audit-engine",
+                        unit = %unit.id,
+                        attempt = attempt + 1,
+                        "批次会话空回复，换实例重试"
+                    );
+                    continue;
+                }
+                // 审计修复 #1：ask 失败保持原分类上抛（System/Agent 等基础设施故障）——
+                // 不包 Quality：真故障该打断整次审计而非伪装成质量失败被放弃。
+                return Err(e);
+            }
         };
         drop(session);
         match parse_findings(&reply) {
@@ -278,10 +294,10 @@ pub fn stage1_review_batch_with_deadline(
             }
         }
     }
-    // 两次违例：放弃批次（不编造发现）——诚实失败优于噪声
-    tracing::warn!(component = "audit-engine", unit = %unit.id, "批次两次协议违例，放弃");
+    // 两次尝试（协议违例或空回复）：放弃批次（不编造发现）——诚实失败优于噪声
+    tracing::warn!(component = "audit-engine", unit = %unit.id, "批次两次尝试未产出合规结果，放弃");
     Err(DevforgeError::Quality(format!(
-        "批次 {} 两次协议违例，已放弃：{last_err}",
+        "批次 {} 两次尝试未产出合规结果，已放弃：{last_err}",
         unit.id
     )))
 }
@@ -544,6 +560,32 @@ mod tests {
         };
         assert!(stage1_review_batch(&mut factory, Path::new("/ws"), &u, &[], "无").is_err());
         assert_eq!(factory.opens, 2, "两次违例恰好开两次会话后放弃");
+    }
+
+    /// 2026-10-25 拍板回归：单批**空回复**与墙钟超时同层——换实例重试后按该批放弃
+    /// （Quality），不得像真基础设施故障那样打断整场审计。
+    #[test]
+    fn empty_reply_is_batch_abandon_not_whole_run_abort() {
+        struct EmptySession;
+        impl AuditSession for EmptySession {
+            fn ask(&mut self, _: &str) -> Result<String> {
+                Ok(String::new())
+            }
+        }
+        struct EmptyFactory;
+        impl AuditSessionFactory for EmptyFactory {
+            fn open(&mut self) -> Result<Box<dyn AuditSession>> {
+                Ok(Box::new(EmptySession))
+            }
+        }
+        let mut f = EmptyFactory;
+        let err = stage1_review_batch(&mut f, Path::new("/ws"), &unit("unit-001"), &[], "无")
+            .unwrap_err();
+        assert!(
+            matches!(err, DevforgeError::Quality(_)),
+            "空回复应归 Quality（放弃层）：{err:?}"
+        );
+        assert!(err.to_string().contains("已放弃"), "{err}");
     }
 
     /// 审计修复 #1 回归：ask 失败保持原分类（System）上抛——不包 Quality，
