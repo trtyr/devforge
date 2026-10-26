@@ -139,6 +139,17 @@ pub(crate) fn run_with_watchdog<T>(
                 std::thread::sleep(std::time::Duration::from_millis(300));
             }
         });
+        // 自审 critical：f() 一旦 panic，下面的置位会被展开跳过 → done 永假 → 看门狗
+        // 循环不自退 → std::thread::scope 的 Drop 在展开期 join 看门狗线程 → run 线程
+        // 永久挂死，server 层 catch_unwind 根本拿不到控制权。用 RAII 守卫保证
+        // **正常返回与展开两条路都会置位**。
+        struct DoneGuard(std::sync::Arc<AtomicBool>);
+        impl Drop for DoneGuard {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _done_guard = DoneGuard(done_main.clone());
         let out = f();
         // 修复点：f 返回后立刻置位（在 scope 闭包内），watchdog 才能退出、join 才能返回；
         // 若在 scope 返回后才置位则不可达，正常完成必死锁（verdict 后挂起真因）

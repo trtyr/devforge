@@ -52,9 +52,20 @@ pub fn write(root: &Path, snap: &RunSnapshot) -> std::io::Result<()> {
     // 阶段转换 / run 收尾终态刷）下会被读者撞见半截/空文件，resume6g 测试阶段
     // 实测 serde「EOF while parsing a value」。rename 同目录内原子替换，读者要么
     // 看旧整文件、要么看新整文件。
-    let tmp = path.with_extension("json.tmp");
+    //
+    // 自审 critical：临时文件名**必须每个写者唯一**。旧实现固定 `{run}.json.tmp`——
+    // 同一 run 的 watchdog 线程与工作线程同时写时，一方 rename 走文件，另一方
+    // write 到一半被 rename → 丢更新；甚至 rename ENOENT。这里用 pid + 进程内
+    // 单调序号，保证同目录并发写者互不踩踏。
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
     std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, &path)
+    let renamed = std::fs::rename(&tmp, &path);
+    if renamed.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    renamed
 }
 
 /// 读心跳（取证/测试用）。
@@ -112,5 +123,37 @@ mod tests {
         let root = dir.path().join("nested").join("devforge");
         write(&root, &snap("plan", "s")).unwrap();
         assert!(root.join("heartbeat").join("run-1.json").exists());
+    }
+
+    /// 自审 critical 回归：同一 run 的多个写者并发写心跳，不得丢更新/产出半截文件
+    /// （旧实现共用固定 tmp 名 → write/rename 互踩，rename ENOENT 或读者撞见空文件）。
+    #[test]
+    fn concurrent_writers_do_not_corrupt_or_lose_the_heartbeat() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::thread::scope(|scope| {
+            for i in 0..8 {
+                let root = root.clone();
+                scope.spawn(move || {
+                    for n in 0..25 {
+                        let phase = format!("p{i}-{n}");
+                        write(&root, &snap(&phase, "step")).expect("并发写心跳不得失败");
+                    }
+                });
+            }
+        });
+        // 文件必须可解析（无半截 JSON），且临时文件不得残留
+        let hb = read(&root, "run-1").expect("心跳文件必须可解析");
+        assert!(
+            hb.phase.starts_with('p'),
+            "应保留最后一次完整写入，实际 {}",
+            hb.phase
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(root.join("heartbeat"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "不得残留临时文件：{leftovers:?}");
     }
 }
