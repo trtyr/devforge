@@ -434,11 +434,41 @@ fn contract_boundary_check(
     let Some(task) = task else {
         return Ok(outcome);
     };
+    let isolation_worktree = matches!(
+        task.contract.as_ref().map(|c| &c.isolation),
+        Some(crate::domain::contract::Isolation::Worktree)
+    );
     let Some(contract) = task.contract else {
         return Ok(outcome);
     };
     let Some(base) = contract.base_rev.as_deref() else {
         return Ok(outcome);
+    };
+    // 自审 critical：worktree 隔离下主仓 HEAD 纹丝不动（agent 的改动全部在 task/{id}
+    // 分支上，worktree 已在引擎收尾时删除）——对 HEAD 求 diff 恒为空集，越界 run
+    // 被判 boundary.ok（门 fail-open，正是本函数注释声称已修掉的那类假绿）。改对
+    // 候选分支尖求 diff；分支不存在 = 收尾异常，按系统错误拒放行（门不能 fail-open）。
+    let diff_target = if isolation_worktree {
+        let branch = format!("task/{task_id}");
+        let probe = std::process::Command::new("git")
+            .args([
+                "-C",
+                &task.workspace.to_string_lossy(),
+                "rev-parse",
+                "--verify",
+                &branch,
+            ])
+            .output();
+        match probe {
+            Ok(o) if o.status.success() => branch,
+            _ => {
+                return Err(crate::error::DevforgeError::System(format!(
+                    "契约终校验找不到候选分支 {branch}（worktree 隔离下对主仓 HEAD 求 diff 恒为空集）——不能放行为 Completed"
+                )));
+            }
+        }
+    } else {
+        "HEAD".to_string()
     };
     let out = std::process::Command::new("git")
         .args([
@@ -446,7 +476,7 @@ fn contract_boundary_check(
             &task.workspace.to_string_lossy(),
             "diff",
             "--name-only",
-            &format!("{base}..HEAD"),
+            &format!("{base}..{diff_target}"),
         ])
         .output();
     let changed: Vec<String> = match out {

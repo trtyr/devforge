@@ -128,6 +128,146 @@ async fn project_registration_cleans_orphan_worktrees() {
     );
 }
 
+/// 自审 critical 回归：worktree 隔离下主仓 HEAD 纹丝不动（agent 的改动全部在
+/// task/{id} 分支上，worktree 收尾即删）——终校验必须对候选分支求 diff，否则
+/// 改动集恒为空集、越界 run 判 boundary.ok（fail-open 假绿）。
+#[tokio::test]
+async fn worktree_isolation_boundary_checks_the_candidate_branch_not_head() {
+    let (g, base) = git_repo_with_base();
+    // 模拟 worktree 流程产物：候选越界改动落在 task/t 分支上，主仓 HEAD 停在 base
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(g.path())
+            .args(args)
+            .output()
+            .expect("git 可执行");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    let wt = tempfile::tempdir().unwrap();
+    git(&["branch", "task/t"]);
+    git(&[
+        "worktree",
+        "add",
+        wt.path().to_str().unwrap(),
+        "task/t",
+    ]);
+    std::fs::write(wt.path().join("evil.txt"), "out of contract\n").unwrap();
+    let wgit = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(wt.path())
+            .args(args)
+            .output()
+            .expect("git 可执行");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    wgit(&["add", "-A"]);
+    wgit(&["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "candidate"]);
+    let _ = std::fs::remove_dir_all(wt.path());
+
+    let f = fixture();
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": g.path().to_str().unwrap()})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({
+            "id": "t",
+            "sop": "doc-from-zero",
+            "contract": {
+                "owned_paths": ["src/**"],
+                "forbidden_paths": [],
+                "base_rev": base,
+                "isolation": "worktree",
+            },
+        })),
+    )
+    .await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    wait_settled(&f, "p", "t").await;
+
+    let body = body_json(
+        send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await,
+    )
+    .await;
+    assert_eq!(
+        body["runs"][0]["status"], "Failed",
+        "分支上的越界改动必须被抓到（对 HEAD 求 diff 是盲区）：{body}"
+    );
+    let replayed = f.state.bus.replay_after(0);
+    assert!(
+        replayed.iter().any(|(_, e)| e.contains("boundary.violation")),
+        "必须有 boundary.violation 事件：{:?}",
+        replayed.iter().map(|(_, e)| e.as_str()).collect::<Vec<_>>()
+    );
+}
+
+/// 自审 critical 配套：worktree 隔离但候选分支不存在（收尾异常）→ 系统错误改判
+/// Failed，不能 fail-open 成 boundary.ok。
+#[tokio::test]
+async fn worktree_isolation_without_candidate_branch_fails_closed() {
+    let (g, base) = git_repo_with_base();
+    // 不建 task/t 分支：主仓 HEAD == base，旧实现对 HEAD 求 diff = 空集 = 假绿
+    let f = fixture();
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": g.path().to_str().unwrap()})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({
+            "id": "t",
+            "sop": "doc-from-zero",
+            "contract": {
+                "owned_paths": ["src/**"],
+                "forbidden_paths": [],
+                "base_rev": base,
+                "isolation": "worktree",
+            },
+        })),
+    )
+    .await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    wait_settled(&f, "p", "t").await;
+
+    let body = body_json(
+        send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await,
+    )
+    .await;
+    assert_eq!(
+        body["runs"][0]["status"], "Failed",
+        "找不到候选分支必须拒放行（门不能 fail-open）：{body}"
+    );
+    let replayed = f.state.bus.replay_after(0);
+    assert!(
+        !replayed.iter().any(|(_, e)| e.contains("boundary.ok")),
+        "分支缺失不得发 boundary.ok（fail-open 假绿）：{:?}",
+        replayed.iter().map(|(_, e)| e.as_str()).collect::<Vec<_>>()
+    );
+}
+
 #[tokio::test]
 async fn in_contract_changes_pass_the_boundary_check() {
     // 对照：改动全部落在 owned_paths 内 → run 正常 Completed（boundary.ok）
