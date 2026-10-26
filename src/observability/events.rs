@@ -29,7 +29,7 @@ impl EventBus {
         let id = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
         let data = value.to_string();
         {
-            let mut log = self.log.lock().expect("event log 锁");
+            let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
             log.push_back((id, data.clone()));
             while log.len() > Self::CAP {
                 log.pop_front();
@@ -46,7 +46,7 @@ impl EventBus {
     pub fn replay_after(&self, last_id: u64) -> Vec<(u64, String)> {
         self.log
             .lock()
-            .expect("event log 锁")
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|(id, _)| *id > last_id)
             .cloned()

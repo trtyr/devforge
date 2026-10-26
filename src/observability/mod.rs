@@ -120,13 +120,13 @@ fn begin_run_in_ctx(root: PathBuf, run_id: &str, phase: &str) {
         attempt: 1,
         started_at_ms: crate::domain::now_ms(),
     };
-    runs().lock().expect("observability 快照表锁").insert(run_id.to_string(), snap);
+    runs().lock().unwrap_or_else(|e| e.into_inner()).insert(run_id.to_string(), snap);
     // 地基批次 #2：新 run 开跑前清掉同 id 的旧 agent 事件戳（按 run 分槽后每槽归本 run）
-    agent_events().lock().expect("agent 事件表锁").remove(run_id);
-    phase_logs().lock().expect("phase 历史表锁").insert(run_id.to_string(), Vec::new());
+    agent_events().lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
+    phase_logs().lock().unwrap_or_else(|e| e.into_inner()).insert(run_id.to_string(), Vec::new());
     roots()
         .lock()
-        .expect("observability 根表锁")
+        .unwrap_or_else(|e| e.into_inner())
         .insert(run_id.to_string(), root);
     LOCAL.with(|l| {
         let mut l = l.borrow_mut();
@@ -158,7 +158,7 @@ fn phase_logs() -> &'static Mutex<HashMap<String, Vec<PhaseSpan>>> {
 pub fn phase_log(run_id: &str) -> Vec<PhaseSpan> {
     phase_logs()
         .lock()
-        .expect("phase 历史表锁")
+        .unwrap_or_else(|e| e.into_inner())
         .get(run_id)
         .cloned()
         .unwrap_or_default()
@@ -173,7 +173,7 @@ fn roots() -> &'static Mutex<HashMap<String, PathBuf>> {
 
 /// 某 run 的观测根（未登记 = 该 run 不存在）。
 fn run_root(run_id: &str) -> Option<PathBuf> {
-    roots().lock().expect("observability 根表锁").get(run_id).cloned()
+    roots().lock().unwrap_or_else(|e| e.into_inner()).get(run_id).cloned()
 }
 
 /// 清位 run 上下文（run 结束）：**心跳文件保留**最后一次状态（不删——那是死亡现场的证据）。
@@ -181,10 +181,10 @@ pub fn end_run(run_id: &str) {
     // F18：终态心跳先落盘再摘快照（摘完 write_heartbeat 就找不到 run 了）；
     // 尾部写不触发开跑竞态（resume6f 实验已证）→ 短 run 也有心跳在案
     write_heartbeat(run_id);
-    runs().lock().expect("observability 快照表锁").remove(run_id);
-    roots().lock().expect("observability 根表锁").remove(run_id);
+    runs().lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
+    roots().lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
     // 地基批次 #2：run 结束后摘掉本 run 的 agent 事件槽（下一 run 不得继承旧戳）
-    agent_events().lock().expect("agent 事件表锁").remove(run_id);
+    agent_events().lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
     LOCAL.with(|l| {
         let mut l = l.borrow_mut();
         if l.run_id.as_deref() == Some(run_id) {
@@ -202,7 +202,7 @@ pub fn set_phase(phase: &str) {
         return;
     };
     {
-        let mut table = runs().lock().expect("observability 快照表锁");
+        let mut table = runs().lock().unwrap_or_else(|e| e.into_inner());
         let Some(snap) = table.get_mut(&run_id) else {
             return;
         };
@@ -210,7 +210,7 @@ pub fn set_phase(phase: &str) {
         snap.phase = phase.to_string();
         phase_logs()
             .lock()
-            .expect("phase 历史表锁")
+            .unwrap_or_else(|e| e.into_inner())
             .entry(run_id.clone())
             .or_default()
             .push(PhaseSpan {
@@ -230,7 +230,7 @@ pub fn set_step(step: &str) {
         return;
     };
     {
-        let mut table = runs().lock().expect("observability 快照表锁");
+        let mut table = runs().lock().unwrap_or_else(|e| e.into_inner());
         let Some(snap) = table.get_mut(&run_id) else {
             return;
         };
@@ -250,7 +250,7 @@ pub fn set_attempt(attempt: u32) {
     LOCAL.with(|l| l.borrow_mut().attempt = attempt);
     let run_id = LOCAL.with(|l| l.borrow().run_id.clone());
     if let Some(id) = run_id {
-        let mut table = runs().lock().expect("observability 快照表锁");
+        let mut table = runs().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(snap) = table.get_mut(&id) {
             snap.attempt = attempt;
         }
@@ -265,7 +265,7 @@ pub fn attempt() -> u32 {
 /// 当前 run 快照（无活动 run = `None`）。
 pub fn current() -> Option<RunSnapshot> {
     let id = LOCAL.with(|l| l.borrow().run_id.clone())?;
-    runs().lock().expect("observability 快照表锁").get(&id).cloned()
+    runs().lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned()
 }
 
 /// DR-2/DR-3：记录一次 agent 事件（turn_start / turn_end / 流式 delta / 命令失败），
@@ -275,7 +275,7 @@ pub fn note_agent_event() {
     let key = current_run_id().unwrap_or_default();
     agent_events()
         .lock()
-        .expect("agent 事件表锁")
+        .unwrap_or_else(|e| e.into_inner())
         .insert(key, crate::domain::now_ms());
 }
 
@@ -283,7 +283,7 @@ pub fn note_agent_event() {
 fn agent_event_age_for(run_id: &str) -> Option<u64> {
     let t = *agent_events()
         .lock()
-        .expect("agent 事件表锁")
+        .unwrap_or_else(|e| e.into_inner())
         .get(run_id)?;
     (t != 0).then(|| crate::domain::now_ms().saturating_sub(t))
 }
@@ -307,7 +307,7 @@ pub fn stall_check(run_id: &str) -> Option<u64> {
 pub fn run_started_at(run_id: &str) -> Option<u64> {
     runs()
         .lock()
-        .expect("observability 快照表锁")
+        .unwrap_or_else(|e| e.into_inner())
         .get(run_id)
         .map(|s| s.started_at_ms)
 }
@@ -347,7 +347,7 @@ fn last_touch() -> &'static Mutex<HashMap<String, u64>> {
 pub fn write_heartbeat(run_id: &str) {
     let Some(snap) = runs()
         .lock()
-        .expect("observability 快照表锁")
+        .unwrap_or_else(|e| e.into_inner())
         .get(run_id)
         .cloned()
     else {
@@ -368,7 +368,7 @@ pub fn write_heartbeat(run_id: &str) {
 pub fn touch_run(run_id: &str) {
     let now = crate::domain::now_ms();
     {
-        let mut table = last_touch().lock().expect("observability 节流锁");
+        let mut table = last_touch().lock().unwrap_or_else(|e| e.into_inner());
         let last = table.get(run_id).copied().unwrap_or(0);
         if now.saturating_sub(last) < HEARTBEAT_REFRESH_MS {
             return;
@@ -380,7 +380,7 @@ pub fn touch_run(run_id: &str) {
 
 /// 注入观测根（单测用；生产由 `DEVFORGE_HOME` / `HOME/.devforge` 解析）。
 pub fn set_root(root: impl Into<PathBuf>) {
-    let mut slot = root_slot().lock().expect("observability 根锁");
+    let mut slot = root_slot().lock().unwrap_or_else(|e| e.into_inner());
     *slot = Some(root.into());
 }
 
@@ -391,7 +391,7 @@ fn root_slot() -> &'static Mutex<Option<PathBuf>> {
 
 /// 解析观测根：进程内注入 > `DEVFORGE_HOME` > `HOME/.devforge`。
 pub fn root() -> PathBuf {
-    if let Some(r) = root_slot().lock().expect("observability 根锁").clone() {
+    if let Some(r) = root_slot().lock().unwrap_or_else(|e| e.into_inner()).clone() {
         return r;
     }
     resolve_root(
