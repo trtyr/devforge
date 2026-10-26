@@ -421,12 +421,25 @@ fn section_paths(plan: &str, title: &str) -> Vec<String> {
 }
 
 fn looks_like_file(tok: &str) -> bool {
-    const EXTS: [&str; 12] = [
-        ".rs", ".py", ".ts", ".tsx", ".js", ".go", ".java", ".kt", ".md", ".toml", ".json", ".yaml",
+    // 自审 major（unit-068）：扩展名单与 inventory::SOURCE_EXTENSIONS 对齐
+    //（单一事实源），另补配置类扩展与无扩展名的知名构建文件——旧名单只有 12 个
+    // 扩展名，白名单被静默削窄：计划里合法登记的非标准扩展文件（如 .yml/.conf）
+    // 被边界门恒判越界且无法自救。
+    const EXTRA_EXTS: [&str; 12] = [
+        ".toml", ".json", ".yaml", ".yml", ".xml", ".sql", ".ini", ".conf", ".env",
+        ".sh", ".proto", ".graphql",
     ];
+    const KNOWN_FILES: [&str; 4] = ["Makefile", "Dockerfile", ".gitignore", ".env.example"];
+    let named = KNOWN_FILES.iter().any(|k| tok.ends_with(k));
+    // 注意：SOURCE_EXTENSIONS 存的是裸扩展名（无点，如 "rs"），必须补点再比对——
+    // 否则 "3c"/"panic"（尾巴碰上裸 "c"）、"chars"（碰上裸 "rs"）全被当文件。
+    let ext_ok = crate::docgen::inventory::SOURCE_EXTENSIONS
+        .iter()
+        .any(|(e, _)| tok.ends_with(&format!(".{e}")))
+        || EXTRA_EXTS.iter().any(|e| tok.ends_with(e));
     !tok.is_empty()
         && !tok.starts_with('/')
-        && EXTS.iter().any(|e| tok.ends_with(e))
+        && (named || ext_ok)
         && !tok.chars().any(|c| c.is_whitespace())
 }
 

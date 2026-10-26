@@ -70,8 +70,9 @@ impl ChangeSession for Scripted {
         _ui: &mut dyn crate::sop::planning::UserLink,
         gaps: &[ImpactGap],
         rt: usize,
+        reason: &str,
     ) -> Result<PlanTurn> {
-        self.log.push(format!("amend(rt={rt},gaps={})", gaps.len()));
+        self.log.push(format!("amend(rt={rt},gaps={},reason={})", gaps.len(), reason));
         if let Some(msg) = self.amend_errors.pop_front() {
             return Err(DevforgeError::System(msg));
         }
@@ -363,7 +364,7 @@ fn coding_routes_back_to_plan_then_reenters_coding() {
         vec![
             "plan(rt=0)",
             "coding(rt=0)",
-            "amend(rt=1,gaps=1)",
+            "amend(rt=1,gaps=1,reason=计划漏了)",
             "coding(rt=1)",
             "testing"
         ],

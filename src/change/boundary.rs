@@ -26,8 +26,10 @@ pub enum BoundaryVerdict {
     /// 改动全在白名单内。
     InBoundary,
     /// 越界且已申报 → 回 plan 补边界。
-    RoutePlan { gaps: Vec<ImpactGap> },
-    /// 越界且没申报（或申报不完整）→ 范围膨胀，FAIL。
+    /// `reason` 是 coding 回复的散文理由（自审 major：空 gaps 回规划时，
+    /// 旧实现把 coding 的回退理由整段丢弃，plan agent 拿到无内容指令空转）。
+    RoutePlan { gaps: Vec<ImpactGap>, reason: String },
+    /// 一段越界且没申报（或申报不完整）→ 范围膨胀，FAIL。
     OutOfBoundary { extra: Vec<String> },
 }
 
@@ -62,6 +64,18 @@ pub fn parse_route(text: &str) -> Option<String> {
             break;
         }
         if !stripped {
+            // 自审 critical（unit-048）：被截断的 <impact-gap>（无闭合标签但延伸到
+            // 文末）也算协议尾巴——否则「route=plan + 被截断的申报」会让 route
+            // 识别失败，合法回退被硬判范围膨胀。截断块定义上延伸到文末，后面无内容。
+            if let Some(start) = rest.rfind("<impact-gap>") {
+                let after = &rest[start + "<impact-gap>".len()..];
+                if !after.contains("</impact-gap>") {
+                    rest = rest[..start].trim_end();
+                    stripped = true;
+                }
+            }
+        }
+        if !stripped {
             break;
         }
     }
@@ -76,8 +90,12 @@ pub fn parse_route(text: &str) -> Option<String> {
 }
 
 /// 解析 `<impact-gap>` 块（每条形如 `- 文件：x` / `- 为什么必须改：y` / `- 证据：z:12`）。
+///
+/// 自审 critical（unit-048）：**只认最后一个块**（与 route 的尾部协议位同口径）——
+/// 旧实现 `text.find` 取全文第一个块，正文里引用的协议示例块会劫持解析：
+/// 真申报被丢弃（误判 FAIL），或越界文件被示例块凭空合法化。
 pub fn parse_impact_gaps(text: &str) -> Vec<ImpactGap> {
-    let Some(start) = text.find("<impact-gap>") else {
+    let Some(start) = text.rfind("<impact-gap>") else {
         return Vec::new();
     };
     let body_start = start + "<impact-gap>".len();
@@ -93,7 +111,14 @@ pub fn parse_impact_gaps(text: &str) -> Vec<ImpactGap> {
         let Some((key, value)) = t.split_once([':', '：']) else {
             continue;
         };
-        let value = value.trim().to_string();
+        let value = value
+            .trim()
+            // 自审 major：字段值净化——剥包裹用的反引号/引号（plan 里写
+            // 「- 文件：`src/x.rs`」时旧实现拿 `` `src/x.rs` `` 去比对，恒不等 →
+            // 合法申报被判范围膨胀）。
+            .trim_matches(|c| matches!(c, '`' | '"' | '\''))
+            .trim()
+            .to_string();
         match key.trim() {
             "文件" | "file" | "File" => {
                 if !gaps.is_empty() {
@@ -153,11 +178,16 @@ pub fn classify(changed: &[String], whitelist: &[String], reply: &str) -> Bounda
     // 有越界时申报仍须覆盖每个越界文件（不能拿 route token 当万能钥匙）。
     if declared_route {
         let gaps = parse_impact_gaps(reply);
+        let reason = prose_reason(reply);
+        // 自审 critical（unit-048）：截断尾巴在身时不再拿覆盖检查硬 FAIL——
+        // 申报被截断 = 无法核实，但 route=plan 的决策本身有效；回 plan
+        // （往返上限兜底）比谎称「范围膨胀」诚实。
+        let truncated_tail = has_trailing_truncated_gap(reply);
         let covered = extra
             .iter()
             .all(|f| gaps.iter().any(|g| normalize_one(&g.file) == normalize_one(f)));
-        if extra.is_empty() || covered {
-            return BoundaryVerdict::RoutePlan { gaps };
+        if extra.is_empty() || covered || truncated_tail {
+            return BoundaryVerdict::RoutePlan { gaps, reason };
         }
         return BoundaryVerdict::OutOfBoundary { extra };
     }
@@ -167,6 +197,25 @@ pub fn classify(changed: &[String], whitelist: &[String], reply: &str) -> Bounda
         return BoundaryVerdict::InBoundary;
     }
     BoundaryVerdict::OutOfBoundary { extra }
+}
+
+/// 回复是否以被截断的 `<impact-gap>`（无闭合标签）结尾。
+fn has_trailing_truncated_gap(text: &str) -> bool {
+    match text.rfind("<impact-gap>") {
+        Some(start) => !text[start + "<impact-gap>".len()..].contains("</impact-gap>"),
+        None => false,
+    }
+}
+
+/// 自审 major：抽取 coding 回复的散文理由（首个协议标签之前的正文），
+/// 供空 gaps 回规划时给 plan agent 当上下文；截到 300 字。
+fn prose_reason(text: &str) -> String {
+    let cut = text.find('<').unwrap_or(text.len());
+    let reason = text[..cut].trim();
+    if reason.is_empty() {
+        return String::new();
+    }
+    reason.chars().take(300).collect()
 }
 
 /// 第 `n` 次往返是否还允许（n 从 1 开始）。
@@ -191,10 +240,16 @@ pub fn merge_gaps_into_whitelist(whitelist: &mut Vec<String>, gaps: &[ImpactGap]
 }
 
 /// 打回 plan 时给 plan agent 的指令：把这些缺口补进计划，然后重新交审。
-pub fn replan_instruction(gaps: &[ImpactGap], roundtrip: usize) -> String {
+/// `reason` 是 coding 的回退散文理由（可能为空）。
+pub fn replan_instruction(gaps: &[ImpactGap], roundtrip: usize, reason: &str) -> String {
     let mut out = format!(
-        "coding 阶段发现计划缺口（第 {roundtrip}/{MAX_ROUNDTRIPS} 次往返）。请只补边界，不要重写整份计划：\n\n"
+        "coding 阶段请求回规划（第 {roundtrip}/{MAX_ROUNDTRIPS} 次往返）。请只补边界，不要重写整份计划：\n\n"
     );
+    if gaps.is_empty() {
+        // 自审 major：无申报缺口的回规划（方案不可行等）——旧实现给 plan agent
+        // 一条无内容指令空转；现在显式告知「无边界缺口」并携带 coding 的理由。
+        out.push_str("无边界缺口申报（coding 未申报具体文件缺口）。");
+    }
     for g in gaps {
         out.push_str(&format!(
             "- `{}`：{}（证据：{}）\n",
@@ -205,6 +260,9 @@ pub fn replan_instruction(gaps: &[ImpactGap], roundtrip: usize) -> String {
         "\n要求：更新「影响面」与「三张表」，把上述文件写进白名单，并在「风险」里记录这次缺口。\
 补完重新交审（审查只审增量，仍不看代码）。",
     );
+    if !reason.is_empty() {
+        out.push_str(&format!("\n\ncoding 的回退理由（原文）：{reason}"));
+    }
     out
 }
 
@@ -237,7 +295,13 @@ mod tests {
             &s(&["src/a.rs"]),
             "改着改着发现计划方案不可行\n<route>plan</route>",
         );
-        assert_eq!(v, BoundaryVerdict::RoutePlan { gaps: Vec::new() });
+        assert_eq!(
+            v,
+            BoundaryVerdict::RoutePlan {
+                gaps: Vec::new(),
+                reason: "改着改着发现计划方案不可行".into()
+            }
+        );
     }
 
     /// 引擎审计修复 #1 回归：纯回规划请求（无改动无申报）同样是 RoutePlan 信号。
@@ -248,7 +312,13 @@ mod tests {
             &s(&["src/a.rs"]),
             "计划里的验收标准无法落地\n<route>plan</route>",
         );
-        assert_eq!(v, BoundaryVerdict::RoutePlan { gaps: Vec::new() });
+        assert_eq!(
+            v,
+            BoundaryVerdict::RoutePlan {
+                gaps: Vec::new(),
+                reason: "计划里的验收标准无法落地".into()
+            }
+        );
     }
 
     #[test]
@@ -268,7 +338,7 @@ mod tests {
     fn declared_gap_routes_back_to_plan_and_whitelist_grows() {
         let mut whitelist = s(&["src/a.rs"]);
         let v = classify(&s(&["src/a.rs", "src/extra.rs"]), &whitelist, REPLY_DECLARE);
-        let BoundaryVerdict::RoutePlan { gaps } = v else {
+        let BoundaryVerdict::RoutePlan { gaps, .. } = v else {
             panic!("带申报应回 plan，实际 {v:?}");
         };
         assert_eq!(gaps.len(), 1);
@@ -323,10 +393,54 @@ mod tests {
             reason: "接口在这里".into(),
             evidence: "src/extra.rs:42".into(),
         }];
-        let text = replan_instruction(&gaps, 2);
+        let text = replan_instruction(&gaps, 2, "需求依赖的接口变了");
         assert!(text.contains("src/extra.rs"), "{text}");
         assert!(text.contains("只补边界"), "{text}");
         assert!(text.contains("第 2/3 次往返"), "{text}");
+        assert!(text.contains("回退理由（原文）：需求依赖的接口变了"), "{text}");
+    }
+
+    /// 自审 major 回归：空 gaps 回规划不得空转——显式告知无缺口申报，
+    /// 并携带 coding 的回退理由。
+    #[test]
+    fn replan_instruction_without_gaps_carries_the_reason() {
+        let text = replan_instruction(&[], 1, "计划里的验收标准无法落地");
+        assert!(text.contains("无边界缺口申报"), "{text}");
+        assert!(text.contains("验收标准无法落地"), "{text}");
+    }
+
+    /// 自审 critical 回归：被截断的 <impact-gap>（无闭合标签延伸到文末）
+    /// 不再抹掉 route 识别——「route=plan + 截断申报」仍走 RoutePlan。
+    #[test]
+    fn truncated_impact_gap_does_not_kill_the_route() {
+        let reply = "发现计划漏了。\n<route>plan</route>\n<impact-gap>\n- 文件：src/extra.rs";
+        let v = classify(&s(&["src/a.rs", "src/extra.rs"]), &s(&["src/a.rs"]), reply);
+        assert!(
+            matches!(v, BoundaryVerdict::RoutePlan { .. }),
+            "截断申报不得判范围膨胀：{v:?}"
+        );
+    }
+
+    /// 自审 critical 回归：协议块只认最后一个——正文里引用的示例块
+    /// 不得劫持解析（旧实现 text.find 取第一个块）。
+    #[test]
+    fn example_blocks_in_prose_do_not_hijack_parsing() {
+        let reply = "申报格式参考：\n<impact-gap>\n- 文件：src/fake.rs\n- 为什么必须改：示例\n- 证据：src/fake.rs:1\n</impact-gap>\n\n真实申报：\n<route>plan</route>\n<impact-gap>\n- 文件：src/real.rs\n- 为什么必须改：真实缺口\n- 证据：src/real.rs:7\n</impact-gap>";
+        let gaps = parse_impact_gaps(reply);
+        assert_eq!(gaps.len(), 1, "只认最后一个块：{gaps:?}");
+        assert_eq!(gaps[0].file, "src/real.rs");
+    }
+
+    /// 自审 major 回归：字段值剥包裹反引号/引号——「- 文件：`src/x.rs`」
+    /// 的申报不再因反引号被判范围膨胀。
+    #[test]
+    fn gap_field_values_are_sanitized() {
+        let reply = "<route>plan</route>\n<impact-gap>\n- 文件：`src/extra.rs`\n- 为什么必须改：x\n- 证据：`src/extra.rs:1`\n</impact-gap>";
+        let v = classify(&s(&["src/a.rs", "src/extra.rs"]), &s(&["src/a.rs"]), reply);
+        let BoundaryVerdict::RoutePlan { gaps, .. } = v else {
+            panic!("反引号申报应被认可，实际 {v:?}");
+        };
+        assert_eq!(gaps[0].file, "src/extra.rs", "反引号必须剥掉：{:?}", gaps[0]);
     }
 
     #[test]

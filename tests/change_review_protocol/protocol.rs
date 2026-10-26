@@ -543,7 +543,7 @@ pub(super) fn a20_tail_route_with_impact_gap_is_still_a_boundary_declaration() {
     ];
     let verdict = classify(&changed, &["src/a.rs".to_string()], declaration);
     match verdict {
-        BoundaryVerdict::RoutePlan { gaps } => {
+        BoundaryVerdict::RoutePlan { gaps, .. } => {
             assert_eq!(gaps.len(), 3, "三条申报都要被认出来：{gaps:?}");
         }
         other => panic!("越界申报应被打回 plan 补边界，实际 {other:?}"),

@@ -133,6 +133,7 @@ impl ChangeSession for Scripted {
         _ui: &mut dyn UserLink,
         _gaps: &[ImpactGap],
         _rt: usize,
+        _reason: &str,
     ) -> Result<PlanTurn> {
         Ok(self.amends.pop_front().expect("amend 脚本耗尽"))
     }

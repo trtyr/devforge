@@ -341,10 +341,11 @@ impl ChangeSession for ProdChangeSession {
         ui: &mut dyn UserLink,
         gaps: &[ImpactGap],
         roundtrip: usize,
+        reason: &str,
     ) -> Result<PlanTurn> {
         let message = format!(
             "{}\n\n补充上下文：目标仓 {}，计划文件 {}。",
-            replan_instruction(gaps, roundtrip),
+            replan_instruction(gaps, roundtrip, reason),
             self.ctx.repo.display(),
             self.ctx.plan_path().display()
         );

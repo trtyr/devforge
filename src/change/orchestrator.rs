@@ -96,11 +96,13 @@ pub trait ChangeSession {
     /// 跑一次 plan（含审查）；`roundtrip` 用于让实现知道这是第几次往返。
     fn run_plan(&mut self, ui: &mut dyn UserLink, roundtrip: usize) -> Result<PlanTurn>;
     /// 带缺口打回 plan：只补边界并重审。
+    /// `reason` 是 coding 的回退散文理由（可能为空）。
     fn amend_plan(
         &mut self,
         ui: &mut dyn UserLink,
         gaps: &[ImpactGap],
         roundtrip: usize,
+        reason: &str,
     ) -> Result<PlanTurn>;
     /// 审查打回 plan：把问题清单回注，plan agent 重写计划后重审。
     fn fix_plan(
@@ -287,6 +289,14 @@ pub fn run<S: ChangeSession>(
             }
             match boundary::classify(&turn.changed, &whitelist, &turn.reply) {
                 BoundaryVerdict::InBoundary => {
+                    // 自审 major：边界门是五道机械门里唯一不落结构化事件的——
+                    // 三种裁决在 runlog 里都不可重建。三种裁决各落一条。
+                    tracing::info!(
+                        component = "change-orchestrator",
+                        event = "boundary.verdict",
+                        verdict = "in_boundary",
+                        "边界门：改动全在白名单内"
+                    );
                     // 消费即清：coding 一旦过门，上一轮失败上下文就过期了
                     state.clear_test_failure();
                     phase_change(&mut state, ChangePhase::Testing);
@@ -294,12 +304,26 @@ pub fn run<S: ChangeSession>(
                     break;
                 }
                 BoundaryVerdict::OutOfBoundary { extra } => {
+                    tracing::info!(
+                        component = "change-orchestrator",
+                        event = "boundary.verdict",
+                        verdict = "out_of_boundary",
+                        extra = ?extra,
+                        "边界门：越界未申报（范围膨胀）"
+                    );
                     return Err(DevforgeError::Quality(format!(
                         "越界改动未申报（范围膨胀）：{}",
                         extra.join("、")
                     )));
                 }
-                BoundaryVerdict::RoutePlan { gaps } => {
+                BoundaryVerdict::RoutePlan { gaps, reason } => {
+                    tracing::info!(
+                        component = "change-orchestrator",
+                        event = "boundary.verdict",
+                        verdict = "route_plan",
+                        gaps = gaps.len(),
+                        "边界门：越界已申报，回 plan 补边界"
+                    );
                     let next = state.roundtrips + 1;
                     boundary::check_roundtrip(next)?;
                     state.bump_roundtrip();
@@ -323,7 +347,7 @@ pub fn run<S: ChangeSession>(
                     // 不再丢计数（原实现只有 Pass 分支 save，重启后 roundtrips 回退、
                     // 上限 3 可被反复绕过、history 往返编号重复）。
                     save(run.store, &state)?;
-                    let amend = session.amend_plan(ui, &gaps, state.roundtrips)?;
+                    let amend = session.amend_plan(ui, &gaps, state.roundtrips, &reason)?;
                     fix_step(&state, "boundary", state.roundtrips, false);
                     tracing::info!(
                         component = "change-orchestrator",

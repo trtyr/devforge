@@ -543,6 +543,7 @@ impl ChangeSession for ScriptedChangeSession {
         _ui: &mut dyn UserLink,
         _gaps: &[devforge::change::boundary::ImpactGap],
         _roundtrip: usize,
+        _reason: &str,
     ) -> Result<PlanTurn> {
         Ok(PlanTurn::Pass)
     }
