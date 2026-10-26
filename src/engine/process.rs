@@ -26,6 +26,10 @@ pub struct SpawnSpec {
     pub working_dir: PathBuf,
     /// 附加参数（测试注入 mock 脚本用）。
     pub extra_args: Vec<String>,
+    /// 台账路径（自审 major）：None = 退回旧行为（working_dir.parent() 涌现推导）。
+    /// 生产必须显式给：change SOP 的 working_dir 是 plans/<p>/<t>/change，涌现推导
+    /// 会把台账落 task 层，而熔断与启动对账只读 project 层——六个角色全部隐身。
+    pub ledger_path: Option<PathBuf>,
 }
 
 impl SpawnSpec {
@@ -39,12 +43,20 @@ impl SpawnSpec {
             session_dir,
             working_dir: PathBuf::from("."),
             extra_args: Vec::new(),
+            ledger_path: None,
         }
     }
 
     /// 设置工作目录（链式；P8-ISSUE-04）。
     pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
         self.working_dir = dir;
+        self
+    }
+
+    /// 显式指定 spawn 台账路径（自审 major：熔断/对账的事实源必须落在
+    /// plans/<项目>/ 层，不能靠 working_dir 涌现推导）。
+    pub fn with_ledger_path(mut self, path: PathBuf) -> Self {
+        self.ledger_path = Some(path);
         self
     }
 }

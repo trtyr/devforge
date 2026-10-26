@@ -140,11 +140,14 @@ impl RpcReviewFactory {
     }
 
     /// P005：显式指定角色与子进程工作目录（编码审查的 cwd = 黑板，报告与树同址）。
+    /// `ledger_path`：spawn 台账显式落点（自审 major：熔断/对账的事实源不能靠
+    /// working_dir 涌现推导——change 审查的 cwd 是 task 层黑板，台账必须回 project 层）。
     pub fn per_round_in(
         profile_dir: std::path::PathBuf,
         role: impl Into<String> + 'static,
         session_root: std::path::PathBuf,
         working_dir: std::path::PathBuf,
+        ledger_path: std::path::PathBuf,
     ) -> Self {
         let counter = std::sync::atomic::AtomicU32::new(0u32);
         let role = role.into();
@@ -159,6 +162,7 @@ impl RpcReviewFactory {
                 session_root.join(format!("review-{n}")),
             )
             .with_working_dir(working_dir.clone())
+            .with_ledger_path(ledger_path.clone())
         })
     }
 }
@@ -243,6 +247,7 @@ mod tests {
             session_dir: dir.path().to_path_buf(),
             working_dir: std::path::PathBuf::from("."),
             extra_args: vec![script.to_string_lossy().into_owned()],
+            ledger_path: None,
         };
         // 裸 sh 跑回放脚本（pi 的 --mode 前缀 sh 不认）
         let mut cmd = Command::new("sh");
@@ -287,6 +292,7 @@ mod tests {
             session_dir: dir.path().to_path_buf(),
             working_dir: PathBuf::from("."),
             extra_args: vec![script.to_string_lossy().into_owned()],
+            ledger_path: None,
         };
         let mut cmd = Command::new("sh");
         cmd.arg(&script);
@@ -334,6 +340,7 @@ mod tests {
             "coding-review",
             root.join("sessions2"),
             root.join("bb"),
+            root.join("spawn-ledger.json"),
         );
         let s3 = (g.make_spec.lock().expect("spec 生成器锁"))();
         assert_eq!(

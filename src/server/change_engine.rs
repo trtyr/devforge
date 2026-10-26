@@ -199,13 +199,23 @@ impl BuiltinRpcEngine {
                 run_id.clone(),
                 sessions.join("change-plan"),
             )
-            .with_working_dir(blackboard.clone()),
+            .with_working_dir(blackboard.clone())
+            // 自审 major：台账必须落 project 层——working_dir（change 黑板）在
+            // task 层，涌现推导会让熔断与启动对账对六个角色全部失明。
+            .with_ledger_path(
+                self.plans_root
+                    .join(&task.project)
+                    .join("spawn-ledger.json"),
+            ),
         )?);
         let plan_review = RpcReviewFactory::per_round_in(
             self.profile_root.join("change-plan-review"),
             "change-plan-review",
             sessions.join("change-plan-reviews"),
             blackboard.clone(),
+            self.plans_root
+                .join(&task.project)
+                .join("spawn-ledger.json"),
         );
         let coding_agent = RpcPlanSession::new(RpcClient::spawn(
             SpawnSpec::new(
@@ -214,13 +224,21 @@ impl BuiltinRpcEngine {
                 run_id.clone(),
                 sessions.join("change-coding"),
             )
-            .with_working_dir(blackboard.clone()),
+            .with_working_dir(blackboard.clone())
+            .with_ledger_path(
+                self.plans_root
+                    .join(&task.project)
+                    .join("spawn-ledger.json"),
+            ),
         )?);
         let coding_review = RpcReviewFactory::per_round_in(
             self.profile_root.join("change-coding-review"),
             "change-coding-review",
             sessions.join("change-coding-reviews"),
             blackboard.clone(),
+            self.plans_root
+                .join(&task.project)
+                .join("spawn-ledger.json"),
         );
         let test_agent = RpcPlanSession::new(RpcClient::spawn(
             SpawnSpec::new(
@@ -229,13 +247,21 @@ impl BuiltinRpcEngine {
                 run_id.clone(),
                 sessions.join("change-testing"),
             )
-            .with_working_dir(blackboard.clone()),
+            .with_working_dir(blackboard.clone())
+            .with_ledger_path(
+                self.plans_root
+                    .join(&task.project)
+                    .join("spawn-ledger.json"),
+            ),
         )?);
         let test_review = RpcReviewFactory::per_round_in(
             self.profile_root.join("change-test-review"),
             "change-test-review",
             sessions.join("change-test-reviews"),
             blackboard.clone(),
+            self.plans_root
+                .join(&task.project)
+                .join("spawn-ledger.json"),
         );
 
         let mut session = ProdChangeSession {

@@ -67,13 +67,15 @@ impl RpcClient {
                 spec.run_id
             ))?;
     // 运行时台账登记（复验熔断归因修复）：budget fuse 强杀与孤儿对账的事实源。
-    // 台账落 plans/<项目>/spawn-ledger.json（working_dir = plans/<项目>/<任务>）。
+    // 自审 major：优先用显式指定的台账路径；没有时才退回 working_dir.parent() 涌现
+    // 推导（change SOP 的 working_dir 是 plans/<p>/<t>/change，推导会落错层）。
     {
-        let ledger_path = spec
-            .working_dir
-            .parent()
-            .map(|p| p.join("spawn-ledger.json"))
-            .unwrap_or_else(|| spec.working_dir.join("spawn-ledger.json"));
+        let ledger_path = spec.ledger_path.clone().unwrap_or_else(|| {
+            spec.working_dir
+                .parent()
+                .map(|p| p.join("spawn-ledger.json"))
+                .unwrap_or_else(|| spec.working_dir.join("spawn-ledger.json"))
+        });
         // 引擎批次：读-改-写必须跨进程互斥（max_concurrent_mutation 默认 2）
         crate::engine::ledger::SpawnLedger::with_file_lock(&ledger_path, || {
         let mut ledger = crate::engine::ledger::SpawnLedger::load_for_record(&ledger_path);

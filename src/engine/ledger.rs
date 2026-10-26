@@ -51,7 +51,20 @@ impl SpawnLedger {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ctx("创建台账目录")?;
         }
-        std::fs::write(path, json).ctx(format!("写台账 {}", path.display()))
+        // 自审 major：原子写（同目录唯一临时名 + rename）——台账是熔断与启动对账的
+        // 事实源，truncate+write 的半截文件会让读方把它当「损坏」，孤儿从此漏杀。
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        (|| -> Result<()> {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp).ctx("建台账临时文件")?;
+            f.write_all(json.as_bytes()).ctx("写台账临时文件")?;
+            f.sync_all().ctx("刷台账临时文件")?;
+            std::fs::rename(&tmp, path).ctx(format!("原子替换台账 {}", path.display()))?;
+            Ok(())
+        })()
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -99,6 +112,14 @@ pub fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
             Err(_) => break,
         }
     }
+    if !acquired {
+        // 自审 major：抢锁失败静默降级 = 把锁要防的丢更新竞态原样放回且无迹可查。
+        tracing::warn!(
+            component = "engine-ledger",
+            lock = %lock.display(),
+            "台账锁超时未获取，无锁继续（丢更新风险自担）"
+        );
+    }
     let out = f();
     if acquired {
         let _ = std::fs::remove_file(&lock);
@@ -134,14 +155,16 @@ pub fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
     }
 
     /// 重启对账：逐条判定 Ours（孤儿，可杀）/ Foreign（绝不动）/ Dead（清账）。
-    /// 双验证：PID 存活 **且** /proc/<pid>/environ 有自家标记。
+    /// 双验证：PID 存活 **且** /proc/<pid>/environ 的 DEVFORGE_MANAGED 值 == 台账条目的
+    /// run_id——自审 major：旧口径只验「标记存在」，PID 被另一台 devforge run 复用时
+    /// 会被误判 Ours 杀掉（杀别人的活进程 = 踩红线）。
     pub fn reconcile(&self) -> Vec<Reconciliation> {
         self.entries
             .iter()
             .map(|e| {
                 if !process_alive(e.pid) {
                     Reconciliation::Dead(e.clone())
-                } else if has_devforge_marker(e.pid) {
+                } else if read_managed_marker(e.pid).as_deref() == Some(e.run_id.as_str()) {
                     Reconciliation::Ours(e.clone())
                 } else {
                     Reconciliation::Foreign(e.clone())
@@ -231,6 +254,15 @@ pub fn kill_run_processes(ledger_path: &Path, run_id: &str) -> usize {
         let rc = unsafe { libc::kill(e.pid as i32, libc::SIGKILL) };
         if rc == 0 {
             killed += 1;
+        } else {
+            // 自审 major：kill 失败静默 = 把「没杀掉」报成「已强杀」。
+            tracing::error!(
+                component = "engine-ledger",
+                pid = e.pid,
+                run_id = %e.run_id,
+                error = %std::io::Error::last_os_error(),
+                "熔断 SIGKILL 失败，进程仍存活"
+            );
         }
     }
     if killed > 0 {
@@ -273,8 +305,8 @@ pub fn reconcile_all(plans_root: &Path) -> (usize, usize, usize) {
         let mut kept = SpawnLedger::default();
         for r in ledger.reconcile() {
             match r {
-                Reconciliation::Ours(e) => match kill_orphan(e.pid) {
-                    Ok(()) => {
+                Reconciliation::Ours(e) => match kill_orphan_wait(e.pid) {
+                    Ok(true) => {
                         killed += 1;
                         tracing::warn!(
                             component = "engine-ledger",
@@ -282,7 +314,18 @@ pub fn reconcile_all(plans_root: &Path) -> (usize, usize, usize) {
                             pid = e.pid,
                             run_id = %e.run_id,
                             role = %e.role,
-                            "启动对账：上一轮遗留的自家子进程已 SIGTERM"
+                            "启动对账：上一轮遗留的自家子进程已 SIGTERM 且已退出"
+                        );
+                    }
+                    Ok(false) => {
+                        // 自审 major：SIGTERM 送达 ≠ 退出——忽略 TERM 的孤儿
+                        // 不得从台账删痕，否则永久失联。
+                        kept.record(e.clone());
+                        tracing::error!(
+                            component = "engine-ledger",
+                            pid = e.pid,
+                            run_id = %e.run_id,
+                            "启动对账：孤儿 SIGTERM 后仍存活，保留台账条目待下次处理"
                         );
                     }
                     Err(err) => {
@@ -302,16 +345,55 @@ pub fn reconcile_all(plans_root: &Path) -> (usize, usize, usize) {
                 Reconciliation::Dead(_) => cleared += 1,
             }
         }
-        if let Err(e) = kept.save(&path) {
-            tracing::error!(
-                component = "engine-ledger",
-                path = %path.display(),
-                error = %e,
-                "启动对账：回写台账失败"
-            );
-        }
+        // 自审 major：回写必须持台账锁，且按「处理前已知 pid 集」判重——
+        // 直接拿盘上旧账并集会把本已清掉的 Dead 条目复活。
+        let known: std::collections::BTreeSet<u32> =
+            ledger.entries.iter().map(|e| e.pid).collect();
+        let saved = crate::engine::ledger::SpawnLedger::with_file_lock(&path, || {
+            let mut merged = kept.clone();
+            if let Ok(later) = SpawnLedger::load(&path) {
+                for e in later.entries {
+                    if !known.contains(&e.pid) && !merged.entries.iter().any(|x| x.pid == e.pid) {
+                        // 对账期间并发登记的新条目，不能丢
+                        merged.record(e);
+                    }
+                }
+            }
+            merged.save(&path)
+        });
     }
     (killed, cleared, foreign)
+}
+
+/// 杀掉自家孤儿（Q005：直接杀，不收养）。SIGTERM 后短等退出。
+/// 返回 Ok(true) = 已退出；Ok(false) = 送达但仍在跑（调用方应保留台账条目）。
+pub fn kill_orphan_wait(pid: u32) -> Result<bool> {
+    kill_orphan(pid)?;
+    // 最多等 2 秒让它自己退；忽略 SIGTERM 的硬骨头留给下次（台账条目保留）。
+    for _ in 0..40 {
+        if process_gone(pid) {
+            return Ok(true);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Ok(process_gone(pid))
+}
+
+/// 进程是否已经走人（不存在**或 zombie**）。
+/// 自审 major：SIGTERM 后子进程变 zombie（父进程未 wait 收尸时 /proc 条目还在），
+/// 只看 /proc/<pid> 存在性会把「已死待收尸」当「还活着」，白等 2 秒后误报杀失败。
+/// 生产里孤儿会被 init 收养自动收尸，但判定本身必须对 Z 态诚实。
+fn process_gone(pid: u32) -> bool {
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(s) => s,
+        Err(_) => return true,
+    };
+    // stat 格式：pid (comm) state ...——comm 可含任意字符（含空格与括号），
+    // 取最后一个 ')' 之后的第一个非空白字符才是 state。
+    match stat.rsplit_once(')') {
+        Some((_, rest)) => !rest.trim_start().starts_with('Z'),
+        None => false,
+    }
 }
 
 /// 杀掉自家孤儿（Q005：直接杀，不收养）。SIGTERM。
@@ -417,6 +499,62 @@ mod tests {
         assert!(!p.with_extension("json.bak").exists(), "首次启动不该生成 .bak");
     }
 
+    /// 自审 major 回归：标记值≠台账条目 run_id 的活进程必须判 Foreign——
+    /// 旧口径只验「标记存在」，PID 被另一台 run 复用时会把它当 Ours 杀掉
+    ///（杀别人的活进程 = 踩红线）。真子进程带另一 run 的标记验证。
+    #[test]
+    fn reconcile_never_claims_a_process_with_mismatched_run_id() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .env("DEVFORGE_MANAGED", "run-other")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+        // exec 完成前 /proc/<pid>/environ 可能还没就绪——先等标记出现再对账，
+        // 否则测的是竞态不是语义。
+        assert_eq!(wait_for_marker(pid, 2000).as_deref(), Some("run-other"));
+        let ledger = SpawnLedger {
+            entries: vec![entry(pid)],
+            ..Default::default()
+        };
+        let rec = ledger.reconcile();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            matches!(rec.as_slice(), [Reconciliation::Foreign(_)]),
+            "标记值 run-other ≠ 条目 run-1，必须判 Foreign：{:?}",
+            rec
+        );
+    }
+
+    /// 正向配套：标记值 == 条目 run_id 才判 Ours（孤儿清理的真前提）。
+    #[test]
+    fn reconcile_claims_ours_only_when_marker_value_matches() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .env("DEVFORGE_MANAGED", "run-1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+        assert_eq!(wait_for_marker(pid, 2000).as_deref(), Some("run-1"));
+        let ledger = SpawnLedger {
+            entries: vec![entry(pid)],
+            ..Default::default()
+        };
+        let rec = ledger.reconcile();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            matches!(rec.as_slice(), [Reconciliation::Ours(_)]),
+            "标记值匹配条目 run-1，必须判 Ours：{:?}",
+            rec
+        );
+    }
+
     #[test]
     fn self_process_alive_and_dead_pid() {
         assert!(process_alive(std::process::id()));
@@ -455,9 +593,11 @@ mod tests {
 
     #[test]
     fn our_spawned_process_with_marker_is_ours() {
+        // 自审 major 语义升级：标记**值**必须等于条目 run_id（run-1）——
+        // 旧口径只验标记存在，PID 被别的 run 复用时误杀。
         let mut child = Command::new("sleep")
             .arg("30")
-            .env(MANAGED_ENV, "run-orphan-1")
+            .env(MANAGED_ENV, "run-1")
             .stdout(Stdio::null())
             .spawn()
             .unwrap();
@@ -465,7 +605,7 @@ mod tests {
         assert!(process_alive(pid));
         assert_eq!(
             wait_for_marker(pid, 2000).as_deref(),
-            Some("run-orphan-1"),
+            Some("run-1"),
             "environ 标记应在超时内可读"
         );
         assert!(has_devforge_marker(pid));

@@ -91,7 +91,13 @@ impl BuiltinRpcEngine {
                 run.id.0.clone(),
                 sessions.join("doc"),
             )
-            .with_working_dir(blackboard.clone()),
+            .with_working_dir(blackboard.clone())
+            // 自审 major：台账显式落 project 层，不靠 working_dir 涌现推导。
+            .with_ledger_path(
+                self.plans_root
+                    .join(&task.project)
+                    .join("spawn-ledger.json"),
+            ),
         )?;
         let agent = RpcPlanSession::new(agent_client);
         let factory = RpcReviewFactory::per_round_in(
@@ -99,6 +105,9 @@ impl BuiltinRpcEngine {
             "doc-review",
             sessions.join("doc-reviews"),
             blackboard,
+            self.plans_root
+                .join(&task.project)
+                .join("spawn-ledger.json"),
         );
         let mut user = RelayUserLink {
             relay: self.ui.clone(),
@@ -350,8 +359,15 @@ impl BuiltinRpcEngine {
                     }
                 }
 
-                let mut final_factory =
-                    RpcReviewFactory::per_round_in(final_review_root, "doc-review", final_session_root, final_blackboard);
+                let mut final_factory = RpcReviewFactory::per_round_in(
+                    final_review_root,
+                    "doc-review",
+                    final_session_root,
+                    final_blackboard.clone(),
+                    self.plans_root
+                        .join(&task.project)
+                        .join("spawn-ledger.json"),
+                );
                 // 引擎审计修复 #6：终审也吃协议重试（见 final_review_with_retry）
                 let verdict = final_review_with_retry(
                     &mut final_factory,

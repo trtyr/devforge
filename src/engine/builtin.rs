@@ -138,6 +138,8 @@ impl RunEngine for BuiltinRpcEngine {
                 "code-review",
                 sessions.join("code-review"),
                 self.plans_root.join(&task.project).join(&task.id),
+                // 自审 major：台账显式落 project 层。
+                self.plans_root.join(&task.project).join("spawn-ledger.json"),
             );
             let plans_root = self.plans_root.clone();
             let watch_dirs = vec![sessions.join("code-review")];
@@ -237,7 +239,13 @@ impl BuiltinRpcEngine {
                 run.id.0.clone(),
                 sessions.join("plan"),
             )
-            .with_working_dir(working_dir),
+            .with_working_dir(working_dir)
+            // 自审 major：台账显式落 project 层。
+            .with_ledger_path(
+                self.plans_root
+                    .join(&task.project)
+                    .join("spawn-ledger.json"),
+            ),
         )?;
         let plan = RpcPlanSession::new(plan_client);
         let factory = RpcReviewFactory::per_round(
@@ -310,7 +318,13 @@ impl BuiltinRpcEngine {
                 run.id.0.clone(),
                 sessions.join("coding"),
             )
-            .with_working_dir(blackboard.clone()),
+            .with_working_dir(blackboard.clone())
+            // 自审 major：MVP coding 的 blackboard 也是 task 层，台账显式落 project 层。
+            .with_ledger_path(
+                self.plans_root
+                    .join(&task.project)
+                    .join("spawn-ledger.json"),
+            ),
         )?;
         let agent = RpcPlanSession::new(agent_client);
         let factory = RpcReviewFactory::per_round_in(
@@ -318,6 +332,9 @@ impl BuiltinRpcEngine {
             "coding-review",
             sessions.join("coding-reviews"),
             blackboard,
+            self.plans_root
+                .join(&task.project)
+                .join("spawn-ledger.json"),
         );
         let mut user = RelayUserLink {
             relay: self.ui.clone(),
@@ -397,7 +414,12 @@ impl BuiltinRpcEngine {
                 run.id.0.clone(),
                 sessions.join("testing"),
             )
-            .with_working_dir(blackboard.clone()),
+            .with_working_dir(blackboard.clone())
+            .with_ledger_path(
+                self.plans_root
+                    .join(&task.project)
+                    .join("spawn-ledger.json"),
+            ),
         )?;
         let agent = RpcPlanSession::new(agent_client);
         let test_review_factory = RpcReviewFactory::per_round_in(
@@ -405,6 +427,9 @@ impl BuiltinRpcEngine {
             "test-review",
             sessions.join("testing-reviews"),
             blackboard.clone(),
+            self.plans_root
+                .join(&task.project)
+                .join("spawn-ledger.json"),
         );
         let mut user = RelayUserLink {
             relay: self.ui.clone(),
@@ -419,6 +444,11 @@ impl BuiltinRpcEngine {
         let docfix_sessions = sessions.join("doc-fix");
         let doc_review_sessions = sessions.join("doc-reviews");
         let watch_dirs = self.testing_watch_dirs(&run.id.0);
+        // 自审 major：doc-fix 交接的 spawn 台账也必须落 project 层（闭包里拿不到 task）。
+        let ledger_path_in_scope = self
+            .plans_root
+            .join(&task.project)
+            .join("spawn-ledger.json");
 
         let sop_result = run_with_watchdog(
             control,
@@ -464,7 +494,9 @@ impl BuiltinRpcEngine {
                                     run_id.clone(),
                                     docfix_sessions.clone(),
                                 )
-                                .with_working_dir(blackboard.clone()),
+                                .with_working_dir(blackboard.clone())
+                                // 自审 major：台账显式落 project 层（run_id 被 move 前先取 project）。
+                                .with_ledger_path(ledger_path_in_scope.clone()),
                             )?;
                             let docfix_agent = RpcPlanSession::new(docfix_client);
                             let doc_review_factory = RpcReviewFactory::per_round_in(
@@ -472,6 +504,7 @@ impl BuiltinRpcEngine {
                                 "doc-review",
                                 doc_review_sessions.clone(),
                                 blackboard.clone(),
+                                ledger_path_in_scope.clone(),
                             );
                             let mut fix_loop = DocFixSopLoop::new(docfix_agent, doc_review_factory);
                             let fix_report =
@@ -534,7 +567,12 @@ impl BuiltinRpcEngine {
                 run.id.0.clone(),
                 sessions.join("doc-fix"),
             )
-            .with_working_dir(blackboard.clone()),
+            .with_working_dir(blackboard.clone())
+            .with_ledger_path(
+                self.plans_root
+                    .join(&task.project)
+                    .join("spawn-ledger.json"),
+            ),
         )?;
         let agent = RpcPlanSession::new(agent_client);
         let factory = RpcReviewFactory::per_round_in(
@@ -542,6 +580,9 @@ impl BuiltinRpcEngine {
             "doc-review",
             sessions.join("doc-reviews"),
             blackboard,
+            self.plans_root
+                .join(&task.project)
+                .join("spawn-ledger.json"),
         );
         let mut user = RelayUserLink {
             relay: self.ui.clone(),
