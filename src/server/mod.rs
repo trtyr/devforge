@@ -201,6 +201,9 @@ pub struct ServerState {
     /// 观测根覆盖（Some = 本实例的 run 把心跳写在这里；None = 用进程级解析结果）。
     /// 单测用它把落点钉在自己的临时目录 → 不落用户 HOME（R13），且**不与其它单测抢全局 root**。
     pub obs_root: Option<PathBuf>,
+    /// 调度有效并发上限（自审 major）：tick 准入用 min(cfg, store)，status 只看 store
+    /// 会把「capacity 阻塞」误报成可跑。调度循环启动同步后写入；0 = 未同步（回退 store）。
+    pub effective_max_concurrent: std::sync::atomic::AtomicUsize,
 }
 
 impl ServerState {
@@ -235,6 +238,7 @@ impl ServerState {
             retry_policy: crate::engine::policy::RetryPolicy::default(),
             render_gate: RenderGate::new(),
             obs_root: None,
+            effective_max_concurrent: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 

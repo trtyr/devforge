@@ -141,48 +141,6 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         if sha.is_empty() {
             continue;
         }
-        let mut queue = match MergeQueue::load(&st.plans_root, &project) {
-            Ok(q) => q,
-            Err(e) => {
-                tracing::warn!(component = "scheduler", error = %e, "队列加载失败，跳过入队");
-                continue;
-            }
-        };
-        // 全仓审计 #2：NeedsRebase 不是终态——语义是「目标在集成期间被推进，
-        // rebase 到新目标后重验」。旧实现 next_pending 只挑 Pending，一次 CAS 失败
-        // 就把任务永久卡死（scheduler 又「任意状态都跳过入队」）。这里把 NeedsRebase
-        // 放回 Pending 重验；NeedsRepair 保持终态（修复 = 新候选带新证据 = 新 frozen_sha）。
-        let mut rearmed = false;
-        for c in queue.candidates.iter_mut() {
-            if let CandidateStatus::NeedsRebase { target_moved_to } = &c.status {
-                tracing::warn!(
-                    component = "scheduler",
-                    project = %project,
-                    task = %c.task_id,
-                    target = %target_moved_to,
-                    "NeedsRebase 候选放回 Pending 重验（终态不停滞）"
-                );
-                c.status = CandidateStatus::Pending;
-                rearmed = true;
-            }
-        }
-        if rearmed && let Err(e) = queue.save() {
-            tracing::warn!(component = "scheduler", error = %e, "重排候选回写失败");
-        }
-        // 去重口径（全仓审计 #2）：Pending/Integrated = 本任务已在队或已合入；
-        // NeedsRepair 只在 frozen_sha 未变时跳过（同一批失败重投只会再失败一次），
-        // 任务重跑产生新 frozen_sha 即视为「新证据」允许入队——不再静默停滞。
-        let already = queue.candidates.iter().any(|c| {
-            c.task_id == task_id
-                && match &c.status {
-                    CandidateStatus::Pending | CandidateStatus::Integrated { .. } => true,
-                    CandidateStatus::NeedsRebase { .. } => true,
-                    CandidateStatus::NeedsRepair { .. } => c.frozen_sha == sha,
-                }
-        });
-        if already {
-            continue;
-        }
         let contract = {
             let store = st.store.lock().expect("store 锁");
             store
@@ -190,21 +148,60 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
                 .and_then(|t| t.contract.clone())
         };
         let Some(contract) = contract else { continue };
-        queue.enqueue(Candidate {
-            task_id: task_id.clone(),
-            frozen_sha: sha,
-            base_rev: contract.base_rev.clone().unwrap_or_default(),
-            owned_paths: contract.owned_paths.clone(),
-            status: CandidateStatus::Pending,
-            evidence_paths: vec![],
+        // 自审 major：入队走锁定读-改-写（rearm + 去重 + enqueue 同一把锁）——
+        // 旧口径无锁 load→save，与 API 入队并发时互相覆写（丢候选）。
+        let enqueued = MergeQueue::mutate(&st.plans_root, &project, |queue| {
+            // 全仓审计 #2：NeedsRebase 不是终态——rebase 到新目标后重验；
+            // NeedsRepair 保持终态（修复 = 新候选带新证据 = 新 frozen_sha）。
+            for c in queue.candidates.iter_mut() {
+                if let CandidateStatus::NeedsRebase { target_moved_to } = &c.status {
+                    tracing::warn!(
+                        component = "scheduler",
+                        project = %project,
+                        task = %c.task_id,
+                        target = %target_moved_to,
+                        "NeedsRebase 候选放回 Pending 重验（终态不停滞）"
+                    );
+                    c.status = CandidateStatus::Pending;
+                }
+            }
+            // 去重口径（全仓审计 #2）：Pending/Integrated = 本任务已在队或已合入；
+            // NeedsRepair 只在 frozen_sha 未变时跳过；任务重跑产生新 frozen_sha
+            // 即视为「新证据」允许入队——不再静默停滞。
+            let already = queue.candidates.iter().any(|c| {
+                c.task_id == *task_id
+                    && match &c.status {
+                        CandidateStatus::Pending | CandidateStatus::Integrated { .. } => true,
+                        CandidateStatus::NeedsRebase { .. } => true,
+                        CandidateStatus::NeedsRepair { .. } => c.frozen_sha == *sha,
+                    }
+            });
+            if already {
+                return Ok(false);
+            }
+            queue.enqueue(Candidate {
+                task_id: task_id.clone(),
+                frozen_sha: sha.clone(),
+                base_rev: contract.base_rev.clone().unwrap_or_default(),
+                owned_paths: contract.owned_paths.clone(),
+                status: CandidateStatus::Pending,
+                evidence_paths: vec![],
+            });
+            Ok(true)
         });
-        if queue.save().is_ok() {
-            report.auto_enqueued.push(format!("{project}/{task_id}"));
-            st.emit(serde_json::json!({
-                "type": "integration.auto_enqueued",
-                "project": project,
-                "task": task_id,
-            }));
+        match enqueued {
+            Ok(true) => {
+                report.auto_enqueued.push(format!("{project}/{task_id}"));
+                st.emit(serde_json::json!({
+                    "type": "integration.auto_enqueued",
+                    "project": project,
+                    "task": task_id,
+                }));
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(component = "scheduler", error = %e, "队列读改写失败，跳过入队");
+            }
         }
     }
 
@@ -367,6 +364,12 @@ pub async fn scheduler_loop(st: SharedState, cfg: SchedulerConfig) {
         store.max_concurrent_runs = store.max_concurrent_runs.max(cfg.max_concurrent_mutation);
     }
     let mut last = std::time::Instant::now() - Duration::from_secs(60);
+    // 自审 major：启动同步后有效准入上限 = min(cfg, store) = cfg（同步保证 store ≥ cfg）。
+    // 写进共享态，status() 读同一份，不再与 tick 两套口径。
+    st.effective_max_concurrent.store(
+        cfg.max_concurrent_mutation.max(1),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
         if !load_kick() && last.elapsed() < Duration::from_secs(30) {
@@ -375,9 +378,27 @@ pub async fn scheduler_loop(st: SharedState, cfg: SchedulerConfig) {
         last = std::time::Instant::now();
         let st2 = st.clone();
         let cfg2 = cfg.clone();
-        let report = tokio::task::spawn_blocking(move || tick(&st2, &cfg2))
-            .await
-            .unwrap_or_default();
+        // 自审 major：tick panic 不再被 unwrap_or_default 静默吞成空报告——
+        // 调度器看起来健康实则已死。panic 必须 ERROR 留痕，本轮跳过派工。
+        let report = match tokio::task::spawn_blocking(move || tick(&st2, &cfg2)).await {
+            Ok(report) => report,
+            Err(err) => {
+                if err.is_panic() {
+                    tracing::error!(
+                        component = "scheduler",
+                        panic = %err,
+                        "调度 tick panic——本轮跳过派工（调度循环存活）"
+                    );
+                } else {
+                    tracing::error!(
+                        component = "scheduler",
+                        error = %err,
+                        "调度 tick 任务异常结束——本轮跳过派工"
+                    );
+                }
+                continue;
+            }
+        };
         for plan in &report.dispatched {
             let (project, task) = plan.split_once('/').unwrap_or((plan.as_str(), ""));
             launch(&st, project, task).await;
@@ -419,7 +440,17 @@ pub fn status(st: &SharedState) -> serde_json::Value {
         .tasks
         .iter()
         .any(|t| t.status == TaskStatus::Running && t.exclusive);
-    let capacity_full = store.running_run_count() >= store.max_concurrent_runs.max(1);
+    // 自审 major：容量阈值与 tick 同源（调度循环启动同步后写入的有效上限），
+    // 不再看 store 硬上限——否则 capacity 阻塞的任务被误报成可跑。
+    let synced = st
+        .effective_max_concurrent
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let effective_cap = if synced == 0 {
+        store.max_concurrent_runs.max(1)
+    } else {
+        synced
+    };
+    let capacity_full = store.running_run_count() >= effective_cap;
 
     let mut runnable: Vec<String> = Vec::new();
     let mut blocked: Vec<serde_json::Value> = Vec::new();

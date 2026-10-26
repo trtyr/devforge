@@ -81,13 +81,49 @@ impl MergeQueue {
         self.candidates.push(cand);
     }
 
-    /// 落盘。
+    /// 落盘（自审 major：原子写——半截 queue.json 会让下一次 load 判损坏静默清空）。
     pub fn save(&self) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).ctx("建队列目录")?;
         }
-        std::fs::write(&self.path, serde_json::to_vec_pretty(&self.candidates).ctx("序列化队列")?)
-            .ctx("写队列文件")
+        let bytes = serde_json::to_vec_pretty(&self.candidates).ctx("序列化队列")?;
+        let tmp = self.path.with_extension(format!(
+            "json.{}.tmp",
+            std::process::id()
+        ));
+        (|| -> Result<()> {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp).ctx("建队列临时文件")?;
+            f.write_all(&bytes).ctx("写队列临时文件")?;
+            f.sync_all().ctx("刷队列临时文件")?;
+            std::fs::rename(&tmp, &self.path).ctx("原子替换队列文件")?;
+            Ok(())
+        })()
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+    }
+
+    /// 读-改-写互斥（自审 major）：与 scheduler tick / API 入队并发时，无锁的
+    /// load→save 会互相覆写（丢候选/状态回退成 Pending 造成重复集成）。
+    /// 锁文件紧邻 queue.json，复用引擎的 with_file_lock。
+    ///
+    /// 已知局限（登记不修）：集成器 integrate_next 持 &mut 队列跑完整合并（分钟级），
+    /// 不适合持锁——其每次状态转移的 save 仍以自己快照为准，期间经 API 并发入队的
+    /// 候选会被覆盖。快速写方（API/tick）已全部走本方法，长窗口由集成器独占的
+    /// 运行语义兜底。
+    pub fn mutate<T>(
+        plans_root: &Path,
+        project: &str,
+        f: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let path = Self::queue_path(plans_root, project);
+        crate::engine::ledger::SpawnLedger::with_file_lock(&path, || {
+            let mut q = Self::load(plans_root, project)?;
+            let out = f(&mut q)?;
+            q.save()?;
+            Ok(out)
+        })
     }
 
     /// 第一个 Pending 候选的下标。

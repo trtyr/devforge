@@ -1071,17 +1071,19 @@ pub async fn enqueue_candidate(
     if !safe_segment(&project) {
         return Err(ApiError::bad_request("项目名含非法路径字符"));
     }
-    let mut q = crate::integration::MergeQueue::load(&st.plans_root, &project)?;
-    let cand = crate::integration::Candidate {
-        task_id: req.task_id.clone(),
-        frozen_sha: req.frozen_sha,
-        base_rev: req.base_rev,
-        owned_paths: req.owned_paths,
-        status: crate::integration::CandidateStatus::Pending,
-        evidence_paths: vec![],
-    };
-    q.enqueue(cand);
-    q.save()?;
+    // 自审 major：入队走锁定读-改-写——与 scheduler tick 的自动入队并发时，
+    // 无锁 load→save 会互相覆写（丢候选）。
+    let depth = crate::integration::MergeQueue::mutate(&st.plans_root, &project, |q| {
+        q.enqueue(crate::integration::Candidate {
+            task_id: req.task_id.clone(),
+            frozen_sha: req.frozen_sha.clone(),
+            base_rev: req.base_rev.clone(),
+            owned_paths: req.owned_paths.clone(),
+            status: crate::integration::CandidateStatus::Pending,
+            evidence_paths: vec![],
+        });
+        Ok(q.candidates.len())
+    })?;
     st.emit(json!({
         "type": "integration.enqueued",
         "project": project,
@@ -1089,7 +1091,7 @@ pub async fn enqueue_candidate(
     }));
     Ok((
         StatusCode::CREATED,
-        Json(json!({"queued": true, "depth": q.candidates.len()})),
+        Json(json!({"queued": true, "depth": depth})),
     ))
 }
 
