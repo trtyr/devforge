@@ -232,6 +232,9 @@ impl<'a> Renderer<'a> {
         // 包安装（必装四件套 + 差异化包）——双记录由 installer 负责
         let mut packages = self.manifest.base_packages.clone();
         packages.extend(agent.extra_packages.iter().cloned());
+        // 自审 major：撤包方向的对账——manifest 移除的包若只在 settings 抹掉、
+        // npm 依赖里残留，双记录自此自相矛盾（后续「已装齐」判定也建立在脏记录上）。
+        prune_npm_dependencies(&dir, &packages)?;
         // 幂等跳过（CAL-19-RENDER）：已装齐且双记录完整则不重装，只回写 settings 记录。
         // 判定标准刻意保守——npm/package.json 缺失、或清单新增了包，一律重装全量。
         let installed = packages.iter().all(|p| previous.contains(p));
@@ -325,6 +328,38 @@ fn recorded_packages(dir: &Path) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 撤包对账：把 npm/package.json 的 dependencies 修剪成清单期望集。
+/// 清单外残留（已撤包）与缺失（损坏记录）都交给重装路径；无记录则不动。
+fn prune_npm_dependencies(dir: &Path, desired: &[String]) -> Result<()> {
+    let path = dir.join("npm").join("package.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = fs::read_to_string(&path).ctx("读 npm/package.json")?;
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Ok(());
+    };
+    let Some(deps) = v.get_mut("dependencies").and_then(|d| d.as_object_mut()) else {
+        return Ok(());
+    };
+    let before = deps.len();
+    deps.retain(|k, _| desired.iter().any(|p| p == k));
+    let pruned = before - deps.len();
+    drop(deps);
+    if pruned == 0 {
+        return Ok(());
+    }
+    fs::write(&path, serde_json::to_string_pretty(&v).ctx("序列化 package.json")?)
+        .ctx("写 npm/package.json（撤包对账）")?;
+    tracing::info!(
+        component = "renderer",
+        pruned,
+        path = %path.display(),
+        "npm 依赖对账：移除清单外的残留包"
+    );
+    Ok(())
 }
 
 /// 递归复制目录。

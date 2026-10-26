@@ -207,6 +207,81 @@ fn second_render_skips_install_when_packages_already_present() {
     );
 }
 
+/// 自审 major 回归：撤包方向——manifest 移除包后重渲染，settings 与 npm 依赖
+/// 都不得残留已撤包（旧口径只抹 settings，npm 依赖留着，双记录自此自相矛盾）。
+#[test]
+fn package_removal_reconciles_both_records() {
+    let mut manifest = ConfigManifest::builtin();
+    let root = tempfile::tempdir().unwrap();
+    let counter = CountingInstaller::default();
+    let removed = "npm:pi-to-be-removed";
+    manifest
+        .agents
+        .iter_mut()
+        .find(|a| a.name == "plan-agent")
+        .unwrap()
+        .extra_packages
+        .push(removed.into());
+    let r = Renderer {
+        manifest: &manifest,
+        installer: &counter,
+        skills_source: None,
+    };
+    r.render_agent(root.path(), "plan-agent").unwrap();
+
+    // 撤包：从清单移除，重渲染（期望集回落到 base_packages）
+    let desired = manifest.base_packages.clone();
+    drop(r); // r 借着 &manifest，先还了才能改清单
+    manifest
+        .agents
+        .iter_mut()
+        .find(|a| a.name == "plan-agent")
+        .unwrap()
+        .extra_packages
+        .clear();
+    let before = counter.0.load(Ordering::SeqCst);
+    let r = Renderer {
+        manifest: &manifest,
+        installer: &counter,
+        skills_source: None,
+    };
+    r.render_agent(root.path(), "plan-agent").unwrap();
+
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.path().join("plan-agent/settings.json")).unwrap(),
+    )
+    .unwrap();
+    let pkgs: Vec<&str> = settings["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        !pkgs.iter().any(|p| p.contains("pi-to-be-removed")),
+        "settings 不得残留已撤包：{pkgs:?}"
+    );
+    let npm: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.path().join("plan-agent/npm/package.json")).unwrap(),
+    )
+    .unwrap();
+    let deps = npm["dependencies"].as_object().unwrap();
+    assert!(
+        !deps.keys().any(|k| k.contains("pi-to-be-removed")),
+        "npm 依赖不得残留已撤包（双记录对账）：{deps:?}"
+    );
+    assert_eq!(
+        deps.len(),
+        desired.len(),
+        "npm 依赖应恰好等于清单期望集：{deps:?}"
+    );
+    assert_eq!(
+        counter.0.load(Ordering::SeqCst),
+        before,
+        "撤包不需要重装（对账即可）"
+    );
+}
+
 #[test]
 fn manifest_package_change_forces_reinstall() {
     let mut manifest = ConfigManifest::builtin();
