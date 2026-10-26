@@ -38,9 +38,10 @@ fn line_prefix(line: Option<&str>) -> Option<String> {
     Some(normalize_ws(&t.chars().take(40).collect::<String>()))
 }
 
-/// evidence 中是否含 `path:line` 形态引用（审计修复 #4：零证据不入的判定基础）。
-/// 解析启发式与 [`evidence_refs_out_of_file`] 同源：路径段（含扩展名或目录分隔）+ 纯数字行号。
-fn has_evidence_ref(evidence: &str) -> bool {
+/// 解析 evidence 里的全部 `path:line` 引用，返回路径段（含扩展名或目录分隔 + 纯数字行号）。
+/// [`has_evidence_ref`] 与「引用自身位置」校验共用本解析，两道门不会漂移。
+fn evidence_ref_paths(evidence: &str) -> Vec<String> {
+    let mut out = Vec::new();
     let mut i = 0usize;
     while let Some(pos) = evidence[i..].find(':') {
         let abs = i + pos;
@@ -60,10 +61,25 @@ fn has_evidence_ref(evidence: &str) -> bool {
             && !digits.is_empty()
             && (path.contains('.') || path.contains('/'))
         {
-            return true;
+            out.push(path.to_string());
         }
     }
-    false
+    out
+}
+
+/// evidence 中是否含 `path:line` 形态引用（审计修复 #4：零证据不入的判定基础）。
+fn has_evidence_ref(evidence: &str) -> bool {
+    !evidence_ref_paths(evidence).is_empty()
+}
+
+/// 引用路径是否指回发现自身位置（自审 major）：`./` 归一后全等，或引用是发现路径的
+/// 段后缀（容忍仓根外层冗余前缀）。
+fn ref_matches_path(ref_path: &str, finding_path: &str) -> bool {
+    fn norm(p: &str) -> &str {
+        p.trim_start_matches("./")
+    }
+    let (r, f) = (norm(ref_path), norm(finding_path));
+    r == f || r.ends_with(&format!("/{f}"))
 }
 
 /// 对一批发现跑核验：`workspace` = 仓库根（存在性判定的基准）。
@@ -86,6 +102,19 @@ pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
             report.dropped.push((
                 format!("{}/{}", f.path, f.line),
                 "零证据：evidence 为空或无 path:line 引用".to_string(),
+            ));
+            continue;
+        }
+        // 自审 major：证据至少有一处引用指回发现自身的位置——旧实现允许 evidence
+        // 全部指向别的文件，「读过再报」对跨文件引用失效（短行豁免引用原文，
+        // 但不豁免引用自己的位置）。
+        if !evidence_ref_paths(&f.evidence)
+            .iter()
+            .any(|p| ref_matches_path(p, &f.path))
+        {
+            report.dropped.push((
+                format!("{}/{}", f.path, f.line),
+                "证据指错位置：evidence 中没有任何引用指向本条 path".to_string(),
             ));
             continue;
         }
@@ -298,10 +327,27 @@ mod tests {
     fn evidence_ref_to_nonexistent_file_is_dropped() {
         let r = fixture();
         let mut f = finding("src/real.rs", 2);
-        f.evidence = "参照 src/ghost.rs:1 的实现".into();
+        // 自身引用在位（过「证据指错位置」门），幽灵引用触发「引用越界」门
+        f.evidence = "src/real.rs:2 参照 src/ghost.rs:1 的实现".into();
         let v = verify(r.path(), &[f]);
         assert!(v.kept.is_empty(), "证据引用幽灵文件应整条丢弃");
         assert!(v.dropped[0].1.contains("文件不存在"), "{}", v.dropped[0].1);
+    }
+
+    /// 自审 major 回归：证据全部指向别的文件 = 「读过再报」失效，整条丢弃。
+    #[test]
+    fn evidence_pointing_only_at_other_files_is_dropped() {
+        let r = fixture();
+        let mut f = finding("src/real.rs", 2);
+        f.evidence = "参照 src/other.rs:1 的实现".into();
+        std::fs::write(r.path().join("src/other.rs"), "fn other() {}\n").unwrap();
+        let v = verify(r.path(), &[f]);
+        assert!(v.kept.is_empty(), "证据不指自身位置应丢弃");
+        assert!(
+            v.dropped[0].1.contains("证据指错位置"),
+            "{}",
+            v.dropped[0].1
+        );
     }
 
     /// 审计修复 #7：路径穿越（../ 或绝对路径）不读盘直接丢弃，原因标「越界」非「不存在」

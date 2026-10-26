@@ -111,17 +111,44 @@ fn split_oversized_file(
             }
         })
         .collect();
-    groups
-        .into_iter()
-        .enumerate()
-        .map(|(i, g)| {
-            let focus = g
-                .iter()
-                .map(|(l, name)| format!("{name}（第 {l} 行）"))
-                .collect();
-            (vec![path.to_string()], focus, Some((starts[i], ends[i])))
-        })
-        .collect()
+    // 自审 major：单片行数预算必须在分片出口兑现——旧实现只按符号分组，单个大符号
+    //（如几千行的函数）或尾部符号到文件尾的跨度可以让一片远超 MAX_UNIT_LINES，
+    // 「每片 ≤ 800 行」的预算在单文件场景完全失效。超宽片按 MAX_UNIT_LINES 硬切
+    // 子区间（同一符号跨多片时 focus 重复列出，行区间预查各自只看本段）。
+    let mut pieces: Vec<Piece> = Vec::new();
+    for (i, g) in groups.into_iter().enumerate() {
+        let (s, e) = (starts[i], ends[i]);
+        // focus 只列**落在本片行区间内**的符号：超预算硬切出的尾片可能一个符号
+        // 都不含——旧实现把整组符号复制给每片，批次指令宣称「本片重点符号」
+        // 却指向不在本片的行，审查面被误导。
+        let focus: Vec<String> = g
+            .iter()
+            .filter(|(l, _)| *l >= s && *l <= e)
+            .map(|(l, name)| format!("{name}（第 {l} 行）"))
+            .collect();
+        if e.saturating_sub(s) + 1 <= MAX_UNIT_LINES {
+            pieces.push((vec![path.to_string()], focus, Some((s, e))));
+        } else {
+            let mut cs = s;
+            while cs <= e {
+                let ce = (cs + MAX_UNIT_LINES - 1).min(e);
+                let in_range: Vec<String> = g
+                    .iter()
+                    .filter(|(l, _)| *l >= cs && *l <= ce)
+                    .map(|(l, name)| format!("{name}（第 {l} 行）"))
+                    .collect();
+                pieces.push((vec![path.to_string()], in_range, Some((cs, ce))));
+                cs = ce + 1;
+            }
+        }
+    }
+    // 只产出一片 = 整文件一片（不存在「其它片由其它批次负责」），focus 清空。
+    if pieces.len() == 1 {
+        if let Some((_, focus, _)) = pieces.first_mut() {
+            focus.clear();
+        }
+    }
+    pieces
 }
 
 /// 按双预算顺序切批（不重排：同批文件语义仍连贯）。
@@ -388,6 +415,73 @@ mod tests {
         for u in &big {
             assert!(!u.focus.is_empty(), "分片必须带 focus（否则等于没切）：{u:?}");
         }
+    }
+
+    /// 自审 major 回归：单片行预算必须在分片出口兑现——符号聚集在前部的超大文件，
+    /// 旧实现一个组一路划到 total_lines，单片可达几千行，预算完全失效。
+    #[test]
+    fn oversized_pieces_never_exceed_the_line_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        let mut body = String::new();
+        // 符号全部聚集在前 100 行，后面 1900 行都是无符号正文
+        for i in 0..5 {
+            body.push_str(&format!("pub fn g{i}() {{}}\n// pad\n"));
+        }
+        for n in 0..1900 {
+            body.push_str(&format!("// tail filler {n}\n"));
+        }
+        std::fs::write(tmp.path().join("src/front.rs"), body).unwrap();
+        let plan = build_plan(tmp.path()).unwrap();
+        let pieces: Vec<&AuditUnit> = plan
+            .units
+            .iter()
+            .filter(|u| u.files == vec!["src/front.rs".to_string()])
+            .collect();
+        assert!(
+            pieces.len() >= 3,
+            "2000 行文件必须切成 ≥3 片（实际 {} 片）",
+            pieces.len()
+        );
+        for u in &pieces {
+            let (s, e) = u.focus_range.expect("每片必须带行区间");
+            assert!(
+                e - s + 1 <= MAX_UNIT_LINES,
+                "单片 {s}..{e} 共 {} 行，超预算 {MAX_UNIT_LINES}",
+                e - s + 1
+            );
+        }
+    }
+
+    /// 自审 major 回归：只落在本片行区间内的符号才进 focus——硬切出的尾片可能
+    /// 一个符号都不含，旧实现把整组符号复制给每片，批次指令宣称的「重点符号」
+    /// 指向不在本片的行。
+    #[test]
+    fn single_piece_split_clears_the_focus_claim() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        let mut body = String::new();
+        body.push_str("pub fn only() {}\n");
+        for n in 0..900 {
+            body.push_str(&format!("// filler {n}\n"));
+        }
+        std::fs::write(tmp.path().join("src/solo.rs"), body).unwrap();
+        let plan = build_plan(tmp.path()).unwrap();
+        let pieces: Vec<&AuditUnit> = plan
+            .units
+            .iter()
+            .filter(|u| u.files == vec!["src/solo.rs".to_string()])
+            .collect();
+        assert_eq!(pieces.len(), 2, "符号聚首 + 900 行正文 → 预算硬切成 2 片");
+        let (s1, e1) = pieces[0].focus_range.unwrap();
+        let (s2, e2) = pieces[1].focus_range.unwrap();
+        assert!((s1, e1) == (1, 800) && (s2, e2) == (801, e2), "硬切边界要对");
+        assert!(!pieces[0].focus.is_empty(), "首片含符号，focus 非空");
+        assert!(
+            pieces[1].focus.is_empty(),
+            "尾片无符号，不得宣称重点符号：{:?}",
+            pieces[1].focus
+        );
     }
 
     #[test]

@@ -99,12 +99,36 @@ pub fn run_audit(
     }
     let review_plan = if progress.stage0_done {
         tracing::info!(component = "audit-engine", "断点：Stage 0 已完成，跳过");
-        read_stage0(&blackboard).expect("刚校验过 Stage 0 产物可读")
+        // 自审 major：不再 expect——二次读取失败（磁盘竞态/权限变化）时按损坏处理
+        // 清标记重算，与 m1 口径一致，而不是在生产路径上 panic。
+        match read_stage0(&blackboard) {
+            Some(p) => p,
+            None => {
+                tracing::warn!(
+                    component = "audit-engine",
+                    "Stage 0 断点标记在位但产物不可读，清标记重算"
+                );
+                progress.stage0_done = false;
+                progress.save(&blackboard)?;
+                check_intervention(control)?;
+                let plan0 = with_stage_retry(factory, "Stage 0 规划", |s| {
+                    crate::audit::pipeline::stage0_plan_with_deadline(s, &plan.units, batch_deadline())
+                })?;
+                std::fs::write(
+                    blackboard.join("audit-stage0.json"),
+                    serde_json::to_vec_pretty(&plan0).ctx("序列化 ReviewPlan")?,
+                )
+                .ctx("写 Stage0 产物")?;
+                progress.stage0_done = true;
+                progress.save(&blackboard)?;
+                plan0
+            }
+        }
     } else {
         check_intervention(control)?;
         // 全仓审计 M2：Stage 0 也吃换实例重试（单次格式抖动不应让一行代码都还没审就报废）
         let plan0 = with_stage_retry(factory, "Stage 0 规划", |s| {
-            crate::audit::pipeline::stage0_plan(s, &plan.units)
+            crate::audit::pipeline::stage0_plan_with_deadline(s, &plan.units, batch_deadline())
         })?;
         std::fs::write(
             blackboard.join("audit-stage0.json"),
@@ -276,13 +300,46 @@ pub fn run_audit(
         progress.save(&blackboard)?;
     }
     let cross = if progress.stage2_done {
-        read_stage2(&blackboard).expect("刚校验过 Stage 2 产物可读")
+        // 自审 major：同 Stage 0——不再 expect，产物不可读时清标记重算
+        match read_stage2(&blackboard) {
+            Some(c) => c,
+            None => {
+                tracing::warn!(
+                    component = "audit-engine",
+                    "Stage 2 断点标记在位但产物不可读，清标记重算"
+                );
+                progress.stage2_done = false;
+                progress.save(&blackboard)?;
+                check_intervention(control)?;
+                let out = with_stage_retry(factory, "Stage 2 跨单元分析", |s| {
+                    crate::audit::pipeline::stage2_cross_with_deadline(
+                        s,
+                        &deduped,
+                        &review_plan.cross_concerns,
+                        batch_deadline(),
+                    )
+                })?;
+                std::fs::write(
+                    blackboard.join("audit-stage2.json"),
+                    serde_json::to_vec_pretty(&out).ctx("序列化跨单元分析")?,
+                )
+                .ctx("写 Stage2 产物")?;
+                progress.stage2_done = true;
+                progress.save(&blackboard)?;
+                out
+            }
+        }
     } else {
         check_intervention(control)?;
         // 全仓审计 M2：Stage 2 在全部批次跑完之后，一次格式抖动不应报废数小时——
         // 同样换实例重试；全仓审计 m8：输入用**去重后**集合（不是验证后未去重的 kept）。
         let out = with_stage_retry(factory, "Stage 2 跨单元分析", |s| {
-            crate::audit::pipeline::stage2_cross(s, &deduped, &review_plan.cross_concerns)
+            crate::audit::pipeline::stage2_cross_with_deadline(
+                s,
+                &deduped,
+                &review_plan.cross_concerns,
+                batch_deadline(),
+            )
         })?;
         std::fs::write(
             blackboard.join("audit-stage2.json"),
@@ -923,7 +980,8 @@ mod tests {
         );
     }
 
-    /// 审计修复 #6：预查报告含本批文件的 unwrap/吞错/埋点/行数机检事实。    #[test]
+    /// 审计修复 #6：预查报告含本批文件的 unwrap/吞错/埋点/行数机检事实。
+    #[test]
     fn precheck_report_counts_machine_facts() {
         let ws = tempfile::tempdir().unwrap();
         std::fs::write(

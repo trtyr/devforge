@@ -79,6 +79,25 @@ impl Store {
 
     // ---------- 项目层 ----------
 
+    /// 自审 major（跨域汇入点）：project/task 名是**目录名**——plans_root/<project>/<task>/、
+    /// 会话目录、spawn 台账、集成队列全都拿它拼路径。名不安全（空/./..、含分隔符）=
+    /// 路径穿越 + 任意目录创建/覆写。在域层唯一入口拦截，所有消费方一次性安全。
+    pub(crate) fn validate_path_name(name: &str) -> Result<()> {
+        let ok = !name.is_empty()
+            && name != "."
+            && name != ".."
+            && !name.contains('/')
+            && !name.contains('\\')
+            && !name.contains('\0');
+        if ok {
+            Ok(())
+        } else {
+            Err(DevforgeError::Store(format!(
+                "名称 `{name}` 含非法路径字符（不可为空/./..，不可含分隔符）"
+            )))
+        }
+    }
+
     /// 回滚插入（P1-ISSUE-01：目录落地失败时不留半注册项目）。
     pub fn remove_project(&mut self, name: &str) {
         self.projects.retain(|p| p.name != name);
@@ -86,6 +105,7 @@ impl Store {
     }
 
     pub fn create_project(&mut self, project: Project) -> Result<&Project> {
+        Self::validate_path_name(&project.name)?;
         if self.projects.iter().any(|p| p.name == project.name) {
             return Err(DevforgeError::Store(format!(
                 "项目 `{}` 已存在",
@@ -121,10 +141,12 @@ impl Store {
     ) -> Result<&Task> {
         let sop = sop.into();
         registry.validate(&sop)?;
+        Self::validate_path_name(project)?;
         if self.get_project(project).is_none() {
             return Err(DevforgeError::Store(format!("项目 `{project}` 不存在")));
         }
         let id = id.into();
+        Self::validate_path_name(&id)?;
         if self
             .tasks
             .iter()
@@ -665,6 +687,33 @@ mod tests {
         // 对账必须落盘：重开一份不再看到僵尸
         let s3 = Store::load(&path).unwrap();
         assert_eq!(s3.running_run_count(), 1, "只有新 run 在跑");
+    }
+
+    /// 自审 major 回归：project/task 名是目录名，不安全名在建入 store 时就被拒。
+    #[test]
+    fn unsafe_project_or_task_names_are_rejected() {
+        let mut s = Store::new();
+        let p = Project::new("../evil", std::path::PathBuf::from("/x"), 1);
+        let err = s.create_project(p).unwrap_err();
+        assert!(
+            err.to_string().contains("非法路径字符"),
+            "穿越项目名应拒：{err}"
+        );
+        s.create_project(Project::new("p", std::path::PathBuf::from("/x"), 1))
+            .unwrap();
+        for bad in ["a/b", "..", ".", ""] {
+            let err = s
+                .create_task(
+                    &SopRegistry::builtin(),
+                    "p",
+                    bad,
+                    "planning",
+                    None,
+                    TaskDeps::default(),
+                )
+                .unwrap_err();
+            assert!(err.to_string().contains("非法路径字符"), "{bad} 应拒：{err}");
+        }
     }
 
     #[test]
