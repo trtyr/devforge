@@ -59,7 +59,20 @@ impl RenderGate {
             return;
         }
         let mut rx = self.notify.subscribe();
+        // 2026-10-27 自审 major：等待必须有上界——渲染线程挂死则 in_flight 永不归零，
+        // 所有 start 与调度派工永久阻塞在闸门上。超时后放行给门卫：缺 profile 由门卫
+        // 明确失败、不盲重启（010 F6 契约不变）。上界 15min（单包安装超时 600s 的富余量）。
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15 * 60);
         loop {
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    component = "server",
+                    event = "render_gate.timeout",
+                    required = ?required,
+                    "等待渲染闸门超时（15min）——放行给门卫做明确失败判定，不再无限等"
+                );
+                return;
+            }
             if !self.is_in_flight() {
                 return; // 渲染不在途 → 直接开跑
             }

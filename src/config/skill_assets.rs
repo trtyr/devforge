@@ -20,7 +20,21 @@ pub fn builtin_skill_files(skill: &str) -> Option<Vec<(&'static str, &'static st
         "plan-tree" => Some(vec![("SKILL.md", PLAN_TREE_SKILL_MD)]),
         "doc-contract" => Some(vec![("SKILL.md", DOC_CONTRACT_SKILL_MD)]),
         "coding-discipline" => Some(vec![("SKILL.md", CODING_DISCIPLINE_SKILL_MD)]),
-        other => builtin_language_files(other),
+        other => match builtin_language_files(other) {
+            Some(files) => Some(files),
+            None => {
+                // 2026-10-27 自审 major：未收录的 skill 静默折叠成 None = 占位目录回归
+                // （P2-ISSUE-05 根因：清单里 skill 名写错 → Agent 为找规范全盘扫描
+                // 10-30 分钟）。名字写错是配置错误，必须可观测。
+                tracing::warn!(
+                    component = "config-render",
+                    event = "skill.unknown",
+                    skill = %other,
+                    "清单引用的 skill 不在内置资产表——该 skill 将回落占位目录（P2-ISSUE-05 形态），检查清单拼写"
+                );
+                None
+            }
+        },
     }
 }
 

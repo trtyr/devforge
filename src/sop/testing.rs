@@ -170,6 +170,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
         let mut last_stage: Option<u64> = None;
         // 被打回后待收尾的修复轮（回注在下一轮 agent 回合才发生 → fix.end 落在那一回合返回处）
         let mut pending_fix: Option<u32> = None;
+        // 空 issues 追补 nudge：只作用于下一轮审查指令（归因归位：补明细是审查方的事）
+        let mut review_issue_nudge: Option<String> = None;
         loop {
             match step {
                 Step::Agent(message) => {
@@ -226,7 +228,14 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                     let (parsed, opened) = review_with_gate(
                         &mut self.review_factory,
                         report.review_rounds,
-                        |round| testing_review_instruction(workspace, round),
+                        |round| {
+                            let mut ins = testing_review_instruction(workspace, round);
+                            if let Some(nudge) = &review_issue_nudge {
+                                ins.push_str("\n\n【上一轮裁决缺明细】");
+                                ins.push_str(nudge);
+                            }
+                            ins
+                        },
                         &mut budget,
                         |text| {
                             let r = parse_test_review_report(text);
@@ -242,6 +251,7 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                         },
                     )?;
                     report.review_rounds += opened;
+                    review_issue_nudge = None; // 用过即清（只补一轮）
                     match (parsed.verdict, parsed.next) {
                         (StageVerdictRe::Pass, NextAction::Finish) => {
                             report.stages_completed.push(stage);
@@ -265,14 +275,20 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                                         "测试审查连续 {empty_issue_nudges} 次判定 FAIL 但未给出 issues 明细，判定为质量失败（不自动重启）"
                                     )));
                                 }
-                                step = Step::Agent(
+                                // 2026-10-27 自审 major（归因归位）：FAIL-但无明细的缺陷在
+                                // **审查侧**（裁决是审查方产出的，被测 Agent 手里没有裁决）——
+                                // 追补应回审查方重开一轮（带缺明细 nudge），不是回注被测 Agent。
+                                review_issue_nudge = Some(
                                     crate::sop::review_gate::ISSUES_NUDGE.to_string(),
                                 );
+                                step = Step::Review(stage);
                                 continue;
                             }
                             empty_issue_nudges = 0;
                             if parsed.reroute == Reroute::DocSide {
-                                report.doc_fix_handoffs += 1;
+                                // 2026-10-27 自审 major（双计修复）：移交计数由编排层统一记
+                                // （builtin.rs DocSideHandoff 分支 +1）——本层已重复 +1，
+                                // 违反本文件「编排层原样传回」的账本契约。
                                 // 阶段推进：测试侧 → 文档侧（移交 doc-fix）
                                 tracing::info!(
                                     component = "testing-engine",

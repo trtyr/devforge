@@ -37,7 +37,8 @@ pub fn doc_review_instruction(workspace: &Path, round: usize) -> String {
         "你是文档审查 Agent（第 {round} 轮）。\
 \n黑板 = 当前目录（plan tree、coding/docs/ 与 testing/findings/ 都在这）；代码工作区 = {}\n\
 按你的提示词执行全部审查面：findings 处置完整性、plan tree 一致性、内部自洽、Runbook 七件套，\
-先写 testing/reports/doc-review-{round}.md，再在回复末尾输出协议块（stage-verdict / issues / notes）。",
+先写 testing/reports/doc-review-{round}.md，再在回复末尾输出协议块（stage-verdict / issues / notes）。\
+\n本流程**只用 stage-verdict 协议；禁止输出 doc-verdict**（那是 doc-from-zero 全量文档流程的协议，不是本轮的，双输出 = 协议违例）。",
         workspace.display()
     )
 }

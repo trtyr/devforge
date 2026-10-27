@@ -216,7 +216,9 @@ fn the_doc_side_handoff_logs_a_phase_change_to_doc() {
         let TestingOutcome::DocSideHandoff { report, .. } = outcome else {
             panic!("应移交文档侧");
         };
-        assert_eq!(report.doc_fix_handoffs, 1);
+        // 2026-10-27 双计修复：移交计数由编排层统一 +1（builtin.rs DocSideHandoff 分支），
+        // SOP 层原样传回 = 本处应为 0（旧断言把双计写成了预期）。
+        assert_eq!(report.doc_fix_handoffs, 0);
     });
     let phases: Vec<&str> = text.lines().filter(|l| l.contains("phase.change")).collect();
     assert!(
@@ -291,7 +293,8 @@ fn fail_doc_side_hands_off_and_resume_reviews_same_stage() {
     };
     assert_eq!(report.stages_completed, vec![1]);
     assert_eq!(report.review_rounds, 2);
-    assert_eq!(report.doc_fix_handoffs, 1);
+    // 双计修复：编排层统一计数，SOP 层返回 0
+    assert_eq!(report.doc_fix_handoffs, 0);
 }
 
 #[test]
@@ -348,16 +351,12 @@ fn repeated_protocol_violations_fail_fast() {
     assert!(err.to_string().contains("质量失败"), "协议违例上限归质量失败: {err}");
 }
 
-/// 全仓审计 #7 回归：审查判 FAIL 却不给 issues 明细 → 拒收 + 追补；
-/// 连续超限判质量失败。错实现形态：把空清单直接回注（agent 盲改、可无界空转），
-/// 而 change 侧早已有 MAX_EMPTY_ISSUES_NUDGES 护栏——两条链路口径不一。
+/// 全仓审计 #7 回归 + 2026-10-27 归因归位：审查判 FAIL 却不给 issues 明细 →
+/// 拒收 + 迫补——但迫补对象是**审查方**（裁决是审查方产出的），不是被测 Agent。
 #[test]
 fn fail_without_issues_is_bounded_not_infinite() {
     let agent = MockAgent::new(&[
         Turn::Say("阶段 1 完成。\n<stage-complete>1</stage-complete>"),
-        Turn::Say("改了点东西。\n<stage-complete>1</stage-complete>"),
-        Turn::Say("又改了点。\n<stage-complete>1</stage-complete>"),
-        Turn::Say("继续改。\n<stage-complete>1</stage-complete>"),
     ]);
     let received = agent.received.clone();
     // FAIL 但 <issues> 为空——旧实现会把它当可用的失败结论直接回注
@@ -373,10 +372,17 @@ fn fail_without_issues_is_bounded_not_infinite() {
         msg.contains("未给出 issues 明细") && msg.contains("质量失败"),
         "空 issues 应拒收并有界收敛：{msg}"
     );
+    // 归因归位：追补话术发给**审查方**（重开审查实例），被测 Agent 只收到 kickoff、
+    // 不再被拿去背审查方的锅。
     assert!(
-        received.borrow().iter().any(|m| m.contains("引擎拒收")),
-        "应把追补话术发给 agent：{:?}",
+        received.borrow().iter().all(|m| !m.contains("引擎拒收")),
+        "追补不得回注被测 Agent：{:?}",
         received.borrow()
+    );
+    let opens = factory.opened.iter().filter(|c| c.get()).count();
+    assert!(
+        opens >= 2,
+        "空 issues 应重开审查实例追补（实际开审 {opens} 次）"
     );
 }
 

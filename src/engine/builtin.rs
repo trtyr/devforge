@@ -232,6 +232,10 @@ impl BuiltinRpcEngine {
 
         // 引擎批次 #4：本 run 的会话根（与 README 口径一致：按 run-id 归档）
         let sessions = self.session_root.join(&run.id.0);
+        let ledger_path = self
+            .plans_root
+            .join(&task.project)
+            .join("spawn-ledger.json");
         let plan_client = RpcClient::spawn(
             SpawnSpec::new(
                 self.profile_root.join("plan-agent"),
@@ -239,18 +243,20 @@ impl BuiltinRpcEngine {
                 run.id.0.clone(),
                 sessions.join("plan"),
             )
-            .with_working_dir(working_dir)
+            .with_working_dir(working_dir.clone())
             // 自审 major：台账显式落 project 层。
-            .with_ledger_path(
-                self.plans_root
-                    .join(&task.project)
-                    .join("spawn-ledger.json"),
-            ),
+            .with_ledger_path(ledger_path.clone()),
         )?;
         let plan = RpcPlanSession::new(plan_client);
-        let factory = RpcReviewFactory::per_round(
+        // 2026-10-27 自审 major：规划审查的 cwd 必须是 plan root——旧口径 per_round
+        // 让审查子进程落在服务器 cwd，实际审的不是 plan-agent 产出的那棵树
+        // （与其他 SOP 的 per_round_in 口径对齐：cwd = 被审产物所在目录）。
+        let factory = RpcReviewFactory::per_round_in(
             self.profile_root.join("plan-review"),
+            "plan-review",
             sessions.join("reviews"),
+            working_dir,
+            ledger_path,
         );
         let mut user = RelayUserLink {
             relay: self.ui.clone(),

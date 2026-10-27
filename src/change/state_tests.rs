@@ -39,6 +39,24 @@ fn checkpoint_lives_on_blackboard_path() {
     assert!(path.is_file());
 }
 
+/// 自审 major 回归：内层 change 段损坏必须拒绝冷启动——
+/// 静默重置 = 计数归零、额度被绕过（变异成冷启动后全套仍绿 = 此前零覆盖）。
+#[test]
+fn corrupt_inner_change_rejects_cold_start() {
+    let rs = RunState {
+        schema_version: 1,
+        sop: CHANGE_SOP.into(),
+        project: "proj".into(),
+        task: "task".into(),
+        updated_at_ms: 0,
+        attempt: 0,
+        data: serde_json::json!({ "change": { "roundtrips": "不是数字" } }),
+    };
+    let err = ChangeState::from_run(&rs, "c-1", "sha").unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("拒绝冷启动"), "{msg}");
+}
+
 #[test]
 fn missing_checkpoint_means_cold_start() {
     let tmp = tempfile::tempdir().unwrap();

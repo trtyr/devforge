@@ -21,3 +21,7 @@ pub const PATH_GUARD_FILES: &[(&str, &str)] = &[
         include_str!("../../assets/extensions/path-guard/config.ts"),
     ),
 ];
+
+#[cfg(test)]
+#[path = "extension_assets_tests.rs"]
+mod extension_assets_tests;

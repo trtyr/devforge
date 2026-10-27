@@ -148,7 +148,7 @@ fn kickoff_carries_interleave_and_batch_rules() {
 #[test]
 fn review_instruction_puts_verdict_first() {
     // DR-13：裁决块前置——防思考型输出把协议块挤到截断线外；DR-12：不读码条款
-    let ins = doc_review_instruction("unit-x", 1);
+    let ins = doc_review_instruction(std::path::Path::new("/tmp/doc-workspace"), "unit-x", 1);
     assert!(ins.contains("第一行"), "要强制裁决块前置: {ins}");
     assert!(ins.contains("<doc-verdict>"), "要带协议块格式: {ins}");
     assert!(ins.contains("4000 字"), "要带叙述预算: {ins}");

@@ -355,7 +355,7 @@ where
         () => {{
             if pending.is_none() {
                 if let Some((qidx, qu, qround)) = written_unreviewed.pop_front() {
-                    let mut instruction = doc_review_instruction(&qu, qround as usize);
+                    let mut instruction = doc_review_instruction(repo, &qu, qround as usize);
                     if let Some(audit_fn) = &audit {
                         instruction.push_str("\n\n## 引擎审计（确定性，勿质疑）\n\n");
                         instruction.push_str(&audit_fn(&qu));
@@ -608,7 +608,7 @@ where
         if pending.is_some() {
             written_unreviewed.push_back((active_idx, active.clone(), round));
         } else {
-            let mut instruction = doc_review_instruction(&active, round as usize);
+            let mut instruction = doc_review_instruction(repo, &active, round as usize);
             if let Some(audit_fn) = &audit {
                 instruction.push_str("\n\n## 引擎审计（确定性，勿质疑）\n\n");
                 instruction.push_str(&audit_fn(&active));
