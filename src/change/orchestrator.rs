@@ -334,7 +334,6 @@ pub fn run<S: ChangeSession>(
                             "计划审查连续 {fix_round} 轮未通过（上限 {MAX_PLAN_FIXES} 轮修复）：{}",
                             next.join("；")
                         );
-                        issues = next;
                         return terminate::<S>(&run, &mut state, reason);
                     }
                     issues = next;

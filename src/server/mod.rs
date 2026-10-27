@@ -470,7 +470,9 @@ fn is_plain_git_sha(s: &str) -> bool {
 }
 
 /// 引擎 panic 兜底（全仓审计 #1）：从 panic payload 取人读文本。
-fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
+///
+/// `pub` 是给审计批次 worker 复用的（同一个「panic 也要留人读原因」口径）。
+pub fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
     } else if let Some(s) = payload.downcast_ref::<String>() {

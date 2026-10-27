@@ -337,7 +337,13 @@ fn regression_claim_text_is_unchanged() {
     let crate::error::DevforgeError::Quality(msg) = &err else {
         panic!("应是质量失败：{err}");
     };
-    assert!(msg.starts_with("回归日志不可解析"), "{msg}");
+    // 自审 minor（88）：文案必须指向**回归日志本身**（旧口径借用基线门的措辞，
+    // 错误里出现 evidence/baseline-test.log，运维会找错文件）。
+    assert!(msg.starts_with("回归日志 evidence/regression.log 不可解析"), "{msg}");
+    assert!(
+        !msg.contains("baseline-test.log"),
+        "回归门的错误不得指向基线证据文件：{msg}"
+    );
 }
 
 #[test]

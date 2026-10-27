@@ -219,3 +219,53 @@ fn coding_failure_block_carries_the_title_and_verbatim_issues() {
     assert!(!block.contains("本消息不提供文件位置"), "{block}");
     assert!(!block.contains("<位置略>"), "{block}");
 }
+
+// ── 2026-10-27 自审 testing_gate 批回归 ──
+
+/// 自审 minor（30）：快照/门的 **fail-closed** Err 分支此前没有用例钉住——把它改回
+/// fail-open（Ok 空集）整套测试仍绿。这里钉三条来源不同的失败。
+#[test]
+fn snapshot_failures_are_closed_not_open() {
+    let tmp = tempfile::tempdir().unwrap();
+    // ① 形状非法（Config：确定性错误，重启不会变好——90）
+    let err = snapshot_tracked_changes(tmp.path(), "not-a-sha").unwrap_err();
+    assert!(
+        matches!(err, DevforgeError::Config(_)),
+        "形状非法应归 Config（旧口径归 System 白耗重试预算）：{err}"
+    );
+    // ② 仓不存在/不是 git 仓（System：基础设施）
+    let err = snapshot_tracked_changes(tmp.path(), "abcdef1").unwrap_err();
+    assert!(
+        matches!(err, DevforgeError::System(_)),
+        "非 git 仓应归 System：{err}"
+    );
+}
+
+/// 自审 minor（92）：只有**列表项**才是验收对账行——散文里的箭头不算
+/// （旧口径把任何含 → 的行当验收项，说明文字会触发不可恢复的硬失败）。
+#[test]
+fn acceptance_table_ignores_prose_arrows() {
+    let text = "验收标准如下（箭头 → 表示映射）：\n\
+                - x=1 → tests/a.rs:12\n\
+                说明：上面的 → 只是举例\n\
+                * y=2 → tests/b.rs:34\n";
+    let rows = parse_acceptance_table(text);
+    assert_eq!(rows.len(), 2, "只认列表项：{rows:?}");
+    assert_eq!(rows[0].criterion, "x=1");
+    assert_eq!(rows[1].test_ref, "tests/b.rs:34");
+}
+
+/// 自审 minor（88）：回归门的解析错误必须指向回归日志本身。
+#[test]
+fn regression_parse_error_points_at_the_regression_log() {
+    let err = check_regression_claim("command: cargo test\n", true).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("evidence/regression.log"),
+        "要指向回归日志：{msg}"
+    );
+    assert!(
+        !msg.contains("baseline-test.log"),
+        "不得指向基线证据文件：{msg}"
+    );
+}

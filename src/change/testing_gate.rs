@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use crate::change::coding_gate::parse_baseline_log;
+use crate::change::coding_gate::parse_evidence_log;
 use crate::change::state::TestFailureContext;
 use crate::error::{DevforgeError, Result};
 
@@ -25,10 +25,16 @@ pub struct AcceptanceMatch {
 }
 
 /// 回归结果判定：日志退出码与 agent 的自述必须一致。
+///
+/// 自审 minor（87）：`claims_green` 在生产调用点**恒为 true**（测试阶段走到这里 =
+/// agent 声称通过），`false` 只在单测里用来验「红着但没声称」的口径；返回的退出码在
+/// 生产侧也只用于日志字段。别把它当成可变策略旋钮。
 pub fn check_regression_claim(log_text: &str, claims_green: bool) -> Result<i32> {
-    let ev = parse_baseline_log(log_text).map_err(|e| {
+    // 自审 minor（88）：走带标签的解析入口——旧口径复用基线门的单参解析，
+    // 内层错误文本里出现 evidence/baseline-test.log，运维会找错文件。
+    let ev = parse_evidence_log(log_text, REGRESSION_LOG, "回归").map_err(|e| {
         DevforgeError::Quality(format!(
-            "回归日志不可解析（要写 `exit_code: N`）：{e}"
+            "回归日志 {REGRESSION_LOG} 不可解析（要写 `exit_code: N`）：{e}"
         ))
     })?;
     if ev.exit_code != 0 && claims_green {
@@ -88,7 +94,9 @@ pub fn snapshot_tracked_changes(
         && baseline.len() <= 64
         && baseline.chars().all(|c| c.is_ascii_hexdigit());
     if !well_formed {
-        return Err(DevforgeError::System(format!(
+        // 自审 minor（90）：形状非法属于**确定性配置错误**（重启不会变好），
+        // 旧口径归 System（可重试）会白耗重试预算、并把终态错标成基础设施故障。
+        return Err(DevforgeError::Config(format!(
             "基线 sha 形状非法（{baseline:?}）——拒绝当作 git 参数"
         )));
     }
@@ -106,8 +114,10 @@ pub fn snapshot_tracked_changes(
         .output()
         .map_err(|e| DevforgeError::System(format!("执行 git diff 失败：{e}")))?;
     if !out.status.success() {
-        // fail-closed（change 批次 #2 收口）：快照失败 = 本阶段机械门未生效，
-        // 必须 Err 让本轮测试作废，绝不把「查不了」当「查过、干净」。
+        // fail-closed：快照失败 = 本阶段机械门未生效，必须 Err 让本轮测试作废，
+        // 绝不把「查不了」当「查过、干净」。
+        //（自审 minor 91：旧注释与日志文案仍写着「待改为 fail-closed」，与已落地的
+        // fail-closed 实现矛盾，会误导排障。）
         return Err(DevforgeError::System(format!(
             "测试阶段产品代码快照失败（git 基线 {baseline}）：{}",
             String::from_utf8_lossy(&out.stderr).trim()
@@ -224,7 +234,13 @@ pub fn check_no_product_code_edits(
 pub fn parse_acceptance_table(text: &str) -> Vec<AcceptanceMatch> {
     let mut out = Vec::new();
     for line in text.lines() {
-        let t = line.trim().trim_start_matches(['-', '*']).trim();
+        let raw = line.trim_start();
+        // 自审 minor（92）：旧口径把**任何**含 → 的行都当验收项——说明文字/散文里的
+        // 箭头会被解析成验收标准并触发不可恢复的硬失败。只认列表项。
+        if !(raw.starts_with("- ") || raw.starts_with("* ") || raw.starts_with("+ ")) {
+            continue;
+        }
+        let t = raw.trim_start_matches(['-', '*', '+']).trim();
         let Some((left, right)) = t.rsplit_once('→') else {
             continue;
         };
@@ -253,7 +269,9 @@ pub fn route_back_message(target: &str, failures: &[String]) -> String {
 
 /// 失败明细渲染：issues 逐条原文，一行一条。
 ///
-/// 回注消息与 coding 送达块共用这一份渲染 → 同一失败在三个出口同源（不漂移）。
+/// 回注消息与 coding 送达块共用这一份渲染 → 同一失败在**四个**出口同源（不漂移）：
+/// route_back_message（coding/plan 两个路由目标）+ coding_failure_block（送达块）+
+/// 编排层的 fix.reinject 事件字段（自审 minor 23：旧注释写「三个出口」）。
 pub fn failure_details(failures: &[String]) -> String {
     failures
         .iter()

@@ -583,18 +583,39 @@ impl ChangeSession for ProdChangeSession {
             self.test_agent.converse(m, ui)
         })?;
         // 声称通过 → 回归日志必须是绿的
-        check_regression_log(&self.ctx.blackboard, true, turn_started)?;
+        // 自审 minor（89）：测试阶段三道门此前没有任何门禁里程碑事件，回归退出码也不落
+        // 字段——日志里重建不出 testing 段的动作序列。
+        let regression_exit = check_regression_log(&self.ctx.blackboard, true, turn_started)?;
+        tracing::info!(
+            component = "change-engine",
+            event = "gate.testing.regression",
+            exit_code = regression_exit,
+            "测试门 1/3：回归证据通过（退出码字段化）"
+        );
         // 引擎审计修复 #6：出口对比——测试期间新增的产品代码改动（tests/ 与流水线
         // 产物之外）= Quality（机械门，不再依赖审查官人眼）。
         let tracked_after =
             crate::change::testing_gate::snapshot_tracked_changes(&self.ctx.repo, &self.ctx.baseline)?;
         crate::change::testing_gate::check_no_product_code_edits(&tracked_before, &tracked_after)?;
+        tracing::info!(
+            component = "change-engine",
+            event = "gate.testing.product_code",
+            before = tracked_before.len(),
+            after = tracked_after.len(),
+            "测试门 2/3：产品代码未被测试阶段改动"
+        );
         // 验收对账表由 agent 落盘，引擎逐条读
         let table_text = std::fs::read_to_string(self.ctx.acceptance_path()).ctx(format!(
             "缺少验收对账表 {}（每条验收标准一行 `- 标准 → 测试:行`）",
             self.ctx.acceptance_path().display()
         ))?;
         let table = parse_acceptance_table(&table_text);
+        tracing::info!(
+            component = "change-engine",
+            event = "gate.testing.acceptance_table",
+            rows = table.len(),
+            "测试门 3/3：验收对账表已解析"
+        );
         let done: Vec<String> = table.iter().map(|m| m.criterion.clone()).collect();
         // 表里每条都必须指到具体测试（path:line），且引用必须真实存在 + 行号在范围内
         //（自审 CG-09：只查词形 = 写一个不存在的测试文件也能机械判绿）

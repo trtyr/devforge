@@ -34,7 +34,7 @@ pub struct BaselineEvidence {
 ///
 /// `file` 与 `label` 是参数：同一套形状服务两道门（基线门 / 自证门），
 /// 错误文案必须指向**各自**的证据文件——指向错文件 = 排查时找错地方。
-fn parse_evidence_log(text: &str, file: &str, label: &str) -> Result<BaselineEvidence> {
+pub fn parse_evidence_log(text: &str, file: &str, label: &str) -> Result<BaselineEvidence> {
     let mut exit_code = None;
     let mut command = String::new();
     // 自审 CG-02（P012 门禁批次）：「首中即停」会被**格式示例**抢先——agent 习惯先写

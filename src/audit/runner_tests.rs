@@ -603,3 +603,45 @@ fn corrupt_stage0_checkpoint_is_recomputed() {
     let mut f = mk(vec![vec![P0], vec![F1], vec![C0]]);
     run_audit(&task, root.path(), &control, &mut f).unwrap();
 }
+
+// ── 2026-10-27 自审 audit/runner 批回归 ──
+
+/// 自审 minor（30）：目录名启发式不得单独成立——手写源码放在 dist/ 或命名为 *.snap
+/// 也必须照审（旧口径整批静默跳过，与「宁可多审」相悖）。
+#[test]
+fn skippable_unit_requires_a_generated_marker_inside_generated_dirs() {
+    let unit = |files: &[&str]| AuditUnit {
+        id: "u".into(),
+        files: files.iter().map(|s| s.to_string()).collect(),
+        label: "u".into(),
+        focus: Vec::new(),
+        focus_range: None,
+    };
+    // 纯生成物目录 + 生成物标记 → 可跳
+    assert!(skippable_unit(&unit(&["dist/app.bundle.js"])));
+    assert!(skippable_unit(&unit(&["node_modules/x/index.d.ts"])));
+    // 手写源码放在生成物目录里 → 不跳（旧口径会跳过）
+    assert!(!skippable_unit(&unit(&["dist/handwritten.rs"])));
+    assert!(!skippable_unit(&unit(&["vendor/core.rs"])));
+    // 后缀类（.lock / .min.js）独立成立
+    assert!(skippable_unit(&unit(&["Cargo.lock"])));
+    assert!(skippable_unit(&unit(&["web/app.min.js"])));
+    // 普通源码 → 不跳
+    assert!(!skippable_unit(&unit(&["src/a.rs"])));
+}
+
+/// 自审 minor（31）：断点里的 abandoned 历史重复项在读出时去重（报告计数不虚高）。
+#[test]
+fn abandoned_history_is_deduped_by_unit() {
+    let mut progress = crate::audit::pipeline::Progress::default();
+    progress.abandoned.push("unit-001：超时".into());
+    progress.abandoned.push("unit-001：协议违例".into());
+    progress.abandoned.push("unit-002：空回复".into());
+    let mut all = progress.abandoned.clone();
+    all.sort();
+    all.dedup_by(|a, b| {
+        let key = |s: &String| s.split('：').next().unwrap_or(s).to_string();
+        key(a) == key(b)
+    });
+    assert_eq!(all.len(), 2, "同一单元只留一条：{all:?}");
+}

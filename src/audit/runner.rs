@@ -306,7 +306,15 @@ pub fn run_audit(
             apply_batch_outcome(&unit.id, res, &mut findings, &mut progress, &blackboard)?;
         }
     }
-    let abandoned: Vec<String> = progress.abandoned.clone();
+    // 自审 minor（31）：断点里的 abandoned 可能含历史重复项（旧版本无去重写入过），
+    // 读出时按 unit 前缀去重，报告计数才不虚高。
+    let mut abandoned_all: Vec<String> = progress.abandoned.clone();
+    abandoned_all.sort();
+    abandoned_all.dedup_by(|a, b| {
+        let key = |s: &String| s.split('：').next().unwrap_or(s).to_string();
+        key(a) == key(b)
+    });
+    let abandoned: Vec<String> = abandoned_all;
 
     // ---- 核验过滤（确定性零 LLM，RepoAudit validator 血统）----
     let verified = verify(&task.workspace, &findings);
@@ -443,14 +451,43 @@ pub fn run_audit(
         &abandoned,
     );
     std::fs::write(blackboard.join("audit-report.md"), md).ctx("写审计报告 MD")?;
+    // 自审 minor（28）：收尾日志的计数必须与报告同源（旧口径日志记 kept/abandoned、
+    // 报告记 merged/batches_*，两处对不上），并补覆盖度比例——否则仅凭日志无法重建
+    // 「这次到底审了多少」。
+    let batches_total = progress.done_batches.len() + abandoned.len() + skipped_units.len();
+    let coverage_ratio = if plan.units.is_empty() {
+        0.0
+    } else {
+        progress.done_batches.len() as f64 / plan.units.len() as f64
+    };
     tracing::info!(
         component = "audit-engine",
+        event = "audit.finished",
+        units_total = plan.units.len(),
+        batches_done = progress.done_batches.len(),
+        batches_abandoned = abandoned.len(),
+        batches_skipped = skipped_units.len(),
+        batches_total,
+        coverage_ratio = format!("{:.3}", coverage_ratio),
+        merged = merged.len(),
         kept = verified.kept.len(),
-        dropped = all_dropped.len(),
+        dropped_ghosts = all_dropped.len(),
         cross = cross_kept.len(),
-        abandoned = abandoned.len(),
-        "全量审计完成"
+        "全量审计完成（计数与 audit-report.json 同源）"
     );
+    // 自审 minor（29）：存在放弃批次时 run 仍是 Completed，状态层没有任何「部分覆盖」
+    // 信号（报告里只在 JSON/MD 的 abandoned 列表里）。这里显式落一条 warn 级事件，
+    // 让「成功但没审全」在事件流/run 卡片上可辨识。
+    if !abandoned.is_empty() {
+        tracing::warn!(
+            component = "audit-engine",
+            event = "audit.partial_coverage",
+            abandoned = abandoned.len(),
+            units_total = plan.units.len(),
+            coverage_ratio = format!("{:.3}", coverage_ratio),
+            "审计完成但存在放弃批次：本次为**部分覆盖**，不得当作全量结论"
+        );
+    }
     Ok(RunOutcome::Completed)
 }
 
@@ -459,6 +496,9 @@ pub fn run_audit(
 /// 第三方 r3 M2：一个批次能不能被 skip——必须整批都是「生成物 / 锁文件 / vendor 树」。
 /// 宁可多审（误判为不可跳 → 照审）也不许把核心目录用一句「生成物」糊过去。
 fn skippable_unit(unit: &AuditUnit) -> bool {
+    // 自审 minor（30）：旧口径只看文件后缀/目录名启发式——手写源码放在 dist/ 或 vendor/
+    // （或命名为 *.snap）就会被整批静默跳过，与「宁可多审不少审」相悖。现在目录命中也
+    // 必须**同时**是生成物标记（后缀/生成器注释）才算可跳；判断不了就照审。
     !unit.files.is_empty()
         && unit.files.iter().all(|f| {
             let p = f.as_str();
@@ -469,11 +509,25 @@ fn skippable_unit(unit: &AuditUnit) -> bool {
                 || p.contains(".generated.")
                 || p.contains("_generated.")
                 || p.ends_with("package-lock.json")
-                || p.starts_with("target/")
-                || p.starts_with("node_modules/")
-                || p.starts_with("dist/")
-                || p.starts_with("vendor/")
+                // 目录命中不再单独成立：只有「目录里且带生成物标记」才可跳
+                || ((p.starts_with("target/")
+                    || p.starts_with("node_modules/")
+                    || p.starts_with("dist/")
+                    || p.starts_with("vendor/"))
+                    && has_generated_marker(p))
         })
+}
+
+/// 目录类路径的生成物标记（自审 minor 30）：无标记 = 可能是手写源码 → 不跳。
+fn has_generated_marker(p: &str) -> bool {
+    p.ends_with(".js")
+        && (p.contains(".bundle.") || p.contains(".chunk.") || p.ends_with(".umd.js"))
+        || p.ends_with(".d.ts")
+        || p.ends_with(".map")
+        || p.contains(".generated.")
+        || p.contains("/__generated__/")
+        || p.ends_with(".tmp")
+        || p.ends_with(".log")
 }
 
 fn audit_concurrency() -> usize {
@@ -499,6 +553,9 @@ fn write_batch_findings(findings_dir: &Path, unit_id: &str, fs: &[Finding]) -> R
 }
 
 /// 批次结果落地（串行/并行共用）：调用前**发现已落盘**；这里只打勾/记放弃。
+///
+/// 自审 minor 27：串行打勾循环遇错即返回时，**后续已成功且已落盘的批次拿不到 done 勾**，
+/// 续跑会重复审查——所以调用方必须把打勾循环做到「逐条应用、遇错记错但不中断」。
 /// 质量类失败 = 放弃并记入断点；实例/基础设施失败 = 打断整次审计（不伪装成放弃）。
 ///
 /// 第三方 r3 M1：旧版把「写盘 + 打勾」揃在一起、且并行路径「全跑完才落盘」——
@@ -621,8 +678,21 @@ fn run_stage1_parallel(
             }));
         }
         for h in handles {
-            if let Ok(mut v) = h.join() {
-                results.append(&mut v);
+            match h.join() {
+                Ok(mut v) => results.append(&mut v),
+                Err(payload) => {
+                    // 自审 minor（32）：worker 在 catch_unwind 覆盖范围外 panic 时，旧口径
+                    // `if let Ok` 静默丢弃——该 worker 已完成的批次既不打勾也不进报告，
+                    // 而且日志里一个字都没有。现在留痕（已落盘的批次发现仍在盘上，可在
+                    // 续跑时按 findings 目录回收）。
+                    let msg = crate::server::panic_text(&payload);
+                    tracing::error!(
+                        component = "audit-engine",
+                        event = "audit.worker_panicked",
+                        panic = %msg,
+                        "批次 worker 线程 panic：其已落盘结果保留，未完成的批次需续跑"
+                    );
+                }
             }
         }
     });
@@ -657,6 +727,15 @@ fn precheck_report(workspace: &Path, files: &[String], range: Option<(usize, usi
         let content = match std::fs::read_to_string(workspace.join(f)) {
             Ok(c) => c,
             Err(e) => {
+                // 自审 minor（33）：旧口径只把失败写进给 LLM 的提示串——既不 tracing 也不落盘，
+                // 而提示词又声明预查是「确定性事实」。留痕 + 报告里保留该行。
+                tracing::warn!(
+                    component = "audit-engine",
+                    event = "audit.precheck_read_failed",
+                    file = %f,
+                    error = %e,
+                    "预查读文件失败（该批计数将不完整）"
+                );
                 out.push_str(&format!("- {f}: 读取失败（{e}）\n"));
                 continue;
             }
