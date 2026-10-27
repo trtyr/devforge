@@ -70,3 +70,58 @@ fn startup_token_empty_is_unset() {
     assert_eq!(resolve_startup_token(None, Some("".into())), None);
     assert_eq!(resolve_startup_token(None, None), None);
 }
+
+// ── 2026-10-27 自审 http 批回归：token 边界用例（219）──
+
+/// 形似 flag 的下一个参数不得被当成密钥（旧口径 `--token --port` 会把 `--port` 当 token）。
+#[test]
+fn token_flag_never_swallows_another_flag() {
+    let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(parse_token_flag(&args(&["--token", "--port"])), None);
+    assert_eq!(parse_token_flag(&args(&["--port", "8080", "--token"])), None);
+    assert_eq!(
+        parse_token_flag(&args(&["--token", "s3cret"])),
+        Some("s3cret".to_string())
+    );
+    assert_eq!(
+        parse_token_flag(&args(&["--token=s3cret"])),
+        Some("s3cret".to_string())
+    );
+    // 首个命中生效
+    assert_eq!(
+        parse_token_flag(&args(&["--token", "a", "--token", "b"])),
+        Some("a".to_string())
+    );
+}
+
+/// 空白必须归一化（旧口径只判空不归一：`" abc "` 当密钥收下但客户端只发 `abc` → 永久 401）。
+#[test]
+fn token_is_trimmed_and_blank_falls_back() {
+    assert_eq!(
+        resolve_startup_token(Some("  abc  ".into()), None),
+        Some("abc".to_string())
+    );
+    // CLI 空串/纯空白 → 回退 env
+    assert_eq!(
+        resolve_startup_token(Some("   ".into()), Some("from-env".into())),
+        Some("from-env".to_string())
+    );
+    assert_eq!(resolve_startup_token(Some(String::new()), None), None);
+    // CLI 优先于 env
+    assert_eq!(
+        resolve_startup_token(Some("cli".into()), Some("env".into())),
+        Some("cli".to_string())
+    );
+    assert_eq!(resolve_startup_token(None, Some("  ".into())), None);
+    // 含不可见字符的 token 会被 trim 掉两端，但中间不可见字符仍原样保留（不猜、不改写）
+    assert_eq!(
+        resolve_startup_token(Some("a\u{7}b".into()), None),
+        Some("a\u{7}b".to_string())
+    );
+}
+
+/// token 契约的单一来源：env 名常量在本模块（46）。
+#[test]
+fn token_env_name_is_owned_here() {
+    assert_eq!(crate::server::http::TOKEN_ENV, "DEVFORGE_TOKEN");
+}

@@ -276,9 +276,10 @@ async fn main() -> anyhow::Result<()> {
     // 未设即放行，Q003）+ run 超时（P8-ISSUE-01）：默认不限时（零硬限制），
     // DEVFORGE_RUN_TIMEOUT_MS 显式开启（两者在 Arc 分享前经 get_mut 注入）
     if let Some(s) = std::sync::Arc::get_mut(&mut state) {
+        // 自审 minor（46）：env 名与解析都在 server::http 里（单一契约来源）
         if let Some(t) = devforge::server::resolve_startup_token(
             devforge::server::parse_token_flag(&args),
-            std::env::var("DEVFORGE_TOKEN").ok(),
+            devforge::server::http::token_from_env(),
         ) {
             s.token = Some(t);
         }

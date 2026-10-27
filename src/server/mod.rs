@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::json;
 
 pub use gate::RenderGate;
-pub use http::{build_router, parse_token_flag, resolve_startup_token, serve};
+pub use http::{build_router, parse_token_flag, resolve_startup_token, serve, TOKEN_ENV};
 
 use crate::config::installer::PackageInstaller;
 use crate::config::ConfigManifest;

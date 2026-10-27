@@ -27,8 +27,31 @@ pub struct Heartbeat {
     pub pid: u32,
 }
 
+/// run_id 是否可作为文件名成分（自审 minor 159：本函数是 pub API，旧口径直接把
+/// run_id 拼进路径——含 `../` 或分隔符就是路径穿越原语，只是当前调用方恰好有护栏）。
+fn safe_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id.len() <= 128
+        && !run_id.contains("..")
+        && !run_id.contains(['/', '\\'])
+        && !run_id.chars().any(char::is_control)
+        && !run_id.chars().any(char::is_whitespace)
+}
+
 /// 心跳文件路径：`root/heartbeat/<runid>.json`。
+///
+/// run_id 形状非法时返回一个**必定不可用**的路径（含 NUL 的非法名）而不是穿越路径——
+/// 调用方随后必然收到 io 错误，不会静默写到根外。
 pub fn heartbeat_path(root: &Path, run_id: &str) -> PathBuf {
+    if !safe_run_id(run_id) {
+        tracing::error!(
+            component = "observability",
+            event = "heartbeat.bad_run_id",
+            run_id = %run_id,
+            "run_id 形状非法（含路径分隔/上跳/空白），心跳落点拒绝构造"
+        );
+        return root.join("heartbeat").join("\u{0}invalid-run-id");
+    }
     root.join("heartbeat").join(format!("{run_id}.json"))
 }
 
@@ -60,10 +83,22 @@ pub fn write(root: &Path, snap: &RunSnapshot) -> std::io::Result<()> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = path.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
-    std::fs::write(&tmp, body)?;
-    let renamed = std::fs::rename(&tmp, &path);
-    if renamed.is_err() {
+    let written = std::fs::write(&tmp, body);
+    if let Err(e) = written {
+        // 自审 minor（161）：写失败要清掉半截临时文件（目录里不得残留 .json.tmp）
         let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    let renamed = std::fs::rename(&tmp, &path);
+    if let Err(e) = &renamed {
+        let _ = std::fs::remove_file(&tmp);
+        tracing::warn!(
+            component = "observability",
+            event = "heartbeat.rename_failed",
+            path = %path.display(),
+            error = %e,
+            "心跳原子替换失败（临时文件已清理）"
+        );
     }
     renamed
 }
