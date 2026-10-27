@@ -464,3 +464,54 @@ fn manifest_json_roundtrip() {
     let loaded = ConfigManifest::load(&path).unwrap();
     assert_eq!(m, loaded);
 }
+
+// ── 2026-10-27 自审 majors（01a1450b 会话）──
+
+/// 落盘文件权限必须 0600——清单里躺着明文 api_key，
+/// 旧口径默认 umask（0644），共享主机上其他用户可读。
+#[test]
+#[cfg(unix)]
+fn manifest_file_is_saved_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    let m = ConfigManifest::builtin();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("manifest.json");
+    m.save(&path).unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "manifest 含明文 api_key，必须 0600：{mode:o}");
+}
+
+/// Agent 名重复：render 并发写同一 profile 目录且 get_agent 只取首个——load 层拒。
+#[test]
+fn duplicate_agent_names_are_rejected_on_load() {
+    let m = ConfigManifest::builtin();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("manifest.json");
+    m.save(&path).unwrap();
+    // 手工改盘上 JSON：复制第一个 agent 形成重名
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let dup = v["agents"][0].clone();
+    v["agents"].as_array_mut().unwrap().push(dup);
+    std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    let err = ConfigManifest::load(&path).unwrap_err();
+    assert!(err.to_string().contains("重复"), "{err}");
+}
+
+/// Agent 名是 profile 目录名：穿越名在 load 层拒（旧口径一路 join 进 profiles_root）。
+#[test]
+fn traversal_agent_names_are_rejected_on_load() {
+    let m = ConfigManifest::builtin();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("manifest.json");
+    m.save(&path).unwrap();
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["agents"][0]["name"] = "../evil".into();
+    std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    let err = ConfigManifest::load(&path).unwrap_err();
+    assert!(
+        err.to_string().contains("须可作为目录名"),
+        "穿越名应被拒：{err}"
+    );
+}

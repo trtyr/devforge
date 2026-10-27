@@ -539,17 +539,62 @@ impl ConfigManifest {
             .ok_or_else(|| DevforgeError::Config(format!("清单中无 Agent `{name}`")))
     }
 
+    /// 2026-10-27 自审 majors：Agent 名是 profile 目录名（profiles_root/<name>/…）。
+    /// 唯一性与路径安全在域层唯一入口拦——重名时 render 并发写同一 profile 目录
+    /// 且 get_agent 只取首个（第二个 Agent 的配置静默丢失/串味）；穿越名直接写出
+    /// profiles_root。load/save 两头都过（builtin 是代码构造，名字硬编码 ASCII）。
+    fn validate(&self) -> Result<()> {
+        let mut seen = std::collections::HashSet::new();
+        for a in &self.agents {
+            if !seen.insert(a.name.as_str()) {
+                return Err(DevforgeError::Config(format!(
+                    "Agent 名重复：`{}`（render 会并发写同一 profile 目录且 get_agent 只取首个）",
+                    a.name
+                )));
+            }
+            crate::domain::store::Store::validate_path_name(&a.name)
+                .ctx(format!("Agent 名 `{}` 须可作为目录名", a.name))?;
+        }
+        Ok(())
+    }
+
     pub fn save(&self, path: &Path) -> Result<()> {
+        self.validate().ctx("清单落盘前校验")?;
         let json = serde_json::to_string_pretty(self).ctx("序列化配置清单")?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ctx("创建清单目录")?;
         }
-        std::fs::write(path, json).ctx(format!("写入清单 {}", path.display()))
+        // 2026-10-27 自审 major：承载明文 api_key 的真源文件——权限收 0600
+        // （旧口径默认 umask，共享主机上其他用户可读），且原子写（半截清单 = 下次 load 拒启动）。
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)
+                .ctx("建清单临时文件（0600）")?;
+            f.write_all(json.as_bytes()).ctx("写清单临时文件")?;
+            f.sync_all().ctx("刷清单临时文件")?;
+            std::fs::rename(&tmp, path).ctx("原子替换清单文件")?;
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, json).ctx(format!("写入清单 {}", path.display()))
+        }
     }
 
     pub fn load(path: &Path) -> Result<Self> {
         let json = std::fs::read_to_string(path).ctx(format!("读取清单 {}", path.display()))?;
-        serde_json::from_str(&json).ctx("解析配置清单")
+        let m: Self = serde_json::from_str(&json).ctx("解析配置清单")?;
+        // 2026-10-27 自审 majors：重名/穿越名在 load 层拦（路径安全 + 唯一性不变量）
+        m.validate().ctx("清单不变量校验")?;
+        Ok(m)
     }
 }
 
