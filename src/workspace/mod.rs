@@ -51,7 +51,10 @@ impl Workspace {
     /// 取得 worktree：不存在则创建（T1.1）；已存在则校验注册表记录后复用（T1.4 resume 对齐）。
     /// 复用时 base_rev 不一致 = 基点漂移 → 拒绝并提示清理重建。
     pub fn ensure(spec: &WorkspaceSpec) -> Result<Workspace> {
+        Self::validate_task_id(spec)?;
         let path = Self::target_path(spec);
+        // 基点先冻结成 sha：移动引用（HEAD/main）的漂移只有 sha 对 sha 才检得出。
+        let base_sha = resolve_base(&spec.repo, &spec.base_rev)?;
         if path.exists() {
             let rec = record_read(&spec.repo, &spec.task_id)
                 .ok_or_else(|| {
@@ -60,11 +63,11 @@ impl Workspace {
                         path.display()
                     ))
                 })?;
-            if rec.base_rev != spec.base_rev {
+            if rec.base_rev != base_sha {
                 return Err(DevforgeError::Store(format!(
                     "worktree 基点漂移：记录 {} vs 契约 {}（清理 {} 后重跑）",
                     rec.base_rev,
-                    spec.base_rev,
+                    base_sha,
                     path.display()
                 )));
             }
@@ -140,7 +143,15 @@ impl Workspace {
     /// - 分支已存在但已有提交（上一轮候选）→ 明确拒绝并告诉怎么清理，
     ///   不静默切换基点（否则本轮的 diff 归因会错位）。
     pub fn create(spec: &WorkspaceSpec) -> Result<Workspace> {
+        // 2026-10-27 自审 majors（WA 域）：① base_rev 先冻结成 commit sha（移动 ref
+        // 漂移要 sha 对 sha，字符串对字符串时 HEAD/main 永不漂移）；② 注册表写失败
+        // 必须回滚——无记录残骸脱离孤儿扫描索引，同一 task 再 ensure 永久报错。
         Self::validate_task_id(spec)?;
+        let base_sha = resolve_base(&spec.repo, &spec.base_rev)?;
+        Self::create_at_resolved(spec, base_sha)
+    }
+
+    fn create_at_resolved(spec: &WorkspaceSpec, base_sha: String) -> Result<Workspace> {
         let path = Self::target_path(spec);
         if path.exists() {
             return Err(DevforgeError::Store(format!(
@@ -154,12 +165,13 @@ impl Workspace {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         let path_str = path.to_string_lossy().to_string();
+        let mut created_branch = false;
         match existing_tip {
-            Some(tip) if tip != spec.base_rev => {
+            Some(tip) if tip != base_sha => {
                 return Err(DevforgeError::Store(format!(
                     "任务分支 `{branch}` 已存在且指向 {tip}（上一轮候选保留，不等于本轮基点 {}）——
                      同一 task 重建工作区请先 `git branch -D {branch}`，或换 task id",
-                    spec.base_rev
+                    &base_sha
                 )));
             }
             Some(_) => {
@@ -169,22 +181,33 @@ impl Workspace {
             None => {
                 git(
                     &spec.repo,
-                    &["worktree", "add", "-b", &branch, &path_str, &spec.base_rev],
+                    &["worktree", "add", "-b", &branch, &path_str, &base_sha],
                 )?;
+                created_branch = true;
             }
         }
         let ws = Workspace {
             path,
             branch,
-            base_rev: spec.base_rev.clone(),
+            base_rev: base_sha,
         };
-        record_write(&spec.repo, &WorkspaceRecord {
+        if let Err(e) = record_write(&spec.repo, &WorkspaceRecord {
             task_id: spec.task_id.clone(),
             path: ws.path.clone(),
             branch: ws.branch.clone(),
             base_rev: ws.base_rev.clone(),
             created_at_ms: crate::domain::now_ms(),
-        })?;
+        }) {
+            // WA-04 回滚：注册表没写进去，worktree 留在盘上就是「无记录残骸」——
+            // 孤儿扫描以注册表为唯一索引，永远看不见它，同一 task 再 ensure 永久报错。
+            let _ = git(&spec.repo, &["worktree", "remove", "--force", &path_str]);
+            if created_branch {
+                let _ = git(&spec.repo, &["branch", "-D", &ws.branch]);
+            }
+            return Err(DevforgeError::Store(format!(
+                "写 workspace 注册表失败（worktree 与分支已回滚）：{e}"
+            )));
+        }
         Ok(ws)
     }
 
@@ -243,12 +266,19 @@ pub fn scan_orphans(repo: &Path) -> Result<Vec<OrphanWorkspace>> {
 /// 清掉一个孤儿（注册表摘除；目录若还在则物理删除残骸）。
 pub fn remove_orphan(repo: &Path, orphan: &OrphanWorkspace) -> Result<()> {
     if orphan.path.exists() {
-        let _ = std::fs::remove_dir_all(&orphan.path);
+        // WA-02：物理删除失败必须上抛并保留注册表记录——
+        // 吞掉后照样摘记录，残骸从此脱离扫描视野，同一 task 被永久砖化。
+        std::fs::remove_dir_all(&orphan.path).map_err(|e| {
+            DevforgeError::Store(format!(
+                "删除孤儿 worktree 残骸 {} 失败（注册表记录保留，残骸不脱离扫描视野）：{e}",
+                orphan.path.display()
+            ))
+        })?;
     }
-    let _ = git(
-        repo,
-        &["worktree", "prune"],
-    );
+    if let Err(e) = git(repo, &["worktree", "prune"]) {
+        // prune 失败不阻塞摘记录（它只是 git 元数据清理，注册表才是扫描索引），但要留痕。
+        tracing::warn!(component = "workspace", "worktree prune 失败（继续摘除注册表记录）：{e}");
+    }
     record_remove(repo, &orphan.task_id);
     Ok(())
 }
@@ -333,6 +363,24 @@ fn normalize(p: &str) -> String {
         .canonicalize()
         .map(|c| c.to_string_lossy().to_string())
         .unwrap_or_else(|_| p.to_string())
+}
+
+/// WA-03 基点冻结：把契约给的 base_rev（可能是 HEAD/main 这类移动引用）解析成
+/// commit sha。漂移检测必须是 sha 对 sha——字符串对字符串时移动 ref 永不漂移，
+/// 「契约显示新基点、worktree 还停在旧基点」的错位不可检。
+/// rev 解析失败 = 契约错误（Config，不自动重启），不是环境故障。
+fn resolve_base(repo: &Path, base_rev: &str) -> Result<String> {
+    git_out(
+        repo,
+        &["rev-parse", "--verify", &format!("{base_rev}^{{commit}}")],
+    )
+    .map(|s| s.trim().to_string())
+    .map_err(|_| {
+        DevforgeError::Config(format!(
+            "契约基点 `{base_rev}` 无法解析为 commit（仓库 {}）——检查拼写或先 fetch",
+            repo.display()
+        ))
+    })
 }
 
 #[cfg(test)]

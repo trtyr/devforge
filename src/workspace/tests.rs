@@ -153,8 +153,25 @@ fn ensure_reuses_existing_worktree_and_rejects_base_drift() {
     let ws2 = Workspace::ensure(&s).unwrap();
     assert_eq!(ws.path, ws2.path);
     // base 漂移：换 base_rev 再 ensure → 拒绝
+    // WA-03 后语义：漂移检测是 sha 对 sha——「字符串不同但同 commit」不再误报，
+    // 主仓前进（移动 ref 指向新 commit）才叫漂移。旧口径「值不同即漂移」
+    // 恰是审计点名的缺陷：字符串相等时 HEAD 前进了也判不出漂移。
+    let mut same_sha = spec(dir.path(), &base);
+    same_sha.base_rev = "HEAD~0".into(); // 解析后与 base 同一 commit → 应复用不误报
+    let ws2 = Workspace::ensure(&same_sha).unwrap();
+    assert_eq!(ws.path, ws2.path);
+    // 真漂移：主仓前进后 HEAD 指向新 commit → 拒绝
+    std::fs::write(dir.path().join("new.rs"), "fn new() {}\n").unwrap();
+    git(&dir.path(), &["add", "-A"]).unwrap();
+    git(
+        &dir.path(),
+        &[
+            "-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "advance",
+        ],
+    )
+    .unwrap();
     let mut drifted = spec(dir.path(), &base);
-    drifted.base_rev = "HEAD~0".into(); // 值不同即漂移（同 sha 也会被字符串不等拦住）
+    drifted.base_rev = "HEAD".into();
     let err = Workspace::ensure(&drifted).unwrap_err();
     assert!(err.to_string().contains("漂移"), "{err}");
 }
@@ -227,4 +244,60 @@ fn legal_task_id_still_creates_worktree() {
     s.task_id = "af-batch-a".into();
     let w = Workspace::create(&s).unwrap();
     assert!(w.path.exists());
+}
+
+// ── 2026-10-27 自审 WA 域 majors（01a1450b 会话认领）──
+
+/// WA-03：移动引用冻结成 sha——主仓前进后再 ensure，同 spec（base_rev=HEAD）
+/// 必须报基点漂移。旧口径记录的是字符串 "HEAD"，主仓前进后仍字符串相等 →
+/// 「契约显示新基点、worktree 停在旧基点」的错位不可检。
+#[test]
+fn moving_ref_base_rev_detects_drift_after_repo_advances() {
+    let (dir, base) = repo_with_base();
+    let mut s = spec(dir.path(), &base);
+    s.base_rev = "HEAD".into();
+    let ws = Workspace::ensure(&s).unwrap();
+    assert!(ws.base_rev.starts_with(|c: char| c.is_ascii_hexdigit()), "记录应已是 sha：{}", ws.base_rev);
+    // 主仓前进
+    std::fs::write(dir.path().join("n.rs"), "fn n() {}\n").unwrap();
+    git(&dir.path(), &["add", "-A"]).unwrap();
+    git(
+        &dir.path(),
+        &[
+            "-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "advance",
+        ],
+    )
+    .unwrap();
+    let err = Workspace::ensure(&s).unwrap_err();
+    assert!(err.to_string().contains("漂移"), "HEAD 前进后必须报漂移：{err}");
+}
+
+/// WA-04：注册表写失败必须回滚 worktree 与分支——旧实现留下无记录残骸，
+/// 孤儿扫描以注册表为唯一索引永远看不见它，同一 task 再 ensure 永久报错。
+#[test]
+fn registry_write_failure_rolls_back_worktree_and_branch() {
+    let (dir, base) = repo_with_base();
+    // 把注册表目录位占领成普通文件 → record_write 的 create_dir_all 必败
+    let registry = dir.path().join(".git").join("devforge-workspaces");
+    std::fs::write(&registry, b"not a dir").unwrap();
+    let s = spec(dir.path(), &base);
+    let err = Workspace::create(&s).unwrap_err();
+    assert!(err.to_string().contains("回滚"), "{err}");
+    // worktree 目录与分支都不应残留
+    assert!(!Workspace::target_path(&s).exists(), "worktree 应已回滚");
+    assert!(
+        git_out(dir.path(), &["rev-parse", "--verify", "--quiet", "task/af-batch-a"]).is_err(),
+        "新建分支应已回滚"
+    );
+}
+
+/// ensure 入口同样过 task_id 校验（WA-01 只护了 create，复用路径裸着——
+/// target_path 拿未校验 task_id 拼 exists() 探测路径、record_read 拼注册表读路径）。
+#[test]
+fn ensure_entry_validates_task_id_too() {
+    let (dir, base) = repo_with_base();
+    let mut s = spec(dir.path(), &base);
+    s.task_id = "a/../b".into();
+    let err = Workspace::ensure(&s).unwrap_err();
+    assert!(err.to_string().contains("非法字符"), "got: {err}");
 }
