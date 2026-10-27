@@ -359,38 +359,48 @@ fn last_touch() -> &'static Mutex<HashMap<String, u64>> {
 }
 
 /// 写心跳（无该 run 的快照时不写）。
-pub fn write_heartbeat(run_id: &str) {
+pub fn write_heartbeat(run_id: &str) -> std::io::Result<()> {
     let Some(snap) = runs()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(run_id)
         .cloned()
     else {
-        return;
+        return Ok(());
     };
     // 落点 = 本 run 开始时捕获的观测根（不随进程级注入漂移）
     let Some(root) = run_root(run_id) else {
-        return;
+        return Ok(());
     };
-    if let Err(e) = heartbeat::write(&root, &snap) {
-        // 刷心跳失败不打断 run（best-effort）：只在 debug 里留痕
-        tracing::debug!(component = "observability", error = %e, "心跳写入失败");
+    match heartbeat::write(&root, &snap) {
+        // 刷心跳失败不打断 run（best-effort）：调用方（watchdog）决定日志级别
+        Err(e) => Err(e),
+        ok => ok,
     }
 }
 
 /// 低频兜底刷新（watchdog 调用）：节流到 [`HEARTBEAT_REFRESH_MS`] 一次
 /// ——阶段/步骤变化走 `set_phase`/`set_step`，不受节流。
-pub fn touch_run(run_id: &str) {
+pub fn touch_run(run_id: &str) -> std::io::Result<()> {
     let now = crate::domain::now_ms();
     {
         let mut table = last_touch().lock().unwrap_or_else(|e| e.into_inner());
         let last = table.get(run_id).copied().unwrap_or(0);
         if now.saturating_sub(last) < HEARTBEAT_REFRESH_MS {
-            return;
+            return Ok(());
         }
         table.insert(run_id.to_string(), now);
     }
-    write_heartbeat(run_id);
+    write_heartbeat(run_id)
+}
+
+/// 清掉某 run 的心跳节流记录（2026-10-27 自审 minor 174：LAST_TOUCH 是进程级 map，
+/// run 结束时不清 → 按 run 无界增长）。由 `end_run` 与 watchdog 收尾调用。
+pub fn forget_run_throttle(run_id: &str) {
+    last_touch()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(run_id);
 }
 
 /// 注入观测根（单测用；生产由 `DEVFORGE_HOME` / `HOME/.devforge` 解析）。

@@ -117,8 +117,7 @@ fn cancel_path_unblocks_the_run_and_fires_the_intervention_hook() {
 // ---------- 失活收割（006 decisions/002：默认不杀，显式闲置阈值才判死） ----------
 
 #[test]
-fn session_fingerprint_changes_on_append() {
-    let dir = tempfile::tempdir().unwrap();
+fn session_fingerprint_changes_on_append() {    let dir = tempfile::tempdir().unwrap();
     let watch = dir.path().join("coding");
     std::fs::create_dir_all(&watch).unwrap();
     let fp0 = session_fingerprint(std::slice::from_ref(&watch)).unwrap();
@@ -129,6 +128,44 @@ fn session_fingerprint_changes_on_append() {
     std::fs::write(watch.join("s.jsonl"), b"hello world").unwrap();
     let fp2 = session_fingerprint(&[watch]).unwrap();
     assert_ne!(fp1, fp2, "追加增长应改变指纹");
+}
+
+/// 2026-10-27 自审 minor（171）：指纹必须**与目录遍历顺序无关**，且含文件身份。
+/// 错实现形态：按 read_dir 产出顺序递推混合（或只哈希长度+mtime 不含路径）→ 红。
+#[test]
+fn fingerprint_is_order_independent_and_identity_aware() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    // 同内容、同大小的两个文件，交换名字 = 不同快照（含路径身份）
+    for (dir, name) in [(&a, "x.jsonl"), (&b, "y.jsonl")] {
+        std::fs::write(dir.path().join(name), b"same").unwrap();
+    }
+    let fa = session_fingerprint(&[a.path().to_path_buf()]).unwrap();
+    let fb = session_fingerprint(&[b.path().to_path_buf()]).unwrap();
+    assert_ne!(fa, fb, "路径字不同必须得到不同指纹（否则换名＝漏报进展）");
+    // 同一目录反复算 = 稳定（顺序无关）
+    for _ in 0..5 {
+        assert_eq!(
+            fa,
+            session_fingerprint(&[a.path().to_path_buf()]).unwrap(),
+            "同一目录的指纹必须稳定"
+        );
+    }
+}
+
+/// 2026-10-27 自审 minor（172）：符号链接目录必须跟随（否则链接出去的子目录
+/// 永远不计入进展 → 假平线 → 活 run 被误收割）。
+#[cfg(unix)]
+#[test]
+fn fingerprint_follows_symlinked_directories() {
+    let outer = tempfile::tempdir().unwrap();
+    let inner = tempfile::tempdir().unwrap();
+    std::fs::write(inner.path().join("s.jsonl"), b"hello").unwrap();
+    std::os::unix::fs::symlink(inner.path(), outer.path().join("link")).unwrap();
+    let fp_before = session_fingerprint(&[outer.path().to_path_buf()]).unwrap();
+    std::fs::write(inner.path().join("s.jsonl"), b"hello world").unwrap();
+    let fp_after = session_fingerprint(&[outer.path().to_path_buf()]).unwrap();
+    assert_ne!(fp_before, fp_after, "链接目录内的增长必须改变指纹");
 }
 
 #[test]
@@ -149,7 +186,9 @@ fn idle_configured_growth_keeps_run_alive() {
                 .open(writer.join("s.jsonl"))
                 .unwrap();
             use std::io::Write;
-            let _ = writeln!(f, "line {i}");
+            // 2026-10-27 自审 minor（178）：不能再 `let _ =`——写失败会让「持续增长=活」
+            // 的样本静默停长而断言仍绿（空洞化）。
+            writeln!(f, "line {i}").expect("增长样本写入必须成功");
             i += 1;
             std::thread::sleep(std::time::Duration::from_millis(150));
         }

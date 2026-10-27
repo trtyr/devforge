@@ -13,15 +13,24 @@ use crate::domain::runner::RunControl;
 /// → 返回 None。旧口径读失败直接 return（指纹停在 FNV 基准值且永不变化）→
 /// 「无进展」误判 → 活着的 run 被失活收割。不可观测即不判定——宁可漏杀不可误杀。
 fn session_fingerprint(dirs: &[PathBuf]) -> Option<u64> {
-    fn walk(dir: &Path, hash: &mut u64) -> bool {
+    // 2026-10-27 自审 minor（171/172）：收集→排序→再哈希。旧口径按 read_dir 产出顺序
+    // 递推混合（顺序敏感 = 目录内容不变也可能算出不同指纹 → 假进展），且条目不含
+    // 路径身份（同名同长的两个文件互换会让指纹不变 → 漏报）。改为先把
+    // (路径, 长度, mtime) 全收上来再排序，并按路径+元数据一起哈希。
+    // 符号链接目录用 fs::metadata 跟随（旧口径 DirEntry::metadata 不跟随，
+    // 链接出去的会话子目录永远不计入进展 → 假平线 → 活 run 被误收割）。
+    fn walk(dir: &Path, acc: &mut Vec<(String, u64, u128)>) -> bool {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return false;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Ok(meta) = entry.metadata() else { continue };
+            // fs::metadata 跟随符号链接（读取失败则跳过该条目，不当作不可观测）
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
             if meta.is_dir() {
-                if !walk(&path, hash) {
+                if !walk(&path, acc) {
                     return false;
                 }
             } else {
@@ -29,16 +38,9 @@ fn session_fingerprint(dirs: &[PathBuf]) -> Option<u64> {
                     .modified()
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_nanos() as u64)
+                    .map(|d| d.as_nanos())
                     .unwrap_or(0);
-                for b in meta.len().to_le_bytes() {
-                    *hash ^= b as u64;
-                    *hash = hash.wrapping_mul(0x100000001b3);
-                }
-                for b in nanos.to_le_bytes() {
-                    *hash ^= b as u64;
-                    *hash = hash.wrapping_mul(0x100000001b3);
-                }
+                acc.push((path.to_string_lossy().to_string(), meta.len(), nanos));
             }
         }
         true
@@ -46,10 +48,26 @@ fn session_fingerprint(dirs: &[PathBuf]) -> Option<u64> {
     if dirs.is_empty() {
         return None;
     }
-    let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
+    let mut acc: Vec<(String, u64, u128)> = Vec::new();
     for d in dirs {
-        if !walk(d, &mut hash) {
+        if !walk(d, &mut acc) {
             return None;
+        }
+    }
+    acc.sort();
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
+    for (path, len, nanos) in acc {
+        for b in path.as_bytes() {
+            hash ^= *b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        for b in len.to_le_bytes() {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        for b in nanos.to_le_bytes() {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
         }
     }
     Some(hash)
@@ -102,7 +120,10 @@ pub(crate) fn run_with_watchdog<T>(
                 }
                 // 心跳低频兜底刷新（节流在 observability 内）：run 停在同一阶段、长时间无事件时，
                 // 时间戳仍向前走 → 能区分「卡死」与「已死」（六个 SOP 全经过本线程）。
-                crate::observability::touch_run(&run_id);
+                if let Err(e) = crate::observability::touch_run(&run_id) {
+                    // 周期刷失败不打断 run：节流到 debug（收尾终态才 WARN）
+                    tracing::debug!(component = "watchdog", run_id = %run_id, error = %e, "周期心跳落盘失败");
+                }
                 // DR-3：agent 停滞告警——心跳只证本线程活，agent 活性看最近 agent 事件。
                 // 从未有 agent 事件（DR-1 型「根本没开轮」）按开跑时刻起算。
                 if let Some(age) = crate::observability::stall_check(&run_id)
@@ -209,7 +230,19 @@ pub(crate) fn run_with_watchdog<T>(
         done_main.store(true, Ordering::SeqCst);
         // F18：收尾终态刷盘——run 的最后一次心跳（阶段/步骤定格在终态）。
         // 在 f() 之后（尾部），不占「开跑→首让」竞态窗口（agent 实验证尾部写不触发）。
-        crate::observability::touch_run(&run_id_final);
+        if let Err(e) = crate::observability::touch_run(&run_id_final) {
+            // 2026-10-27 自审 minor（177）：死亡现场的最后一次心跳落盘失败必须响——
+            // 旧口径在 write_heartbeat 里只留 debug，现场证据静默缺失。
+            tracing::warn!(
+                component = "watchdog",
+                event = "watchdog.heartbeat.final_failed",
+                run_id = %run_id_final,
+                error = %e,
+                "收尾终态心跳落盘失败——run 死亡现场的心跳证据缺失"
+            );
+        }
+        // 自审 minor（174）：节流表是进程级 map，run 收场必须摘条目（否则按 run 无界增长）
+        crate::observability::forget_run_throttle(&run_id_final);
         out
     })
 }
