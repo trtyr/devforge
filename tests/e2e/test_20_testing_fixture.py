@@ -139,8 +139,9 @@ python3 -m unittest discover -s tests -v
 
 
 def newest_session_bytes(server: Server, kind: str) -> int:
-    sd = server.home / ".devforge" / "sessions" / kind
-    files = list(sd.glob("**/*.jsonl")) if sd.is_dir() else []
+    # 2026-10-27 对齐 run-id 隔离布局
+    sd = server.home / ".devforge" / "sessions"
+    files = list(sd.glob(f"*/{kind}/**/*.jsonl"))
     return max((f.stat().st_size for f in files), default=0)
 
 
@@ -161,7 +162,7 @@ def main() -> int:
             status, _ = server.req("PUT", "/config/manifest", manifest, timeout=300.0)
             r.check(status == 202, "PUT 剥包 manifest == 202", f"status={status}")
             ev = sse.wait_for(
-                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 15,
+                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 16,
                 timeout=300.0,
             )
             r.check(ev is not None, "九 profile 渲染完成（剥包快路径）", f"{ev}")
@@ -207,6 +208,9 @@ def main() -> int:
                 "POST", "/projects/calc-app/tasks/t1/start", {"sop": "testing"},
             )
             r.check(status == 202, "start sop=testing == 202（testing 阶段点火）", f"status={status}")
+            if status != 202:
+                # 2026-10-27 自审 major：start 未受理不得再空转等一个不会出现的 run
+                return r.finish()
 
             t0 = time.time()
             growth: list[tuple[int, int]] = []
@@ -274,8 +278,9 @@ def main() -> int:
 
         # ---- 测试会话工具取证（D007：黑盒纪律 + 供给边界） ----
         tool_names: set[str] = set()
-        sd = server.home / ".devforge" / "sessions" / "testing"
-        for jf in sd.glob("**/*.jsonl") if sd.is_dir() else []:
+        # 2026-10-27 对齐 run-id 隔离布局
+        sd = server.home / ".devforge" / "sessions"
+        for jf in sd.glob("*/testing/**/*.jsonl"):
             try:
                 for line in jf.read_text(errors="replace").splitlines():
                     for m in re.finditer(r'"name"\s*:\s*"([^"]+)"', line):

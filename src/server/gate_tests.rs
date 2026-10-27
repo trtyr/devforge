@@ -96,3 +96,41 @@ async fn the_gate_does_not_wait_when_no_render_is_in_flight() {
     .await
     .expect("无渲染在途时不应等待");
 }
+
+// ---------- 2026-10-27 自审 major：渲染单飞 + 提交合并 ----------
+
+#[test]
+fn concurrent_submits_coalesce_instead_of_spawning_a_second_render() {
+    // 错实现形态：在途时另起渲染线程（两个线程非原子写同一 profiles_root）→ 红
+    let gate = RenderGate::new();
+    assert!(gate.try_begin_or_coalesce(), "首个提交应取得渲染权");
+    assert!(gate.is_in_flight());
+    assert!(!gate.try_begin_or_coalesce(), "在途时第二个提交必须被合并");
+    assert!(gate.is_in_flight(), "合并不得改变在途计数");
+}
+
+#[test]
+fn a_coalesced_submit_is_never_lost() {
+    // 错实现形态：判完 dirty 到归零之间有窗口 → 合并进来的提交永久丢掉
+    //（配置提交了但 profile 永不更新、无报错）→ 本用例必须变红
+    let gate = RenderGate::new();
+    assert!(gate.try_begin_or_coalesce());
+    assert!(!gate.try_begin_or_coalesce(), "提交 A 合并进在跑的轮");
+    assert!(gate.finish_round_or_continue(), "轮末必须发现合并请求并再跑一轮");
+    assert!(
+        gate.is_in_flight(),
+        "重渲期间仍算在途（不得出现空窗让别的线程插队）"
+    );
+    assert!(!gate.finish_round_or_continue(), "无新提交时收工");
+    assert!(!gate.is_in_flight(), "收工后归零");
+}
+
+#[test]
+fn idle_gate_grants_the_render_to_the_next_submit() {
+    // 收工后新提交必须拿到渲染权（否则之后的配置永不生效）
+    let gate = RenderGate::new();
+    assert!(gate.try_begin_or_coalesce());
+    assert!(!gate.finish_round_or_continue());
+    assert!(gate.try_begin_or_coalesce(), "收工后的新提交应取得渲染权");
+    assert!(gate.is_in_flight());
+}

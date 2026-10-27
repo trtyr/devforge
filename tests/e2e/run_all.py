@@ -40,6 +40,8 @@ SCRIPTS = [
     ("test_20_testing_fixture.py", 7200, "P007 测试阶段本体（fixture 路线）：预置被测系统+文档，验 stages/矩阵/发现/tests 落仓/审查闭环"),
     ("test_21_coding_to_testing.py", 25200, "P007 编码→测试交接（预置小 plan tree + 真 coding + 真 testing；两段各 10800s 窗口）"),
     ("test_22_doc_from_zero.py", 10800, "P008 doc-from-zero 端到端（无文档无 git fixture）：门0 清单/闭包/单元 → 单元滚动 → 终审 + doc-audit 复算"),
+    ("test_23_doc_incremental.py", 10800, "P008 doc 增量续跑：基线推进/召回/增量轮更省（2026-10-27 登记进套件，此前判定不进 TEST_REPORT）"),
+    ("test_24_doc_resume.py", 10800, "plan 010 T008 doc-from-zero 续跑实证：断点认账/不重写/第二单元补完/无 kickoff 泄漏（2026-10-27 登记进套件）"),
 ]
 
 

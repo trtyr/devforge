@@ -415,6 +415,19 @@ def wait_run_status(server: Server, project: str, task: str, statuses: set[str],
     return None, last
 
 
+def session_files(server: Server, kind: str, run_id: str | None = None) -> list:
+    """会话文件枚举（2026-10-27 对齐引擎 run-id 隔离布局：sessions/<run_id>/<kind>/*.jsonl）。
+
+    旧平铺布局 sessions/<kind> 已不存在——引擎批次 #4 起会话按 run-id 归档。
+    run_id 给定只看该 run；None 跨全部 run 聚合。
+    """
+    root = server.home / ".devforge" / "sessions"
+    if run_id:
+        d = root / run_id / kind
+        return sorted(d.glob("*.jsonl")) if d.is_dir() else []
+    return sorted(root.glob(f"*/{kind}/*.jsonl"))
+
+
 def start_tolerant(server: Server, project: str, task: str, body=None, timeout: float = 20.0):
     """终态后重跑 start：容忍串行位释放的亚秒级窗口。
 

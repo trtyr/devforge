@@ -47,8 +47,9 @@ EIGHT = (
 
 
 def newest_session_bytes(server: Server, kind: str) -> int:
-    sd = server.home / ".devforge" / "sessions" / kind
-    files = list(sd.glob("*.jsonl")) if sd.is_dir() else []
+    # 2026-10-27 对齐 run-id 隔离布局（旧 sessions/<kind> 平铺已不存在）
+    sd = server.home / ".devforge" / "sessions"
+    files = list(sd.glob(f"*/{kind}/*.jsonl"))
     return max((f.stat().st_size for f in files), default=0)
 
 
@@ -61,6 +62,11 @@ def main() -> int:
 
         # ---- manifest：真 key；全供给真装（八 profile；测试链需要真插件） ----
         key = real_api_key("newapi")
+        if key is None:
+            # 2026-10-27 自审 major：缺凭据是环境故障，不是产品 run 失败——
+            # 走 ENV_ERROR 出口，不再把 None 写进 manifest 让故障伪装成产品红。
+            print("ENV_ERROR：real_api_key 返回 None（缺 NEWAPI 凭据），跳过本脚本")
+            return 2
         _, manifest = server.req("GET", "/config/manifest")
         manifest["api_key"] = key
         t0 = time.time()
@@ -257,8 +263,9 @@ def main() -> int:
 
         # ---- 测试会话 toolCall 命名空间取证（插件可见性） ----
         tool_names: set[str] = set()
-        sessions_dir = server.home / ".devforge" / "sessions" / "testing"
-        for jf in sessions_dir.glob("*.jsonl"):
+        # 2026-10-27 对齐 run-id 隔离布局：testing 角色 dir 只存在于跑过 testing SOP 的 run
+        sessions_dir = server.home / ".devforge" / "sessions"
+        for jf in sessions_dir.glob("*/testing/*.jsonl"):
             try:
                 for line in jf.read_text(errors="replace").splitlines():
                     for m in re.finditer(r'"name"\s*:\s*"([^"]+)"', line):

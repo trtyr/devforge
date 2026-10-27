@@ -14,6 +14,9 @@ use std::sync::Mutex;
 pub struct RenderGate {
     /// 在途渲染数（>0 = 有渲染在途）。
     in_flight: Mutex<usize>,
+    /// 合并重渲请求（2026-10-27）：渲染在途时新到的提交不得另起一线（多线程非原子
+    /// 写同一 profiles_root），只置此标记，由在跑那一轮结束时重渲一次。
+    rerender_pending: std::sync::atomic::AtomicBool,
     /// 渲染完成通知（值 = 已完成代数；每次完成自增 → 订阅者的 `changed()` 会醒）。
     notify: tokio::sync::watch::Sender<u64>,
 }
@@ -23,8 +26,42 @@ impl RenderGate {
         let (tx, _rx) = tokio::sync::watch::channel(0u64);
         Self {
             in_flight: Mutex::new(0),
+            rerender_pending: std::sync::atomic::AtomicBool::new(false),
             notify: tx,
         }
+    }
+
+    /// 尝试独占一轮渲染：true = 调用方负责起渲染线程（已登记在途）；
+    /// false = 已有轮在跑，本次提交已合并进它（结束后自动重渲最新清单）。
+    ///
+    /// 与 [`Self::finish_round_or_continue`] 同锁串行：两边不可能同时判错
+    /// （漏渲 = 提交了但没人渲，或双渲 = 两个线程写同一 profiles_root）。
+    pub fn try_begin_or_coalesce(&self) -> bool {
+        let mut n = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        if *n > 0 {
+            self.rerender_pending
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            return false;
+        }
+        *n += 1;
+        true
+    }
+
+    /// 一轮渲染结束后的决策：true = 还有合并请求 → 再渲一轮（**保持在途不归零**）；
+    /// false = 收工，归零并广播。持锁判 dirty 与归零是原子的——
+    /// 否则「判完 dirty 到 guard 归零」之间到达的提交会永久丢掉（配置不生效、无报错）。
+    pub fn finish_round_or_continue(&self) -> bool {
+        let mut n = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        if self
+            .rerender_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return true;
+        }
+        *n = n.saturating_sub(1);
+        drop(n);
+        self.notify.send_modify(|v| *v += 1);
+        false
     }
 
     /// 登记一次在途渲染（`PUT /config/manifest` 受理后调用）。

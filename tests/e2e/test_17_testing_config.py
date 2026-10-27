@@ -80,12 +80,13 @@ def main() -> int:
             [m.get("name") for m in df.get("mcp", [])] == ["codegraph", "context7"],
             "doc-fix 双 MCP（codegraph+context7）", f"{[m.get('name') for m in df.get('mcp', [])]}",
         )
-        r.check(len(df.get("skills", [])) == 4, "doc-fix 四语言 skills", f"{df.get('skills')}")
+        # 2026-10-27 对齐：doc-fix = 四语言 + doc-contract = 5（P008 后 doc-contract 四处共用）
+        r.check(len(df.get("skills", [])) == 5, "doc-fix 五项 skills（四语言+doc-contract）", f"{df.get('skills')}")
 
         dr = agents.get("doc-review", {})
         r.check(
-            not dr.get("extra_packages") and not dr.get("mcp") and not dr.get("skills"),
-            "doc-review 极简", f"{dr}",
+            not dr.get("extra_packages") and not dr.get("mcp") and dr.get("skills") == ["doc-contract"],
+            "doc-review 极简（无包无 MCP，仅 doc-contract skill）", f"{dr}",
         )
         r.check(dr.get("model") == "grok-4.7", "doc-review → grok-4.7", f"{dr.get('model')}")
 
@@ -99,13 +100,13 @@ def main() -> int:
             status, resp = server.req("PUT", "/config/manifest", stripped, timeout=120.0)
             r.check(status == 202, "PUT 剥包 manifest == 202", f"status={status}")
             ev = sse.wait_for(
-                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 15,
+                lambda e: e.get("type") == "config.rendered" and e.get("rendered") == 16,
                 timeout=120.0,
             )
             elapsed = time.time() - t0
             r.check(
                 ev is not None,
-                "config.rendered == 11（全角色渲染全完成，剥包快路径）",
+                "config.rendered == 16（全角色渲染全完成，剥包快路径）",
                 f"elapsed={elapsed:.0f}s, ev={ev}",
             )
 

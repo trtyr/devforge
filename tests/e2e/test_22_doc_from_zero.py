@@ -80,8 +80,9 @@ def _reset_for_tests() -> None:
 
 
 def newest_session_bytes(server: Server, kind: str) -> int:
-    sd = server.home / ".devforge" / "sessions" / kind
-    files = list(sd.glob("**/*.jsonl")) if sd.is_dir() else []
+    # 2026-10-27 对齐 run-id 隔离布局
+    sd = server.home / ".devforge" / "sessions"
+    files = list(sd.glob(f"*/{kind}/**/*.jsonl"))
     return max((f.stat().st_size for f in files), default=0)
 
 
@@ -154,10 +155,13 @@ def main() -> int:
             r.check(not (repo / ".git").exists(), "fixture 初始无 git 历史")
             project_name = "book-app"
 
-        status, _ = server.req(
+        status, body = server.req(
             "POST", "/projects", {"name": project_name, "local_path": str(repo)}
         )
-        r.check(status == 201, f"项目 {project_name} 创建", f"status={status}")
+        r.check(status == 201, f"项目 {project_name} 创建", f"status={status}, body={body}")
+        if status != 201:
+            # 2026-10-27 自审 major：注册失败不连锁假红——带 body 一红到底，根因可见
+            return r.finish()
         status, body = server.req(
             "POST",
             "/projects/{}/tasks".format(project_name),
@@ -173,6 +177,9 @@ def main() -> int:
                 "POST", f"/projects/{project_name}/tasks/d1/start", None
             )
             r.check(status == 202, "start doc-from-zero == 202", f"status={status}")
+            if status != 202:
+                # 2026-10-27 自审 major：start 未受理不得按 7200s 空转
+                return r.finish()
 
             t0 = time.time()
             growth: list[tuple[int, int]] = []
@@ -223,7 +230,8 @@ def main() -> int:
         r.check(gate.exists(), "门 0：闭包校验证据落盘")
 
         # 单元滚动（plan 010 D001：检查点住黑板，不在产物目录）
-        state_path = server.home / ".devforge" / "plans" / "devforge" / "d1" / "doc-from-zero" / "state.json"
+        # 2026-10-27 修复：项目名跟随本脚本 fixture（旧口径硬编码 devforge，断言恒空）
+        state_path = server.home / ".devforge" / "plans" / project_name / "d1" / "doc-from-zero" / "state.json"
         r.check(state_path.exists(), "检查点 state.json 落盘（黑板）")
         state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
         done = (state.get("data") or {}).get("done", [])

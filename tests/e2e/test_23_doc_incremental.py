@@ -261,9 +261,10 @@ def main() -> int:
         report2, text2 = newest_report(docs)
         tokens2_total = parse_tokens(text2)
         r.check(tokens2_total > 0, "第 2 轮账单有 token 用量", f"{tokens2_total}")
-        # 账单是累计值（usage 扫全量会话目录）：增量轮净耗 = 累计 - 第 1 轮
-        tokens2 = tokens2_total - tokens1
-        r.check(tokens2 < tokens1, "增量轮净耗 token 少于全量轮", f"{tokens2} < {tokens1}（累计 {tokens2_total}）")
+        # 2026-10-27 对齐 run-id 会话隔离：账单按 run 各自记账（不再跨 run 累计），
+        # 第 2 轮账单即增量轮净耗；旧「累计-第 1 轮」口径下差值恒为负 → 断言恒真失去鉴别力。
+        tokens2 = tokens2_total
+        r.check(tokens2 < tokens1, "增量轮净耗 token 少于全量轮", f"{tokens2} < {tokens1}")
         r.check(t2 < t1, "增量轮墙钟短于全量轮", f"{t2:.0f}s < {t1:.0f}s")
         r.check(
             data2.get("base_sha") == head2,

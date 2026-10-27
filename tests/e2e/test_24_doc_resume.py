@@ -70,11 +70,17 @@ def unit_files(repo: Path, state: dict, unit: str) -> dict[str, tuple[int, int]]
 
 
 def session_inventory(server: Server) -> dict[str, int]:
-    """会话文件 → 当前大小（观测第二轮新增/增长）。"""
-    sd = server.home / ".devforge" / "sessions" / "doc"
-    if not sd.is_dir():
+    """会话文件 → 当前大小（观测第二轮新增/增长）。
+
+    2026-10-27 对齐 run-id 隔离布局：key = 相对 sessions 根的路径
+    （第二轮是新 run-id 目录 → 整目录计入「新增」，正是验收要观测的）。
+    """
+    root = server.home / ".devforge" / "sessions"
+    if not root.is_dir():
         return {}
-    return {f: p.stat().st_size for f, p in ((q.name, q) for q in sd.glob("**/*.jsonl"))}
+    return {
+        str(p.relative_to(root)): p.stat().st_size for p in root.glob("*/doc/**/*.jsonl")
+    }
 
 
 def wait_run_final(server: Server, project: str, task: str, timeout: float) -> tuple[str | None, float]:
@@ -196,7 +202,7 @@ def main() -> int:
             old = sessions_before.get(name, 0)
             if size <= old:
                 continue
-            p = server.home / ".devforge" / "sessions" / "doc" / name
+            p = server.home / ".devforge" / "sessions" / name
             text = p.read_text(encoding="utf-8", errors="ignore")[old:]
             if needle in text:
                 leaks.append(name)

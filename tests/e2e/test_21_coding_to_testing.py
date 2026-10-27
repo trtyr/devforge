@@ -55,8 +55,9 @@ PLAN_TASK = """# T001 · 实现 wordcount-lite CLI
 
 
 def newest_session_bytes(server: Server, kind: str) -> int:
-    sd = server.home / ".devforge" / "sessions" / kind
-    files = list(sd.glob("**/*.jsonl")) if sd.is_dir() else []
+    # 2026-10-27 对齐 run-id 隔离布局
+    sd = server.home / ".devforge" / "sessions"
+    files = list(sd.glob(f"*/{kind}/**/*.jsonl"))
     return max((f.stat().st_size for f in files), default=0)
 
 
@@ -143,6 +144,9 @@ def main() -> int:
             if code_final == "Settled":
                 status, _ = server.req("POST", "/projects/wc-lite/tasks/t1/start", {"sop": "testing"})
                 r.check(status == 202, "start sop=testing == 202（编码→测试交接）", f"status={status}")
+                if status != 202:
+                    # 2026-10-27 自审 major：start 未受理不得进入小时级空转等待
+                    return r.finish()
                 exclude = {code_run} if code_run else set()
                 test_final, _, test_elapsed, tgrowth = wait_run(
                     server, "wc-lite", "t1", exclude, TEST_TIMEOUT, sse, timeline
@@ -181,8 +185,9 @@ def main() -> int:
 
         # 黑盒纪律旁证
         names: set[str] = set()
-        sd = server.home / ".devforge" / "sessions" / "testing"
-        for jf in sd.glob("**/*.jsonl") if sd.is_dir() else []:
+        # 2026-10-27 对齐 run-id 隔离布局
+        sd = server.home / ".devforge" / "sessions"
+        for jf in sd.glob("*/testing/**/*.jsonl"):
             try:
                 for line in jf.read_text(errors="replace").splitlines():
                     for m in re.finditer(r'"name"\s*:\s*"([^"]+)"', line):

@@ -117,6 +117,10 @@ impl From<crate::error::DevforgeError> for ApiError {
             Self::conflict(msg)
         } else if msg.contains("未知 SOP") {
             Self::bad_request(msg)
+        } else if msg.contains("依赖") || msg.contains("非法字符") || msg.contains("含非法") {
+            // 2026-10-27 自审 major：确定性校验失败（依赖环/自依赖/依赖缺失/名字非法）
+            // 是客户端输入问题 → 400，不是 500 内部错误（旧口径落进兑底 internal）。
+            Self::bad_request(msg)
         } else {
             Self::internal(msg)
         }
@@ -975,21 +979,37 @@ pub async fn put_manifest(
         agents,
         "清单已更新（真源落盘 + 内存生效），后台重渲染开始"
     );
-    // 渲染闸门：登记「渲染在途」——`start` 端点据此等本 run 所需 profile 就绪
-    // （用户裁决 A：开跑前等 profile 就绪，而不是开跑后被门卫判成「未渲染」而盲重启）
-    if st.render_gate.is_in_flight() {
-        // 2026-10-27 自审 major：并发 PUT 各自 spawn 渲染线程 = 多线程非原子写同一
-        // profiles_root（配置文件撕裂 + pi install 争抢 + 线程无界增长）。渲染是
-        // 全局单飞的——上一轮在途直接 409，客户端等 config.rendered 后重试。
-        return Err(ApiError::conflict(
-            "上一轮配置渲染仍在进行——等 config.rendered/config.render_failed 事件后再提交",
+    // 2026-10-27 自审 major：并发 PUT 各自 spawn 渲染线程 = 多线程非原子写同一
+    // profiles_root（配置文件撕裂 + pi install 争抢 + 线程无界增长）。渲染全局单飞：
+    // 在途时只置 dirty 标记，由在跑的渲染轮末再渲一次（内存清单已更新 → 渲的就是最新版）。
+    if !st.render_gate.try_begin_or_coalesce() {
+        tracing::info!(
+            component = "server",
+            event = "config.render.coalesced",
+            "渲染已在途——本次提交合并进在跑那一轮（结束后自动重渲最新清单）"
+        );
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({"ok": true, "async": true, "agents": agents, "coalesced": true})),
         ));
     }
-    st.render_gate.begin_render();
+    // 渲染闸门：登记「渲染在途」——`start` 端点据此等本 run 所需 profile 就绪
+    // （用户裁决 A：开跑前等 profile 就绪，而不是开跑后被门卫判成「未渲染」而盲重启）
     let st2 = st.clone();
     std::thread::spawn(move || {
-        let st3 = st2.clone();
-        render_body(st2, move |v| st3.emit(v));
+        loop {
+            let st3 = st2.clone();
+            // 不带守卫：在途计数归零的决策交给 finish_round_or_continue（与提交同锁）
+            render_body_without_guard(st2.clone(), move |v| st3.emit(v));
+            if !st2.render_gate.finish_round_or_continue() {
+                break;
+            }
+            tracing::info!(
+                component = "server",
+                event = "config.render.round2",
+                "合并的配置变更触发重渲（第二轮）"
+            );
+        }
     });
     Ok((
         StatusCode::ACCEPTED,
@@ -1020,6 +1040,12 @@ impl Drop for RenderInFlightGuard {
 fn render_body(st: SharedState, emit: impl FnOnce(serde_json::Value)) {
     // 在途守卫：线程体结束**或 panic 展开**都归零（不再依赖线程体末尾的显式调用）
     let _guard = RenderInFlightGuard { st: st.clone() };
+    render_body_without_guard(st, emit)
+}
+
+/// 渲染 + 发通知（**不管在途计数**，由调用方持有守卫）——合并重渲的循环轮用这个，
+/// 否则每轮都归零一次，两轮之间出现空窗让第二个渲染线程插进来。
+fn render_body_without_guard(st: SharedState, emit: impl FnOnce(serde_json::Value)) {
     // 渲染本身异常也要发通知（故把渲染包在 catch_unwind 里）
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let m = st.manifest.lock().unwrap_or_else(|e| e.into_inner()).clone();
