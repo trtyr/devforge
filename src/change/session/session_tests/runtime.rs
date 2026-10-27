@@ -359,6 +359,48 @@ fn testing_route_coding_returns_failures() {
 }
 
 #[test]
+fn red_regression_without_route_block_is_nudged_not_judged_a_liar() {
+    // 自审 minor（84）回归：回归证据红着，但 agent 只是漏了 <route> 块。
+    // 错实现形态：把「没发路由」硬编码成 claims_green=true → 一次格式遗漏就判死整个变更，
+    // 有界回注回路根本用不上。现在必须先追补一次，拿到路由再正常回注。
+    let f = fixture(true);
+    std::fs::create_dir_all(f.ctx.blackboard.join("evidence")).unwrap();
+    let path = f.ctx.blackboard.join(crate::change::testing_gate::REGRESSION_LOG);
+    std::fs::write(&path, "command: cargo test\nexit_code: 1\n").unwrap();
+    // 红证据也是本轮产物 → mtime 要 fresh，否则先被「残留证据」拦下（另一条路径）
+    let future = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+    std::fs::File::open(&path)
+        .unwrap()
+        .set_modified(future)
+        .unwrap();
+
+    let mut session = ProdChangeSession {
+        plan_agent: Box::new(Agent::new(&[])),
+        plan_review: Box::new(ReviewFactory::new(&[])),
+        coding_agent: Box::new(Agent::new(&[])),
+        coding_review: Box::new(ReviewFactory::new(&[])),
+        test_agent: Box::new(Agent::new(&[
+            // 第一轮：诚实说了红，但漏了 <route> 块
+            "回归红了：tests/a_test.rs:10 断言失败\n<stage-complete>1</stage-complete>",
+            // 追补后：补上路由与明细
+            "<route>coding</route>\n<issues>\n- tests/a_test.rs:10 断言失败\n</issues>",
+        ])),
+        test_review: Box::new(ReviewFactory::new(&[])),
+        ctx: f.ctx.clone(),
+        plan_review_instances: 0,
+    };
+    match session.run_testing(&mut NoUser).unwrap() {
+        TestingTurn::RouteCoding { failures } => {
+            assert!(
+                failures.iter().any(|f| f.contains("断言失败")),
+                "追补后应拿到明细：{failures:?}"
+            );
+        }
+        other => panic!("红证据 + 无路由应追补后回注 coding，实际 {other:?}"),
+    }
+}
+
+#[test]
 fn acceptance_table_without_test_ref_is_rejected() {
     let f = fixture(true);
     std::fs::create_dir_all(f.ctx.blackboard.join("testing")).unwrap();

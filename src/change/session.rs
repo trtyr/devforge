@@ -610,7 +610,37 @@ impl ChangeSession for ProdChangeSession {
                     }
                     message = ISSUES_NUDGE.to_string();
                 }
-                _ => break (reply, None, Vec::new()),
+                _ => {
+                    // 自审 minor（84）：「没发路由块」≠「声称通过」。先看回归证据自己的退出码：
+                    // 红 = agent 其实诚实报告了失败，只是漏了 <route> 块——旧口径直接当
+                    // claims_green=true 判「谎称通过」并判死，有界回注回路根本用不上。
+                    // 证据缺失/不可解析不在此列（那是「没跑测试」，下游按缺证据判死）。
+                    let red = evidence_exit_code(
+                        &self.ctx.blackboard.join(crate::change::testing_gate::REGRESSION_LOG),
+                    )
+                    .is_some_and(|code| code != 0);
+                    if !red {
+                        break (reply, None, Vec::new());
+                    }
+                    nudges += 1;
+                    if nudges > MAX_EMPTY_ISSUES_NUDGES {
+                        // 追补耗尽：如实落一条事件再交下游判死——失败归因至少可查
+                        tracing::warn!(
+                            component = "change-engine",
+                            event = "gate.testing.route_missing",
+                            nudges,
+                            "回归证据是红的且连续追补仍无 <route> 块：按质量失败收场（归因：缺路由块，非谎称通过）"
+                        );
+                        break (reply, None, Vec::new());
+                    }
+                    tracing::warn!(
+                        component = "change-engine",
+                        event = "gate.testing.route_missing",
+                        nudges,
+                        "回归证据是红的但没发 <route> 块：追补一次（不按「谎称通过」判死）"
+                    );
+                    message = crate::sop::review_gate::ROUTE_NUDGE.to_string();
+                }
             }
         };
         if let Some(route) = route {

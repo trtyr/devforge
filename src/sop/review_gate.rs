@@ -44,6 +44,15 @@ pub const ISSUES_NUDGE: &str = "\
 你给出的裁决是 FAIL，但没有给出 <issues> 失败明细（每条一行，`- ` 开头）。\
 这条回注已被引擎拒收：请补齐失败明细后重发。";
 
+/// 「回归证据是红的却没发路由块」的追补话术（自审 minor 84）。
+///
+/// 与 `ISSUES_NUDGE` 的分工：那条管「有路由没明细」，这条管「连路由都没有但证据已红」——
+/// 后者旧口径被当成 claimed-green 直接判死，把一次的格式遗漏升级成了质量失败。
+pub const ROUTE_NUDGE: &str = "\
+你的回归证据（testing/regression.log）退出码非 0，但回复里没有 <route> 块。\
+这条回复已被引擎拒收：问题在代码就发 <route>coding</route>，在计划就发 <route>plan</route>；\
+两种都必须跟一个 <issues> 块逐条列失败明细（每条一行，`- ` 开头）。";
+
 /// 外部文本（用户需求 / 审查官产出的 issues / 测试失败明细）进另一个 agent 提示词时的
 /// **分隔包装**（自审 minor 85）。
 ///
