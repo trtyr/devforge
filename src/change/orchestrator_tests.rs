@@ -123,9 +123,23 @@ impl ChangeSession for Scripted {
         _ui: &mut dyn crate::sop::planning::UserLink,
         issues: &[String],
         round: usize,
-    ) -> Result<()> {
-        self.log.push(format!("fix_coding(rt={round},issues={})", issues.len()));
-        Ok(())
+    ) -> Result<String> {
+        self.log
+            .push(format!("fix_coding(rt={round},issues={})", issues.len()));
+        // 回注轮回复：只复审要拿它过边界判定（脚本化 session 通常用不到）。
+        Ok("修复完成\n<stage-complete>1</stage-complete>".into())
+    }
+
+    /// 只复审（自审 minor 73）：回注后不整段重跑 coding，而是只重跑门与审查。
+    /// 脚本仍从 `codings` 队列取（与旧口径的「第二次 coding」兼容——两者都代表
+    /// 「修复之后这一轮审查的结果」）。
+    fn re_review_coding(
+        &mut self,
+        _ui: &mut dyn crate::sop::planning::UserLink,
+        _fix_reply: &str,
+    ) -> Result<CodingTurn> {
+        self.log.push("re_review_coding".into());
+        Ok(self.codings.pop_front().expect("coding 脚本耗尽"))
     }
 }
 
@@ -1008,8 +1022,11 @@ fn corrupt_checkpoint_is_rejected_instead_of_resetting_counters() {
     assert!(session.log.is_empty(), "不得开跑：{:?}", session.log);
 }
 
-/// change #4 回归：编码审查 FAIL → 回注修复（有界），修完重跑 coding 并通关。
+/// change #4 回归：编码审查 FAIL → 回注修复（有界），修完**只复审**并通关。
 /// 旧实现直接 `Err(Quality)`，一次小毛病就判死整个变更。
+///
+/// 自审 minor 73：修复后不得回到 `run_coding` 整段重跑——回注轮已声明「只补审查指出的
+/// 问题，不重跑基线、不重做已完成工作」，再跑一遍基线轮与 coding 开工语就是自相矛盾。
 #[test]
 fn coding_review_fail_reroutes_to_the_fix_loop_and_recovers() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1033,6 +1050,28 @@ fn coding_review_fail_reroutes_to_the_fix_loop_and_recovers() {
         session.log
     );
     assert_eq!(out.state.coding_fix_rounds, 1, "回注轮次必须落盘计数");
+    // 回注之后必须走「只复审」，且 coding 整段只跑过一次
+    let fix_at = session
+        .log
+        .iter()
+        .position(|l| l.starts_with("fix_coding("))
+        .expect("应有回注");
+    assert_eq!(
+        session.log.get(fix_at + 1).map(String::as_str),
+        Some("re_review_coding"),
+        "回注后必须只复审（不得回到 run_coding）：{:?}",
+        session.log
+    );
+    let coding_runs = session
+        .log
+        .iter()
+        .filter(|l| l.starts_with("coding(rt="))
+        .count();
+    assert_eq!(
+        coding_runs, 1,
+        "回注后不得重跑基线轮/开工语（coding 应只进一次）：{:?}",
+        session.log
+    );
 }
 
 /// change #4 回归：编码审查连续 FAIL 超过上限 → Quality（不自动重启）。

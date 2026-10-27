@@ -141,11 +141,25 @@ pub trait ChangeSession {
     /// 默认实现**显式失败**（自审 minor 71：旧口径静默 no-op 返回 Ok，编排层却把这当作
     /// 「修复已送达」落 fix.end 并消耗持久化额度——额度烧完了问题根本没送给 agent）。
     /// 脚本化 session 不产 review issues，因此不会走到这里。
-    fn fix_coding(&mut self, ui: &mut dyn UserLink, issues: &[String], round: usize) -> Result<()> {
+    fn fix_coding(&mut self, ui: &mut dyn UserLink, issues: &[String], round: usize) -> Result<String> {
         let _ = (ui, issues, round);
         Err(DevforgeError::Agent {
             role: "change-coding".into(),
             message: "该会话未实现 fix_coding（编码审查回注无法送达）".into(),
+        })
+    }
+
+    /// 编码审查打回、修复送达后的**只复审**（自审 minor 73）：重跑机械门 + 编码审查，
+    /// 不重跑基线轮、不重发 coding 开工语。`fix_reply` = 回注轮的回复原文
+    /// （边界判定要读它：`<route>plan</route>` 与越界申报都在里面）。
+    ///
+    /// 默认实现**显式失败**（同 `fix_coding`）：静默回退到 `run_coding` 会把「不重跑基线」
+    /// 的契约又破一遍。脚本化 session 不产 review issues，不会走到这里。
+    fn re_review_coding(&mut self, ui: &mut dyn UserLink, fix_reply: &str) -> Result<CodingTurn> {
+        let _ = (ui, fix_reply);
+        Err(DevforgeError::Agent {
+            role: "change-coding".into(),
+            message: "该会话未实现 re_review_coding（编码复审无法执行）".into(),
         })
     }
 }
@@ -344,8 +358,20 @@ pub fn run<S: ChangeSession>(
 
     // ---- coding ⇄ plan ----
     if matches!(state.phase, ChangePhase::Coding) {
+        // 本循环有两种“回到起点”的理由，**重入粒度不同**（自审 minor 73）：
+        // - 计划补边界（RoutePlan → amend Pass）：计划文件换了，coding 必须整段重跑
+        //   （开工语引用计划，白名单与验收标准都变了）；
+        // - 编码审查打回（fix_coding 之后）：契约是「只补审查指出的问题，不重跑基线、
+        //   不重做已完成工作」，所以走 re_review_coding（只重跑机械门与审查）。
+        // 旧口径两者都 `continue` 回 run_coding——后者直接违背了它自己向 agent 许的诺。
+        let mut pending_turn: Option<CodingTurn> = None;
         loop {
-            let turn = session.run_coding(ui, state.roundtrips, state.last_test_failure.as_ref())?;
+            let turn = match pending_turn.take() {
+                Some(t) => t,
+                None => {
+                    session.run_coding(ui, state.roundtrips, state.last_test_failure.as_ref())?
+                }
+            };
             state.review_rounds += turn.reviews;
             // change #4：编码审查 FAIL 走有界回注循环（旧实现直接 `Err(Quality)`，
             // 与 MVP 的 FAIL→回注→重审节奏不一致，一次小毛病就判死整个变更）。
@@ -368,7 +394,7 @@ pub fn run<S: ChangeSession>(
                     round = next,
                     "编码审查回注开始"
                 );
-                session.fix_coding(ui, &review_issues, next)?;
+                let fix_reply = session.fix_coding(ui, &review_issues, next)?;
                 fix_step(&state, "coding", next, false);
                 tracing::info!(
                     component = "change-orchestrator",
@@ -376,6 +402,9 @@ pub fn run<S: ChangeSession>(
                     round = next,
                     "编码审查回注结束"
                 );
+                // 修复已送达 → **只复审**（不重跑基线轮、不重发开工语）；
+                // 回注轮回复交给它过边界判定。
+                pending_turn = Some(session.re_review_coding(ui, &fix_reply)?);
                 continue;
             }
             match boundary::classify(&turn.changed, &whitelist, &turn.reply) {

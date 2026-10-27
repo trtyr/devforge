@@ -360,6 +360,85 @@ impl ProdChangeSession {
             }),
         }
     }
+    /// 编码轮之后的三道机械门（自证 / 步提交对账 / 改动集），返回改动集。
+    ///
+    /// 基线门**不在**这里：它属阶段入口（「动手前是绿的」），回注轮重跑没有意义。
+    fn gate_after_coding(&self, turn_started: std::time::SystemTime) -> Result<Vec<String>> {
+        // 先证后报：自证证据缺失或红 → Quality（不进审查）
+        // 「自证门」里程碑：绿/红都落一条
+        let self_check = check_self_check_fresh(&self.ctx.blackboard, turn_started);
+        match &self_check {
+            Ok(ev) => tracing::info!(
+                component = "change-engine",
+                event = "gate.self_check",
+                passed = true,
+                exit_code = ev.exit_code,
+                "自证门通过"
+            ),
+            Err(e) => tracing::info!(
+                component = "change-engine",
+                event = "gate.self_check",
+                passed = false,
+                error = %e,
+                "自证门未通过"
+            ),
+        }
+        self_check?;
+        // 实施步骤与按步提交必须对得上
+        let steps = read_steps(&self.ctx.blackboard)?;
+        // 「步提交对账」里程碑：含步骤数与判定结论
+        let step_commits = check_step_commits(
+            &self.ctx.repo,
+            &self.ctx.baseline,
+            &self.ctx.change_id,
+            &steps,
+        );
+        match &step_commits {
+            Ok(n) => tracing::info!(
+                component = "change-engine",
+                event = "gate.step_commits",
+                passed = true,
+                steps = steps.len(),
+                commits = *n,
+                "步提交对账通过"
+            ),
+            Err(e) => tracing::info!(
+                component = "change-engine",
+                event = "gate.step_commits",
+                passed = false,
+                steps = steps.len(),
+                error = %e,
+                "步提交对账未通过"
+            ),
+        }
+        step_commits?;
+        changed_files(&self.ctx.repo, &self.ctx.baseline)
+    }
+
+    /// 编码审查（diff ↔ 计划对账；越界已由引擎先算，这里管语义）+ 产出 turn。
+    fn review_after_gates(&mut self, reply: String, changed: Vec<String>) -> Result<CodingTurn> {
+        let (report, instances) = review_once(
+            &mut *self.coding_review,
+            "change-coding-review",
+            &coding_review_instruction(&self.ctx, &changed),
+        )?;
+        match report.verdict {
+            StageVerdict::Pass => Ok(CodingTurn {
+                reply,
+                changed,
+                reviews: instances,
+                review_issues: Vec::new(),
+            }),
+            // change #4：审查 FAIL 不再一刀切判 Quality——把明细随 turn 交回编排层，
+            // 由它走有界回注循环（MAX_CODING_FIXES）。
+            StageVerdict::Fail => Ok(CodingTurn {
+                reply,
+                changed,
+                reviews: instances,
+                review_issues: report.issues,
+            }),
+        }
+    }
 }
 
 impl ChangeSession for ProdChangeSession {
@@ -463,78 +542,23 @@ impl ChangeSession for ProdChangeSession {
         reply = require_marker_nudged("change-coding-agent", reply, |m| {
             self.coding_agent.converse(m, ui)
         })?;
-        // 先证后报：自证证据缺失或红 → Quality（不进审查）
-        // 「自证门」里程碑：绿/红都落一条
-        let self_check = check_self_check_fresh(&self.ctx.blackboard, turn_started);
-        match &self_check {
-            Ok(ev) => tracing::info!(
-                component = "change-engine",
-                event = "gate.self_check",
-                passed = true,
-                exit_code = ev.exit_code,
-                "自证门通过"
-            ),
-            Err(e) => tracing::info!(
-                component = "change-engine",
-                event = "gate.self_check",
-                passed = false,
-                error = %e,
-                "自证门未通过"
-            ),
-        }
-        self_check?;
-        // 实施步骤与按步提交必须对得上
-        let steps = read_steps(&self.ctx.blackboard)?;
-        // 「步提交对账」里程碑：含步骤数与判定结论
-        let step_commits = check_step_commits(
-            &self.ctx.repo,
-            &self.ctx.baseline,
-            &self.ctx.change_id,
-            &steps,
-        );
-        match &step_commits {
-            Ok(n) => tracing::info!(
-                component = "change-engine",
-                event = "gate.step_commits",
-                passed = true,
-                steps = steps.len(),
-                commits = *n,
-                "步提交对账通过"
-            ),
-            Err(e) => tracing::info!(
-                component = "change-engine",
-                event = "gate.step_commits",
-                passed = false,
-                steps = steps.len(),
-                error = %e,
-                "步提交对账未通过"
-            ),
-        }
-        step_commits?;
-        let changed = changed_files(&self.ctx.repo, &self.ctx.baseline)?;
+        let changed = self.gate_after_coding(turn_started)?;
+        self.review_after_gates(reply, changed)
+    }
 
-        // ③ coding review：diff ↔ 计划对账（越界已由引擎先算，这里管语义）
-        let (report, instances) = review_once(
-            &mut *self.coding_review,
-            "change-coding-review",
-            &coding_review_instruction(&self.ctx, &changed),
-        )?;
-        match report.verdict {
-            StageVerdict::Pass => Ok(CodingTurn {
-                reply,
-                changed,
-                reviews: instances,
-                review_issues: Vec::new(),
-            }),
-            // change #4：审查 FAIL 不再一刀切判 Quality——把明细随 turn 交回编排层，
-            // 由它走有界回注循环（MAX_CODING_FIXES）。
-            StageVerdict::Fail => Ok(CodingTurn {
-                reply,
-                changed,
-                reviews: instances,
-                review_issues: report.issues,
-            }),
-        }
+    /// 编码审查打回 + 修复送达后的**只复审**（自审 minor 73）。
+    ///
+    /// 与 `run_coding` 的差别只在「不重做什么」：不重跑基线轮、不重发 coding 开工语、
+    /// 不把已完成的工作再做一遍；只重跑三道机械门 + 编码审查。
+    /// 旧口径没这个入口，编排层回注后 `continue` 回到 `run_coding` → 整段重跑，
+    /// 与 `fix_coding` 向 agent 承诺的「只补审查指出的问题」直接相冲。
+    /// 只复审（自审 minor 73）：回注轮已把改动做完，此时**只能**重跑机械门与编码审查。
+    /// `fix_reply` 是回注轮回复（内含可能的 `<route>plan</route>` 与越界申报）。
+    fn re_review_coding(&mut self, _ui: &mut dyn UserLink, fix_reply: &str) -> Result<CodingTurn> {
+        // 门要看「本轮」证据：回注轮已要求 agent 更新自证证据，早于此刻的一律拒收
+        let turn_started = std::time::SystemTime::now();
+        let changed = self.gate_after_coding(turn_started)?;
+        self.review_after_gates(fix_reply.to_string(), changed)
     }
 
     fn run_testing(&mut self, ui: &mut dyn UserLink) -> Result<TestingTurn> {
@@ -659,7 +683,13 @@ impl ChangeSession for ProdChangeSession {
     }
 
     /// 编码审查打回后的回注（change #4）：只补审查指出的问题，不重跑基线、不重做已完成工作。
-    fn fix_coding(&mut self, ui: &mut dyn UserLink, issues: &[String], round: usize) -> Result<()> {
+    /// 返回回注轮的回复原文（交给 `re_review_coding` 过边界判定）。
+    fn fix_coding(
+        &mut self,
+        ui: &mut dyn UserLink,
+        issues: &[String],
+        round: usize,
+    ) -> Result<String> {
         let message = format!(
             "编码审查第 {round} 轮打回，逐条修复后重交（不要重复已完成的工作，不要扩围）：\n{}\n\n\
              只改计划白名单内的文件；修完把本轮自证证据（命令 + 退出码）更新到黑板 `{}`，\
@@ -679,8 +709,7 @@ impl ChangeSession for ProdChangeSession {
         let first = self.coding_agent.converse(&message, ui)?;
         require_marker_nudged("change-coding-agent（回注轮）", first, |m| {
             self.coding_agent.converse(m, ui)
-        })?;
-        Ok(())
+        })
     }
 
     fn plan_reviews(&self) -> usize {
