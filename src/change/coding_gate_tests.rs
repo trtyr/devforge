@@ -566,8 +566,46 @@ fn eleven_steps_with_prose_digits_reconcile_via_check_step_commits() {
     assert_eq!(commits, 11, "返回的是真实提交数");
 }
 
-// ── P012-T007 · CG-02：格式示例不再遮蔽真实结果 ──
+#[test]
+fn empty_subject_commit_is_not_silently_dropped() {
+    // 自审 minor（55）回归：`git commit --allow-empty-message` 造的提交主题为空——
+    // 旧口径在 commits_since 里把空串过滤掉，「每个提交都必须声明步号」对它不生效，
+    // 提交数也少算。现在必须报质量失败并说清是什么提交。
+    let (tmp, baseline) = repo_with_baseline();
+    let out = Command::new("git")
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@localhost",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "--allow-empty-message",
+            "-m",
+            "",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "空主题提交应能造出来：{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let steps = vec![Step {
+        number: 1,
+        title: String::new(),
+    }];
+    let err = check_step_commits(tmp.path(), &baseline, "change-20261020-x", &steps)
+        .expect_err("空主题提交不得被静默放过");
+    assert!(
+        err.to_string().contains("空主题"),
+        "错误文案要点名空主题提交：{err}"
+    );
+}
 
+// ── P012-T007 · CG-02：格式示例不再遮蔽真实结果 ──
 #[test]
 fn format_example_with_concrete_number_does_not_mask_real_red() {
     // 报告探针用例 C：示例具体数字 0 在前，真实 101 在后 → 必须取 101（旧实现取 0 判绿）

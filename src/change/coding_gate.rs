@@ -383,10 +383,11 @@ pub fn commits_since(repo: &Path, baseline: &str) -> Result<Vec<String>> {
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
+    // 自审 minor（55）：不过滤空行——空主题提交也必须进对账（见 check_step_commits）。
+    // `str::lines` 已消化末尾换行，所以这里只剩「真有一笔空主题提交」这一种空串。
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
         .map(str::to_string)
         .collect())
 }
@@ -432,6 +433,14 @@ pub fn check_step_commits(
     let commits = commits_since(repo, baseline)?;
     let mut declared: Vec<u32> = Vec::new();
     for subject in &commits {
+        // 自审 minor（55）：空主题提交不得被过滤出去——旧口径在 commits_since 里
+        // `.filter(|l| !l.is_empty())` 把 `git commit --allow-empty-message` 这类提交
+        // 静默丢掉：「每个提交都必须声明步号」对它们不生效，提交数还会少算。
+        if subject.is_empty() {
+            return Err(DevforgeError::Quality(
+                "有空主题提交（`git commit --allow-empty-message`）——每笔提交都必须写 `step N` 与 change-id，无法机械归属".into(),
+            ));
+        }
         // 2026-10-27 自审 minor（56）：旧口径 `subject.contains("change")` 恒真（change-id
         // 本身就含 "change"）——文档承诺的「缺 change: 前缀即不合格」从未被强制，提示词也
         // 从未要求该前缀。这里按**实际能强制**的口径收敛：机械归属只要求 change-id 出现；
