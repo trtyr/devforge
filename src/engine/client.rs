@@ -22,7 +22,9 @@ pub struct WaitOutcome {
     pub text: String,
     /// 期间收到的事件（可观测数据层原料）。
     pub events: Vec<EventRecord>,
-    /// DR-9 L2：最近一次 usage（input, output）tokens——上下文大小的直接观测。
+    /// DR-9 L2：**最近一次响应**上报的 usage（input, output）tokens。
+    /// 口径澄清（2026-10-27 自审 minor 129）：这是最后一次上报的值（上下文规模快照），
+    /// 不是整轮累加；事件字段名用 last_ 前缀，避免被当成「本轮消耗」。
     pub last_usage: Option<(u64, u64)>,
     /// 2026-10-27 自审 major：path-guard 拦截计数（消费方持有事件总线，可上总线）。
     pub boundary_denials: usize,
@@ -116,23 +118,59 @@ impl RpcClient {
                 for line in reader.lines() {
                     match line {
                         Ok(l) if !l.trim().is_empty() => {
+                            // 2026-10-27 自审 minor（121）：长度上限——stderr 可能整段
+                            // 打印超长行（stack/JSON dump），原样进日志会把日志炸大。
+                            const MAX_LINE: usize = 2000;
+                            let l = if l.chars().count() > MAX_LINE {
+                                let cut: String = l.chars().take(MAX_LINE).collect();
+                                format!("{cut}…（截断，原长 {} 字符）", l.chars().count())
+                            } else {
+                                l
+                            };
                             tracing::warn!(
                                 component = "pi-stderr",
                                 role = %role,
                                 run_id = %run_id,
                                 "{l}"
                             );
-                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                            match std::fs::OpenOptions::new()
                                 .create(true)
                                 .append(true)
                                 .open(&stderr_log)
                             {
-                                use std::io::Write as _;
-                                let _ = writeln!(f, "{l}");
+                                Ok(mut f) => {
+                                    use std::io::Write as _;
+                                    // 自审 minor（122）：留档失败必须留痕——旧口径
+                                    // `let _ =` 使「stderr 落盘」可静默降级。
+                                    if let Err(e) = writeln!(f, "{l}") {
+                                        tracing::warn!(
+                                            component = "pi-stderr",
+                                            role = %role,
+                                            path = %stderr_log.display(),
+                                            error = %e,
+                                            "stderr 留档写入失败（此后仅 tracing 有一份）"
+                                        );
+                                    }
+                                }
+                                Err(e) => tracing::warn!(
+                                    component = "pi-stderr",
+                                    role = %role,
+                                    path = %stderr_log.display(),
+                                    error = %e,
+                                    "stderr 留档文件打不开（仅 tracing 一份）"
+                                ),
                             }
                         }
                         Ok(_) => {}
-                        Err(_) => break,
+                        Err(e) => {
+                            tracing::warn!(
+                                component = "pi-stderr",
+                                role = %role,
+                                error = %e,
+                                "读 stderr 失败，伴读线程退出"
+                            );
+                            break;
+                        }
                     }
                 }
             });
@@ -153,7 +191,17 @@ impl RpcClient {
                                     break;
                                 }
                             }
-                            Err(_) => break,
+                            // 2026-10-27 自审 minor（123）：读错误不得等同 EOF——
+                            // 旧口径一律 break，下游把管道读失败统一报成「子进程 EOF」，
+                            // 真实起因丢掉。先留痕再断。
+                            Err(e) => {
+                                tracing::warn!(
+                                    component = "engine",
+                                    error = %e,
+                                    "读子进程 stdout 失败（下游按 EOF 处理，起因已留痕）"
+                                );
+                                break;
+                            }
                         }
                     }
                 });
@@ -177,9 +225,11 @@ impl RpcClient {
                     // 引擎审计修复 #3：子进程流提前结束与 try_wait 发现退出是同一类故障
                     // （「子进程没了」的两种表象）——统一归 System（基础设施，可重启），
                     // 不再一个 RpcProtocol 一个 System 各奔东西。
-                    return Err(DevforgeError::System(
-                        "子进程 EOF：agent_settled 之前流已结束（基础设施故障）".into(),
-                    ));
+                    return Err(DevforgeError::System(format!(
+                        "子进程 EOF（role={} pid={}）：agent_settled 之前流已结束（基础设施故障）",
+                        self.spec.role,
+                        self.child.id()
+                    )));
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     if let Ok(Some(status)) = self.child.try_wait() {
@@ -200,7 +250,9 @@ impl RpcClient {
                             }
                         }
                         return Err(DevforgeError::System(format!(
-                            "子进程已退出（{status}）且管道排空后仍未见 agent_settled——按基础设施故障处理，不作为审查/编码结论"
+                            "子进程已退出（{status}，role={} pid={}）且管道排空后仍未见 agent_settled——按基础设施故障处理，不作为审查/编码结论",
+                            self.spec.role,
+                            self.child.id()
                         )));
                     }
                 }
@@ -208,7 +260,11 @@ impl RpcClient {
         }
     }
 
-    /// 台账条目（spawn 后立即落盘）。
+    /// 台账条目（用于对外暴露本进程登记事实）。
+    ///
+    /// 注意（2026-10-27 自审 minor 30）：真正落盘的台账条目由 spawn 时的
+    /// `now_ms()` 生成，与此处的 `started_at_ms`（客户端构造时刻）**不是同一个值**；
+    /// 本方法只作观测/测试用，不作为台账真源。
     pub fn ledger_entry(&self) -> LedgerEntry {
         LedgerEntry {
             pid: self.child.id(),
@@ -245,7 +301,8 @@ impl RpcClient {
             component = "engine",
             event = "agent.turn_start",
             role = %self.spec.role,
-            chars = message.len(),
+            // 2026-10-27 自审 minor（125）：与 turn_end 同口径（字符数，非字节）
+            chars = message.chars().count(),
             "agent 轮次开始（prompt 已发）"
         );
         Ok(id)
@@ -272,30 +329,65 @@ impl RpcClient {
             if let Some(at) = deadline {
                 let expired = std::time::Instant::now() >= at;
                 if expired {
-                    return Err(DevforgeError::Quality(
-                        "审查会话超过批次墙钟仍未收尾（流式刷活性但不再推进）——按质量失败放弃该批"
-                            .into(),
+                    return Err(self.fail_turn(
+                        started_at_ms,
+                        &out,
+                        DevforgeError::Quality(
+                            "审查会话超过批次墙钟仍未收尾（流式刷活性但不再推进）——按质量失败放弃该批"
+                                .into(),
+                        ),
                     ));
                 }
             }
-            let line = self.next_line()?;
-            match decode_line(line.trim_end())? {
+            let line = match self.next_line() {
+                Ok(l) => l,
+                Err(e) => return Err(self.fail_turn(started_at_ms, &out, e)),
+            };
+            let inbound = match decode_line(line.trim_end()) {
+                Ok(i) => i,
+                Err(e) => return Err(self.fail_turn(started_at_ms, &out, e)),
+            };
+            match inbound {
                 crate::engine::protocol::Inbound::Response(r) => {
                     // DR-1 修复：失败响应快速失败（此前傻等 agent_settled，无 key 类错误挂死整个 run 而无任何事件）
                     if !r.success {
-                        return Err(self.command_failure(&r));
+                        let e = self.command_failure(&r);
+                        return Err(self.fail_turn(started_at_ms, &out, e));
                     }
                     out.responses.push(r)
                 }
                 crate::engine::protocol::Inbound::Event(e) => {
                     if let Some(delta) = e.text_delta() {
                         out.text.push_str(delta);
+                        // 2026-10-27 自审 minor（31）：流式文本无上限累积（长轮次线性吃内存）。
+                        // 协议块按全仓口径在**尾部**（D026），故超限保尾丢头，并留痕。
+                        const MAX_TEXT_CHARS: usize = 4_000_000;
+                        if out.text.chars().count() > MAX_TEXT_CHARS {
+                            let keep_from = out.text.len().saturating_sub(MAX_TEXT_CHARS / 2);
+                            let mut cut = keep_from;
+                            while cut < out.text.len() && !out.text.is_char_boundary(cut) {
+                                cut += 1;
+                            }
+                            out.text.drain(..cut);
+                            tracing::warn!(
+                                component = "engine",
+                                role = %self.spec.role,
+                                run_id = %self.spec.run_id,
+                                "轮次文本超过上限，已丢弃头部保留尾部（协议块在尾部）"
+                            );
+                        }
                         // DR-3 精化：流式 delta 也是活性——长流式回合不得误触停滞告警
                         crate::observability::note_agent_event_for(&self.spec.run_id);
                     }
                     self.note_step_telemetry(&e, &mut tool_starts, &mut out);
                     let settled = e.is_agent_settled();
                     out.events.push(e);
+                    // 事件只是遥测原料：超窗口丢最旧（避免长轮次无界增长）
+                    const MAX_EVENTS: usize = 50_000;
+                    if out.events.len() > MAX_EVENTS {
+                        let drop_n = out.events.len() - MAX_EVENTS;
+                        out.events.drain(..drop_n);
+                    }
                     if settled {
                         self.log_turn_end(started_at_ms, &out);
                         return Ok(out);
@@ -303,6 +395,27 @@ impl RpcClient {
                 }
             }
         }
+    }
+
+    /// 2026-10-27 自审 minor（126/127）：等待循环的错误出口统一处理——
+    /// ① 轮次异常终止也落 agent.turn_end（旧口径只有正常 settled 才落，turn_start 无配对，
+    ///    「交卷→开庭空洞」与轮次耗时统计失真）；② 已产出的文本/事件数落 ERROR 日志
+    ///    （旧口径三条错误出口把 out.text/out.events 整只丢掉，排障最值钱的上下文没了）。
+    fn fail_turn(&self, started_at_ms: u64, out: &WaitOutcome, e: DevforgeError) -> DevforgeError {
+        tracing::error!(
+            component = "engine",
+            event = "agent.turn_aborted",
+            role = %self.spec.role,
+            run_id = %self.spec.run_id,
+            turn_ms = now_ms().saturating_sub(started_at_ms),
+            chars = out.text.chars().count(),
+            events = out.events.len(),
+            responses = out.responses.len(),
+            error = %e,
+            "轮次异常终止（已收集的上下文见上）"
+        );
+        self.log_turn_end_with(started_at_ms, out, "aborted");
+        e
     }
 
     /// 等待 agent_settled，期间遇 extension_ui_request 事件时：
@@ -330,8 +443,15 @@ impl RpcClient {
                     ));
                 }
             }
-            let line = self.next_line()?;
-            match decode_line(line.trim_end())? {
+            let line = match self.next_line() {
+                Ok(l) => l,
+                Err(e) => return Err(self.fail_turn(started_at_ms, &out, e)),
+            };
+            let inbound = match decode_line(line.trim_end()) {
+                Ok(i) => i,
+                Err(e) => return Err(self.fail_turn(started_at_ms, &out, e)),
+            };
+            match inbound {
                 crate::engine::protocol::Inbound::Response(r) => {
                     // DR-1 修复：同 wait_settled —— 失败响应快速失败，不傻等 settled
                     if !r.success {
@@ -342,6 +462,23 @@ impl RpcClient {
                 crate::engine::protocol::Inbound::Event(e) => {
                     if let Some(delta) = e.text_delta() {
                         out.text.push_str(delta);
+                        // 2026-10-27 自审 minor（31）：流式文本无上限累积（长轮次线性吃内存）。
+                        // 协议块按全仓口径在**尾部**（D026），故超限保尾丢头，并留痕。
+                        const MAX_TEXT_CHARS: usize = 4_000_000;
+                        if out.text.chars().count() > MAX_TEXT_CHARS {
+                            let keep_from = out.text.len().saturating_sub(MAX_TEXT_CHARS / 2);
+                            let mut cut = keep_from;
+                            while cut < out.text.len() && !out.text.is_char_boundary(cut) {
+                                cut += 1;
+                            }
+                            out.text.drain(..cut);
+                            tracing::warn!(
+                                component = "engine",
+                                role = %self.spec.role,
+                                run_id = %self.spec.run_id,
+                                "轮次文本超过上限，已丢弃头部保留尾部（协议块在尾部）"
+                            );
+                        }
                         // DR-3 精化：同 wait_settled —— 流式即活性
                         crate::observability::note_agent_event_for(&self.spec.run_id);
                     }
@@ -402,6 +539,12 @@ impl RpcClient {
                     }
                     let settled = e.is_agent_settled();
                     out.events.push(e);
+                    // 事件只是遥测原料：超窗口丢最旧（避免长轮次无界增长）
+                    const MAX_EVENTS: usize = 50_000;
+                    if out.events.len() > MAX_EVENTS {
+                        let drop_n = out.events.len() - MAX_EVENTS;
+                        out.events.drain(..drop_n);
+                    }
                     if settled {
                         self.log_turn_end(started_at_ms, &out);
                         return Ok(out);
@@ -595,6 +738,11 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
     /// 字段：角色名（`spec.role`）、本轮耗时（毫秒）、本轮产出字符数。
     /// 作用：交卷 → 下一次开庭之间的空洞由此可算（此前那 15 分钟无任何记录）。
     fn log_turn_end(&self, started_at_ms: u64, out: &WaitOutcome) {
+        self.log_turn_end_with(started_at_ms, out, "settled");
+    }
+
+    /// 带结局的轮次结束记账（`settled` / `aborted`）。
+    fn log_turn_end_with(&self, started_at_ms: u64, out: &WaitOutcome, outcome: &str) {
         crate::observability::note_agent_event_for(&self.spec.run_id);
         tracing::info!(
             component = "engine",
@@ -603,13 +751,19 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
             role = %self.spec.role,
             turn_ms = now_ms().saturating_sub(started_at_ms),
             chars = out.text.chars().count(),
-            tokens_in = out.last_usage.map(|u| u.0),
-            tokens_out = out.last_usage.map(|u| u.1),
+            last_tokens_in = out.last_usage.map(|u| u.0),
+            last_tokens_out = out.last_usage.map(|u| u.1),
+            outcome,
             "agent 轮次结束"
         );
     }
 
     /// 校验某 id 的响应成功；失败则转为该角色 Agent 的失败错误（可恢复类）。
+    ///
+    /// 2026-10-27 自审 minor（130）：本方法是**第三种命令失败分类**（Agent 变体），
+    /// 与 command_failure 的 System/Config 分流不同口径——现明确分化：
+    /// await 路径上已由 command_failure 快速失败，这里的 Agent 变体只覆盖
+    /// 「响应存在但 success=false 且调用方辞端判定」的场景（不盲重启，交编排器决策）。
     pub fn require_success(&self, outcome: &WaitOutcome, id: &str) -> Result<()> {
         match outcome.responses.iter().find(|r| r.id.as_deref() == Some(id)) {
             Some(r) if r.success => Ok(()),

@@ -1153,11 +1153,19 @@ pub async fn put_manifest(
     // （用户裁决 A：开跑前等 profile 就绪，而不是开跑后被门卫判成「未渲染」而盲重启）
     let st2 = st.clone();
     std::thread::spawn(move || {
+        // 2026-10-27：合并渲染循环的 panic 兜底——若 emit 抛异常，循环体后面的
+        // finish_round_or_continue 就不会执行，在途计数永久 >0（后续 start 只能在
+        // 闸门上等到超时）。守卫在「正常收工」时置 finished，避免双重递减。
+        let mut guard = RenderInFlightGuard {
+            st: st2.clone(),
+            finished: false,
+        };
         loop {
             let st3 = st2.clone();
             // 不带守卫：在途计数归零的决策交给 finish_round_or_continue（与提交同锁）
             render_body_without_guard(st2.clone(), move |v| st3.emit(v));
             if !st2.render_gate.finish_round_or_continue() {
+                guard.finished = true;
                 break;
             }
             tracing::info!(
@@ -1180,22 +1188,30 @@ pub async fn put_manifest(
 /// 通知发出时抛异常 → 那一行永远不执行 → 计数**永久大于 0** → 之后的 `start` 永远在闸门上等。
 struct RenderInFlightGuard {
     st: SharedState,
+    /// 正常收工时置 true（已由 finish_round_or_continue 归零，Drop 不得重复递减）。
+    finished: bool,
 }
 
 impl Drop for RenderInFlightGuard {
     fn drop(&mut self) {
-        // 渲染结束（成功/失败/异常都算）→ 广播，等着的 start 请求不再等
+        if self.finished {
+            return;
+        }
+        // 异常展开路径：兜底归零 + 广播，等着的 start 不再等
         self.st.render_gate.end_render();
     }
 }
 
-/// 渲染线程体：渲染 → 发完成通知（成功 / 失败 / 异常三种结果都发一条）。
+/// 渲染线程体（带在途守卫；供 R-3 用例验证「通知抛异常时计数也归零」）。
 ///
 /// `emit` 是参数而不是直接调 `st.emit`：为了让「发完成通知时抛异常」这条路径**可测**
-/// （R-3 的验收判据）——生产调用点传 `|v| st.emit(v)`。
+/// （R-3 的验收判据）——生产调用点走 render_body_without_guard + 外层守卫。
+#[cfg(test)]
 fn render_body(st: SharedState, emit: impl FnOnce(serde_json::Value)) {
-    // 在途守卫：线程体结束**或 panic 展开**都归零（不再依赖线程体末尾的显式调用）
-    let _guard = RenderInFlightGuard { st: st.clone() };
+    let _guard = RenderInFlightGuard {
+        st: st.clone(),
+        finished: false,
+    };
     render_body_without_guard(st, emit)
 }
 
