@@ -1,10 +1,10 @@
-//! 串行执行循环（P004 · decisions/003：架构并发、实现先串行）。
+//! 运行域公共件（P004）：RunControl（干预控制面）/ RunEngine（引擎契约）/ RunOutcome。
 //!
-//! Runner 泛型注入执行引擎（trait [`RunEngine`]）——task-4 的 RPC 编排引擎将实现它。
-//! MVP 串行 = Store 层的全局串行守卫 + 同步顺序调用；并发放开时换调度器，引擎不变。
+//! 历史注：原 Runner 串行执行循环已删（2026-10-27 自审 major：生产编排全部在
+//! server/change_engine，本文件 run_task 是死掉的弱化副本，仅自测在调——
+//! 死代码不与生产双权威并存）。生命周期守卫语义由 Store 层承担，未变。
 
 use crate::domain::run::Run;
-use crate::domain::store::{FinishOutcome, Store};
 use crate::domain::task::Task;
 use crate::error::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -77,69 +77,3 @@ pub enum RunOutcome {
     Completed,
     Failed { reason: String },
 }
-
-pub struct Runner<E: RunEngine> {
-    pub engine: E,
-}
-
-impl<E: RunEngine> Runner<E> {
-    pub fn new(engine: E) -> Self {
-        Self { engine }
-    }
-
-    /// 跑一个任务的一次 run：begin → execute → finish。
-    /// 全程遵守 Store 的生命周期守卫（串行守卫/状态机/重跑留档）。
-    pub fn run_task(
-        &mut self,
-        store: &mut Store,
-        project: &str,
-        task_id: &str,
-        control: &RunControl,
-    ) -> Result<RunOutcome> {
-        let run = store.begin_run(project, task_id)?;
-        tracing::info!(
-            component = "runner",
-            run_id = %run.id.0,
-            project,
-            task = task_id,
-            "run 开始"
-        );
-
-        // 引擎需要任务快照；store 的可变借用在此先释放
-        let task = store
-            .get_task(project, task_id)
-            .cloned()
-            .expect("begin_run 已校验存在");
-
-        let result = self.engine.execute(&task, &run, control);
-
-        match result {
-            Ok(outcome) => {
-                let finish = match &outcome {
-                    RunOutcome::Completed => FinishOutcome::Completed,
-                    RunOutcome::Failed { reason } => FinishOutcome::Failed {
-                        reason: reason.clone(),
-                    },
-                };
-                store.finish_run(&run.id, finish)?;
-                tracing::info!(component = "runner", run_id = %run.id.0, "run 结束");
-                Ok(outcome)
-            }
-            Err(e) => {
-                // 技术故障：run 与任务都按失败收尾，再把错误抛给调用方决策
-                store.finish_run(
-                    &run.id,
-                    FinishOutcome::Failed {
-                        reason: e.to_string(),
-                    },
-                )?;
-                tracing::error!(component = "runner", run_id = %run.id.0, error = %e, "run 技术故障");
-                Err(e)
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "runner_tests.rs"]
-mod tests;

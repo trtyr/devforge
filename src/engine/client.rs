@@ -24,6 +24,8 @@ pub struct WaitOutcome {
     pub events: Vec<EventRecord>,
     /// DR-9 L2：最近一次 usage（input, output）tokens——上下文大小的直接观测。
     pub last_usage: Option<(u64, u64)>,
+    /// 2026-10-27 自审 major：path-guard 拦截计数（消费方持有事件总线，可上总线）。
+    pub boundary_denials: usize,
 }
 
 /// extension_ui_request 是否为 dialog 类（阻塞等应答）。
@@ -181,8 +183,24 @@ impl RpcClient {
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     if let Ok(Some(status)) = self.child.try_wait() {
+                        // 2026-10-27 自审 major：判死前先给伴读线程一个排空窗口——
+                        // 子进程退出 ≠ 管道读尽，已缓冲的 agent_settled 可能晚于
+                        // 500ms 才被伴读线程交付；旧口径晚一点就误判「已退出」，
+                        // 整轮工作作废且触发全 run 盲重启。排空到断流或窗口耗尽。
+                        let drain_deadline = std::time::Instant::now() + Duration::from_secs(2);
+                        loop {
+                            match self.lines.recv_timeout(Duration::from_millis(200)) {
+                                Ok(l) => return Ok(l),
+                                Err(RecvTimeoutError::Timeout) => {
+                                    if std::time::Instant::now() >= drain_deadline {
+                                        break;
+                                    }
+                                }
+                                Err(RecvTimeoutError::Disconnected) => break,
+                            }
+                        }
                         return Err(DevforgeError::System(format!(
-                            "子进程已退出（{status}）但未发出 agent_settled——按基础设施故障处理，不作为审查/编码结论"
+                            "子进程已退出（{status}）且管道排空后仍未见 agent_settled——按基础设施故障处理，不作为审查/编码结论"
                         )));
                     }
                 }
@@ -222,7 +240,7 @@ impl RpcClient {
             .ctx(format!("发送 prompt (id={id})"))?;
         stdin.flush().ctx("flush prompt")?;
         // DR-2/DR-3：轮次开始即记 agent 事件——停滞告警与活性聚合的锚点
-        crate::observability::note_agent_event();
+        crate::observability::note_agent_event_for(&self.spec.run_id);
         tracing::info!(
             component = "engine",
             event = "agent.turn_start",
@@ -273,7 +291,7 @@ impl RpcClient {
                     if let Some(delta) = e.text_delta() {
                         out.text.push_str(delta);
                         // DR-3 精化：流式 delta 也是活性——长流式回合不得误触停滞告警
-                        crate::observability::note_agent_event();
+                        crate::observability::note_agent_event_for(&self.spec.run_id);
                     }
                     self.note_step_telemetry(&e, &mut tool_starts, &mut out);
                     let settled = e.is_agent_settled();
@@ -301,6 +319,17 @@ impl RpcClient {
         let mut out = WaitOutcome::default();
         let mut tool_starts = std::collections::HashMap::new();
         loop {
+            // 2026-10-27 自审 major：Plan 侧等待也要墙钟——「流式刷活性但不再收尾」
+            // 的活死批 idle 收割打不中，只能靠墙钟叫停（与 wait_settled_deadline 同口径）。
+            // review_deadline() 为 None = 显式不限时（零硬限制），行为同旧。
+            if let Some(at) = crate::sop::review_gate::review_deadline() {
+                if std::time::Instant::now() >= at {
+                    return Err(DevforgeError::Quality(
+                        "会话超过墙钟仍未收尾（流式刷活性但不再推进）——按质量失败放弃"
+                            .into(),
+                    ));
+                }
+            }
             let line = self.next_line()?;
             match decode_line(line.trim_end())? {
                 crate::engine::protocol::Inbound::Response(r) => {
@@ -314,17 +343,48 @@ impl RpcClient {
                     if let Some(delta) = e.text_delta() {
                         out.text.push_str(delta);
                         // DR-3 精化：同 wait_settled —— 流式即活性
-                        crate::observability::note_agent_event();
+                        crate::observability::note_agent_event_for(&self.spec.run_id);
                     }
                     self.note_step_telemetry(&e, &mut tool_starts, &mut out);
                     if e.r#type == "extension_ui_request" {
-                        // P8-ISSUE-07 修复：按 method 分流——dialog 才走应答链路
-                        if !is_dialog_method(&e.extra) {
+                        // P8-ISSUE-07 修复：按 method 分流——已知 dialog 走应答链路
+                        if is_dialog_method(&e.extra) {
+                            // 问用户（经 UI 链路），回传应答（同一 request id）
+                            let answer = on_ui_request(&e.extra)?;
+                            let req_id = e
+                                .extra
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let resp = serde_json::json!({
+                                "id": req_id,
+                                "type": "extension_ui_response",
+                                "value": answer,
+                            });
+                            self.send_ui_response(resp, "UI 应答")?;
                             out.events.push(e);
                             continue;
                         }
-                        // 问用户（经 UI 链路），回传应答（同一 request id）
-                        let answer = on_ui_request(&e.extra)?;
+                        let method =
+                            e.extra.get("method").and_then(|v| v.as_str()).unwrap_or("?");
+                        const FIRE_AND_FORGET: [&str; 5] =
+                            ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"];
+                        if FIRE_AND_FORGET.contains(&method) {
+                            // 已知 fire-and-forget：不期待 response，误应答属协议噪音 → 只记录
+                            out.events.push(e);
+                            continue;
+                        }
+                        // 2026-10-27 自审 major：未知 method 若恰好是新增 dialog 类，
+                        // 沉默不应答 = pi 阻塞等答整轮永挂。回显式错误应答兜底（
+                        // fire-and-forget 类收到多余 response 无害；dialog 类拿到错误能收场）。
+                        tracing::warn!(
+                            component = "engine",
+                            event = "extension_ui.unknown_method",
+                            role = %self.spec.role,
+                            method = method,
+                            "未知 extension_ui method——回错误应答防子进程阻塞等答"
+                        );
                         let req_id = e
                             .extra
                             .get("id")
@@ -334,29 +394,9 @@ impl RpcClient {
                         let resp = serde_json::json!({
                             "id": req_id,
                             "type": "extension_ui_response",
-                            "value": answer,
+                            "error": format!("client 不支持该 UI method：{method}"),
                         });
-                        let mut l = serde_json::to_string(&resp).ctx("序列化 UI 应答")?;
-                        l.push('\n');
-                        self.stdin
-                            .as_mut()
-                            // 引擎审计修复 #7：同 prompt 路径，kill 后不再 panic
-                            .ok_or_else(|| {
-                                DevforgeError::RpcProtocol(
-                                    "stdin 已关闭：子进程被杀后无法发送 UI 应答".into(),
-                                )
-                            })?
-                            .write_all(l.as_bytes())
-                            .ctx("发送 extension_ui_response")?;
-                            self.stdin
-                                .as_mut()
-                                .ok_or_else(|| {
-                                    DevforgeError::RpcProtocol(
-                                        "stdin 已关闭：子进程被杀后无法 flush UI 应答".into(),
-                                    )
-                                })?
-                                .flush()
-                                .ctx("flush UI 应答")?;
+                        self.send_ui_response(resp, "未知 method 错误应答")?;
                         out.events.push(e);
                         continue;
                     }
@@ -371,10 +411,31 @@ impl RpcClient {
         }
     }
 
+    /// UI 应答写 stdin（引擎审计修复 #7：kill 后 stdin 关闭不再 panic）。
+    fn send_ui_response(&mut self, resp: serde_json::Value, what: &str) -> Result<()> {
+        let mut l = serde_json::to_string(&resp).ctx("序列化 UI 应答")?;
+        l.push('\n');
+        self.stdin
+            .as_mut()
+            .ok_or_else(|| {
+                DevforgeError::RpcProtocol("stdin 已关闭：子进程被杀后无法发送 UI 应答".into())
+            })?
+            .write_all(l.as_bytes())
+            .ctx(format!("发送 {what}"))?;
+        self.stdin
+            .as_mut()
+            .ok_or_else(|| {
+                DevforgeError::RpcProtocol("stdin 已关闭：子进程被杀后无法 flush UI 应答".into())
+            })?
+            .flush()
+            .ctx(format!("flush {what}"))?;
+        Ok(())
+    }
+
     /// DR-1 修复：把 pi 的命令失败（success=false，如缺 API key）转成结构化错误。
     /// 此前这类失败只被归档进 responses 继续傻等 settled，run 无声挂死。
     fn command_failure(&self, r: &ResponseRecord) -> DevforgeError {
-        crate::observability::note_agent_event();
+        crate::observability::note_agent_event_for(&self.spec.run_id);
         let detail = r.error.clone().unwrap_or_else(|| "（无错误详情）".into());
         tracing::warn!(
             component = "engine",
@@ -384,20 +445,23 @@ impl RpcClient {
             error = %detail,
             "agent 命令失败（快速失败，不等 settled）"
         );
-        // 引擎 #7：先分流——瞬态上游/限流/连接中断归 System（可重启重试），
-        // 其余才归 Config。旧实现一律 Config，一次 502 就判成「配置永不修好」。
-        if Self::transient_failure(&detail) {
+        Self::classify_command_failure(&self.spec.role, &r.command, &detail)
+    }
+
+    /// 引擎 #7 分流 + 2026-10-27 自审 major：抽成自由函数钉单测——旧口径内联在
+    /// command_failure 里，测试够不看（变异成一律 Config 后 16 条测试仍全绿）。
+    /// 瞬态上游/限流/连接中断归 System（可重启重试）；认不出的归 Config（不盲重启）。
+    fn classify_command_failure(role: &str, command: &str, detail: &str) -> DevforgeError {
+        if Self::transient_failure(detail) {
             return DevforgeError::System(format!(
-                "agent[{}] 命令 {} 失败：{}（瞬态上游/限流故障，按基础设施错误重试）",
-                self.spec.role, r.command, detail
+                "agent[{role}] 命令 {command} 失败：{detail}（瞬态上游/限流故障，按基础设施错误重试）"
             ));
         }
         // 审计修复 #2：配置类命令失败用 Config（非 System）——is_infra_failure 只认裸 System，
         // 用 System 会盲重启 4 次（退避 10s/30s/90s）；配置问题重启永远不会变好，
         // require_profile 的「配置问题用 Config」口径在此对齐。
         DevforgeError::Config(format!(
-            "agent[{}] 命令 {} 失败：{}（配置问题：缺 API key / 模型名错误；见 auth.json 与 models.json，修好配置后重新启动 run）",
-            self.spec.role, r.command, detail
+            "agent[{role}] 命令 {command} 失败：{detail}（配置问题：缺 API key / 模型名错误；见 auth.json 与 models.json，修好配置后重新启动 run）"
         ))
     }
 
@@ -462,7 +526,7 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
                 if let Some(id) = e.extra.get("toolCallId").and_then(|v| v.as_str()) {
                     tool_starts.insert(id.to_string(), std::time::Instant::now());
                 }
-                crate::observability::note_agent_event();
+                crate::observability::note_agent_event_for(&self.spec.run_id);
                 tracing::info!(
                     component = "engine",
                     event = "agent.step",
@@ -485,7 +549,7 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
                     .and_then(|v| v.as_str())
                     .and_then(|id| tool_starts.remove(id))
                     .map(|t| t.elapsed().as_millis() as u64);
-                crate::observability::note_agent_event();
+                crate::observability::note_agent_event_for(&self.spec.run_id);
                 tracing::info!(
                     component = "engine",
                     event = "agent.step",
@@ -498,6 +562,10 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
                 // P012 · path-guard 事件回流：被插件拦截的调用（isError + reason 前缀约定）
                 // 转 boundary.violation —— 与 M0 引擎终校验共用同一事件名，过滤时对得上。
                 if Self::is_path_guard_denial(e) {
+                    // 2026-10-27 自审 major：除日志外计入结构化计数——WaitOutcome 消费方
+                    // （编排层，持有事件总线）可据此把拦截事实发上总线；旧口径只落
+                    // tracing，与 server 侧同名事件的「进总线」口径对不上。
+                    out.boundary_denials += 1;
                     tracing::warn!(
                         component = "engine",
                         event = "boundary.violation",
@@ -523,7 +591,7 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
     /// 字段：角色名（`spec.role`）、本轮耗时（毫秒）、本轮产出字符数。
     /// 作用：交卷 → 下一次开庭之间的空洞由此可算（此前那 15 分钟无任何记录）。
     fn log_turn_end(&self, started_at_ms: u64, out: &WaitOutcome) {
-        crate::observability::note_agent_event();
+        crate::observability::note_agent_event_for(&self.spec.run_id);
         tracing::info!(
             component = "engine",
             event = "agent.turn_end",

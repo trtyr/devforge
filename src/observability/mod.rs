@@ -273,10 +273,18 @@ pub fn current() -> Option<RunSnapshot> {
 /// 记在空键下，不污染任何真 run 的判定。
 pub fn note_agent_event() {
     let key = current_run_id().unwrap_or_default();
+    note_agent_event_for(&key);
+}
+
+/// 指定 run 键的活性打点（2026-10-27 自审 major）：RPC 客户端跑在 worker 线程上，
+/// thread-local run 上下文为空 → 旧口径活性戳全落空键，该 run 的停滞检测退化成
+/// 「按开跑时刻起算」——长跑真审计误报 agent.stall，真停滞反而看不见。客户端
+/// 持有自己的 run-id，按它记键。
+pub fn note_agent_event_for(run_id: &str) {
     agent_events()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(key, crate::domain::now_ms());
+        .insert(run_id.to_string(), crate::domain::now_ms());
 }
 
 /// 某个 run 距最近一次 agent 事件的毫秒数（该 run 从未有过事件 = `None`）。

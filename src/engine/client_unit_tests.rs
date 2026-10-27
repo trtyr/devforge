@@ -47,3 +47,25 @@ fn non_error_tool_result_is_never_a_denial() {
     let e = tool_end_event(false, "前缀字样出现在正常输出里 [path-guard] ");
     assert!(!RpcClient::is_path_guard_denial(&e));
 }
+
+/// 2026-10-27 自审 major 回归：分类分支的**端到端**钉子——
+/// 旧口径只测 transient_failure 谓词，command_failure 里的分流分支本身够不看
+/// （变异成一律 Config 后全部仍绿）。现在钉返回的错误类别 + 可重启性。
+#[test]
+fn command_failure_classification_pins_system_vs_config() {
+    let sys = RpcClient::classify_command_failure("review", "prompt", "upstream 502 Bad Gateway");
+    assert!(
+        matches!(sys, DevforgeError::System(_)),
+        "瞬态必须归 System（policy::is_infra_failure 只认裸 System，可重启）：{sys}"
+    );
+    let cfg = RpcClient::classify_command_failure("review", "prompt", "missing api key");
+    assert!(
+        matches!(cfg, DevforgeError::Config(_)),
+        "认不出的归 Config（不盲重启）：{cfg}"
+    );
+    assert_ne!(
+        std::mem::discriminant(&sys),
+        std::mem::discriminant(&cfg),
+        "两类必须可区分（瞬态≠配置）"
+    );
+}

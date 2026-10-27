@@ -13,7 +13,7 @@ pub mod task;
 
 pub use project::Project;
 pub use run::{Run, RunId, RunStatus};
-pub use runner::{RunEngine, RunOutcome, Runner};
+pub use runner::{RunEngine, RunOutcome};
 pub use sop::{Sop, SopRegistry, PLANNING_SOP};
 pub use store::Store;
 pub use task::{Task, TaskStatus};
