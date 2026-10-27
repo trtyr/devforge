@@ -8,16 +8,22 @@ use crate::domain::runner::RunControl;
 /// 会话目录指纹：递归累加 (文件长度, mtime 纳秒) 的 FNV-1a 混合。
 /// 任一文件被追加/触碰都会改变指纹——活性检测的「进展」信号
 /// （006 decisions/002：会话增长=活，平线=失活）。
-fn session_fingerprint(dirs: &[PathBuf]) -> u64 {
-    fn walk(dir: &Path, hash: &mut u64) {
+///
+/// 2026-10-27 自审 major：任一监视目录不可读（或未提供任何目录）= **不可观测**
+/// → 返回 None。旧口径读失败直接 return（指纹停在 FNV 基准值且永不变化）→
+/// 「无进展」误判 → 活着的 run 被失活收割。不可观测即不判定——宁可漏杀不可误杀。
+fn session_fingerprint(dirs: &[PathBuf]) -> Option<u64> {
+    fn walk(dir: &Path, hash: &mut u64) -> bool {
         let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
+            return false;
         };
         for entry in entries.flatten() {
             let path = entry.path();
             let Ok(meta) = entry.metadata() else { continue };
             if meta.is_dir() {
-                walk(&path, hash);
+                if !walk(&path, hash) {
+                    return false;
+                }
             } else {
                 let nanos = meta
                     .modified()
@@ -35,12 +41,18 @@ fn session_fingerprint(dirs: &[PathBuf]) -> u64 {
                 }
             }
         }
+        true
+    }
+    if dirs.is_empty() {
+        return None;
     }
     let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
     for d in dirs {
-        walk(d, &mut hash);
+        if !walk(d, &mut hash) {
+            return None;
+        }
     }
-    hash
+    Some(hash)
 }
 
 /// SOP 执行 + 取消/超时/失活看门狗。
@@ -78,6 +90,12 @@ pub(crate) fn run_with_watchdog<T>(
         scope.spawn(move || {
             let mut last_fp = session_fingerprint(&watch_dirs);
             let mut last_progress = crate::domain::now_ms();
+            // 失活收割只判一次：收割后停失活判定，但心跳/取消/超时监测继续
+            // 守护到 run 收场（旧实现 return 后这些全掉线，cancel 变 no-op）。
+            let mut idle_active = true;
+            // 失明告警只发一次（目录恢复可读后自然恢复判定）
+            let blind_warned = std::sync::Arc::new(AtomicBool::new(false));
+            let blind_wd = blind_warned.clone();
             loop {
                 if done_wd.load(Ordering::SeqCst) {
                     return;
@@ -92,7 +110,7 @@ pub(crate) fn run_with_watchdog<T>(
                 {
                     if !stall_wd.swap(true, Ordering::Relaxed) {
                         tracing::warn!(
-                            component = "server",
+                            component = "watchdog",
                             event = "agent.stall",
                             run_id = %run_id,
                             age_ms = age,
@@ -107,48 +125,68 @@ pub(crate) fn run_with_watchdog<T>(
                 if control.is_cancelled() || control.timed_out(now) {
                     // 引擎审计修复 #9：统一杀进程入口（watchdog 无台账路径上下文 → 直接兕底扫盘，标记校验仍生效）
                     let killed = crate::engine::ledger::kill_run(None, &run_id);
-                    if killed > 0 {
-                        tracing::warn!(
-                            component = "planning-engine",
-                            run_id = %run_id,
-                            killed,
-                            "watchdog 已清场（取消或超时）"
-                        );
-                    }
+                    // 2026-10-27 自审 major：killed==0 是常态（进程已退出/从未 spawn），
+                    // 但「看门狗观测到取消」这件事必须无条件留痕——旧口径只在杀到人时记日志。
+                    tracing::warn!(
+                        component = "watchdog",
+                        event = "watchdog.cancel",
+                        run_id = %run_id,
+                        killed,
+                        "watchdog 清场（取消或超时）；killed=0 = 无存活进程可杀"
+                    );
                     // 自审 critical：杀进程不解阻 recv() 中的 ask_blocking——丢待答，run 线程才能收场
                     if let Some(hook) = &on_intervention {
                         hook(&run_id);
                     }
                     return;
                 }
-                if let Some(idle) = idle_ms {
-                    let fp = session_fingerprint(&watch_dirs);
-                    if fp != last_fp {
-                        last_fp = fp;
-                        last_progress = now;
-                    } else if now.saturating_sub(last_progress) > idle {
-                        control.mark_stalled();
-                        tracing::warn!(
-                            component = "planning-engine",
-                            run_id = %run_id,
-                            idle_ms = idle,
-                            "会话无进展超过闲置阈值，失活收割"
-                        );
-                        // 引擎审计修复 #9：统一杀进程入口（同上：直接兕底扫盘）
-                        let killed = crate::engine::ledger::kill_run(None, &run_id);
-                        if killed > 0 {
+                if idle_active
+                    && let Some(idle) = idle_ms
+                {
+                    match session_fingerprint(&watch_dirs) {
+                        None => {
+                            // 失明保护：任一监视目录不可读 = 不可观测 → 不判定失活。
+                            // 旧口径指纹停在基准值 → 平线误判 → 活 run 被误杀。
+                            if !blind_wd.swap(true, Ordering::Relaxed) {
+                                tracing::warn!(
+                                    component = "watchdog",
+                                    event = "watchdog.blind",
+                                    run_id = %run_id,
+                                    "会话目录不可读，失活收割暂停（不可观测即不判定，宁可漏杀不可误杀）"
+                                );
+                            }
+                        }
+                        Some(fp) if Some(fp) != last_fp => {
+                            last_fp = Some(fp);
+                            last_progress = now;
+                        }
+                        Some(_) if now.saturating_sub(last_progress) > idle => {
+                            control.mark_stalled();
                             tracing::warn!(
-                                component = "planning-engine",
+                                component = "watchdog",
+                                event = "watchdog.reap",
+                                run_id = %run_id,
+                                idle_ms = idle,
+                                "会话无进展超过闲置阈值，失活收割"
+                            );
+                            // 引擎审计修复 #9：统一杀进程入口（同上：直接兕底扫盘）
+                            let killed = crate::engine::ledger::kill_run(None, &run_id);
+                            tracing::warn!(
+                                component = "watchdog",
+                                event = "watchdog.reap.kill",
                                 run_id = %run_id,
                                 killed,
-                                "失活收割：SIGKILL 自家 run 进程"
+                                "失活收割完成（killed=0 = 无存活进程可杀）"
                             );
+                            // 自审 critical：同取消路径——收割也要解阻待答
+                            if let Some(hook) = &on_intervention {
+                                hook(&run_id);
+                            }
+                            // 2026-10-27 自审 major：收割后不退出——心跳/取消/超时监测
+                            // 继续守护到 run 收场，只停失活判定（不重复杀）。
+                            idle_active = false;
                         }
-                        // 自审 critical：同取消路径——收割也要解阻待答
-                        if let Some(hook) = &on_intervention {
-                            hook(&run_id);
-                        }
-                        return;
+                        Some(_) => {}
                     }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(300));

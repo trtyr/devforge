@@ -38,8 +38,10 @@ fn the_deferred_begin_does_not_write_the_heartbeat_on_the_critical_path() {
 
 #[test]
 fn the_watchdog_refreshes_the_heartbeat_while_the_run_is_stalled() {
-    // 错实现形态：watchdog 不刷心跳（只有阶段转换才写）→ 长 agent 轮里心跳陈旧
-    // → 「卡死」与「已死」分不清（本用例必须变红）
+    // 错实现形态：watchdog 不刷心跳 → 长 agent 轮里心跳陈旧 →「卡死」与「已死」分不清。
+    // 2026-10-27 自审 major（空洞修复）：旧口径取样点在 run **结束后**——收尾终态刷盘
+    // 照样把 after 抬高，删掉周期 tick 也绿。现在在 run **进行中**（f 内部）取样：
+    // 周期 tick 被删 → mid == before → 红。
     let dir = tempfile::tempdir().unwrap();
     let run_id = "watchdog-heartbeat";
     // 观测根按 run 注入到临时目录（不抢进程级全局 → 与并行单测不互相干扰）
@@ -48,30 +50,68 @@ fn the_watchdog_refreshes_the_heartbeat_while_the_run_is_stalled() {
         .expect("心跳应已落盘")
         .timestamp_ms;
     let control = RunControl::new();
-    // 停 1.6s：心跳节流 1s → watchdog 的第 5 跳（~1.2s）必须落在观察窗**内**
-    // （停在 1.2s 会与那一跳撞在同一毫秒 → 偶发读不到刷新）
-    run_with_watchdog(&control, run_id.into(), None, vec![], None, || {
+    // 停 1.6s：心跳节流 1s → watchdog 的周期 tick（~1.2s）必落在观察窗内；
+    // mid 在 run 进行中取样，不落收尾刷盘的账。
+    let mid = run_with_watchdog(&control, run_id.into(), None, vec![], None, || {
         std::thread::sleep(Duration::from_millis(1600));
+        crate::observability::heartbeat::read(dir.path(), run_id)
+            .expect("run 进行中心跳应可读")
+            .timestamp_ms
     });
     let after = crate::observability::heartbeat::read(dir.path(), run_id)
         .expect("心跳应仍在")
         .timestamp_ms;
     crate::observability::end_run(run_id);
     assert!(
-        after > before,
-        "心跳时间戳应随之刷新（区分「卡死」与「已死」）：before={before} after={after}"
+        mid > before,
+        "run 进行中心跳必须已被 watchdog tick 刷新：before={before} mid={mid}"
     );
+    assert!(after >= mid, "收尾终态刷不早于进行中样本：mid={mid} after={after}");
 }
 
 #[test]
-fn watchdog_scope_cancel_path_does_not_hang() {
-    // cancel 置位 → watchdog 触发清场路径（scan_and_kill_run 对不存在进程为 no-op）→ 退出
-    let control = RunControl::new();
-    control.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+fn cancel_path_unblocks_the_run_and_fires_the_intervention_hook() {
+    // 2026-10-27 自审 major（空洞修复）：旧用例 f 立即返回 7——取消清场分支整段删掉
+    // 也全绿。现在 f 阻塞等 hook 解阻：分支被删 → hook 永不触发 → recv 超时且
+    // hooked=false → 红。
+    let control = std::sync::Arc::new(RunControl::new());
+    let hooked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hooked_h = hooked.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let canceller = {
+        let c = control.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            c.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
     let start = Instant::now();
-    let out = run_with_watchdog(&control, "watchdog-cancel".into(), None, vec![], None, || 7);
+    let out = run_with_watchdog(
+        &control,
+        "watchdog-cancel-real".into(),
+        None,
+        vec![],
+        Some(std::sync::Arc::new(move |_rid: &str| {
+            hooked_h.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = tx.send(());
+        })),
+        || {
+            // 阻塞直到 hook 解阻；3s 兜底（收不到 = 分支被删）
+            let _ = rx.recv_timeout(Duration::from_secs(3));
+            7
+        },
+    );
+    canceller.join().unwrap();
     assert_eq!(out, 7);
-    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(
+        hooked.load(std::sync::atomic::Ordering::SeqCst),
+        "取消清场必须触发 intervention hook（分支被删此断言红）"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "hook 解阻后 f 应立即收场：elapsed={:?}",
+        start.elapsed()
+    );
 }
 
 // ---------- 失活收割（006 decisions/002：默认不杀，显式闲置阈值才判死） ----------
@@ -81,13 +121,13 @@ fn session_fingerprint_changes_on_append() {
     let dir = tempfile::tempdir().unwrap();
     let watch = dir.path().join("coding");
     std::fs::create_dir_all(&watch).unwrap();
-    let fp0 = session_fingerprint(std::slice::from_ref(&watch));
+    let fp0 = session_fingerprint(std::slice::from_ref(&watch)).unwrap();
     std::fs::write(watch.join("s.jsonl"), b"hello").unwrap();
-    let fp1 = session_fingerprint(std::slice::from_ref(&watch));
+    let fp1 = session_fingerprint(std::slice::from_ref(&watch)).unwrap();
     assert_ne!(fp0, fp1, "新建文件应改变指纹");
     std::thread::sleep(std::time::Duration::from_millis(20));
     std::fs::write(watch.join("s.jsonl"), b"hello world").unwrap();
-    let fp2 = session_fingerprint(&[watch]);
+    let fp2 = session_fingerprint(&[watch]).unwrap();
     assert_ne!(fp1, fp2, "追加增长应改变指纹");
 }
 
@@ -162,4 +202,70 @@ fn idle_unconfigured_never_harvests() {
         || std::thread::sleep(Duration::from_millis(900)),
     );
     assert!(!control.is_stalled(), "未配置闲置阈值时永不失活收割");
+}
+
+/// 2026-10-27 自审 major：监视目录不可读 = 不可观测 → 不得判定失活。
+/// 旧口径：指纹停在 FNV 基准值 → 平线误判 → 活 run 被收割（stalled=true）。
+#[test]
+fn unreadable_watch_dir_disables_idle_harvest() {
+    let dir = tempfile::tempdir().unwrap();
+    let control = RunControl::new();
+    run_with_watchdog(
+        &control,
+        "watchdog-blind".into(),
+        Some(400),
+        vec![dir.path().join("never-created")], // 目录不存在 → 不可观测
+        None,
+        || std::thread::sleep(Duration::from_millis(1200)),
+    );
+    assert!(
+        !control.is_stalled(),
+        "不可观测时不得判定失活（旧口径误杀活 run）"
+    );
+}
+
+/// 2026-10-27 自审 major：收割后旧实现 return → 心跳/取消/超时监测全掉线。
+/// 新口径只停失活判定。验证：收割触发 hook#1，随后 cancel 触发 hook#2——
+/// hook 计到 2 = 收割后取消监测仍在岗（旧实现只会有 1 → 红）。
+#[test]
+fn after_harvest_cancel_is_still_monitored() {
+    let dir = tempfile::tempdir().unwrap();
+    let watch = dir.path().join("coding");
+    std::fs::create_dir_all(&watch).unwrap();
+    std::fs::write(watch.join("s.jsonl"), b"flat").unwrap(); // 永不增长 → 平线
+    let control = std::sync::Arc::new(RunControl::new());
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let canceller = {
+        let c = control.clone();
+        std::thread::spawn(move || {
+            // 收割（idle=300ms，~0.6s 内触发）在先，取消在后
+            std::thread::sleep(Duration::from_millis(1000));
+            c.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+    let hooked_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hc = hooked_count.clone();
+    let out = run_with_watchdog(
+        &control,
+        "watchdog-post-harvest".into(),
+        Some(300),
+        vec![watch],
+        Some(std::sync::Arc::new(move |_rid: &str| {
+            hc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = tx.send(());
+        })),
+        move || {
+            let _ = rx.recv_timeout(Duration::from_secs(3)); // hook#1（收割解阻）
+            let _ = rx.recv_timeout(Duration::from_secs(3)); // hook#2（取消解阻）
+            9
+        },
+    );
+    canceller.join().unwrap();
+    assert_eq!(out, 9);
+    assert!(control.is_stalled(), "平线应已收割");
+    let n = hooked_count.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        n >= 2,
+        "收割后取消监测必须仍在岗（hook#2 由 cancel 触发）；实际 {n}"
+    );
 }
