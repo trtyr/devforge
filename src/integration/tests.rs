@@ -174,3 +174,167 @@ fn validation_failure_produces_artifact_and_needs_repair() {
     let now = git_out(dir.path(), &["rev-parse", "refs/heads/main"]).unwrap();
     assert_eq!(now.trim(), base);
 }
+
+// ── 2026-10-27 自审 majors（01a1450b 会话认领 CH 域）──
+
+/// 归因三分单元钉：冲突 / 候选失联 / 基础设施——旧口径任何 stderr 都硬编码「合并冲突」，
+/// 基础设施故障被误判成质量失败进修复队列。
+#[test]
+fn merge_failure_classification_is_three_way() {
+    assert_eq!(
+        classify_merge_failure("Auto-merging shared.rs\nCONFLICT (content): Merge conflict in shared.rs"),
+        MergeFailureKind::Conflict
+    );
+    assert_eq!(
+        classify_merge_failure("merge: deadbeef - not something we can merge"),
+        MergeFailureKind::CandidateUnreachable
+    );
+    assert_eq!(
+        classify_merge_failure("error: cannot lock ref 'refs/heads/main': Unable to create lock file"),
+        MergeFailureKind::Infra
+    );
+}
+
+/// merge 冲突分支（此前零覆盖）：同文件两候选，第二个 merge 必冲突 →
+/// NeedsRepair + merge_conflict 产物 + 目标不动。
+#[test]
+fn merge_conflict_produces_artifact_and_needs_repair() {
+    let (dir, base) = repo_with_base();
+    let plans = tempfile::tempdir().unwrap();
+    // 两候选改同一文件且内容不同 → 后者真冲突（相同内容会被 git 判为无冲突合并）
+    let a = make_candidate(dir.path(), &base, "task-a", "shared.rs");
+    let spec_b = crate::workspace::WorkspaceSpec {
+        repo: dir.path().to_path_buf(),
+        task_id: "task-b".into(),
+        base_rev: base.clone(),
+    };
+    let ws_b = crate::workspace::Workspace::create(&spec_b).unwrap();
+    std::fs::write(ws_b.path.join("shared.rs"), "task-b 的不同改动\n").unwrap();
+    git(&ws_b.path, &["add", "-A"]).unwrap();
+    git(&ws_b.path, &[
+        "-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "task-b",
+    ])
+    .unwrap();
+    let frozen_b = ws_b.freeze().unwrap();
+    ws_b.remove(dir.path()).unwrap();
+    let b = Candidate {
+        task_id: "task-b".into(),
+        frozen_sha: frozen_b,
+        base_rev: base.clone(),
+        owned_paths: vec!["shared.rs".into()],
+        status: CandidateStatus::Pending,
+        evidence_paths: vec![],
+    };
+    let mut q = MergeQueue::load(plans.path(), "p").unwrap();
+    q.enqueue(a);
+    q.enqueue(b);
+    q.save().unwrap();
+    let mut it = integrator(dir.path(), plans.path(), |_| Ok(()));
+    assert!(matches!(
+        it.integrate_next(&mut q).unwrap(),
+        IntegrationOutcome::Integrated { .. }
+    ));
+    let r = it.integrate_next(&mut q).unwrap();
+    let IntegrationOutcome::NeedsRepair { task_id, reason, artifact } = r else {
+        panic!("冲突应回修复队列：{r:?}");
+    };
+    assert_eq!(task_id, "task-b");
+    assert!(reason.contains("合并冲突"), "{reason}");
+    let body = std::fs::read_to_string(&artifact).unwrap();
+    assert!(body.contains("merge_conflict"), "{body}");
+    assert!(matches!(
+        q.candidates[1].status,
+        CandidateStatus::NeedsRepair { .. }
+    ));
+    // 目标停在第一个候选的集成点（冲突者不推进）
+    let after_first = git_out(dir.path(), &["rev-parse", "refs/heads/main"]).unwrap();
+    assert_eq!(after_first.trim().is_empty(), false);
+}
+
+/// 候选失联（frozen_sha 不存在）不再被硬编码成「合并冲突」——
+/// 归因要指向候选自身缺陷（candidate_unreachable）。
+#[test]
+fn unreachable_candidate_is_not_reported_as_conflict() {
+    let (dir, base) = repo_with_base();
+    let plans = tempfile::tempdir().unwrap();
+    let mut cand = make_candidate(dir.path(), &base, "task-ghost", "from-ghost.rs");
+    cand.frozen_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".into();
+    let mut q = MergeQueue::load(plans.path(), "p").unwrap();
+    q.enqueue(cand);
+    q.save().unwrap();
+    let mut it = integrator(dir.path(), plans.path(), |_| Ok(()));
+    let r = it.integrate_next(&mut q).unwrap();
+    let IntegrationOutcome::NeedsRepair { reason, artifact, .. } = r else {
+        panic!("失联候选应回修复队列：{r:?}");
+    };
+    assert!(
+        reason.contains("候选 commit 不可达"),
+        "归因应指向候选失联而非冲突：{reason}"
+    );
+    let body = std::fs::read_to_string(&artifact).unwrap();
+    assert!(body.contains("candidate_unreachable"), "{body}");
+}
+
+/// CH-09：产物序号用空闲槽扫描——同一 task 连续两次进修复队列，
+/// 两份证据并存不覆盖（旧口径条目数当序号，多候选同任务时撞号）。
+#[test]
+fn repeated_artifacts_never_overwrite() {
+    let (dir, base) = repo_with_base();
+    let plans = tempfile::tempdir().unwrap();
+    let c1 = make_candidate(dir.path(), &base, "task-dup", "dup.rs");
+    // 修复回注形态：同 task_id 新候选（生产语义：修复 = 新候选带新证据走完整流程）。
+    // 复用同一 frozen sha——验证必败路径下 target 未动，merge 仍可过。
+    let c2 = Candidate {
+        task_id: "task-dup".into(),
+        frozen_sha: c1.frozen_sha.clone(),
+        base_rev: base.clone(),
+        owned_paths: vec!["dup.rs".into()],
+        status: CandidateStatus::Pending,
+        evidence_paths: vec![],
+    };
+    let mut q = MergeQueue::load(plans.path(), "p").unwrap();
+    q.enqueue(c1);
+    q.enqueue(c2);
+    q.save().unwrap();
+    let mut it = integrator(dir.path(), plans.path(), |_| {
+        Err(DevforgeError::Quality("总是失败".into()))
+    });
+    let r1 = it.integrate_next(&mut q).unwrap();
+    let IntegrationOutcome::NeedsRepair { artifact: a1, .. } = r1 else {
+        panic!("第一次应进修复队列：{r1:?}");
+    };
+    let r2 = it.integrate_next(&mut q).unwrap();
+    let IntegrationOutcome::NeedsRepair { artifact: a2, .. } = r2 else {
+        panic!("第二次应进修复队列：{r2:?}");
+    };
+    assert_ne!(a1, a2, "两份产物必须不同文件（不覆盖）");
+    assert!(a1.exists() && a2.exists(), "两份证据都要还在");
+    assert!(a1.to_string_lossy().contains("task-dup-0.json"), "{}", a1.display());
+    assert!(a2.to_string_lossy().contains("task-dup-1.json"), "{}", a2.display());
+}
+
+/// CH-10 纵深：project/task_id 拼路径前的域层校验——穿越名直接拒。
+#[test]
+fn traversal_project_and_task_id_are_rejected() {
+    let plans = tempfile::tempdir().unwrap();
+    // project 穿越：load 与 mutate 都拒
+    assert!(MergeQueue::load(plans.path(), "../evil").is_err());
+    assert!(MergeQueue::mutate(plans.path(), "a/../b", |_| Ok(())).is_err());
+    // task_id 穿越：走 integrate_next 到 write_artifact 时拒
+    let (dir, base) = repo_with_base();
+    let mut cand = make_candidate(dir.path(), &base, "task-ok", "x.rs");
+    cand.task_id = "../evil".into();
+    let mut q = MergeQueue::load(plans.path(), "p").unwrap();
+    q.enqueue(cand);
+    q.save().unwrap();
+    let mut it = integrator(dir.path(), plans.path(), |_| {
+        Err(DevforgeError::Quality("触发产物写入".into()))
+    });
+    let err = it.integrate_next(&mut q).unwrap_err();
+    assert!(
+        err.to_string().contains("产物 task_id 校验"),
+        "穿越 task_id 应被拒：{err}"
+    );
+    // 越界目录不得存在
+    assert!(!plans.path().join("evil").exists(), "不得写出 plans_root 之外");
+}

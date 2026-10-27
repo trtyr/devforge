@@ -56,11 +56,22 @@ pub struct MergeQueue {
 impl MergeQueue {
     /// 从 plans_root 加载项目队列（无文件 = 空队列）。
     pub fn load(plans_root: &Path, project: &str) -> Result<Self> {
+        // CH-10 纵深：project 拼路径前的域层校验（store 创建入口已拦，这里防绕过入口的调用方）
+        crate::domain::store::Store::validate_path_name(project).ctx("集成队列项目名校验")?;
         let path = Self::queue_path(plans_root, project);
         let candidates = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice::<Vec<Candidate>>(&bytes)
                 .ctx("队列文件反序列化（删除损坏文件可重置）")?,
-            Err(_) => Vec::new(),
+            // 2026-10-27 自审 major：只有「文件不存在」才是空队列；其余读错误必须上抛——
+            // 旧口径一律当空队列，随后的 save() 会用只含新候选的队列覆盖原文件，
+            // 已排队候选被静默清空。
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                return Err(DevforgeError::from(e)).ctx(format!(
+                    "读集成队列 {} 失败（拒绝当作空队列——后续 save 会静默清掉已排队候选）",
+                    path.display()
+                ))
+            }
         };
         Ok(Self {
             project: project.to_string(),
@@ -117,6 +128,7 @@ impl MergeQueue {
         project: &str,
         f: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
+        crate::domain::store::Store::validate_path_name(project).ctx("集成队列项目名校验")?;
         let path = Self::queue_path(plans_root, project);
         crate::engine::ledger::SpawnLedger::with_file_lock(&path, || {
             let mut q = Self::load(plans_root, project)?;
@@ -188,6 +200,9 @@ impl<'a> Integrator<'a> {
         // 集成工作树：独立目录 checkout 目标最新（M1 路径约定，`_integration` 固定名独占）
         let iw_path = Self::integration_path(self.repo);
         let _ = std::fs::remove_dir_all(&iw_path); // 上一次的残骸清掉再建
+        // 2026-10-27 自审 major：崩溃残留的 worktree 注册（目录已删但 .git/worktrees
+        // 还挂着）会让 add 被永久拒绝，整个队列再也无法消费——目录清掉后同步 prune 摘注册。
+        git(self.repo, &["worktree", "prune"])?;
         git(self.repo, &[
             "worktree",
             "add",
@@ -206,26 +221,66 @@ impl<'a> Integrator<'a> {
             .ctx("git 可执行")?;
         if !merge.status.success() {
             let stderr = String::from_utf8_lossy(&merge.stderr).to_string();
+            let stdout = String::from_utf8_lossy(&merge.stdout).to_string();
+            // git merge 的冲突详情走 stdout（stderr 常为空），归因看合并流
+            let combined = format!("{stdout}\n{stderr}");
+            // 2026-10-27 自审 major（归因三分）：merge 失败 ≠ 合并冲突。
+            // conflict / 候选失联 → 质量失败（NeedsRepair，artifact kind 区分）；
+            // 其余 → 基础设施故障（Err(System)，队列状态不动 = 保持 Pending，可重试）。
+            let kind = match classify_merge_failure(&combined) {
+                MergeFailureKind::Conflict => "merge_conflict",
+                MergeFailureKind::CandidateUnreachable => "candidate_unreachable",
+                MergeFailureKind::Infra => {
+                    drop(guard);
+                    tracing::error!(
+                        component = "integration",
+                        event = "integration.merge.infra",
+                        project = %queue.project,
+                        task_id = %cand.task_id,
+                        stderr = %first_line(&stderr),
+                        "git merge 基础设施失败（非冲突、非候选失联），候选保持 Pending 等重试"
+                    );
+                    return Err(DevforgeError::System(format!(
+                        "集成 git merge 基础设施失败（task {}）：{}",
+                        cand.task_id,
+                        first_line(&stderr)
+                    )));
+                }
+            };
+            let reason = if kind == "merge_conflict" {
+                format!("合并冲突：{}", first_line(&stderr))
+            } else {
+                format!("候选 commit 不可达：{}", first_line(&stderr))
+            };
             let _ = git(&iw_path, &["merge", "--abort"]);
             drop(guard);
             let artifact = self.write_artifact(
                 &queue.project,
                 &cand,
                 &serde_json::json!({
-                    "kind": "merge_conflict",
+                    "kind": kind,
                     "base_rev": cand.base_rev,
                     "target": expect_before,
                     "candidate": cand.frozen_sha,
+                    "stdout": stdout,
                     "stderr": stderr,
                 }),
             )?;
             queue.candidates[idx].status = CandidateStatus::NeedsRepair {
-                reason: format!("合并冲突：{}", first_line(&stderr)),
+                reason: reason.clone(),
             };
             queue.save()?;
+            tracing::warn!(
+                component = "integration",
+                event = "integration.needs_repair",
+                project = %queue.project,
+                task_id = %cand.task_id,
+                kind = kind,
+                "集成转入修复队列"
+            );
             return Ok(IntegrationOutcome::NeedsRepair {
                 task_id: cand.task_id,
-                reason: format!("合并冲突：{}", first_line(&stderr)),
+                reason,
                 artifact,
             });
         }
@@ -248,6 +303,14 @@ impl<'a> Integrator<'a> {
                 reason: format!("组合验证失败：{e}"),
             };
             queue.save()?;
+            tracing::warn!(
+                component = "integration",
+                event = "integration.needs_repair",
+                project = %queue.project,
+                task_id = %cand.task_id,
+                kind = "validation_failed",
+                "组合验证失败，集成转入修复队列"
+            );
             return Ok(IntegrationOutcome::NeedsRepair {
                 task_id: cand.task_id,
                 reason: format!("组合验证失败：{e}"),
@@ -275,6 +338,14 @@ impl<'a> Integrator<'a> {
                 integrated_sha: merged_sha.clone(),
             };
             queue.save()?;
+            tracing::info!(
+                component = "integration",
+                event = "integration.cas.success",
+                project = %queue.project,
+                task_id = %cand.task_id,
+                merged_sha = %merged_sha,
+                "候选已集成（目标 ref CAS 前进）"
+            );
             return Ok(IntegrationOutcome::Integrated {
                 task_id: cand.task_id,
                 merged_sha,
@@ -285,6 +356,15 @@ impl<'a> Integrator<'a> {
             target_moved_to: target_moved_to.clone(),
         };
         queue.save()?;
+        tracing::warn!(
+            component = "integration",
+            event = "integration.cas.requeue",
+            project = %queue.project,
+            task_id = %cand.task_id,
+            expect = %expect_before,
+            moved_to = %target_moved_to,
+            "目标 ref 在集成窗口内被推进（CAS expect 不符），候选转重排"
+        );
         Ok(IntegrationOutcome::Requeued {
             task_id: cand.task_id,
             target_moved_to,
@@ -318,15 +398,20 @@ impl<'a> Integrator<'a> {
         cand: &Candidate,
         body: &serde_json::Value,
     ) -> Result<PathBuf> {
+        // CH-10 纵深：task_id 直接拼产物文件名，落盘前校验（防绕过 store 入口的构造）
+        crate::domain::store::Store::validate_path_name(&cand.task_id).ctx("产物 task_id 校验")?;
         let dir = self
             .plans_root
             .join("integrations")
             .join(project)
             .join("artifacts");
         std::fs::create_dir_all(&dir).ctx("建产物目录")?;
-        let n = std::fs::read_dir(&dir)
-            .map(|rd| rd.filter_map(|e| e.ok()).count())
-            .unwrap_or(0);
+        // CH-09：空闲槽序号——旧口径用「目录条目数」当序号，删除/同名候选会撞号覆盖旧证据。
+        // 按本 task_id 的已有产物数递增到第一个空闲槽，永不覆盖。
+        let mut n = 0u32;
+        while dir.join(format!("{}-{n}.json", cand.task_id)).exists() {
+            n += 1;
+        }
         let path = dir.join(format!("{}-{n}.json", cand.task_id));
         std::fs::write(&path, serde_json::to_vec_pretty(body).ctx("序列化产物")?)
             .ctx("写冲突/失败产物")?;
@@ -347,6 +432,27 @@ impl Drop for IwCleanup {
 
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
+}
+
+/// merge 失败归因（CH-11 三分）：冲突（质量）/ 候选失联（候选自身缺陷）/ 基础设施。
+fn classify_merge_failure(stderr: &str) -> MergeFailureKind {
+    if stderr.contains("CONFLICT") {
+        MergeFailureKind::Conflict
+    } else if ["not something we can merge", "unknown revision", "bad revision"]
+        .iter()
+        .any(|needle| stderr.contains(needle))
+    {
+        MergeFailureKind::CandidateUnreachable
+    } else {
+        MergeFailureKind::Infra
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MergeFailureKind {
+    Conflict,
+    CandidateUnreachable,
+    Infra,
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<()> {
