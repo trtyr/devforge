@@ -255,6 +255,8 @@ async fn start_returns_immediately_when_the_required_profile_is_ready_even_if_a_
         let d = f.state.profiles_root.join(p);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("settings.json"), "{}").unwrap();
+        // 自审 minor（115）：就绪判据 = 渲染完成标记（settings.json 在装包前就写了）
+        std::fs::write(d.join(crate::config::render::RENDER_READY_MARKER), "fp").unwrap();
     }
     send(
         &f.router,
@@ -377,6 +379,8 @@ async fn two_concurrent_starts_while_the_gate_waits_run_at_most_one() {
         let d = f.state.profiles_root.join(p);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("settings.json"), "{}").unwrap();
+        // 自审 minor（115）：就绪判据 = 渲染完成标记（settings.json 在装包前就写了）
+        std::fs::write(d.join(crate::config::render::RENDER_READY_MARKER), "fp").unwrap();
     }
     f.state.render_gate.end_render();
 

@@ -26,6 +26,35 @@ fn runtime_settings() -> serde_json::Value {
 /// 并发四路为实测保守值——再高会跟 npm 缓存/网络限流撞车）。
 const MAX_RENDER_CONCURRENCY: usize = 4;
 
+/// 渲染就绪标记文件名（profile 目录内）。内容 = 清单指纹，不是空文件。
+pub const RENDER_READY_MARKER: &str = ".devforge-rendered";
+
+/// 清单指纹：provider + model + 包列表（顺序稳定）→ FNV-1a 十六进制。
+///
+/// 自审 minor（115）：只需要「两次渲染是不是同一份清单」这一位信息，不引新依赖。
+pub fn render_fingerprint(provider: &str, model_id: &str, packages: &[String]) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    fn feed(hash: &mut u64, bytes: &[u8]) {
+        for b in bytes {
+            *hash ^= *b as u64;
+            *hash = hash.wrapping_mul(0x100000001b3);
+        }
+        *hash ^= 0xff;
+        *hash = hash.wrapping_mul(0x100000001b3);
+    }
+    feed(&mut hash, provider.as_bytes());
+    feed(&mut hash, model_id.as_bytes());
+    for p in packages {
+        feed(&mut hash, p.as_bytes());
+    }
+    format!("{hash:016x}")
+}
+
+/// profile 的渲染指纹（`None` = 没有完成标记：未渲染，或旧版本渲的半成品）。
+pub fn rendered_fingerprint(profile_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(profile_dir.join(RENDER_READY_MARKER)).ok()
+}
+
 pub struct Renderer<'a> {
     pub manifest: &'a ConfigManifest,
     pub installer: &'a dyn PackageInstaller,
@@ -258,6 +287,13 @@ impl<'a> Renderer<'a> {
             return Ok(dir);
         }
         self.installer.install(&dir, &packages)?;
+
+        // 自审 minor（115）：**完成标记最后写**——就绪判据不能是「settings.json 存在」，
+        // 那个文件在装包**之前**就写了，闸门中途看到它就会放行一个半成品 profile（包还没装）。
+        // 标记内含清单指纹（provider/model/packages），也能区分「profile 是上一版清单渲的」。
+        let fingerprint = render_fingerprint(&model.provider, &model.model_id, &packages);
+        fs::write(dir.join(RENDER_READY_MARKER), &fingerprint)
+            .ctx(format!("写 {} 的渲染完成标记", agent.name))?;
 
         tracing::info!(
             component = "renderer",

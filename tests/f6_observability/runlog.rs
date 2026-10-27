@@ -244,6 +244,12 @@ pub(super) async fn start_waits_at_the_render_gate_until_the_required_profile_is
         let d = f.state.profiles_root.join(p);
         std::fs::create_dir_all(&d).expect("建 profile 目录");
         std::fs::write(d.join("settings.json"), "{}").expect("写 settings.json");
+        // 自审 minor（115）：闸门就绪判据 = 渲染完成标记
+        std::fs::write(
+            d.join(devforge::config::render::RENDER_READY_MARKER),
+            "fp",
+        )
+        .expect("写渲染完成标记");
     }
     f.state.render_gate.end_render();
     let resp = tokio::time::timeout(
@@ -264,6 +270,12 @@ pub(super) async fn start_returns_immediately_when_the_required_profiles_are_rea
         let d = f.state.profiles_root.join(p);
         std::fs::create_dir_all(&d).expect("建 profile 目录");
         std::fs::write(d.join("settings.json"), "{}").expect("写 settings.json");
+        // 自审 minor（115）：闸门就绪判据 = 渲染完成标记
+        std::fs::write(
+            d.join(devforge::config::render::RENDER_READY_MARKER),
+            "fp",
+        )
+        .expect("写渲染完成标记");
     }
     make_task(&f, "p", "t1", "coding").await;
     f.state.render_gate.begin_render();
@@ -289,6 +301,12 @@ pub(super) async fn a_ready_run_passes_on_the_first_attempt_without_a_restart_wa
         let d = f.state.profiles_root.join(p);
         std::fs::create_dir_all(&d).expect("建 profile 目录");
         std::fs::write(d.join("settings.json"), "{}").expect("写 settings.json");
+        // 自审 minor（115）：闸门就绪判据 = 渲染完成标记
+        std::fs::write(
+            d.join(devforge::config::render::RENDER_READY_MARKER),
+            "fp",
+        )
+        .expect("写渲染完成标记");
     }
     make_task(&f, "p", "t1", "coding").await;
     let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t1/start", None).await;
@@ -417,6 +435,12 @@ pub(super) async fn two_concurrent_starts_while_the_gate_waits_run_at_most_one()
         let d = f.state.profiles_root.join(p);
         std::fs::create_dir_all(&d).expect("建 profile 目录");
         std::fs::write(d.join("settings.json"), "{}").expect("写 settings.json");
+        // 自审 minor（115）：闸门就绪判据 = 渲染完成标记
+        std::fs::write(
+            d.join(devforge::config::render::RENDER_READY_MARKER),
+            "fp",
+        )
+        .expect("写渲染完成标记");
     }
     f.state.render_gate.end_render();
     // server #1 修复后：准入在响应之前——一路 202、一路 409，不存在「后台才失败」的静默路径
@@ -483,6 +507,12 @@ pub(super) async fn the_gate_does_not_release_while_another_render_is_still_in_f
         let d = f.state.profiles_root.join(p);
         std::fs::create_dir_all(&d).expect("建 profile 目录");
         std::fs::write(d.join("settings.json"), "{}").expect("写 settings.json");
+        // 自审 minor（115）：闸门就绪判据 = 渲染完成标记
+        std::fs::write(
+            d.join(devforge::config::render::RENDER_READY_MARKER),
+            "fp",
+        )
+        .expect("写渲染完成标记");
     }
     let resp = tokio::time::timeout(Duration::from_secs(3), waiter)
         .await

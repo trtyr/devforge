@@ -22,6 +22,8 @@ async fn the_gate_waits_for_the_required_profiles_and_ignores_the_rest() {
         let d = dir.path().join(p);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("settings.json"), "{}").unwrap();
+        // 自审 minor（115）：就绪判据 = 渲染完成标记（settings.json 在装包前就写了）
+        std::fs::write(d.join(crate::config::render::RENDER_READY_MARKER), "fp").unwrap();
     }
     tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
         .await
@@ -79,6 +81,8 @@ async fn the_gate_keeps_waiting_while_another_render_is_still_in_flight() {
     let d = dir.path().join("plan-agent");
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join("settings.json"), "{}").unwrap();
+        // 自审 minor（115）：就绪判据 = 渲染完成标记（settings.json 在装包前就写了）
+        std::fs::write(d.join(crate::config::render::RENDER_READY_MARKER), "fp").unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
         .await
         .expect("所需 profile 就绪后闸门应放行")

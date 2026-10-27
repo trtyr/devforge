@@ -84,10 +84,14 @@ impl RenderGate {
         *self.in_flight.lock().unwrap_or_else(|e| e.into_inner()) > 0
     }
 
-    /// 等「所需 profile 的 `settings.json` 落盘」或「渲染结束」。
+    /// 等「所需 profile 渲染就绪」或「渲染结束」。
     ///
     /// 放行条件 = 「**无渲染在途**」**或**「**所需 profile 全部就绪**」二者之一成立
     /// （010 F6 靶 · R-2：并发两轮渲染时，先结束的那一轮**不**放行）。
+    ///
+    /// 自审 minor（115）：「就绪」不再是「settings.json 存在」——那个文件在装包**之前**就写了，
+    /// 闸门看到它就会放行一个半成品 profile。现在的判据是渲染完成标记
+    /// （[`crate::config::render::RENDER_READY_MARKER`]），它由渲染器**最后一步**写。
     ///
     /// 返回即代表「可以开跑」：所需 profile 已就绪（后续门卫复查会过），
     /// 或渲染已结束（缺 profile 则由门卫明确失败，不再盲重启）。
@@ -113,11 +117,10 @@ impl RenderGate {
             if !self.is_in_flight() {
                 return; // 渲染不在途 → 直接开跑
             }
-            if required
-                .iter()
-                .all(|p| profiles_root.join(p).join("settings.json").is_file())
-            {
-                return; // 所需 profile 已就绪 → 不等整轮渲染
+            if required.iter().all(|p| {
+                crate::config::render::rendered_fingerprint(&profiles_root.join(p)).is_some()
+            }) {
+                return; // 所需 profile 已按本版清单渲完 → 不等整轮渲染
             }
             // 等「渲染结束」信号，或短间隔后重查就绪状态
             // （awaitable：不占 tokio worker；不用 std::thread::sleep 轮询）
