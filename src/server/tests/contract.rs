@@ -4,6 +4,9 @@
 use super::*;
 
 /// git 仓夹具：tempdir + init + 基线 commit；返回（目录，基线 sha）。
+///
+/// 自审 minor（50）：隔离宿主 git 配置——旧口径跑开发机/CI 的全局设置（core.hooksPath /
+/// commit.gpgsign / init.defaultBranch / template），失败时错误信息容易被误读成代码问题。
 fn git_repo_with_base() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let git = |args: &[&str]| {
@@ -11,6 +14,10 @@ fn git_repo_with_base() -> (tempfile::TempDir, String) {
             .arg("-C")
             .arg(dir.path())
             .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
             .output()
             .expect("git 可执行");
         assert!(
@@ -35,6 +42,9 @@ fn commit_all(dir: &tempfile::TempDir, msg: &str) {
         .arg("-C")
         .arg(dir.path())
         .args(["add", "-A"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -42,6 +52,9 @@ fn commit_all(dir: &tempfile::TempDir, msg: &str) {
         .arg("-C")
         .arg(dir.path())
         .args(["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", msg])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -93,6 +106,17 @@ async fn boundary_violation_fails_an_otherwise_successful_run() {
         replayed.iter().any(|(_, e)| e.contains("boundary.violation")),
         "必须有 boundary.violation 事件：{:?}",
         replayed.iter().map(|(_, e)| e.as_str()).collect::<Vec<_>>()
+    );
+    // 自审 minor（239）：诊断力对齐 forbidden 分支——必须断言事件**指认了越界文件**，
+    // 否则「判了 Failed 但说不出谁越界」的回归抓不到。
+    let violation = replayed
+        .iter()
+        .map(|(_, e)| e.as_str())
+        .find(|e| e.contains("boundary.violation"))
+        .expect("boundary.violation 事件");
+    assert!(
+        violation.contains("evil.txt"),
+        "boundary.violation 必须指认越界文件：{violation}"
     );
 }
 
@@ -311,6 +335,14 @@ async fn in_contract_changes_pass_the_boundary_check() {
     assert_eq!(
         body["runs"][0]["status"], "settled",
         "契约内改动不得拦截：{body}"
+    );
+    // 自审 minor（240）：注释声称对照用例覆盖 boundary.ok，但旧口径全仓无任何地方断言它——
+    // 「门过了」在事件流里必须看得见，否则 fail-open（不发点）与真过不可区分。
+    let replayed = f.state.bus.replay_after(0);
+    assert!(
+        replayed.iter().any(|(_, e)| e.contains("boundary.ok")),
+        "契约内改动必须落 boundary.ok 事件：{:?}",
+        replayed.iter().map(|(_, e)| e.as_str()).collect::<Vec<_>>()
     );
 }
 

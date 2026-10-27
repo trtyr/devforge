@@ -1,9 +1,24 @@
 //! （ARC-R6 自 server/tests.rs 平移，纯移动。）
 
-#[allow(unused_imports)]
 use super::*;
-#[allow(unused_imports)]
-use super::{http::*, observe::*, retry::*, start::*};
+
+/// 有界 409 重试的 start（自审 minor 133/134）：F18 后 status=settled 与串行槽真正释放
+/// 之间有收尾窗口，偶发 409 会淹没断言本体；旧口径只有第三个 start 带防护，前两个
+/// 直接断言 202 → 竞态发作时以误导性断言失败。100×20ms = 2s 上限，超限直接失败而非挂死。
+async fn start_bounded(
+    f: &Fixture,
+    path: &str,
+    body: Option<Value>,
+) -> axum::response::Response {
+    for _ in 0..100 {
+        let r = send(&f.router, "POST", path, body.clone()).await;
+        if r.status() != 409 {
+            return r;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("{path} 在 2s 内持续 409（串行槽未释放）——超出有界重试上限");
+}
 
 #[tokio::test]
 async fn projects_crud_with_local_dir_creation() {
@@ -110,22 +125,12 @@ async fn start_doc_from_zero_sop_returns_202() {
     send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": repo_p.to_string_lossy()}))).await;
     send(&f.router, "POST", "/api/v1/projects/p/tasks", Some(json!({"id": "d", "sop": "doc-from-zero"}))).await;
 
-    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/d/start", None).await;
+    let resp = start_bounded(&f, "/api/v1/projects/p/tasks/d/start", None).await;
     assert_eq!(resp.status(), 202);
 
-    let mut settled = false;
-    for _ in 0..100 {
-        let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/d/runs", None).await;
-        let body = body_json(resp).await;
-        if body["runs"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
-            && body["runs"][0]["status"] == "settled"
-        {
-            settled = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(settled, "run 应在超时前 Settled");
+    // 自审 minor（242）：用共享的 wait_settled（它只看**最新**那条 run）；
+    // 旧口径在本文件内联了第二套「只看 runs[0]」的等落定范式，正是 helper 注释警告的陷阱。
+    wait_settled(&f, "p", "d").await;
 }
 
 #[tokio::test]
@@ -142,7 +147,7 @@ async fn start_change_sop_returns_202() {
         Some(json!({"id": "c", "sop": "change"})),
     )
     .await;
-    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/c/start", None).await;
+    let resp = start_bounded(&f, "/api/v1/projects/p/tasks/c/start", None).await;
     assert_eq!(resp.status(), 202);
     let body = body_json(resp).await;
     assert_eq!(body["sop"], "change");
@@ -176,14 +181,13 @@ async fn start_change_resumes_from_blackboard_and_fresh_clears_it() {
     );
     crate::runstate::save(&f.state.plans_root, &key, &mut st).unwrap();
 
-    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/c/start", None).await;
+    let resp = start_bounded(&f, "/api/v1/projects/p/tasks/c/start", None).await;
     let body = body_json(resp).await;
     assert_eq!(body["resumed"], true, "有断点必须续跑：{body}");
     wait_settled(&f, "p", "c").await;
 
-    let resp = send(
-        &f.router,
-        "POST",
+    let resp = start_bounded(
+        &f,
         "/api/v1/projects/p/tasks/c/start",
         Some(json!({"fresh": true})),
     )
@@ -215,7 +219,7 @@ async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
     .await;
 
     // 1) 无断点 → 冷启动
-    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/d/start", None).await;
+    let resp = start_bounded(&f, "/api/v1/projects/p/tasks/d/start", None).await;
     assert_eq!(resp.status(), 202);
     let body = body_json(resp).await;
     assert_eq!(body["resumed"], false, "无断点必须冷启动：{body}");
@@ -229,7 +233,7 @@ async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
     let mut st2 = crate::runstate::RunState::new(&other, json!({"done": ["x"]}));
     crate::runstate::save(&f.state.plans_root, &other, &mut st2).unwrap();
 
-    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/d/start", None).await;
+    let resp = start_bounded(&f, "/api/v1/projects/p/tasks/d/start", None).await;
     assert_eq!(resp.status(), 202);
     let body = body_json(resp).await;
     assert_eq!(body["resumed"], true, "有断点默认续跑：{body}");

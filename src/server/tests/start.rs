@@ -2,8 +2,6 @@
 
 #[allow(unused_imports)]
 use super::*;
-#[allow(unused_imports)]
-use super::{crud::*, http::*, observe::*, retry::*};
 
 #[tokio::test]
 async fn rejected_fresh_start_does_not_wipe_the_checkpoint() {

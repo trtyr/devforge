@@ -49,7 +49,15 @@ async fn create_project_accepts_empty_dir_and_git_repo() {
     assert_eq!(resp.status(), 201, "空目录应可注册");
 
     let repo = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+    // 自审 minor（243）：用真 git 仓（旧口径只建空 `.git` 目录，实际钉住的是
+    // 「存在 .git 即放行」的弱规则，真仓从未被验证过）。
+    let st = std::process::Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(repo.path())
+        .status()
+        .expect("git 应可用");
+    assert!(st.success(), "git init 应成功");
+    assert!(repo.path().join(".git").is_dir());
     let resp = send(
         &f.router,
         "POST",
@@ -104,9 +112,15 @@ async fn audit_report_404_does_not_leak_absolute_path() {
     assert_eq!(resp.status(), 404);
     let body = body_json(resp).await;
     let msg = body["error"].as_str().unwrap_or("");
+    // 自审 minor（244）：旧断言是析取式（`!/ || !plans`）——只要文案不是同时含 '/' 与
+    // "plans" 就能通过，其余任何绝对路径泄露全部放行。现在：禁止任何**绝对路径 token**。
     assert!(
-        !msg.contains('/') || !msg.contains("plans"),
+        !msg.split_whitespace().any(|w| w.starts_with('/')),
         "404 文案不得回显绝对路径：{msg}"
+    );
+    assert!(
+        !msg.contains(&f.state.plans_root.display().to_string()),
+        "404 文案不得回显 plans_root：{msg}"
     );
 
     // 已存在项目/任务但报告未生成 → 同样 404（文案指向历史位置而非主机路径）
@@ -157,6 +171,28 @@ async fn token_gate_still_rejects_wrong_token() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404, "正确 token 应通过鉴权（404 = 项目不存在）");
+}
+
+/// 自审 minor（245）：模块文档宣称「token 常量时间比较」，但单测只验 401/404 状态码——
+/// 回退到旧的按字节早退比较仍全绿。计时侧信道没法在单测里测，所以钉**实现路径**：
+/// token 校验必须调 ct_eq，且不得出现早退式 `==` 比较。
+#[test]
+fn token_comparison_stays_constant_time() {
+    let src = include_str!("../handlers.rs");
+    let at = src.find("fn token_matches").expect("token_matches 应存在");
+    let end = (at + 400).min(src.len());
+    let mut end = end;
+    while end < src.len() && !src.is_char_boundary(end) {
+        end += 1;
+    }
+    let body = &src[at..end];
+    assert!(body.contains("ct_eq("), "token 校验必须走常量时间比较：{body}");
+    assert!(
+        !body.contains("== expected") && !body.contains("g =="),
+        "不得回退到按字节早退比较：{body}"
+    );
+    // 缺失 token 不得短路成「相等」
+    assert!(body.contains("None => false"), "缺失 token 必须判不匹配：{body}");
 }
 
 /// 自审 critical：GET /config/manifest 不得回传明文 api_key；PUT 见脱敏占位 = 保持

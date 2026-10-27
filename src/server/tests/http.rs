@@ -2,8 +2,6 @@
 
 #[allow(unused_imports)]
 use super::*;
-#[allow(unused_imports)]
-use super::{crud::*, observe::*, retry::*, start::*};
 
 #[tokio::test]
 async fn auth_token_enforced_when_configured() {
