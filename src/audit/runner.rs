@@ -524,7 +524,17 @@ fn apply_batch_outcome(
             Ok(())
         }
         Err(crate::error::DevforgeError::Quality(msg)) => {
-            progress.abandoned.push(format!("{unit_id}：{msg}"));
+            // 自审 minor（13）：abandoned 是断点字段、会被续跑复用——同一单元只能有一条，
+            // 否则报告的 batches_abandoned 计数虚高（旧口径无条件 push）。
+            let entry = format!("{unit_id}：{msg}");
+            match progress
+                .abandoned
+                .iter_mut()
+                .find(|a| a.starts_with(&format!("{unit_id}：")))
+            {
+                Some(existing) => *existing = entry,
+                None => progress.abandoned.push(entry),
+            }
             progress.save(blackboard)?;
             tracing::warn!(component = "audit-engine", unit = %unit_id, "批次放弃");
             Ok(())

@@ -122,12 +122,10 @@ fn parse_evidence_log(text: &str, file: &str, label: &str) -> Result<BaselineEvi
         // 2026-10-27 自审 minor（46）：退出码行可能**排在 command 行之前**——
         // 旧口径 found 即 break，后面的 command 行再也读不到（诊断退化成「命令：未记录」）。
         // 现在：已拿到退出码但还没有 command 时继续扫，两者齐了才停。
-        if found {
-            if !command.is_empty() {
-                // 首中即停：主回归的退出码在文件最前（§1）；后面的 exit_code 行是
-                // 反向验证的「能失败」证据（故意 101），不能覆盖主结果。
-                break;
-            }
+        // 首中即停：主回归的退出码在文件最前（§1）；后面的 exit_code 行是
+        // 反向验证的「能失败」证据（故意 101），不能覆盖主结果。
+        if found && !command.is_empty() {
+            break;
         }
     }
     let exit_code = exit_code.ok_or_else(|| {
@@ -149,7 +147,7 @@ pub fn parse_baseline_log(text: &str) -> Result<BaselineEvidence> {
 ///
 /// 自审 major（unit-011）：弱化版不再 pub——它传 UNIX_EPOCH 等于关掉新鲜度，
 /// 生产只能用 `_fresh` 版；保留为测试底座，未来调用方拿不到（防再犯）。
-
+///
 /// 基线门（绑定本轮）：证据文件 mtime 早于 `not_before`（本轮开始）视为上一轮残留
 /// （复验 #6：上轮绿色证据不得通过本轮机械门）。
 pub fn check_baseline_log_fresh(
@@ -176,7 +174,7 @@ pub fn check_self_check_fresh(
         "缺少自证证据 {}（提交前必须留下命令原文 + 退出码 + 摘要）",
         "自证不是绿的",
         "先证后报：证据红着不许提交",
-        |text| parse_evidence_log(&text, SELF_CHECK_LOG, "自证"),
+        |text| parse_evidence_log(text, SELF_CHECK_LOG, "自证"),
         not_before,
     )
 }
@@ -237,7 +235,7 @@ fn check_evidence_fresh(
 ///
 /// 与基线门同策略：失败即 Quality，不自动重问 Agent（证据红着 = 没证明）。
 /// 自审 major（unit-011）：同基线门，弱化版收进测试底座，生产只用 `_fresh` 版。
-
+///
 /// `impl-steps.md` 里的步骤（形如 `## 步骤 1` / `### 步骤 2`，也接受 `## Step 3`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {

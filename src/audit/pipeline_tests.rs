@@ -69,11 +69,91 @@ fn batch_instruction_carries_workspace_absolute_path() {
 
 #[test]
 fn stage0_plans_from_metadata_only() {
-    let mut s = ScriptSession { replies: RefCell::new([PLAN_REPLY].into()) };
-    let plan = stage0_plan(&mut s, &[unit("unit-001"), unit("unit-002")]).unwrap();
+    // 自审 minor（17）：旧用例从不检查指令内容——「Stage 0 只喂元数据」的契约无断言保护，
+    // 把整个文件内容塞进指令也照样绿。这里用记录型会话钉住「有元数据、无代码」。
+    let seen = std::rc::Rc::new(RefCell::new(String::new()));
+    struct RecordingSession {
+        reply: &'static str,
+        seen: std::rc::Rc<RefCell<String>>,
+    }
+    impl AuditSession for RecordingSession {
+        fn ask(&mut self, instruction: &str) -> Result<String> {
+            *self.seen.borrow_mut() = instruction.to_string();
+            Ok(self.reply.to_string())
+        }
+    }
+    let mut s = RecordingSession {
+        reply: PLAN_REPLY,
+        seen: seen.clone(),
+    };
+    let mut u = unit("unit-001");
+    u.files = vec!["src/a.rs".into()];
+    let plan = stage0_plan(&mut s, &[u, unit("unit-002")]).unwrap();
     assert_eq!(plan.priority, vec!["unit-001"]);
     assert_eq!(plan.skip, vec!["unit-002"]);
     assert_eq!(plan.cross_concerns.len(), 1);
+    let instruction = seen.borrow().clone();
+    assert!(
+        instruction.contains("unit-001") && instruction.contains("label-unit-002"),
+        "元数据必须在指令里：{instruction}"
+    );
+    assert!(
+        !instruction.contains("src/a.rs") && !instruction.contains("fn ") && !instruction.contains("use "),
+        "Stage 0 不得喂代码/文件路径：{instruction}"
+    );
+    assert!(
+        instruction.contains("REPO-DATA 边界声明"),
+        "仓库派生数据必须带边界声明（注入面）：{instruction}"
+    );
+}
+
+/// 自审 minor（9）：json 块取**末尾**那个（正文里的示例块不得劫持解析）。
+#[test]
+fn json_block_is_taken_from_the_tail() {
+    let reply = "示例格式：\n```json\n{\"priority\": [\"unit-999\"]}\n```\n\n实际结果：\n```json\n{\"priority\": [\"unit-001\"]}\n```\n";
+    let plan = parse_stage0(reply).unwrap();
+    assert_eq!(
+        plan.priority,
+        vec!["unit-001"],
+        "必须取末尾块（示例块不得劫持）"
+    );
+}
+
+/// 自审 minor（10）：Stage 0 的非字符串条目不再静默丢弃，计数入报告。
+#[test]
+fn stage0_counts_malformed_entries() {
+    let plan = parse_stage0(
+        "```json\n{\"priority\": [\"unit-001\", 42, null], \"skip\": [], \"cross_concerns\": []}\n```",
+    )
+    .unwrap();
+    assert_eq!(plan.priority, vec!["unit-001"]);
+    assert_eq!(plan.parse_errors, 2, "畸形条目必须计数：{plan:?}");
+}
+
+/// 自审 minor（14）：进度文件损坏分支（旧口径零覆盖，删掉整段仍全绿）。
+#[test]
+fn corrupt_progress_file_is_warned_and_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("audit-progress.json"), "{broken").unwrap();
+    let p = Progress::load(dir.path());
+    assert_eq!(p, Progress::default(), "损坏即整表重跑（空进度）");
+    // 冷启动（文件不存在）静默且同样是空进度
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(Progress::load(empty.path()), Progress::default());
+}
+
+/// 自审 minor（7）：老版本进度文件缺字段不得被判「损坏」——serde default 要对称。
+#[test]
+fn legacy_progress_without_new_fields_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("audit-progress.json"),
+        "{\"abandoned\": [\"unit-9：超时\"]}",
+    )
+    .unwrap();
+    let p = Progress::load(dir.path());
+    assert_eq!(p.abandoned, vec!["unit-9：超时".to_string()]);
+    assert!(!p.stage0_done && p.done_batches.is_empty() && !p.stage2_done);
 }
 
 #[test]
