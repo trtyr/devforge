@@ -437,8 +437,17 @@ pub async fn start_task(
     let sop_name = requested_sop
         .clone()
         .unwrap_or_else(|| registered_sop.clone());
+    // 渲染闸门（用户裁决 A）：开跑前等「本 run 所需 profile 的 settings.json 落盘」
+    // 或「渲染结束」——等的是 awaitable 原语，不占 tokio worker（其它端点照常被处理）。
+    // **必须在准入与 SOP 覆盖写盘之前**：客户端在闸门等待期间断开（超时/取消）时，
+    // 不得留下占着串行槽的幽灵 run，也不得让一次「从未开跑」的请求改写任务身份。
+    let required = crate::engine::builtin::BuiltinRpcEngine::profiles_for_sop(&sop_name);
+    st.render_gate
+        .wait_for_profiles(&st.profiles_root, required)
+        .await;
     // sop 覆盖必须在准入之前写盘（`set_task_sop` 拒绝 Running 态，而 begin_run 会把任务置
     // Running）——所以准入失败时**回滚**旧 sop，不让一次失败的 start 改写任务身份（server #2）。
+    // （2026-10-27 自审 major：写盘时机从闸门之前移到闸门之后——闸门里断开不再永久改写身份。）
     let mut previous_sop: Option<String> = None;
     if let Some(sop) = requested_sop.clone() {
         let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
@@ -447,14 +456,6 @@ pub async fn start_task(
             .map_err(ApiError::from)?;
         previous_sop = Some(registered_sop);
     }
-    // 渲染闸门（用户裁决 A）：开跑前等「本 run 所需 profile 的 settings.json 落盘」
-    // 或「渲染结束」——等的是 awaitable 原语，不占 tokio worker（其它端点照常被处理）。
-    // **必须在准入之前**：客户端在闸门等待期间断开（超时/取消）时，不得留下一个占着
-    // 串行槽、却永远不会开跑的幽灵 run。
-    let required = crate::engine::builtin::BuiltinRpcEngine::profiles_for_sop(&sop_name);
-    st.render_gate
-        .wait_for_profiles(&st.profiles_root, required)
-        .await;
     // *** 准入在响应之前 ***（server #1）：旧实现直接回 202，真正的 can_begin_run 在后台线程，
     // 失败只发一条 run.error 事件——调用方永远不知道 run 没起来，两个并发请求都能拿到 202。
     let run = {
@@ -482,12 +483,22 @@ pub async fn start_task(
         Ok(d) => d,
         Err(e) => {
             let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = store.finish_run(
+            if let Err(fe) = store.finish_run(
                 &run.id,
                 crate::domain::store::FinishOutcome::Failed {
                     reason: e.to_string(),
                 },
-            );
+            ) {
+                // 2026-10-27 自审 major：落账失败必须留痕——吞掉 = 任务永久停在
+                // Running 并占死全局串行槽，且无任何日志可查。
+                tracing::error!(
+                    component = "server",
+                    event = "run.finish_failed",
+                    run_id = %run.id.0,
+                    error = %fe,
+                    "准入失败回滚时 finish_run 落账失败——run 可能停在 Running 占住串行槽，需人工检查 store.json"
+                );
+            }
             if let Some(old) = previous_sop.clone() {
                 let _ = store.set_task_sop(&st.registry, &project, &task, old);
             }
@@ -505,12 +516,20 @@ pub async fn start_task(
                 // 已准入：失败要回滚槽位再抛，否则任务卡 Running
                 {
                     let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-                    let _ = store.finish_run(
+                    if let Err(fe) = store.finish_run(
                         &run.id,
                         crate::domain::store::FinishOutcome::Failed {
                             reason: format!("清空 change 黑板失败：{e}"),
                         },
-                    );
+                    ) {
+                        tracing::error!(
+                            component = "server",
+                            event = "run.finish_failed",
+                            run_id = %run.id.0,
+                            error = %fe,
+                            "清黑板失败回滚时 finish_run 落账失败——run 可能停在 Running 占住串行槽"
+                        );
+                    }
                 }
                 return Err(ApiError::internal(format!(
                     "清空 change 黑板 {} 失败：{e}",
@@ -713,11 +732,12 @@ pub async fn get_run_detail(
         }),
         None => serde_json::Value::Null,
     };
-    // agent 活性：历史侧（日志尾扫）+ 进程侧（本进程内最近 agent 事件）
+    // agent 活性：历史侧（日志尾扫，全局流）+ 进程侧（按 run-id 键直查——HTTP 线程
+    // 无 thread-local run 上下文，旧口径线程局部查询在此恒为 null）
     let log_path = log_file_path(&st);
     let agent = json!({
         "last_event": last_agent_event_from_log(&log_path),
-        "last_event_age_ms": crate::observability::last_agent_event_age_ms(),
+        "last_event_age_ms": crate::observability::last_agent_event_age_for(&run_id),
         "stall_warn_ms": crate::observability::stall_warn_ms(),
     });
     Ok(Json(json!({
@@ -868,7 +888,10 @@ pub async fn events(
         .unwrap_or(0);
     let rx = st.bus.subscribe();
     let replay = st.bus.replay_after(last_id);
-    let replay_max = replay.last().map(|(id, _)| *id).unwrap_or(last_id);
+    // 2026-10-27 自审 major：去重阈值 = **实际回放过的最大序号**；回放为空时必须归零。
+    // 旧口径回退成客户端的 Last-Event-ID——服务重启后序号重置，客户端带着旧大序号重连，
+    // 全部新序号实时事件 ≤ 旧大序号 → 被永久丢弃。空回放 = 无重叠可能 → 不该过滤任何实时事件。
+    let replay_max = replay.last().map(|(id, _)| *id).unwrap_or(0);
     let replayed = tokio_stream::iter(replay.into_iter().map(|(id, data)| {
         Ok(axum::response::sse::Event::default()
             .id(id.to_string())
@@ -938,14 +961,30 @@ pub async fn put_manifest(
     }
     {
         let mut m = st.manifest.lock().unwrap_or_else(|e| e.into_inner());
-        *m = manifest;
+        // 2026-10-27 自审 major：先落盘后换内存——旧口径先替换再 save，落盘失败只回 500
+        // 不回滚 → 内存与真源文件分叉，重启后配置静默回退。落盘失败时内存未动，两端一致。
         if let Some(path) = st.manifest_path.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            m.save(path).map_err(ApiError::from)?;
+            manifest.save(path).map_err(ApiError::from)?;
         }
+        *m = manifest;
     }
     let agents = st.manifest.lock().unwrap_or_else(|e| e.into_inner()).agents.len();
+    tracing::info!(
+        component = "server",
+        event = "config.updated",
+        agents,
+        "清单已更新（真源落盘 + 内存生效），后台重渲染开始"
+    );
     // 渲染闸门：登记「渲染在途」——`start` 端点据此等本 run 所需 profile 就绪
     // （用户裁决 A：开跑前等 profile 就绪，而不是开跑后被门卫判成「未渲染」而盲重启）
+    if st.render_gate.is_in_flight() {
+        // 2026-10-27 自审 major：并发 PUT 各自 spawn 渲染线程 = 多线程非原子写同一
+        // profiles_root（配置文件撕裂 + pi install 争抢 + 线程无界增长）。渲染是
+        // 全局单飞的——上一轮在途直接 409，客户端等 config.rendered 后重试。
+        return Err(ApiError::conflict(
+            "上一轮配置渲染仍在进行——等 config.rendered/config.render_failed 事件后再提交",
+        ));
+    }
     st.render_gate.begin_render();
     let st2 = st.clone();
     std::thread::spawn(move || {
@@ -1037,6 +1076,13 @@ pub async fn enqueue_candidate(
     }
     // 自审 major：入队走锁定读-改-写——与 scheduler tick 的自动入队并发时，
     // 无锁 load→save 会互相覆写（丢候选）。
+    // 自审 major：frozen_sha 会被当作 git 参数（git merge <sha>）——非十六进制
+    // 形状 = 参数注入面；也是 worktree freeze 契约的形状门。
+    if req.frozen_sha.len() != 40 || !req.frozen_sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ApiError::bad_request(
+            "frozen_sha 必须是 40 位十六进制 commit sha",
+        ));
+    }
     let depth = crate::integration::MergeQueue::mutate(&st.plans_root, &project, |q| {
         q.enqueue(crate::integration::Candidate {
             task_id: req.task_id.clone(),

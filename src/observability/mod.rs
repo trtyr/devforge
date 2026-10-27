@@ -302,6 +302,13 @@ pub fn last_agent_event_age_ms() -> Option<u64> {
     agent_event_age_for(&key)
 }
 
+/// 指定 run 的 agent 事件龄（2026-10-27 自审 major）：HTTP 处理线程没有 thread-local
+/// run 上下文，旧口径 `last_agent_event_age_ms()` 在 get_run_detail 里恒为 null——
+/// 按 run-id 键直查。
+pub fn last_agent_event_age_for(run_id: &str) -> Option<u64> {
+    agent_event_age_for(run_id)
+}
+
 /// DR-3：停滞判定——返回「该 run 距最近 agent 事件的毫秒数」（超阈值与否由调用方比）。
 /// 该 run 从未有 agent 事件时按 run 开跑时刻起算（DR-1 型「根本没开轮」也要能报警）。
 pub fn stall_check(run_id: &str) -> Option<u64> {
