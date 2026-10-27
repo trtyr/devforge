@@ -100,7 +100,25 @@ impl Store {
 
     /// 回滚插入（P1-ISSUE-01：目录落地失败时不留半注册项目）。
     pub fn remove_project(&mut self, name: &str) {
+        // 自审 minor（115）：必须级联清理——旧口径只删项目记录，遗留的孤儿任务仍参与
+        // running_run_count / list_tasks（占并发槽、出现在别人项目列表里）。
         self.projects.retain(|p| p.name != name);
+        let orphan_task_ids: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|t| t.project == name)
+            .map(|t| t.id.clone())
+            .collect();
+        self.tasks.retain(|t| t.project != name);
+        self.runs
+            .retain(|r| r.task_project != name || !orphan_task_ids.contains(&r.task_id));
+        tracing::info!(
+            component = "store",
+            event = "store.project_removed",
+            project = %name,
+            tasks = orphan_task_ids.len(),
+            "项目已删除（含级联任务）"
+        );
         self.persist();
     }
 
@@ -114,7 +132,10 @@ impl Store {
         }
         self.projects.push(project);
         self.persist();
-        Ok(self.projects.last().expect("刚 push"))
+        // 自审 minor（29）：库代码不留 expect（rust-strict 口径）——push 后必有，用错误出口。
+        self.projects
+            .last()
+            .ok_or_else(|| DevforgeError::Store("项目登记失败（内部不变量）".into()))
     }
 
     pub fn get_project(&self, name: &str) -> Option<&Project> {
@@ -186,15 +207,17 @@ impl Store {
         let id = task.id.clone();
         self.tasks.push(task);
         self.persist();
-        Ok(self
-            .tasks
+        self.tasks
             .iter()
             .find(|t| t.project == project && t.id == id)
-            .expect("刚 push"))
+            .ok_or_else(|| DevforgeError::Store("任务登记失败（内部不变量）".into()))
     }
 
     /// 环检测（T4.1）：假设 `new_id` 带 `depends_on` 建入后，项目图不得有环。
-    /// DFS 三色标记；待建节点以虚拟边参与。
+    ///
+    /// 实现是 **Kahn 拓扑排序**（入度归零计数），不是 DFS 三色标记——2026-10-27 自审
+    /// minor 116 把注释与实现对齐：旧注释说 DFS，读者会按 DFS 去修。悬空依赖
+    /// （目标不在本项目图内）不进节点计数，不得把 visited 撑大造成「有环」误报。
     fn assert_acyclic(
         &self,
         project: &str,
@@ -211,7 +234,7 @@ impl Store {
         edges.entry(new_id).or_default().extend(
             new_deps.iter().map(|s| s.as_str()),
         );
-        // Kahn：入度归零计数 = 无环；残图非空 = 有环
+        // Kahn：入度归零计数 = 无环；残图非空 = 有环（比较基准 = 图内节点数）
         let mut indegree: HashMap<&str, usize> = edges.keys().map(|k| (*k, 0)).collect();
         for outs in edges.values() {
             for d in outs {
@@ -228,7 +251,11 @@ impl Store {
             visited += 1;
             if let Some(outs) = edges.get(n) {
                 for d in outs {
-                    let e = indegree.get_mut(d).expect("边端点必在图内");
+                    let Some(e) = indegree.get_mut(d) else {
+                        // 自审 minor（116）：悬空依赖（目标不在本项目图内）不得当作节点参与
+                        // 计数——旧口径会把它算进 visited，导致「存在环」误报。
+                        continue;
+                    };
                     *e -= 1;
                     if *e == 0 {
                         queue.push_back(d);
@@ -265,6 +292,14 @@ impl Store {
         status: TaskStatus,
     ) -> Result<()> {
         self.get_task_mut(project, id)?.status = status;
+        tracing::debug!(
+            component = "store",
+            event = "store.task_status",
+            project = %project,
+            task = %id,
+            status = ?status,
+            "任务状态变更"
+        );
         self.persist();
         Ok(())
     }
@@ -314,10 +349,12 @@ impl Store {
     /// 发起 run：守卫（并发上限 + 任务状态机）通过后创建新 run 并挂到任务上。
     /// 并发上限：`max_concurrent_runs`（默认 1 = decisions/003 串行兼容；M4 调度器调高）。
     pub fn begin_run(&mut self, project: &str, task_id: &str) -> Result<Run> {
-        if self.running_run_count() >= self.max_concurrent_runs {
+        // 自审 minor（118）：0 不得等于「永久拒绝」——调度器侧对同一字段做了 .max(1)，
+        // 两端口径必须一致（0 视为 1 = 串行兼容）。
+        let cap = self.max_concurrent_runs.max(1);
+        if self.running_run_count() >= cap {
             return Err(DevforgeError::Store(format!(
-                "已达并发上限 {}（P012 M4：worktree 隔离下允许多 run）",
-                self.max_concurrent_runs
+                "已达并发上限 {cap}（P012 M4：worktree 隔离下允许多 run）"
             )));
         }
         let task = self.get_task_mut(project, task_id)?;
@@ -350,13 +387,21 @@ impl Store {
         let task = self.get_task_mut(project, task_id)?;
         task.status = TaskStatus::Running;
         task.current_run = Some(run_id.clone());
-        task.runs.push(run_id);
+        task.runs.push(run_id.clone());
+        // 自审 minor（117）：域层状态迁移此前零可观测（只有 persist 失败一条 WARN）
+        tracing::info!(
+            component = "store",
+            event = "store.run_begun",
+            project = %project,
+            task = %task_id,
+            run_id = %run_id.0,
+            "run 已发起"
+        );
         self.persist();
-        Ok(self
-            .runs
+        self.runs
             .last()
-            .expect("刚 push")
-            .clone())
+            .cloned()
+            .ok_or_else(|| DevforgeError::Store("run 登记失败（内部不变量）".into()))
     }
 
     /// 收尾 run：更新 run 终态与任务状态。
@@ -405,6 +450,15 @@ impl Store {
             FinishOutcome::Completed => TaskStatus::Completed,
             FinishOutcome::Failed { .. } => TaskStatus::Failed,
         };
+        tracing::info!(
+            component = "store",
+            event = "store.run_finished",
+            project = %task_project,
+            task = %task_id,
+            run_id = %run_id.0,
+            completed = matches!(outcome, FinishOutcome::Completed),
+            "run 已收尾"
+        );
         self.persist();
         Ok(())
     }
@@ -452,7 +506,25 @@ impl Store {
     /// 铁律守卫（用户 10-25 拍板）：路径命中临时目录返回违反原因，否则 None。
     /// 覆盖 /tmp、/var/tmp、/dev/shm、/run 及其子路径（前缀判定，含恰等）。
     pub fn tmp_path_violation(path: &std::path::Path) -> Option<String> {
-        let p = path.to_string_lossy();
+        // 自审 minor（119）：旧口径只做字符串前缀判定——相对路径或含符号链接的路径可以
+        // 绕过（`./x` 指到 /tmp、或 /var/tmp 的软链）。现在先尽力 canonicalize（不存在时
+        // canonicalize 父目录再拼文件名），相对路径直接判违规（无法证明落点）。
+        let canonical = match std::fs::canonicalize(path) {
+            Ok(c) => c,
+            Err(_) => match (path.parent(), path.file_name()) {
+                (Some(parent), Some(name)) => std::fs::canonicalize(parent)
+                    .map(|c| c.join(name))
+                    .unwrap_or_else(|_| path.to_path_buf()),
+                _ => path.to_path_buf(),
+            },
+        };
+        if !canonical.is_absolute() {
+            return Some(format!(
+                "路径 `{}` 不是绝对路径（无法证明落点，按临时路径处理）",
+                path.display()
+            ));
+        }
+        let p = canonical.to_string_lossy();
         for tmp in ["/tmp", "/var/tmp", "/dev/shm", "/run"] {
             if p == tmp || p.starts_with(&format!("{tmp}/")) {
                 return Some(format!("位于临时目录 {tmp}（非持久，重启即清）"));

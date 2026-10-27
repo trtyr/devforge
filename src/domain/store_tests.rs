@@ -368,3 +368,82 @@ fn tmp_paths_are_rejected_by_guard() {
     assert!(Store::tmp_path_violation(Path::new("/home/u/devforge")).is_none());
     assert!(Store::tmp_path_violation(Path::new("/var/lib/devforge")).is_none());
 }
+
+// ── 2026-10-27 自审 store 批回归 ──
+
+/// 依赖未完成的直接 start（绕过调度器）也必须被领域层拒绝。
+#[test]
+fn begin_run_rejects_unfinished_dependencies() {
+    let mut s = Store::new();
+    s.create_project(Project::new("p", std::path::PathBuf::from("/home/me/p"), 1))
+        .unwrap();
+    let reg = SopRegistry::builtin();
+    s.create_task(&reg, "p", "a", PLANNING_SOP.id, None, TaskDeps::default())
+        .unwrap();
+    s.create_task(
+        &reg,
+        "p",
+        "b",
+        PLANNING_SOP.id,
+        None,
+        TaskDeps { depends_on: vec!["a".into()], exclusive: false },
+    )
+    .unwrap();
+    let err = s.begin_run("p", "b").unwrap_err();
+    assert!(err.to_string().contains("未就绪"), "{err}");
+}
+
+/// 自审 minor（118）：并发上限 0 不得等于「永久拒绝」（调度器侧有 .max(1)，两端口径统一）。
+#[test]
+fn zero_max_concurrent_behaves_as_one() {
+    let mut s = Store::new();
+    s.max_concurrent_runs = 0;
+    s.create_project(Project::new("p", std::path::PathBuf::from("/home/me/p"), 1))
+        .unwrap();
+    let reg = SopRegistry::builtin();
+    s.create_task(&reg, "p", "t", PLANNING_SOP.id, None, TaskDeps::default())
+        .unwrap();
+    assert!(s.begin_run("p", "t").is_ok(), "上限 0 应按 1 处理");
+}
+
+/// 自审 minor（115）：删项目必须级联任务与 run（否则孤儿任务仍占并发槽、仍在列表里）。
+#[test]
+fn remove_project_cascades_tasks_and_runs() {
+    let mut s = Store::new();
+    s.create_project(Project::new("p", std::path::PathBuf::from("/home/me/p"), 1))
+        .unwrap();
+    let reg = SopRegistry::builtin();
+    s.create_task(&reg, "p", "t", PLANNING_SOP.id, None, TaskDeps::default())
+        .unwrap();
+    let _run = s.begin_run("p", "t").unwrap();
+    assert_eq!(s.running_run_count(), 1);
+    s.remove_project("p");
+    assert!(s.list_projects().is_empty());
+    assert!(s.list_tasks("p").is_empty(), "任务必须级联删除");
+    assert!(s.list_runs().is_empty(), "run 必须级联删除");
+    assert_eq!(s.running_run_count(), 0, "不得留下占并发槽的孤儿 run");
+}
+
+/// 自审 minor（119）：相对路径无法证明落点，一律按临时路径判违规；
+/// `..` 绕行与符号链接也要能识破（存在时走 canonicalize）。
+#[test]
+fn tmp_path_violation_cannot_be_bypassed() {
+    assert!(Store::tmp_path_violation(std::path::Path::new("/tmp/x")).is_some());
+    assert!(Store::tmp_path_violation(std::path::Path::new("/var/tmp/y/z")).is_some());
+    assert!(
+        Store::tmp_path_violation(std::path::Path::new("relative/store.json")).is_some(),
+        "相对路径不得放行"
+    );
+    assert!(Store::tmp_path_violation(std::path::Path::new("/home/u/.devforge/store.json")).is_none());
+    // 经符号链接指到 /tmp：canonicalize 之后必须识破
+    #[cfg(unix)]
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink("/tmp", &link).unwrap();
+        assert!(
+            Store::tmp_path_violation(&link.join("escape.json")).is_some(),
+            "符号链接指向 /tmp 必须判违规"
+        );
+    }
+}
