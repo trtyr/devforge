@@ -75,136 +75,17 @@ pub fn run_audit(
     let mut progress = Progress::load(&blackboard);
 
     // ---- 盘点 + 切片（确定性零 LLM）----
-    crate::observability::set_phase("audit-slice");
-    let plan = build_plan(&task.workspace)?;
-    // 第三方 r2 m7：批次文件清单落盘——报告只有分母计数，没有「哪批审了哪些文件」，
-    // 事后无法重建审查面。此产物是 M6「coverage 可对账」的分子。
-    crate::audit::write_units_file(&blackboard, &plan)?;
-    // 全仓审计 M5：空盘 = 假成功——指向错目录/空仓时旧实现 Stage 0 空规划→循环 0 次
-    // → Ok(Completed) + 0 条发现，最难排查。这里显式失败，不交一个「审了 0 文件」的成功。
-    if plan.units.is_empty() {
-        return Err(crate::error::DevforgeError::System(format!(
-            "无可审源码（盘点 0 个审查单元）：workspace = {}——检查路径是否正确、是否为空仓",
-            task.workspace.display()
-        )));
-    }
+    let plan = slice_workspace(task, &blackboard)?;
     let unit_labels: Vec<String> = plan.units.iter().map(|u| u.label.clone()).collect();
-    tracing::info!(
-        component = "audit-engine",
-        units = plan.units.len(),
-        "切片完成，进入四阶段审查"
-    );
 
     // ---- Stage 0 规划 ----
-    crate::observability::set_phase("audit-plan");
-    // 全仓审计 m1：断点产物损坏不再硬失败——清标记重算（与 Progress::load 的「损坏即重跑」同口径）
-    if progress.stage0_done && read_stage0(&blackboard).is_none() {
-        tracing::warn!(component = "audit-engine", "Stage 0 断点产物不可用，已清标记重算（m1）");
-        progress.stage0_done = false;
-        progress.save(&blackboard)?;
-    }
-    let review_plan = if progress.stage0_done {
-        tracing::info!(component = "audit-engine", "断点：Stage 0 已完成，跳过");
-        // 自审 major：不再 expect——二次读取失败（磁盘竞态/权限变化）时按损坏处理
-        // 清标记重算，与 m1 口径一致，而不是在生产路径上 panic。
-        match read_stage0(&blackboard) {
-            Some(p) => p,
-            None => {
-                tracing::warn!(
-                    component = "audit-engine",
-                    "Stage 0 断点标记在位但产物不可读，清标记重算"
-                );
-                progress.stage0_done = false;
-                progress.save(&blackboard)?;
-                check_intervention(control)?;
-                let plan0 = with_stage_retry(factory, "Stage 0 规划", |s| {
-                    crate::audit::pipeline::stage0_plan_with_deadline(s, &plan.units, batch_deadline())
-                })?;
-                std::fs::write(
-                    blackboard.join("audit-stage0.json"),
-                    serde_json::to_vec_pretty(&plan0).ctx("序列化 ReviewPlan")?,
-                )
-                .ctx("写 Stage0 产物")?;
-                progress.stage0_done = true;
-                progress.save(&blackboard)?;
-                plan0
-            }
-        }
-    } else {
-        check_intervention(control)?;
-        // 全仓审计 M2：Stage 0 也吃换实例重试（单次格式抖动不应让一行代码都还没审就报废）
-        let plan0 = with_stage_retry(factory, "Stage 0 规划", |s| {
-            crate::audit::pipeline::stage0_plan_with_deadline(s, &plan.units, batch_deadline())
-        })?;
-        std::fs::write(
-            blackboard.join("audit-stage0.json"),
-            serde_json::to_vec_pretty(&plan0).ctx("序列化 ReviewPlan")?,
-        )
-        .ctx("写 Stage0 产物")?;
-        progress.stage0_done = true;
-        progress.save(&blackboard)?;
-        tracing::info!(
-            component = "audit-engine",
-            priority = plan0.priority.len(),
-            skip = plan0.skip.len(),
-            concerns = plan0.cross_concerns.len(),
-            "Stage 0 规划完成"
-        );
-        plan0
-    };
+    let review_plan = stage0_plan(&blackboard, &plan.units, &mut progress, factory, control)?;
 
     // ---- Stage 1 批次审查（按优先级排序；skip 跳过；断点跳过已完成批次）----
     crate::observability::set_phase("audit-batch");
-    // 全仓审计 M6：skip 只能落在 Stage 0 自己声明的单元集合内，且不得跳过全量——
-    // 旧实现把 LLM 给的 skip 直接当过滤器，skip 全量就能让整仓零审查还报成功。
-    let known_ids: std::collections::BTreeSet<&str> =
-        plan.units.iter().map(|u| u.id.as_str()).collect();
-    let unknown_skip: Vec<&String> = review_plan
-        .skip
-        .iter()
-        .filter(|s| !known_ids.contains(s.as_str()))
-        .collect();
-    if !unknown_skip.is_empty() {
-        tracing::warn!(
-            component = "audit-engine",
-            unknown = ?unknown_skip,
-            "Stage 0 的 skip 含不存在的单元号，已忽略"
-        );
-    }
-    // 第三方 r3 M2：skip 除了「必须在单元集合内」，还要求**批次内容真是生成物/锁文件**——
-    // 旧版照 LLM 说的跳，把 src/audit 整组标 skip 也算「全量成功」。
-    // 规则保守：宁多审不少审（不匹配的 skip 一律忽略并 WARN）。
-    let mut rejected_skip: Vec<&String> = Vec::new();
-    let skipped_units: Vec<String> = review_plan
-        .skip
-        .iter()
-        .filter(|s| {
-            let Some(unit) = plan.units.iter().find(|u| &u.id == *s) else {
-                return false; // 不存在的单元号已在上面 WARN
-            };
-            if skippable_unit(unit) {
-                true
-            } else {
-                rejected_skip.push(s);
-                false
-            }
-        })
-        .cloned()
-        .collect();
-    if !rejected_skip.is_empty() {
-        tracing::warn!(
-            component = "audit-engine",
-            rejected = ?rejected_skip,
-            "Stage 0 的 skip 指向非生成物/锁文件批次，已忽略（全量审计宁可多审）"
-        );
-    }
-    if skipped_units.len() == plan.units.len() {
-        // 防御性兑底：skip 已被限定在「生成物批次」，而切入器只切源码面——
-        // 正常路径到不了这里；留着是为了万一以后放开 skip 范围时零审查不能静默成功。
-        return Err(crate::error::DevforgeError::Quality(
-            "Stage 0 把全部批次都标了 skip——全量审计不允许零审查收工（检查 skip 规则）".into(),
-        ));
-    }
+    // 全仓审计 M6/M7：skip 只能在 Stage 0 自己声明的单元集合内，且必须是真生成物/锁文件批次
+    // （skip 全量就能让整仓零审查还报成功）——白名单判定与驳回 WARN 收在 accepted_skip_units 里。
+    let skipped_units = accepted_skip_units(&plan, &review_plan)?;
     let mut ordered: Vec<&AuditUnit> = plan
         .units
         .iter()
@@ -338,64 +219,14 @@ pub fn run_audit(
     let deduped = super::report::dedup(&verified.kept);
 
     // ---- Stage 2 跨单元分析 ----
-    crate::observability::set_phase("audit-cross");
-    // m1：同 Stage 0——断点产物损坏则清标记重算
-    if progress.stage2_done && read_stage2(&blackboard).is_none() {
-        tracing::warn!(component = "audit-engine", "Stage 2 断点产物不可用，已清标记重算（m1）");
-        progress.stage2_done = false;
-        progress.save(&blackboard)?;
-    }
-    let cross = if progress.stage2_done {
-        // 自审 major：同 Stage 0——不再 expect，产物不可读时清标记重算
-        match read_stage2(&blackboard) {
-            Some(c) => c,
-            None => {
-                tracing::warn!(
-                    component = "audit-engine",
-                    "Stage 2 断点标记在位但产物不可读，清标记重算"
-                );
-                progress.stage2_done = false;
-                progress.save(&blackboard)?;
-                check_intervention(control)?;
-                let out = with_stage_retry(factory, "Stage 2 跨单元分析", |s| {
-                    crate::audit::pipeline::stage2_cross_with_deadline(
-                        s,
-                        &deduped,
-                        &review_plan.cross_concerns,
-                        batch_deadline(),
-                    )
-                })?;
-                std::fs::write(
-                    blackboard.join("audit-stage2.json"),
-                    serde_json::to_vec_pretty(&out).ctx("序列化跨单元分析")?,
-                )
-                .ctx("写 Stage2 产物")?;
-                progress.stage2_done = true;
-                progress.save(&blackboard)?;
-                out
-            }
-        }
-    } else {
-        check_intervention(control)?;
-        // 全仓审计 M2：Stage 2 在全部批次跑完之后，一次格式抖动不应报废数小时——
-        // 同样换实例重试；全仓审计 m8：输入用**去重后**集合（不是验证后未去重的 kept）。
-        let out = with_stage_retry(factory, "Stage 2 跨单元分析", |s| {
-            crate::audit::pipeline::stage2_cross_with_deadline(
-                s,
-                &deduped,
-                &review_plan.cross_concerns,
-                batch_deadline(),
-            )
-        })?;
-        std::fs::write(
-            blackboard.join("audit-stage2.json"),
-            serde_json::to_vec_pretty(&out).ctx("序列化跨单元分析")?,
-        )
-        .ctx("写 Stage2 产物")?;
-        progress.stage2_done = true;
-        progress.save(&blackboard)?;
-        out
-    };
+    let cross = stage2_cross(
+        &blackboard,
+        &deduped,
+        &review_plan.cross_concerns,
+        &mut progress,
+        factory,
+        control,
+    )?;
 
     // 审计修复 #2：Stage 2 跨单元发现同样过核验——跨单元是 LLM 二次生成 findings 的入口，
     // 绕过核验等于「无幽灵发现」底线对汇总层失效（RepoAudit：无 validator FP +245%）。
@@ -407,105 +238,21 @@ pub fn run_audit(
 
     // ---- 报告组装（JSON + MD，M2）----
     crate::observability::set_phase("audit-report");
-    // 全仓审计 M7：JSON 里写**核验后**的 cross_kept，幽灵单独入 cross_dropped——
-    // 旧实现把原始 cross 写进 JSON，与 MD/severity_summary 用的 cross_kept 结论不一致。
-    // 全仓审计 M8：跨层去重一次（deduped + cross_kept），汇总与渲染都用它，避免同一条算两次。
-    let merged = super::report::dedup(
-        &deduped
-            .iter()
-            .cloned()
-            .chain(cross_kept.iter().cloned())
-            .collect::<Vec<_>>(),
-    );
-    let report = serde_json::json!({
-        "project": task.project,
-        "task": task.id,
-        "workspace": task.workspace,
-        // 全仓审计 m10：报告可溯到具体版本（自审复现的底线）
-        "workspace_sha": workspace_sha(&task.workspace),
-        "units_total": plan.units.len(),
-        "files_total": plan.units.iter().map(|u| u.files.len()).sum::<usize>(),
-        // 全仓审计 M6：「全量」必须可对账——盘点到多少文件、切片多少、跳过哪些、
-        // 哪些条目根本没进切片（非 Module/Symbol）都要能看见。
-        "coverage": {
-            "source_files": plan.source_files,
-            "sliced_files": plan.units.iter().map(|u| u.files.len()).sum::<usize>(),
-            "excluded_entries": plan.excluded_entries,
-            "units_total": plan.units.len(),
-            "units_file": "audit-units.json",
-            "skipped_units": skipped_units,
-            "batches_done": progress.done_batches.len(),
-            "batches_abandoned": abandoned.len(),
-        },
-        "batches_done": progress.done_batches.len(),
-        "batches_abandoned": abandoned,
-        "findings": {
-            "kept": deduped,
-            "dropped_ghosts": all_dropped,
-            // 自审 minor（2）：单批超限被截断的条数——「这次少看了 N 条」必须可对账
-            "truncated": truncated_findings,
-        },
-        "cross_analysis": {
-            "findings": cross_kept,
-            "dropped_ghosts": cross_dropped,
-            "concern_verdicts": cross.concern_verdicts,
-            "parse_errors": cross.parse_errors,
-        },
-        "severity_summary": severity_summary_of(&merged),
-    });
-    std::fs::write(
-        blackboard.join("audit-report.json"),
-        serde_json::to_vec_pretty(&report).ctx("序列化审计报告")?,
-    )
-    .ctx("写审计报告")?;
-    // 自审 minor（24）：MD 报告也带代码版本（与 JSON 同源），报告文件才能溯到具体 commit
-    let head = workspace_sha(&task.workspace);
-    let md = super::report::render_markdown(
-        &task.project,
-        &task.id,
-        &merged,
-        head.as_deref(),
-        &all_dropped,
-        &abandoned,
-    );
-    std::fs::write(blackboard.join("audit-report.md"), md).ctx("写审计报告 MD")?;
-    // 自审 minor（28）：收尾日志的计数必须与报告同源（旧口径日志记 kept/abandoned、
-    // 报告记 merged/batches_*，两处对不上），并补覆盖度比例——否则仅凭日志无法重建
-    // 「这次到底审了多少」。
-    let batches_total = progress.done_batches.len() + abandoned.len() + skipped_units.len();
-    let coverage_ratio = if plan.units.is_empty() {
-        0.0
-    } else {
-        progress.done_batches.len() as f64 / plan.units.len() as f64
+    // 报告由哪些阶段产物拼成（自审 minor 9：这一百行原本只能在主函数里看得见）。
+    let report_input = ReportInput {
+        plan: &plan,
+        progress: &progress,
+        skipped_units: &skipped_units,
+        abandoned: &abandoned,
+        truncated: truncated_findings,
+        deduped: &deduped,
+        kept_count: verified.kept.len(),
+        all_dropped: &all_dropped,
+        cross_kept: &cross_kept,
+        cross_dropped: &cross_dropped,
+        cross: &cross,
     };
-    tracing::info!(
-        component = "audit-engine",
-        event = "audit.finished",
-        units_total = plan.units.len(),
-        batches_done = progress.done_batches.len(),
-        batches_abandoned = abandoned.len(),
-        batches_skipped = skipped_units.len(),
-        batches_total,
-        coverage_ratio = format!("{:.3}", coverage_ratio),
-        merged = merged.len(),
-        kept = verified.kept.len(),
-        dropped_ghosts = all_dropped.len(),
-        cross = cross_kept.len(),
-        "全量审计完成（计数与 audit-report.json 同源）"
-    );
-    // 自审 minor（29）：存在放弃批次时 run 仍是 Completed，状态层没有任何「部分覆盖」
-    // 信号（报告里只在 JSON/MD 的 abandoned 列表里）。这里显式落一条 warn 级事件，
-    // 让「成功但没审全」在事件流/run 卡片上可辨识。
-    if !abandoned.is_empty() {
-        tracing::warn!(
-            component = "audit-engine",
-            event = "audit.partial_coverage",
-            abandoned = abandoned.len(),
-            units_total = plan.units.len(),
-            coverage_ratio = format!("{:.3}", coverage_ratio),
-            "审计完成但存在放弃批次：本次为**部分覆盖**，不得当作全量结论"
-        );
-    }
+    write_reports(task, &blackboard, &report_input)?;
     Ok(RunOutcome::Completed)
 }
 
@@ -947,6 +694,319 @@ fn read_stage2(blackboard: &Path) -> Option<super::pipeline::CrossAnalysis> {
             None
         }
     }
+}
+
+// ============ 阶段函数（自审 minor 9：把 ~450 行单函数按阶段拆开） ============
+
+/// 报告组装输入（旧口径这些值全是主函数的局部变量，报告段只能长在同一条函数体里；
+/// 显式结构把「报告由哪些阶段产物拼成」变成可读契约）。
+struct ReportInput<'a> {
+    plan: &'a super::AuditPlan,
+    progress: &'a Progress,
+    skipped_units: &'a [String],
+    abandoned: &'a [String],
+    truncated: usize,
+    /// 核验 + 跨单元去重后的发现（报告 findings.kept）。
+    deduped: &'a [Finding],
+    /// 核验通过的本地发现条数（收尾日志用，不含跨单元）。
+    kept_count: usize,
+    /// 全部被核验丢弃的幽灵发现（本地 + 跨单元），已渲染成（路径/位置, 理由）对。
+    all_dropped: &'a [(String, String)],
+    cross_kept: &'a [Finding],
+    cross_dropped: &'a [(String, String)],
+    cross: &'a crate::audit::pipeline::CrossAnalysis,
+}
+
+/// 阶段 ①：盘点 + 切片 + 空盘守卫（确定性零 LLM）。
+///
+/// 第三方 r2 m7：批次文件清单必须落盘——报告只有分母计数，没有「哪批审了哪些文件」，
+/// 事后无法重建审查面。此产物是 M6「coverage 可对账」的分子。
+/// 全仓审计 M5：空盘 = 假成功——指向错目录/空仓时旧实现 Stage 0 空规划→循环 0 次
+/// → Ok(Completed) + 0 条发现，最难排查。这里显式失败，不交一个「审了 0 文件」的成功。
+fn slice_workspace(task: &Task, blackboard: &Path) -> Result<super::AuditPlan> {
+    crate::observability::set_phase("audit-slice");
+    let plan = build_plan(&task.workspace)?;
+    crate::audit::write_units_file(blackboard, &plan)?;
+    if plan.units.is_empty() {
+        return Err(crate::error::DevforgeError::System(format!(
+            "无可审源码（盘点 0 个审查单元）：workspace = {}——检查路径是否正确、是否为空仓",
+            task.workspace.display()
+        )));
+    }
+    tracing::info!(
+        component = "audit-engine",
+        units = plan.units.len(),
+        "切片完成，进入四阶段审查"
+    );
+    Ok(plan)
+}
+
+/// 阶段 ②：Stage 0 规划（优先级 / 可跳批次 / 跨单元关注点）。
+///
+/// 断点复活与产物损坏重算全在这里收口：旧口径两个分支各抄了一份「调规划 + 写产物 +
+/// 打勾」，重算支还漏了完成日志；现在一条路径。
+fn stage0_plan(
+    blackboard: &Path,
+    units: &[AuditUnit],
+    progress: &mut Progress,
+    factory: &mut dyn AuditSessionFactory,
+    control: &RunControl,
+) -> Result<crate::audit::pipeline::ReviewPlan> {
+    crate::observability::set_phase("audit-plan");
+    // 全仓审计 m1：断点产物损坏不再硬失败——清标记重算（与 Progress::load 的「损坏即重跑」同口径）
+    if progress.stage0_done && read_stage0(blackboard).is_none() {
+        tracing::warn!(component = "audit-engine", "Stage 0 断点产物不可用，已清标记重算（m1）");
+        progress.stage0_done = false;
+        progress.save(blackboard)?;
+    }
+    if progress.stage0_done {
+        tracing::info!(component = "audit-engine", "断点：Stage 0 已完成，跳过");
+        // 自审 major：不再 expect——二次读取失败（磁盘竞态/权限变化）时按损坏处理
+        // 清标记重算，与 m1 口径一致，而不是在生产路径上 panic。
+        if let Some(plan0) = read_stage0(blackboard) {
+            return Ok(plan0);
+        }
+        tracing::warn!(
+            component = "audit-engine",
+            "Stage 0 断点标记在位但产物不可读，清标记重算"
+        );
+        progress.stage0_done = false;
+        progress.save(blackboard)?;
+    }
+    check_intervention(control)?;
+    // 全仓审计 M2：Stage 0 也吃换实例重试（单次格式抖动不应让一行代码都还没审就报废）
+    let plan0 = with_stage_retry(factory, "Stage 0 规划", |s| {
+        crate::audit::pipeline::stage0_plan_with_deadline(s, units, batch_deadline())
+    })?;
+    std::fs::write(
+        blackboard.join("audit-stage0.json"),
+        serde_json::to_vec_pretty(&plan0).ctx("序列化 ReviewPlan")?,
+    )
+    .ctx("写 Stage0 产物")?;
+    progress.stage0_done = true;
+    progress.save(blackboard)?;
+    tracing::info!(
+        component = "audit-engine",
+        priority = plan0.priority.len(),
+        skip = plan0.skip.len(),
+        concerns = plan0.cross_concerns.len(),
+        "Stage 0 规划完成"
+    );
+    Ok(plan0)
+}
+
+/// Stage 0 的 skip 白名单：必须在单元集合内，且批次内容真是生成物/锁文件。
+///
+/// 全仓审计 M6：不得跳过全量——旧实现把 LLM 给的 skip 直接当过滤器，skip 全量就能让
+/// 整仓零审查还报成功。第三方 r3 M2：即使单元号存在，也不许把 src/audit 整组标 skip；
+/// 规则保守——宁多审不少审（不匹配的 skip 一律忽略并 WARN）。
+fn accepted_skip_units(
+    plan: &super::AuditPlan,
+    review_plan: &crate::audit::pipeline::ReviewPlan,
+) -> Result<Vec<String>> {
+    let known_ids: std::collections::BTreeSet<&str> =
+        plan.units.iter().map(|u| u.id.as_str()).collect();
+    let unknown_skip: Vec<&String> = review_plan
+        .skip
+        .iter()
+        .filter(|s| !known_ids.contains(s.as_str()))
+        .collect();
+    if !unknown_skip.is_empty() {
+        tracing::warn!(
+            component = "audit-engine",
+            unknown = ?unknown_skip,
+            "Stage 0 的 skip 含不存在的单元号，已忽略"
+        );
+    }
+    let mut rejected_skip: Vec<&String> = Vec::new();
+    let skipped_units: Vec<String> = review_plan
+        .skip
+        .iter()
+        .filter(|s| {
+            let Some(unit) = plan.units.iter().find(|u| &u.id == *s) else {
+                return false; // 不存在的单元号已在上面 WARN
+            };
+            if skippable_unit(unit) {
+                true
+            } else {
+                rejected_skip.push(s);
+                false
+            }
+        })
+        .cloned()
+        .collect();
+    if !rejected_skip.is_empty() {
+        tracing::warn!(
+            component = "audit-engine",
+            rejected = ?rejected_skip,
+            "Stage 0 的 skip 指向非生成物/锁文件批次，已忽略（全量审计宁可多审）"
+        );
+    }
+    if skipped_units.len() == plan.units.len() {
+        // 防御性兑底：skip 已被限定在「生成物批次」，而切片器只切源码面——
+        // 正常路径到不了这里；留着是为了万一以后放开 skip 范围时零审查不能静默成功。
+        return Err(crate::error::DevforgeError::Quality(
+            "Stage 0 把全部批次都标了 skip——全量审计不允许零审查收工（检查 skip 规则）".into(),
+        ));
+    }
+    Ok(skipped_units)
+}
+
+/// 阶段 ④：Stage 2 跨单元分析（输入是**去重后**的本地发现），断点复活同 Stage 0。
+fn stage2_cross(
+    blackboard: &Path,
+    deduped: &[Finding],
+    cross_concerns: &[String],
+    progress: &mut Progress,
+    factory: &mut dyn AuditSessionFactory,
+    control: &RunControl,
+) -> Result<crate::audit::pipeline::CrossAnalysis> {
+    crate::observability::set_phase("audit-cross");
+    // m1：同 Stage 0——断点产物损坏则清标记重算
+    if progress.stage2_done && read_stage2(blackboard).is_none() {
+        tracing::warn!(component = "audit-engine", "Stage 2 断点产物不可用，已清标记重算（m1）");
+        progress.stage2_done = false;
+        progress.save(blackboard)?;
+    }
+    if progress.stage2_done {
+        // 自审 major：同 Stage 0——不再 expect，产物不可读时清标记重算
+        if let Some(c) = read_stage2(blackboard) {
+            return Ok(c);
+        }
+        tracing::warn!(
+            component = "audit-engine",
+            "Stage 2 断点标记在位但产物不可读，清标记重算"
+        );
+        progress.stage2_done = false;
+        progress.save(blackboard)?;
+    }
+    check_intervention(control)?;
+    // 全仓审计 M2：Stage 2 在全部批次跑完之后，一次格式抖动不应报废数小时——
+    // 同样换实例重试；全仓审计 m8：输入用**去重后**集合（不是验证后未去重的 kept）。
+    let out = with_stage_retry(factory, "Stage 2 跨单元分析", |s| {
+        crate::audit::pipeline::stage2_cross_with_deadline(
+            s,
+            deduped,
+            cross_concerns,
+            batch_deadline(),
+        )
+    })?;
+    std::fs::write(
+        blackboard.join("audit-stage2.json"),
+        serde_json::to_vec_pretty(&out).ctx("序列化跨单元分析")?,
+    )
+    .ctx("写 Stage2 产物")?;
+    progress.stage2_done = true;
+    progress.save(blackboard)?;
+    Ok(out)
+}
+
+/// 阶段 ⑤：报告组装（JSON + MD）与收尾日志/事件。
+fn write_reports(task: &Task, blackboard: &Path, input: &ReportInput) -> Result<()> {
+    let plan = input.plan;
+    let progress = input.progress;
+    let abandoned = input.abandoned;
+    // 全仓审计 M7：JSON 里写**核验后**的 cross_kept，幽灵单独入 cross_dropped——
+    // 旧实现把原始 cross 写进 JSON，与 MD/severity_summary 用的 cross_kept 结论不一致。
+    // 全仓审计 M8：跨层去重一次（deduped + cross_kept），汇总与渲染都用它，避免同一条算两次。
+    let merged = super::report::dedup(
+        &input
+            .deduped
+            .iter()
+            .cloned()
+            .chain(input.cross_kept.iter().cloned())
+            .collect::<Vec<_>>(),
+    );
+    let report = serde_json::json!({
+        "project": task.project,
+        "task": task.id,
+        "workspace": task.workspace,
+        // 全仓审计 m10：报告可溯到具体版本（自审复现的底线）
+        "workspace_sha": workspace_sha(&task.workspace),
+        "units_total": plan.units.len(),
+        "files_total": plan.units.iter().map(|u| u.files.len()).sum::<usize>(),
+        // 全仓审计 M6：「全量」必须可对账——盘点到多少文件、切片多少、跳过哪些、
+        // 哪些条目根本没进切片（非 Module/Symbol）都要能看见。
+        "coverage": {
+            "source_files": plan.source_files,
+            "sliced_files": plan.units.iter().map(|u| u.files.len()).sum::<usize>(),
+            "excluded_entries": plan.excluded_entries,
+            "units_total": plan.units.len(),
+            "units_file": "audit-units.json",
+            "skipped_units": input.skipped_units,
+            "batches_done": progress.done_batches.len(),
+            "batches_abandoned": abandoned.len(),
+        },
+        "batches_done": progress.done_batches.len(),
+        "batches_abandoned": abandoned,
+        "findings": {
+            "kept": input.deduped,
+            "dropped_ghosts": input.all_dropped,
+            // 自审 minor（2）：单批超限被截断的条数——「这次少看了 N 条」必须可对账
+            "truncated": input.truncated,
+        },
+        "cross_analysis": {
+            "findings": input.cross_kept,
+            "dropped_ghosts": input.cross_dropped,
+            "concern_verdicts": input.cross.concern_verdicts,
+            "parse_errors": input.cross.parse_errors,
+        },
+        "severity_summary": severity_summary_of(&merged),
+    });
+    std::fs::write(
+        blackboard.join("audit-report.json"),
+        serde_json::to_vec_pretty(&report).ctx("序列化审计报告")?,
+    )
+    .ctx("写审计报告")?;
+    // 自审 minor（24）：MD 报告也带代码版本（与 JSON 同源），报告文件才能溯到具体 commit
+    let head = workspace_sha(&task.workspace);
+    let md = super::report::render_markdown(
+        &task.project,
+        &task.id,
+        &merged,
+        head.as_deref(),
+        input.all_dropped,
+        abandoned,
+    );
+    std::fs::write(blackboard.join("audit-report.md"), md).ctx("写审计报告 MD")?;
+    // 自审 minor（28）：收尾日志的计数必须与报告同源（旧口径日志记 kept/abandoned、
+    // 报告记 merged/batches_*，两处对不上），并补覆盖度比例——否则仅凭日志无法重建
+    // 「这次到底审了多少」。
+    let batches_total = progress.done_batches.len() + abandoned.len() + input.skipped_units.len();
+    let coverage_ratio = if plan.units.is_empty() {
+        0.0
+    } else {
+        progress.done_batches.len() as f64 / plan.units.len() as f64
+    };
+    tracing::info!(
+        component = "audit-engine",
+        event = "audit.finished",
+        units_total = plan.units.len(),
+        batches_done = progress.done_batches.len(),
+        batches_abandoned = abandoned.len(),
+        batches_skipped = input.skipped_units.len(),
+        batches_total,
+        coverage_ratio = format!("{:.3}", coverage_ratio),
+        merged = merged.len(),
+        kept = input.kept_count,
+        dropped_ghosts = input.all_dropped.len(),
+        cross = input.cross_kept.len(),
+        "全量审计完成（计数与 audit-report.json 同源）"
+    );
+    // 自审 minor（29）：存在放弃批次时 run 仍是 Completed，状态层没有任何「部分覆盖」
+    // 信号（报告里只在 JSON/MD 的 abandoned 列表里）。这里显式落一条 warn 级事件，
+    // 让「成功但没审全」在事件流/run 卡片上可辨识。
+    if !abandoned.is_empty() {
+        tracing::warn!(
+            component = "audit-engine",
+            event = "audit.partial_coverage",
+            abandoned = abandoned.len(),
+            units_total = plan.units.len(),
+            coverage_ratio = format!("{:.3}", coverage_ratio),
+            "审计完成但存在放弃批次：本次为**部分覆盖**，不得当作全量结论"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
