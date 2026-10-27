@@ -234,6 +234,7 @@ mod contract;
 mod crud;
 mod hardening;
 mod http;
+mod integration_api;
 mod observe;
 mod panic_safety;
 mod restart;

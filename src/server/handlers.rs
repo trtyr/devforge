@@ -105,6 +105,22 @@ impl IntoResponse for ApiError {
 impl From<crate::error::DevforgeError> for ApiError {
     fn from(e: crate::error::DevforgeError) -> Self {
         let msg = e.to_string();
+        // 2026-10-27 自审 minor（105/202）：变体优先——旧口径全靠中文关键词子串，
+        // 客户端输入类（JSON/配置）落进 500 内部错，而 System 里带「不存在」字样的
+        // 基础设施故障反被判成 404。变体是确定性事实，关键词只在 Store 内细化状态码。
+        match e.root_cause() {
+            crate::error::DevforgeError::Config(_) => return Self::bad_request(msg),
+            // 请求体/数据 JSON 错 = 客户端输入问题
+            crate::error::DevforgeError::Json(_) => return Self::bad_request(msg),
+            // 服务端侧问题：任何时候都不得被关键词误判成 404/409
+            crate::error::DevforgeError::System(_)
+            | crate::error::DevforgeError::Quality(_)
+            | crate::error::DevforgeError::Agent { .. }
+            | crate::error::DevforgeError::RpcProtocol(_)
+            | crate::error::DevforgeError::Io(_) => return Self::internal(msg),
+            // Store：不变量/校验类，继续走关键词细化（已存在/串行/不存在/其余）
+            _ => {}
+        }
         // P3-ISSUE-01 修复：变体优先（配置类错误 = 客户端输入问题 → 400），
         // 语义关键词兜底；后续可给错误加机器可读 code（原则 §3）
         if matches!(e, crate::error::DevforgeError::Config(_)) {
@@ -197,7 +213,17 @@ pub async fn create_project(
                     path = %o.path.display(),
                     "清理孤儿 worktree"
                 );
-                let _ = crate::workspace::remove_orphan(&created.local_path, o);
+                // 2026-10-27 自审 minor：清理失败必须留痕——旧口径 `let _ =` 吞掉，
+                // 泄漏的 worktree 无任何痕迹（而扫描失败却有日志）。
+                if let Err(e) = crate::workspace::remove_orphan(&created.local_path, o) {
+                    tracing::error!(
+                        component = "workspace",
+                        task = %o.task_id,
+                        path = %o.path.display(),
+                        error = %e,
+                        "孤儿 worktree 清理失败（残骸仍在盘上，下次注册会重试）"
+                    );
+                }
             }
             st.emit(json!({
                 "type": "workspace.orphans_cleaned",
@@ -406,7 +432,9 @@ pub struct StartReq {
 pub async fn start_task(
     State(st): State<SharedState>,
     Path((project, task)): Path<(String, String)>,
-    body: Option<Json<StartReq>>,
+    // 2026-10-27 自审 minor：用 Bytes 显式解析——`Option<Json<StartReq>>` 在缺
+    // Content-Type 时把请求体静默丢弃（sop 覆盖与 fresh 无声失效，调用方以为生效）。
+    body: axum::body::Bytes,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     // 全仓审计 server #：路径段先过安全校验——下面 fresh 分支会用 project/task 拼 change_root
     // 再 `remove_dir_all`，而 `..` 是合法路径段（同文件的 audit_report 早就校验了，这里漏了）。
@@ -417,9 +445,17 @@ pub async fn start_task(
     // 准入失败时任务的 SOP 已经被换掉（一次失败的 start 改写了任务身份）。
     let mut fresh = false;
     let mut requested_sop: Option<String> = None;
-    if let Some(Json(req)) = body {
-        fresh = req.fresh.unwrap_or(false);
-        requested_sop = req.sop;
+    if !body.is_empty() {
+        match serde_json::from_slice::<StartReq>(&body) {
+            Ok(req) => {
+                fresh = req.fresh.unwrap_or(false);
+                requested_sop = req.sop;
+            }
+            Err(e) => {
+                // 体非空但解不开 = 客户端错误（不再静默忽略）
+                return Err(ApiError::bad_request(format!("请求体解析失败：{e}")));
+            }
+        }
     }
     let sop_override = requested_sop.is_some();
     // 前置校验（只读）：任务存在性 + 已完成 change 的隐式空转
@@ -432,6 +468,14 @@ pub async fn start_task(
         // spawn 六个会话后用旧产物出报告）——显式拒绝，重跑带 fresh。
         // 只挡 change（通用 SOP 重跑 = 冷启动重跑，合法）；sop 覆盖 = 跨 SOP 换道（P005），放行。
         if t.status == TaskStatus::Completed && !fresh && !sop_override && t.sop == "change" {
+            tracing::warn!(
+                component = "server",
+                event = "start.rejected",
+                project = %project,
+                task = %task,
+                reason = "completed-change-without-fresh",
+                "start 被拒：change 已完成，需 fresh:true"
+            );
             return Err(ApiError::conflict(format!(
                 "任务 `{project}/{task}` 已完成；重跑请带 fresh:true（完整重置）"
             )));
@@ -469,8 +513,27 @@ pub async fn start_task(
             Err(e) => {
                 // 回滚 sop 覆盖：准入没通过，任务身份不得被改写
                 if let Some(old) = previous_sop.clone() {
-                    let _ = store.set_task_sop(&st.registry, &project, &task, old);
+                    if let Err(re) = store.set_task_sop(&st.registry, &project, &task, old) {
+                        // 2026-10-27 自审 minor：回滚失败必须响（不变量靠它维持）
+                        tracing::error!(
+                            component = "server",
+                            event = "start.sop_rollback_failed",
+                            project = %project,
+                            task = %task,
+                            error = %re,
+                            "准入失败后回滚 SOP 覆盖失败——任务身份可能已被改写，需人工核对"
+                        );
+                    }
                 }
+                tracing::warn!(
+                    component = "server",
+                    event = "start.rejected",
+                    project = %project,
+                    task = %task,
+                    reason = "admission",
+                    error = %e,
+                    "start 被拒：准入未通过"
+                );
                 return Err(ApiError::from(e));
             }
         }
@@ -504,8 +567,26 @@ pub async fn start_task(
                 );
             }
             if let Some(old) = previous_sop.clone() {
-                let _ = store.set_task_sop(&st.registry, &project, &task, old);
+                if let Err(re) = store.set_task_sop(&st.registry, &project, &task, old) {
+                    tracing::error!(
+                        component = "server",
+                        event = "start.sop_rollback_failed",
+                        project = %project,
+                        task = %task,
+                        error = %re,
+                        "续跑门失败后回滚 SOP 覆盖失败——任务身份可能已被改写"
+                    );
+                }
             }
+            tracing::warn!(
+                component = "server",
+                event = "start.rejected",
+                project = %project,
+                task = %task,
+                reason = "resume-gate",
+                error = %e,
+                "start 被拒：续跑门未通过"
+            );
             return Err(ApiError::from(e));
         }
     };
@@ -535,6 +616,15 @@ pub async fn start_task(
                         );
                     }
                 }
+                tracing::warn!(
+                    component = "server",
+                    event = "start.rejected",
+                    project = %project,
+                    task = %task,
+                    reason = "change-blackboard-clear",
+                    error = %e,
+                    "start 已准入但清黑板失败，已回滚槽位"
+                );
                 return Err(ApiError::internal(format!(
                     "清空 change 黑板 {} 失败：{e}",
                     change_root.display()
@@ -544,6 +634,18 @@ pub async fn start_task(
     }
     let engine = (st.engine_factory)();
     let run_id = run.id.0.clone();
+    tracing::info!(
+        component = "server",
+        event = "start.accepted",
+        project = %project,
+        task = %task,
+        sop = %sop_name,
+        run_id = %run_id,
+        resumed = decision.resumed,
+        fresh,
+        sop_override,
+        "start 已受理（202 已返回后后台执行）"
+    );
     std::thread::spawn(move || run_in_background(st, project, task, engine, run));
     Ok((
         StatusCode::ACCEPTED,
@@ -874,7 +976,14 @@ pub async fn answer_ui(
     Path(id): Path<String>,
     Json(req): Json<AnswerReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    st.ui.answer(&id, req.value).map_err(ApiError::from)?;
+    st.ui.answer(&id, req.value).map_err(|e| {
+        // 2026-10-27 自审 minor：无此待答 = 404（客户端重复/过期应答），不是 500 服务端故障。
+        if e.to_string().contains("无此待答") {
+            ApiError::not_found(e.to_string())
+        } else {
+            ApiError::from(e)
+        }
+    })?;
     Ok(Json(json!({"ok": true})))
 }
 
@@ -963,6 +1072,9 @@ pub async fn put_manifest(
         manifest.resolve_model(agent).map_err(ApiError::from)?;
         manifest.resolve_provider(agent).map_err(ApiError::from)?;
     }
+    // 2026-10-27 自审 minor：计数取**本次受理的清单**（旧口径再读一次 st.manifest = 当前值，
+    // 并发 PUT 下会回错数字）。
+    let agents = manifest.agents.len();
     {
         let mut m = st.manifest.lock().unwrap_or_else(|e| e.into_inner());
         // 2026-10-27 自审 major：先落盘后换内存——旧口径先替换再 save，落盘失败只回 500
@@ -972,7 +1084,6 @@ pub async fn put_manifest(
         }
         *m = manifest;
     }
-    let agents = st.manifest.lock().unwrap_or_else(|e| e.into_inner()).agents.len();
     tracing::info!(
         component = "server",
         event = "config.updated",
@@ -1063,8 +1174,21 @@ fn render_body_without_guard(st: SharedState, emit: impl FnOnce(serde_json::Valu
         Ok(Err(e)) => {
             emit(json!({"type": "config.render_failed", "error": e.to_string()}));
         }
-        Err(_) => {
-            emit(json!({"type": "config.render_failed", "error": "渲染线程异常终止"}));
+        Err(payload) => {
+            // 2026-10-27 自审 minor：捞回 panic 载荷（旧口径整只丢掉，SSE 只拿到
+            // 「异常终止」，错误上下文链在此断掉）。
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "（非字符串 panic 载荷）".to_string());
+            tracing::error!(
+                component = "server",
+                event = "config.render.panic",
+                panic = %msg,
+                "渲染线程 panic（载荷已捞回）"
+            );
+            emit(json!({"type": "config.render_failed", "error": format!("渲染线程异常终止：{msg}")}));
         }
     }
 }
@@ -1100,6 +1224,21 @@ pub async fn enqueue_candidate(
     if !safe_segment(&project) {
         return Err(ApiError::bad_request("项目名含非法路径字符"));
     }
+    // 2026-10-27 自审 minor：与同文件其它 project 作用域端点一致——项目必须存在
+    //（旧口径可对不存在的项目建出 integrations/<name>/ 目录）。
+    {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        if store.get_project(&project).is_none() {
+            return Err(ApiError::not_found(format!("项目 `{project}` 不存在")));
+        }
+    }
+    // task_id 会被拼进产物文件名（write_artifact）与分支名——入口先过 allowlist
+    if !safe_segment(&req.task_id) {
+        return Err(ApiError::bad_request(format!(
+            "task_id `{}` 含非法路径字符",
+            req.task_id
+        )));
+    }
     // 自审 major：入队走锁定读-改-写——与 scheduler tick 的自动入队并发时，
     // 无锁 load→save 会互相覆写（丢候选）。
     // 自审 major：frozen_sha 会被当作 git 参数（git merge <sha>）——非十六进制
@@ -1110,6 +1249,15 @@ pub async fn enqueue_candidate(
         ));
     }
     let depth = crate::integration::MergeQueue::mutate(&st.plans_root, &project, |q| {
+        // 2026-10-27 自审 minor：去重——同一 (task_id, frozen_sha) 仍在队且 Pending
+        // 时不得重复入队（否则同一候选被集成两次）。
+        if q.candidates.iter().any(|c| {
+            c.task_id == req.task_id
+                && c.frozen_sha == req.frozen_sha
+                && matches!(c.status, crate::integration::CandidateStatus::Pending)
+        }) {
+            return Ok(q.candidates.len());
+        }
         q.enqueue(crate::integration::Candidate {
             task_id: req.task_id.clone(),
             frozen_sha: req.frozen_sha.clone(),
@@ -1139,6 +1287,12 @@ pub async fn get_integration_queue(
     // 自审 critical：同 enqueue_candidate——project 不过 safe_segment 不落地。
     if !safe_segment(&project) {
         return Err(ApiError::bad_request("项目名含非法路径字符"));
+    }
+    {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        if store.get_project(&project).is_none() {
+            return Err(ApiError::not_found(format!("项目 `{project}` 不存在")));
+        }
     }
     let q = crate::integration::MergeQueue::load(&st.plans_root, &project)?;
     Ok(Json(json!({
