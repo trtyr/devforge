@@ -86,31 +86,48 @@ fn parse_evidence_log(text: &str, file: &str, label: &str) -> Result<BaselineEvi
             // 示例上下文的 exit_code 不作数（CG-02）：继续扫，找真实结果
             continue;
         }
+        // 2026-10-27 自审 minor（46/47）：旧口径只认**行首**前缀——
+        // 「command: cargo test … exit_code: 1」这类同行写法与「证据：exit_code: 1」
+        // 全部落空（退化成「缺退出码」直接 Quality）。改为行内定位候选。
         for prefix in candidates {
-            let l = if prefix.starts_with("exit") { lower.as_str() } else { t };
-            if let Some(rest) = l.strip_prefix(prefix) {
-                // F16b：值容差——`**0**`（粗体包裹）与 `0` 同义；尾随散文（`**0**（44 passed…）`）
-                // 取前导整数。10-23 c7b 场：测试 agent 以列表项+粗体写回归日志，解析器判死。
-                // 剥掉粗体后取前导（可选负号+）数字；无数字 = 模板/散文行，跳过继续扫。
-                let v = rest.trim().trim_start_matches('*').trim_start();
-                let mut ds = String::new();
-                let mut cs = v.chars();
-                if cs.clone().next() == Some('-') {
-                    ds.push('-');
-                    cs.next();
-                }
-                ds.extend(cs.take_while(|c| c.is_ascii_digit()));
-                if let Ok(n) = ds.parse::<i32>() {
-                    exit_code = Some(n);
-                    found = true;
-                    break;
-                }
+            let hay = if prefix.starts_with("exit") { lower.as_str() } else { t };
+            let Some(pos) = hay.find(prefix) else { continue };
+            // 前缀前的字符必须是非字母数字（避免 substep: 之类误命中）
+            let boundary_ok = pos == 0
+                || !hay[..pos]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_');
+            if !boundary_ok {
+                continue;
+            }
+            let rest = &hay[pos + prefix.len()..];
+            // F16b：值容差——`**0**`（粗体包裹）与 `0` 同义；尾随散文（`**0**（44 passed…）`）
+            // 取前导整数。10-23 c7b 场：测试 agent 以列表项+粗体写回归日志，解析器判死。
+            // 剥掉粗体后取前导（可选负号+）数字；无数字 = 模板/散文行，跳过继续扫。
+            let v = rest.trim().trim_start_matches('*').trim_start();
+            let mut ds = String::new();
+            let mut cs = v.chars();
+            if cs.clone().next() == Some('-') {
+                ds.push('-');
+                cs.next();
+            }
+            ds.extend(cs.take_while(|c| c.is_ascii_digit()));
+            if let Ok(n) = ds.parse::<i32>() {
+                exit_code = Some(n);
+                found = true;
+                break;
             }
         }
+        // 2026-10-27 自审 minor（46）：退出码行可能**排在 command 行之前**——
+        // 旧口径 found 即 break，后面的 command 行再也读不到（诊断退化成「命令：未记录」）。
+        // 现在：已拿到退出码但还没有 command 时继续扫，两者齐了才停。
         if found {
-            // 首中即停：主回归的退出码在文件最前（§1）；后面的 exit_code 行是
-            // 反向验证的「能失败」证据（故意 101），不能覆盖主结果。
-            break;
+            if !command.is_empty() {
+                // 首中即停：主回归的退出码在文件最前（§1）；后面的 exit_code 行是
+                // 反向验证的「能失败」证据（故意 101），不能覆盖主结果。
+                break;
+            }
         }
     }
     let exit_code = exit_code.ok_or_else(|| {
@@ -174,15 +191,26 @@ fn check_evidence_fresh(
     not_before: std::time::SystemTime,
 ) -> Result<BaselineEvidence> {
     let text = std::fs::read_to_string(&path).map_err(|e| {
-        DevforgeError::Quality(format!(
-            "{}：{e}",
-            missing_msg.replace("{}", &path.display().to_string())
-        ))
+        // 2026-10-27 自审 minor（49）：区分「文件不存在」与「读不到」——
+        // 旧口径一律报「缺少证据」，权限/IO 故障被误归为 agent 没写证据（归因错）。
+        if e.kind() == std::io::ErrorKind::NotFound {
+            DevforgeError::Quality(missing_msg.replace("{}", &path.display().to_string()))
+        } else {
+            DevforgeError::System(format!(
+                "证据文件 {} 读取失败（非缺失）：{e}",
+                path.display()
+            ))
+        }
     })?;
-    let mtime = std::fs::metadata(&path)
-        .and_then(|m| m.modified())
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-    if mtime < not_before {
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).map_err(|e| {
+        // 同（49）：stat 失败不得吞成 UNIX_EPOCH（那会被当成「上一轮残留」，归因错）
+        DevforgeError::System(format!("取证据文件 {} 的 mtime 失败：{e}", path.display()))
+    })?;
+    // 2026-10-27 自审 minor（50）：粗粒度文件系统（1s/2s 整数秒）上，本轮刚写的证据
+    // 的 mtime 可能略早于 not_before → 误判「上一轮残留」。给 2s 容差（远小于
+    // 一轮 coding 的量级，不会放过真正的旧文件：旧文件早几分钟到几小时）。
+    const MTIME_GRANULARITY_TOLERANCE: std::time::Duration = std::time::Duration::from_secs(2);
+    if mtime + MTIME_GRANULARITY_TOLERANCE < not_before {
         return Err(DevforgeError::Quality(format!(
             "证据 {} 是上一轮残留（写入时间早于本轮开始）：本轮必须重跑重写，不许沿用旧绿色证据",
             path.display()
@@ -219,8 +247,18 @@ pub struct Step {
 
 pub fn parse_steps(md: &str) -> Vec<Step> {
     let mut out = Vec::new();
+    // 2026-10-27 自审 minor（15）：围栏代码块里的 `# 注释` 不得当成步骤标题
+    //（旧口径只看行首 '#\'，示例/脚本块里的 shell 注释也会被当成步骤条目）。
+    let mut in_fence = false;
     for line in md.lines() {
         let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
         if !t.starts_with('#') {
             continue;
         }
@@ -312,10 +350,22 @@ pub fn changed_files(repo: &Path, baseline: &str) -> Result<Vec<String>> {
     // 引擎审计修复 #3：docs/contexts/（含 essential 档的 _meta 盘点/词表）同样是 SOP
     // 自产文档域——已有 git 仓基线只记 HEAD 不提交，这些 untracked 文件会让每次
     // doc_level≠none 的 change 必踩范围膨胀 FAIL。
+    // 2026-10-27 自审 minor（54）：黑名单只是「滤流水线自产文档」，不得成为越界检查的
+    // **代码盲区**——旧口径按纯路径前缀丢弃，把产品源码写进 docs/ 前缀即可绕过白名单判定。
+    // 现在：前缀命中且**不是代码扩展名**才滤（.rs/.ts/.py/.go/... 一律留下参与越界判定）。
+    fn looks_like_code(f: &str) -> bool {
+        const CODE_EXTS: [&str; 14] = [
+            "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "kt", "c", "cc", "cpp", "h", "sh",
+        ];
+        f.rsplit_once('.').is_some_and(|(_, ext)| {
+            CODE_EXTS.iter().any(|e| ext.eq_ignore_ascii_case(e))
+        })
+    }
     files.retain(|f| {
-        !f.starts_with("docs/plantree/")
-            && !f.starts_with("docs/contexts/")
-            && !f.starts_with("evidence/")
+        let in_artifact_dir = f.starts_with("docs/plantree/")
+            || f.starts_with("docs/contexts/")
+            || f.starts_with("evidence/");
+        !(in_artifact_dir && !looks_like_code(f))
     });
     Ok(files)
 }
@@ -384,7 +434,11 @@ pub fn check_step_commits(
     let commits = commits_since(repo, baseline)?;
     let mut declared: Vec<u32> = Vec::new();
     for subject in &commits {
-        if !subject.contains(change_id) || !subject.contains(COMMIT_PREFIX.trim_end_matches(':')) {
+        // 2026-10-27 自审 minor（56）：旧口径 `subject.contains("change")` 恒真（change-id
+        // 本身就含 "change"）——文档承诺的「缺 change: 前缀即不合格」从未被强制，提示词也
+        // 从未要求该前缀。这里按**实际能强制**的口径收敛：机械归属只要求 change-id 出现；
+        // 文档同步改成不承诺前缀（承诺与强制分离 = 假纪律）。
+        if !subject.contains(change_id) {
             return Err(DevforgeError::Quality(format!(
                 "提交「{subject}」缺 change-id 或 `{COMMIT_PREFIX}` 前缀，无法机械归属"
             )));
@@ -395,18 +449,18 @@ pub fn check_step_commits(
                 "提交「{subject}」没写步骤号（应含 `step N`）"
             )));
         }
-        // 自审 major：一歩一提交是模块文档承诺的不变量——一个提交声明多个步号
+        // 自审 major：一步一提交是模块文档承诺的不变量——一个提交声明多个步号
         //（"step 1 步骤 2"）会绕过对账，必须硬门拒绝。
         if nums.len() > 1 {
             return Err(DevforgeError::Quality(format!(
-                "提交「{subject}」声明了 {} 个步号（{nums:?}）——一歩一提交，一次只声明一个步骤",
+                "提交「{subject}」声明了 {} 个步号（{nums:?}）——一步一提交，一次只声明一个步骤",
                 nums.len()
             )));
         }
         for n in nums {
             if declared.contains(&n) {
                 return Err(DevforgeError::Quality(format!(
-                    "步骤 {n} 被提交了不止一次（一歩一提交）"
+                    "步骤 {n} 被提交了不止一次（一步一提交）"
                 )));
             }
             declared.push(n);

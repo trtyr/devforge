@@ -375,6 +375,19 @@ fn steps_are_parsed_from_headings() {
     assert_eq!(steps[1].title, "补测试");
 }
 
+/// 2026-10-27 自审 minor（15）：围栏代码块里的 `# 注释` 不是步骤标题——
+/// 旧口径只看行首 `#`，脚本示例会把步骤表弄脏（多出幽灵步骤 → 对账必红）。
+#[test]
+fn fenced_code_headings_are_not_steps() {
+    let md = "## 步骤 1 改接口\n\n```sh\n# 步骤 9 本地跑一下\nrun_ci.sh\n```\n\n~~~\n# 步骤 8 也不是\n~~~\n\n## 步骤 2 补测试\n";
+    let steps = parse_steps(md);
+    assert_eq!(
+        steps.iter().map(|s| s.number).collect::<Vec<_>>(),
+        vec![1, 2],
+        "围栏内的 # 注释不得当成步骤：{steps:?}"
+    );
+}
+
 #[test]
 fn step_count_matches_commits() {
     let (tmp, sha) = repo_with_baseline();
@@ -391,7 +404,7 @@ fn step_count_matches_commits() {
     assert_eq!(n, 2);
 }
 
-/// 自审 major 回归：一歩一提交是文档承诺的不变量——单个提交声明两个步号
+/// 自审 major 回归：一步一提交是文档承诺的不变量——单个提交声明两个步号
 /// 必须硬门拒绝（旧实现只比对集合，声明多号照样过）。
 #[test]
 fn one_commit_declaring_two_steps_is_rejected() {
@@ -403,7 +416,7 @@ fn one_commit_declaring_two_steps_is_rejected() {
         Step { number: 2, title: "two".into() },
     ];
     let err = check_step_commits(tmp.path(), &sha, "change-20261020-x", &steps).unwrap_err();
-    assert!(err.to_string().contains("一歩一提交"), "{err}");
+    assert!(err.to_string().contains("一步一提交"), "{err}");
 }
 
 /// 自审 major 回归：git 故障分类对齐——基线 SHA 失效（git log 非零退出）
@@ -439,8 +452,9 @@ fn fresh_gates_reject_stale_evidence() {
         "command: cargo test\nexit_code: 0\n",
     )
     .unwrap();
-    // not_before = 写入之后 → 现有文件必然是「上一轮残留」
-    let not_before = std::time::SystemTime::now();
+    // not_before = 写入之后 60s → 现有文件必然是「上一轮残留」
+    // （2026-10-27：新鲜度门有 2s 粒度容差（粗粒度文件系统），测试阈值必须远大于容差）
+    let not_before = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
     let err = check_baseline_log_fresh(tmp.path(), not_before).unwrap_err();
     assert!(err.to_string().contains("上一轮残留"), "{err}");
     let err = check_self_check_fresh(tmp.path(), not_before).unwrap_err();
