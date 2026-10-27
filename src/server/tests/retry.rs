@@ -26,7 +26,7 @@ async fn quality_failure_path_is_not_retried_end_to_end() {
         send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await,
     )
     .await;
-    assert_eq!(body["runs"][0]["status"], "Failed");
+    assert_eq!(body["runs"][0]["status"], "failed");
     let key = crate::runstate::StateKey::new("p", "t", "doc-from-zero");
     let attempt = crate::runstate::load(&f.state.plans_root, &key)
         .state()
@@ -157,7 +157,7 @@ async fn persistent_infra_failures_fail_after_four_attempts() {
         send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await,
     )
     .await;
-    assert_eq!(body["runs"][0]["status"], "Failed");
+    assert_eq!(body["runs"][0]["status"], "failed");
     let key = crate::runstate::StateKey::new("p", "t", "planning");
     let st = crate::runstate::load(&f.state.plans_root, &key);
     assert_eq!(st.state().map(|s| s.attempt), Some(4));

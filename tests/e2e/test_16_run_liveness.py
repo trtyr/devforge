@@ -117,20 +117,20 @@ def main() -> int:
             failed_at = None
             while time.time() < deadline:
                 run = latest_run(server, "demo-app", "live")
-                if run and run["status"] in ("Settled", "Failed"):
+                if run and run["status"] in ("settled", "failed"):
                     final = run["status"]
                     failed_at = time.time()
                     break
                 time.sleep(0.5)
             since_stop = (failed_at - stop_at) if failed_at else -1
             r.check(
-                final == "Failed" and since_stop >= (IDLE_MS / 1000.0) - 1.5,
+                final == "failed" and since_stop >= (IDLE_MS / 1000.0) - 1.5,
                 "会话平线超阈 → 失活收割 run Failed（D002；进程存活但沉默，时序符合闲置阈值）",
                 f"final={final}, since_stop={since_stop:.1f}s, idle={IDLE_MS}ms",
             )
             _, task_body = server.req("GET", "/projects/demo-app/tasks")
             r.check(
-                task_body["tasks"][0]["status"] == "Failed",
+                task_body["tasks"][0]["status"] == "failed",
                 "任务终态同步 Failed（失活路径）",
                 f"status={task_body['tasks'][0]['status']}",
             )
@@ -173,7 +173,7 @@ def main() -> int:
             time.sleep((IDLE_MS / 1000.0) + 6)
             run = latest_run(server2, "demo-app", "live2")
             r.check(
-                bool(run) and run["status"] == "Running",
+                bool(run) and run["status"] == "running",
                 "未配置 IDLE_MS 时平线不自动收割（零硬限制默认）",
                 f"status={run['status'] if run else None}",
             )
@@ -184,11 +184,11 @@ def main() -> int:
             final2 = None
             while time.time() < deadline:
                 run = latest_run(server2, "demo-app", "live2")
-                if run and run["status"] in ("Settled", "Failed"):
+                if run and run["status"] in ("settled", "failed"):
                     final2 = run["status"]
                     break
                 time.sleep(0.5)
-            r.check(final2 == "Failed", "cancel 后 run 进 Failed（人工恢复路径）", f"final={final2}")
+            r.check(final2 == "failed", "cancel 后 run 进 Failed（人工恢复路径）", f"final={final2}")
     finally:
         server2.stop()
     return r.finish()

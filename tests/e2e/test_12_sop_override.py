@@ -67,13 +67,13 @@ def main() -> int:
         while time.time() < deadline:
             _, runs_body = server.req("GET", "/projects/demo-app/tasks/flow/runs")
             runs = runs_body.get("runs", [])
-            if runs and runs[-1]["status"] in ("Settled", "Failed"):
+            if runs and runs[-1]["status"] in ("settled", "failed"):
                 final = runs[-1]["status"]
                 break
             time.sleep(0.3)
         elapsed = time.time() - t0
         r.check(
-            final == "Failed",
+            final == "failed",
             "未渲染 profile 的编码 run 快速 Failed（F1 修复回归）",
             f"final={final}, elapsed={elapsed:.1f}s",
         )
@@ -84,7 +84,7 @@ def main() -> int:
         )
         _, tasks_body = server.req("GET", "/projects/demo-app/tasks")
         r.check(
-            tasks_body["tasks"][0]["status"] == "Failed",
+            tasks_body["tasks"][0]["status"] == "failed",
             "任务终态同步 Failed",
             f"status={tasks_body['tasks'][0]['status']}",
         )

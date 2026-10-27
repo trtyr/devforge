@@ -63,10 +63,10 @@ def main() -> int:
         status, _ = server.req("POST", "/projects/to/tasks/timeout-me/start")
         r.check(status == 202, "任务启动受理 202", f"status={status}")
 
-        final, runs_body = wait_run_status(server, "to", "timeout-me", {"Failed"}, timeout=90.0)
+        final, runs_body = wait_run_status(server, "to", "timeout-me", {"failed"}, timeout=90.0)
         took = time.time() - t0
-        r.check(final == "Failed", "超时后 run 进 Failed", f"{runs_body}")
-        if final == "Failed":
+        r.check(final == "failed", "超时后 run 进 Failed", f"{runs_body}")
+        if final == "failed":
             r.check(
                 took < 60.0,
                 f"超时收割及时（{took:.0f}s < 60s，deadline={RUN_TIMEOUT_MS / 1000:.0f}s）",
@@ -76,7 +76,7 @@ def main() -> int:
         tasks = body.get("tasks", []) if isinstance(body, dict) else []
         me = next((t for t in tasks if t.get("id") == "timeout-me"), {})
         r.check(
-            status == 200 and me.get("status") == "Failed",
+            status == 200 and me.get("status") == "failed",
             "任务状态同步 Failed", f"status={status}, task={me}",
         )
 

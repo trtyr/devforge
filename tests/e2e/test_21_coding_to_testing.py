@@ -68,7 +68,7 @@ def wait_run(server: Server, project: str, task: str, exclude: set[str], window:
         _, body = server.req("GET", f"/projects/{project}/tasks/{task}/runs")
         runs = body.get("runs", [])
         new = [x for x in runs if x["id"] not in exclude]
-        if new and new[-1]["status"] in ("Settled", "Failed"):
+        if new and new[-1]["status"] in ("settled", "failed"):
             return new[-1]["status"], new[-1]["id"], time.time() - t0, growth
         timeline.extend(sse.events[len(timeline):])
         growth.append((round(time.time() - t0), newest_session_bytes(server, "coding") + newest_session_bytes(server, "testing")))
@@ -132,7 +132,7 @@ def main() -> int:
                 r.issue("C21-CODE-TIMEOUT", "high", f"编码段 {CODE_TIMEOUT}s 未结束（增长 {growth[-5:]}）")
                 r.check(False, "编码 run 在窗口内结束")
             else:
-                r.check(code_final == "Settled", f"编码 run Settled（实际 {code_final}，{code_elapsed:.0f}s）")
+                r.check(code_final == "settled", f"编码 run Settled（实际 {code_final}，{code_elapsed:.0f}s）")
 
             # 编码段产物（证据不依赖终态）
             cb = board / "coding"
@@ -141,7 +141,7 @@ def main() -> int:
             r.check(len(docs) >= 1, f"伴写文档 {len(docs)} 篇（D004）", f"{[p.name for p in docs][:5]}")
 
             # ---- 段二：跨 SOP 交接到 testing ----
-            if code_final == "Settled":
+            if code_final == "settled":
                 status, _ = server.req("POST", "/projects/wc-lite/tasks/t1/start", {"sop": "testing"})
                 r.check(status == 202, "start sop=testing == 202（编码→测试交接）", f"status={status}")
                 if status != 202:
@@ -155,10 +155,10 @@ def main() -> int:
                     r.issue("C21-TEST-TIMEOUT", "high", f"测试段 {TEST_TIMEOUT}s 未结束（增长 {tgrowth[-5:]}）")
                     r.check(False, "testing run 在窗口内结束")
                 else:
-                    r.check(test_final == "Settled", f"testing run Settled（实际 {test_final}，{test_elapsed:.0f}s）")
+                    r.check(test_final == "settled", f"testing run Settled（实际 {test_final}，{test_elapsed:.0f}s）")
                     _, graph = server.req("GET", "/projects/wc-lite/tasks/t1/graph")
                     r.check(
-                        graph.get("status") == "Completed",
+                        graph.get("status") == "completed",
                         f"任务终态 Completed（实际 {graph.get('status')}）",
                     )
             else:

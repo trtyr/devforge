@@ -53,15 +53,15 @@ def main() -> int:
         while time.time() < deadline:
             _, runs_body = server.req("GET", "/projects/rc-demo/tasks/timeout-me/runs")
             runs = runs_body.get("runs", [])
-            if runs and runs[0]["status"] in ("Settled", "Failed"):
+            if runs and runs[0]["status"] in ("settled", "failed"):
                 final = runs[0]["status"]
                 break
             time.sleep(1)
-        r.check(final == "Failed", f"超时后编码 run 进 Failed（窗口 {RUN_TIMEOUT_MS}ms）", f"final={final}")
+        r.check(final == "failed", f"超时后编码 run 进 Failed（窗口 {RUN_TIMEOUT_MS}ms）", f"final={final}")
 
         # 任务状态同步
         _, tasks = server.req("GET", "/projects/rc-demo/tasks")
-        r.check(tasks["tasks"][0]["status"] == "Failed", "任务状态同步 Failed", f"{tasks['tasks'][0]['status']}")
+        r.check(tasks["tasks"][0]["status"] == "failed", "任务状态同步 Failed", f"{tasks['tasks'][0]['status']}")
 
         # 终态后 cancel → 404
         status, _ = server.req("POST", "/projects/rc-demo/tasks/timeout-me/cancel")

@@ -688,7 +688,7 @@ fn unit_pass_commits_docs_per_unit_in_git_repo() {
         "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
     ]);
     let units = vec!["unit-a-01".to_string(), "unit-b-02".to_string()];
-    let rep = run_pipe!(agent, f, tmp, units).unwrap();
+    let _rep = run_pipe!(agent, f, tmp, units).unwrap();
     let log = String::from_utf8(run(&["log", "--format=%s"]).stdout).unwrap();
     assert!(
         log.contains("unit-a-01") && log.contains("unit-b-02"),

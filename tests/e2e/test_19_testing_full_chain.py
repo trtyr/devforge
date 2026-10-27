@@ -126,7 +126,7 @@ def main() -> int:
 
             _, runs_body = server.req("GET", "/projects/demo-app/tasks/planning-run/runs")
             runs = runs_body.get("runs", [])
-            plan_settled = bool(runs) and runs[0]["status"] == "Settled"
+            plan_settled = bool(runs) and runs[0]["status"] == "settled"
             r.check(plan_settled, "规划 run Settled", f"{runs[0].get('status') if runs else None}")
             tree = server.home / ".devforge" / "plans" / "demo-app" / "planning-run"
             r.check(tree.is_dir() and any(tree.iterdir()),
@@ -149,7 +149,7 @@ def main() -> int:
                 coding = next(
                     (x for x in runs_body.get("runs", []) if x["id"] != plan_run_id), None
                 )
-                if coding and coding["status"] in ("Settled", "Failed"):
+                if coding and coding["status"] in ("settled", "failed"):
                     coding_run_id = coding["id"]
                     code_final = coding["status"]
                     break
@@ -165,11 +165,11 @@ def main() -> int:
                 r.check(False, "编码 run 在超时内结束")
             else:
                 r.check(
-                    code_final == "Settled",
+                    code_final == "settled",
                     f"编码 run 终态 Settled（实际 {code_final}）",
                 )
             _, graph = server.req("GET", "/projects/demo-app/tasks/planning-run/graph")
-            coding_completed = graph.get("status") == "Completed"
+            coding_completed = graph.get("status") == "completed"
             r.check(
                 coding_completed,
                 f"编码段后任务终态 Completed（实际 {graph.get('status')}）",
@@ -198,7 +198,7 @@ def main() -> int:
                          if x["id"] not in (plan_run_id, coding_run_id)),
                         None,
                     )
-                    if testing and testing["status"] in ("Settled", "Failed"):
+                    if testing and testing["status"] in ("settled", "failed"):
                         testing_final = testing["status"]
                         break
                     timeline.extend(sse.events[len(timeline):])
@@ -213,12 +213,12 @@ def main() -> int:
                     r.check(False, "testing run 在超时内结束")
                 else:
                     r.check(
-                        testing_final == "Settled",
+                        testing_final == "settled",
                         f"testing run 终态 Settled（实际 {testing_final}）",
                     )
                     _, graph = server.req("GET", "/projects/demo-app/tasks/planning-run/graph")
                     r.check(
-                        graph.get("status") == "Completed",
+                        graph.get("status") == "completed",
                         f"全链收官：任务终态 Completed（实际 {graph.get('status')}）",
                     )
 

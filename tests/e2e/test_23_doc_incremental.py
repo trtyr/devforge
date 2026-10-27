@@ -94,7 +94,7 @@ def run_once(server: Server, project: str, task: str, timeout: float) -> tuple[s
         while time.time() - t0 < timeout:
             _, body = server.req("GET", f"/projects/{project}/tasks/{task}/runs")
             runs = body.get("runs", [])
-            if runs and runs[-1]["status"] in ("Settled", "Failed"):
+            if runs and runs[-1]["status"] in ("settled", "failed"):
                 final = runs[-1]["status"]
                 break
             time.sleep(10.0)
@@ -187,8 +187,8 @@ def main() -> int:
 
         # ---- 第 1 轮：降级全量 ----
         final1, t1 = run_once(server, project, "d1", DOC_TIMEOUT)
-        r.check(final1 == "Settled", f"第 1 轮 Settled（{t1:.0f}s）", f"final={final1}")
-        if final1 != "Settled":
+        r.check(final1 == "settled", f"第 1 轮 Settled（{t1:.0f}s）", f"final={final1}")
+        if final1 != "settled":
             return r.finish()
 
         docs = repo / "docs" / "contexts"
@@ -216,8 +216,8 @@ def main() -> int:
 
         # ---- 第 2 轮：增量 ----
         final2, t2 = run_once(server, project, "d1", DOC_TIMEOUT)
-        r.check(final2 == "Settled", f"第 2 轮 Settled（{t2:.0f}s）", f"final={final2}")
-        if final2 != "Settled":
+        r.check(final2 == "settled", f"第 2 轮 Settled（{t2:.0f}s）", f"final={final2}")
+        if final2 != "settled":
             return r.finish()
 
         st2 = load_state(server, project, "d1")

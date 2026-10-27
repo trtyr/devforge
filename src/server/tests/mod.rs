@@ -183,6 +183,7 @@ fn fixture_full(
 }
 
 async fn wait_settled(f: &Fixture, project: &str, task: &str) {
+    let mut last_seen = String::new();
     for _ in 0..200 {
         let resp = send(
             &f.router,
@@ -199,12 +200,13 @@ async fn wait_settled(f: &Fixture, project: &str, task: &str) {
             .and_then(|runs| runs.last())
             .and_then(|r| r["status"].as_str())
             .unwrap_or("");
-        if st == "Settled" || st == "Failed" {
+        if st == "settled" || st == "failed" {
             return;
         }
+        last_seen = st.to_string();
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    panic!("run 未在上限内进入终态：{project}/{task}");
+    panic!("run 未在上限内进入终态：{project}/{task}（最新状态 {last_seen:?}）");
 }
 
 async fn send(

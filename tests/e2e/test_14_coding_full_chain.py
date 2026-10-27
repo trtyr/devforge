@@ -104,7 +104,7 @@ def main() -> int:
 
             # 规划段轻断言（深断言归 test_08）
             status, runs_body = server.req("GET", "/projects/demo-app/tasks/planning-run/runs")
-            plan_settled = bool(runs_body.get("runs")) and runs_body["runs"][0]["status"] == "Settled"
+            plan_settled = bool(runs_body.get("runs")) and runs_body["runs"][0]["status"] == "settled"
             r.check(plan_settled, "规划 run Settled", f"{runs_body.get('runs', [{}])[0].get('status') if runs_body else None}")
             tree = server.home / ".devforge" / "plans" / "demo-app" / "planning-run"
             r.check(tree.is_dir() and any(tree.iterdir()),
@@ -130,7 +130,7 @@ def main() -> int:
                 coding = next(
                     (x for x in runs_body.get("runs", []) if x["id"] != plan_run_id), None
                 )
-                if coding and coding["status"] in ("Settled", "Failed"):
+                if coding and coding["status"] in ("settled", "failed"):
                     fin2 = {"status": coding["status"], "run_id": coding["id"]}
                     break
                 timeline.extend(sse.events[len(timeline):])
@@ -146,7 +146,7 @@ def main() -> int:
                 r.check(False, "编码 run 在超时内结束")
             else:
                 r.check(
-                    fin2["status"] == "Settled",
+                    fin2["status"] == "settled",
                     f"编码 run 终态 Settled（实际 {fin2['status']}）",
                 )
 
@@ -154,7 +154,7 @@ def main() -> int:
             status, graph = server.req("GET", "/projects/demo-app/tasks/planning-run/graph")
             if status == 200:
                 r.check(
-                    graph.get("status") == "Completed",
+                    graph.get("status") == "completed",
                     f"任务终态 Completed（实际 {graph.get('status')}）",
                 )
 

@@ -23,7 +23,7 @@ async fn engine_panic_ends_run_failed_and_frees_the_slot() {
     let runs = body["runs"].as_array().expect("runs 应为数组");
     let last = runs.last().expect("至少一个 run");
     assert_eq!(
-        last["status"], "Failed",
+        last["status"], "failed",
         "panic 应被兜底成 Failed 终态（而不是永远 Running）：{last}"
     );
 
@@ -56,7 +56,7 @@ fn watchdog_intervention_unblocks_pending_ask() {
     let bus = std::sync::Arc::new(crate::server::EventBus::new());
     let relay = std::sync::Arc::new(UiRelay::new(bus));
     let control = RunControl::new();
-    control.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    control.cancel();
 
     // 在 run 上下文里发问（生产路径：引擎线程在 run 内，owner 才归 abort_run 管）；
     // run 上下文是 thread_local，必须在 asker 线程内置位。

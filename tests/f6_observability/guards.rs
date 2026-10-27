@@ -80,13 +80,14 @@ pub(super) async fn the_server_run_writes_the_heartbeat_into_the_fixture_dir_not
     // 心跳落在夹具的临时目录里，且 run 结束后**保留**最后一次状态
     // （F18 后首写异步化：有界轮询等落盘，不假设 Settled 瞬间文件已在）
     let hb_dir = f.obs_root.join("heartbeat");
-    let mut files: Vec<PathBuf> = Vec::new();
+    let files: Vec<PathBuf>;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
     loop {
-        files = std::fs::read_dir(&hb_dir)
+        let current: Vec<PathBuf> = std::fs::read_dir(&hb_dir)
             .map(|it| it.filter_map(|e| e.ok().map(|e| e.path())).collect())
             .unwrap_or_default();
-        if !files.is_empty() || std::time::Instant::now() > deadline {
+        if !current.is_empty() || std::time::Instant::now() > deadline {
+            files = current;
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;

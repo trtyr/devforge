@@ -86,7 +86,7 @@ async fn boundary_violation_fails_an_otherwise_successful_run() {
         send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await,
     )
     .await;
-    assert_eq!(body["runs"][0]["status"], "Failed", "越界 run 必须改判 Failed");
+    assert_eq!(body["runs"][0]["status"], "failed", "越界 run 必须改判 Failed");
     // 事件可查：EventBus 回放缓冲（state.emit 的落点）里有 boundary.violation
     let replayed = f.state.bus.replay_after(0);
     assert!(
@@ -208,7 +208,7 @@ async fn worktree_isolation_boundary_checks_the_candidate_branch_not_head() {
     )
     .await;
     assert_eq!(
-        body["runs"][0]["status"], "Failed",
+        body["runs"][0]["status"], "failed",
         "分支上的越界改动必须被抓到（对 HEAD 求 diff 是盲区）：{body}"
     );
     let replayed = f.state.bus.replay_after(0);
@@ -257,7 +257,7 @@ async fn worktree_isolation_without_candidate_branch_fails_closed() {
     )
     .await;
     assert_eq!(
-        body["runs"][0]["status"], "Failed",
+        body["runs"][0]["status"], "failed",
         "找不到候选分支必须拒放行（门不能 fail-open）：{body}"
     );
     let replayed = f.state.bus.replay_after(0);
@@ -309,7 +309,7 @@ async fn in_contract_changes_pass_the_boundary_check() {
     )
     .await;
     assert_eq!(
-        body["runs"][0]["status"], "Settled",
+        body["runs"][0]["status"], "settled",
         "契约内改动不得拦截：{body}"
     );
 }
@@ -355,7 +355,7 @@ async fn forbidden_paths_fail_even_inside_owned() {
     )
     .await;
     assert_eq!(
-        body["runs"][0]["status"], "Failed",
+        body["runs"][0]["status"], "failed",
         "禁改命中即使在 owned 内也必须 FAIL：{body}"
     );
     let replayed = f.state.bus.replay_after(0);

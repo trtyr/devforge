@@ -69,11 +69,11 @@ def main() -> int:
             while time.time() < deadline:
                 _, runs_body = server.req("GET", "/projects/demo-app/tasks/flow/runs")
                 runs = runs_body.get("runs", [])
-                if runs and runs[-1]["status"] in ("Settled", "Failed"):
+                if runs and runs[-1]["status"] in ("settled", "failed"):
                     final = runs[-1]["status"]
                     break
                 time.sleep(0.3)
-            return final or "Running"
+            return final or "running"
 
         # 3. 触发链：planning → testing → doc-fix（D012：显式 API 触发，同款跨 SOP 机制）
         status, _ = server.req(
@@ -83,7 +83,7 @@ def main() -> int:
         sop_now = wait_task_sop("testing")
         r.check(sop_now == "testing", "任务 sop 已切换为 testing", f"sop={sop_now}")
         r.check(
-            wait_runs_terminal() == "Failed",
+            wait_runs_terminal() == "failed",
             "未渲染 profile 下 testing run 快速 Failed（F1 门卫，槽即时释放）",
         )
 
@@ -91,7 +91,7 @@ def main() -> int:
         r.check(status == 202, "start sop=doc-fix == 202（DOC_FIX_SOP 触发面）", f"status={status}")
         sop_now = wait_task_sop("doc-fix")
         r.check(sop_now == "doc-fix", "任务 sop 已切换为 doc-fix", f"sop={sop_now}")
-        r.check(wait_runs_terminal() == "Failed", "doc-fix run 快速 Failed（F1 门卫）")
+        r.check(wait_runs_terminal() == "failed", "doc-fix run 快速 Failed（F1 门卫）")
 
         # 4. 无 body start → 202 沿用当前 sop（doc-fix）
         status, _ = start_tolerant(server, "demo-app", "flow", None)

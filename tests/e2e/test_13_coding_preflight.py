@@ -69,7 +69,7 @@ def main() -> int:
             while time.time() < deadline:
                 _, runs_body = server.req("GET", "/projects/pf-demo/tasks/pf/runs")
                 runs = runs_body.get("runs", [])
-                if runs and runs[0]["status"] in ("Settled", "Failed"):
+                if runs and runs[0]["status"] in ("settled", "failed"):
                     final = runs[0]["status"]
                     break
                 time.sleep(1)
@@ -79,11 +79,11 @@ def main() -> int:
                 while time.time() < deadline:
                     _, runs_body = server.req("GET", "/projects/pf-demo/tasks/pf/runs")
                     runs = runs_body.get("runs", [])
-                    if runs and runs[0]["status"] in ("Settled", "Failed"):
+                    if runs and runs[0]["status"] in ("settled", "failed"):
                         final = runs[0]["status"]
                         break
                     time.sleep(1)
-            r.check(final in ("Settled", "Failed"), "run 收场（终态或 cancel 解锁）", f"final={final}")
+            r.check(final in ("settled", "failed"), "run 收场（终态或 cancel 解锁）", f"final={final}")
 
     finally:
         server.stop()

@@ -83,19 +83,30 @@ impl Store {
     /// 会话目录、spawn 台账、集成队列全都拿它拼路径。名不安全（空/./..、含分隔符）=
     /// 路径穿越 + 任意目录创建/覆写。在域层唯一入口拦截，所有消费方一次性安全。
     pub(crate) fn validate_path_name(name: &str) -> Result<()> {
-        let ok = !name.is_empty()
+        let path_ok = !name.is_empty()
             && name != "."
             && name != ".."
             && !name.contains('/')
             && !name.contains('\\')
             && !name.contains('\0');
-        if ok {
-            Ok(())
-        } else {
-            Err(DevforgeError::Store(format!(
+        if !path_ok {
+            return Err(DevforgeError::Store(format!(
                 "名称 `{name}` 含非法路径字符（不可为空/./..，不可含分隔符）"
-            )))
+            )));
         }
+        // 自审 minor（19）：文档承诺 kebab-case（`mvp-from-zero`），旧口径只挡路径穿越、
+        // 字符集零校验——`My.Project` / `项目` 这类名能进仓，而它同时是目录名与 API 键。
+        let kebab_ok = name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            && !name.starts_with('-')
+            && !name.ends_with('-');
+        if !kebab_ok {
+            return Err(DevforgeError::Store(format!(
+                "名称 `{name}` 不是 kebab-case（只允许 a-z0-9 与 -，首尾不得为 -）"
+            )));
+        }
+        Ok(())
     }
 
     /// 回滚插入（P1-ISSUE-01：目录落地失败时不留半注册项目）。

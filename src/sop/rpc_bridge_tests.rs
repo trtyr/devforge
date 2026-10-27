@@ -134,7 +134,7 @@ fn review_subprocess_marker_carries_the_parent_run_id() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     crate::observability::begin_run_in_deferred(root.clone(), "run-parent-42", "coding");
-    let mut f = RpcReviewFactory::per_round(root.join("profile"), root.join("sessions"));
+    let f = RpcReviewFactory::per_round(root.join("profile"), root.join("sessions"));
     let s1 = (f.make_spec.lock().expect("spec 生成器锁"))();
     let s2 = (f.make_spec.lock().expect("spec 生成器锁"))();
     assert_eq!(
@@ -153,7 +153,7 @@ fn review_subprocess_marker_carries_the_parent_run_id() {
     assert!(s2.session_dir.ends_with("review-1"));
 
     // per_round_in 是同一条路径（编码 / 文档审查走它）
-    let mut g = RpcReviewFactory::per_round_in(
+    let g = RpcReviewFactory::per_round_in(
         root.join("profile"),
         "coding-review",
         root.join("sessions2"),

@@ -117,7 +117,7 @@ pub(super) async fn wait_settled(f: &ServerFixture, project: &str, task: &str) {
             .and_then(|runs| runs.last())
             .and_then(|r| r["status"].as_str())
             .unwrap_or("");
-        if st == "Settled" || st == "Failed" {
+        if st == "settled" || st == "failed" {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;

@@ -177,7 +177,7 @@ pub struct CreateProjectReq {
 pub async fn create_project(
     State(st): State<SharedState>,
     Json(req): Json<CreateProjectReq>,
-) -> ApiResult<(StatusCode, Json<Project>)> {
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     // 全仓审计 #5：local_path 注册前置校验——门 0 会在无 .git 的目录上 git init +
     // add -A 建基线提交，路径误填为已有目录（如 home）即把其全部内容纳入一次提交。
     if let Err(msg) = validate_local_path(std::path::Path::new(&req.local_path)) {
@@ -238,22 +238,24 @@ pub async fn create_project(
         }
     }
     st.emit(json!({"type": "project.created", "project": created.name}));
-    Ok((StatusCode::CREATED, Json(created)))
+    // 自审 minor（14）：不回显主机绝对路径（created 仍按全量落库，只对外收口）
+    Ok((StatusCode::CREATED, Json(created.public_view())))
 }
 
 pub async fn list_projects(State(st): State<SharedState>) -> Json<serde_json::Value> {
     let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-    Json(json!({"projects": store.list_projects()}))
+    let views: Vec<serde_json::Value> = store.projects.iter().map(Project::public_view).collect();
+    Json(json!({"projects": views}))
 }
 
 pub async fn get_project(
     State(st): State<SharedState>,
     Path(name): Path<String>,
-) -> ApiResult<Json<Project>> {
+) -> ApiResult<Json<serde_json::Value>> {
     let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
     store
         .get_project(&name)
-        .cloned()
+        .map(Project::public_view)
         .map(Json)
         .ok_or_else(|| ApiError::not_found(format!("项目 `{name}` 不存在")))
 }

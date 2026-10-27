@@ -100,7 +100,7 @@ async fn start_sop_override_switches_task_for_cross_sop_chain() {
         )
         .await;
         if body["runs"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
-            && (body["runs"][0]["status"] == "Settled" || body["runs"][0]["status"] == "Failed")
+            && (body["runs"][0]["status"] == "settled" || body["runs"][0]["status"] == "failed")
         {
             settled = true;
             break;

@@ -218,7 +218,7 @@ def main() -> int:
             while time.time() - t0 < TEST_TIMEOUT:
                 _, runs_body = server.req("GET", "/projects/calc-app/tasks/t1/runs")
                 runs = runs_body.get("runs", [])
-                if runs and runs[-1]["status"] in ("Settled", "Failed"):
+                if runs and runs[-1]["status"] in ("settled", "failed"):
                     final = runs[-1]["status"]
                     break
                 timeline.extend(sse.events[len(timeline):])
@@ -236,12 +236,12 @@ def main() -> int:
                 r.check(False, "testing run 在窗口内结束")
             else:
                 r.check(
-                    final == "Settled",
+                    final == "settled",
                     f"testing run 终态 Settled（实际 {final}，耗时 {elapsed:.0f}s）",
                 )
                 _, graph = server.req("GET", "/projects/calc-app/tasks/t1/graph")
                 r.check(
-                    graph.get("status") == "Completed",
+                    graph.get("status") == "completed",
                     f"任务终态 Completed（实际 {graph.get('status')}）",
                 )
 

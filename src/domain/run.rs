@@ -17,10 +17,18 @@ impl RunId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+// 自审 minor（19）：状态枚举的线上词汇统一成 kebab-case——旧口径以 PascalCase 序列化
+//（"Running"/"Settled"/"Failed"），与仓库其余 API 词汇（kebab/snake/dot）不一致。
+// 旧值 alias 只为**读回 2026-10-27 之前落盘的 store.json**（数据迁移，不是接口双权威）；
+// 序列化永远只产出新词汇。
+#[serde(rename_all = "kebab-case")]
 pub enum RunStatus {
+    #[serde(alias = "Running")]
     Running,
-    /// 正常结束（剧本内完成或剧本内失败都已 settle——终态）。
+    /// 正常结束（剧本内完成——终态）。剧本内失败落 [`RunStatus::Failed`]。
+    #[serde(alias = "Settled")]
     Settled,
+    #[serde(alias = "Failed")]
     Failed,
 }
 

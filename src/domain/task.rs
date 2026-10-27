@@ -4,18 +4,27 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+// 自审 minor（19）：与 RunStatus 同口径——线上词汇 kebab-case；旧值 alias 只为读回
+// 2026-10-27 之前落盘的 store.json。
+#[serde(rename_all = "kebab-case")]
 pub enum TaskStatus {
     /// 已创建，未跑过。
+    #[serde(alias = "Pending")]
     Pending,
     /// 有 run 正在执行。
+    #[serde(alias = "Running")]
     Running,
     /// 最近一次 run 正常完成。
+    #[serde(alias = "Completed")]
     Completed,
     /// 最近一次 run 失败（可重跑，重跑 = 新 run）。
+    #[serde(alias = "Failed")]
     Failed,
     /// 归档（终态，不再执行）。
+    #[serde(alias = "Archived")]
     Archived,
     /// 依赖未就绪/准入拒绝（P012 M4）：调度器恢复联动自动迁出，非终态。
+    #[serde(alias = "Blocked")]
     Blocked,
 }
 

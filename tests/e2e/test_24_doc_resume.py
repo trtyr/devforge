@@ -88,7 +88,7 @@ def wait_run_final(server: Server, project: str, task: str, timeout: float) -> t
     while time.time() - t0 < timeout:
         _, body = server.req("GET", f"/projects/{project}/tasks/{task}/runs")
         runs = body.get("runs", [])
-        if runs and runs[-1]["status"] in ("Settled", "Failed"):
+        if runs and runs[-1]["status"] in ("settled", "failed"):
             return runs[-1]["status"], time.time() - t0
         time.sleep(5.0)
     return None, time.time() - t0
@@ -163,7 +163,7 @@ def main() -> int:
             status, _ = server.req("POST", f"/projects/{project}/tasks/d1/cancel", None)
             r.check(status in (200, 202), "cancel 受理", f"status={status}")
             final1, took1 = wait_run_final(server, project, "d1", 300)
-            r.check(final1 == "Failed", f"第 1 轮以取消终态收场（{final1}，{took1:.0f}s）", "cancel 语义 = Failed")
+            r.check(final1 == "failed", f"第 1 轮以取消终态收场（{final1}，{took1:.0f}s）", "cancel 语义 = Failed")
             autopilot.stop()
 
         # ---- 第 2 轮：同一条 start（无 fresh）----
@@ -178,9 +178,9 @@ def main() -> int:
                 f"{body}",
             )
             final2, took2 = wait_run_final(server, project, "d1", DOC_TIMEOUT)
-            r.check(final2 == "Settled", f"第 2 轮 Settled（{took2:.0f}s）", f"final={final2}")
+            r.check(final2 == "settled", f"第 2 轮 Settled（{took2:.0f}s）", f"final={final2}")
             autopilot.stop()
-            if final2 != "Settled":
+            if final2 != "settled":
                 return r.finish()
 
         st2 = load_state(server, project, "d1")

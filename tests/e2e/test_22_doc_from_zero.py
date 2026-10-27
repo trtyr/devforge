@@ -189,7 +189,7 @@ def main() -> int:
                     "GET", f"/projects/{project_name}/tasks/d1/runs"
                 )
                 runs = runs_body.get("runs", [])
-                if runs and runs[-1]["status"] in ("Settled", "Failed"):
+                if runs and runs[-1]["status"] in ("settled", "failed"):
                     final = runs[-1]["status"]
                     break
                 timeline.extend(sse.events[len(timeline):])
@@ -208,7 +208,7 @@ def main() -> int:
                     f"doc-from-zero run {DOC_TIMEOUT}s 未结束（增长曲线 {growth[-6:]}）",
                 )
                 return r.finish()
-            r.check(final == "Settled", f"run 终态 Settled（耗时 {elapsed:.0f}s）", f"final={final}")
+            r.check(final == "settled", f"run 终态 Settled（耗时 {elapsed:.0f}s）", f"final={final}")
 
         docs = repo / "docs" / "contexts"
         meta = docs / "_meta"

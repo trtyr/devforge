@@ -259,7 +259,7 @@ def main() -> int:
             while time.time() - t0 < DOC_TIMEOUT:
                 _, body = server.req("GET", f"/projects/{project}/tasks/d1/runs")
                 runs = body.get("runs", [])
-                if runs and runs[-1]["status"] in ("Settled", "Failed"):
+                if runs and runs[-1]["status"] in ("settled", "failed"):
                     final = runs[-1]["status"]
                     break
                 time.sleep(10.0)
@@ -267,8 +267,8 @@ def main() -> int:
             elapsed = time.time() - t0
             retries = [e for e in sse.events if e.get("type") == "run.retry"]
 
-        r.check(final == "Settled", f"run 终态 Settled（{elapsed:.0f}s）", f"final={final}")
-        if final != "Settled":
+        r.check(final == "settled", f"run 终态 Settled（{elapsed:.0f}s）", f"final={final}")
+        if final != "settled":
             r.issue("C25-NOT-SETTLED", "high", f"故障注入后未恢复：final={final}", "\n".join(proxy.log))
             return r.finish()
 

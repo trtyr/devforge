@@ -20,7 +20,7 @@ async fn start_task_runs_engine_and_records() {
         let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
         let body = body_json(resp).await;
         if body["runs"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
-            && body["runs"][0]["status"] == "Settled"
+            && body["runs"][0]["status"] == "settled"
         {
             settled = true;
             break;
@@ -53,7 +53,7 @@ async fn the_run_writes_a_heartbeat_into_the_fixtures_dir_and_keeps_it() {
         let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
         let body = body_json(resp).await;
         if body["runs"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
-            && body["runs"][0]["status"] == "Settled"
+            && body["runs"][0]["status"] == "settled"
         {
             settled = true;
             break;

@@ -25,7 +25,7 @@ def main() -> int:
         )
         r.check(status == 201, "创建任务 == 201", f"status={status}, body={body}")
         r.check(
-            isinstance(body, dict) and body.get("status") == "Pending",
+            isinstance(body, dict) and body.get("status") == "pending",
             "新任务状态 Pending", f"{body}",
         )
 

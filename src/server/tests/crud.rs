@@ -118,7 +118,7 @@ async fn start_doc_from_zero_sop_returns_202() {
         let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/d/runs", None).await;
         let body = body_json(resp).await;
         if body["runs"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
-            && body["runs"][0]["status"] == "Settled"
+            && body["runs"][0]["status"] == "settled"
         {
             settled = true;
             break;
@@ -151,7 +151,7 @@ async fn start_change_sop_returns_202() {
         send(&f.router, "GET", "/api/v1/projects/p/tasks/c/runs", None).await,
     )
     .await;
-    assert_eq!(runs["runs"][0]["status"], "Settled");
+    assert_eq!(runs["runs"][0]["status"], "settled");
 }
 
 #[tokio::test]

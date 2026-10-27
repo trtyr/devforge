@@ -3,7 +3,7 @@
 //! SOP 的本质是编排器代码里显式接线的产物流（见 P001 状态机）；
 //! 本模块只维护「内置 SOP 注册表」——任务创建时引用其中一个标识。
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::error::{DevforgeError, Result};
 
@@ -56,7 +56,11 @@ pub const CODE_REVIEW_SOP: Sop = Sop {
     description: "对任意项目整仓审计（非 diff）：引擎盘点清单与切片（门0）→ audit-agent 逐批次综合六视角审查（正确性/错误处理/可观测/架构 AI-friendly/一致性/安全）→ 引擎核验过滤与去重分级 → 审计报告（JSON+MD）",
 };
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// SOP 描述。**只用于展示与校验，不参与持久化**——自审 minor（59）：旧口径派生了
+/// `Deserialize`，可 `&'static str` 字段只能从 `&'static` 源反序列化，公开 API 表面
+/// 宣称的能力与实际可用性不符（消费方写 `serde_json::from_str::<Sop>` 必然报错）。
+/// 序列化保留（对外快照/日志可读），反序列化删除。
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Sop {
     /// 内置标识（任务绑定用，如 `"planning"`）。
     pub id: &'static str,
@@ -65,12 +69,21 @@ pub struct Sop {
 }
 
 /// 内置 SOP 注册表。新增 SOP = 在此登记 + 编排器代码接线（改代码，不是加数据）。
-#[derive(Debug, Clone, Default)]
+///
+/// **不自带 `Default`**：自审 minor（68）——`SopRegistry::default()` 得到的是**空注册表**，
+/// 与 `builtin()` 语义相反（空表 = 任何 SOP 都「未知」）；作为公开构造路径可静默致错，
+/// 要空表请显式写 `SopRegistry::empty()`。
+#[derive(Debug, Clone)]
 pub struct SopRegistry {
     sops: Vec<Sop>,
 }
 
 impl SopRegistry {
+    /// 空注册表（仅限测试/显式「什么都不认识」的场景；生产一律 [`SopRegistry::builtin`]）。
+    pub fn empty() -> Self {
+        Self { sops: Vec::new() }
+    }
+
     /// 系统出厂内置的全部 SOP。
     pub fn builtin() -> Self {
         Self {

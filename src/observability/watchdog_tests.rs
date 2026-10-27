@@ -82,7 +82,7 @@ fn cancel_path_unblocks_the_run_and_fires_the_intervention_hook() {
         let c = control.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(400));
-            c.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            c.cancel();
         })
     };
     let start = Instant::now();
@@ -279,7 +279,7 @@ fn after_harvest_cancel_is_still_monitored() {
         std::thread::spawn(move || {
             // 收割（idle=300ms，~0.6s 内触发）在先，取消在后
             std::thread::sleep(Duration::from_millis(1000));
-            c.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            c.cancel();
         })
     };
     let hooked_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

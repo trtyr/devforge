@@ -15,12 +15,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// （会话无进展，显式 opt-in）分离；stalled 标记由 watchdog 在失活收割时置位，
 /// 让 map_intervention 给出明确的 Failed 原因而非底层 RPC 噪音。
 pub struct RunControl {
-    /// 取消标志（cancel 端点置位）。
-    pub cancel: AtomicBool,
+    /// 取消标志（cancel 端点置位）。**私有**——自审 minor（19）：旧口径 `pub` 原子字段
+    /// 与访问器并存，调用方得以绕过封装直接 store/load（语义变更点就不可收口）。
+    cancel: AtomicBool,
     /// 绝对截止时间（epoch ms）；None = 不限时。
-    pub deadline_ms: Option<u64>,
+    deadline_ms: Option<u64>,
     /// 失活标志：watchdog 判定「会话无进展超过闲置阈值」并收割时置位。
-    pub stalled: AtomicBool,
+    stalled: AtomicBool,
 }
 
 impl Default for RunControl {

@@ -109,7 +109,7 @@ async fn graph_endpoint_shows_nodes() {
         let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/graph", None).await;
         graph = body_json(resp).await;
         if graph["nodes"].as_array().map(|a| !a.is_empty()).unwrap_or(false)
-            && graph["status"] == "Completed"
+            && graph["status"] == "completed"
         {
             break;
         }
@@ -145,15 +145,15 @@ async fn cancel_endpoint_stops_running_task() {
     for _ in 0..200 {
         let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
         final_runs = body_json(resp).await;
-        if final_runs["runs"][0]["status"] == "Failed" {
+        if final_runs["runs"][0]["status"] == "failed" {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert_eq!(final_runs["runs"][0]["status"], "Failed");
+    assert_eq!(final_runs["runs"][0]["status"], "failed");
     let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks", None).await;
     let body = body_json(resp).await;
-    assert_eq!(body["tasks"][0]["status"], "Failed");
+    assert_eq!(body["tasks"][0]["status"], "failed");
 }
 
 #[tokio::test]
@@ -169,15 +169,15 @@ async fn run_timeout_fails_run() {
     for _ in 0..200 {
         let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
         final_runs = body_json(resp).await;
-        if final_runs["runs"][0]["status"] == "Failed" {
+        if final_runs["runs"][0]["status"] == "failed" {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert_eq!(final_runs["runs"][0]["status"], "Failed");
+    assert_eq!(final_runs["runs"][0]["status"], "failed");
     let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks", None).await;
     let body = body_json(resp).await;
-    assert_eq!(body["tasks"][0]["status"], "Failed");
+    assert_eq!(body["tasks"][0]["status"], "failed");
 }
 
 #[tokio::test]

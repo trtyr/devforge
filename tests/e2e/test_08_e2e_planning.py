@@ -214,17 +214,17 @@ def main() -> int:
         if runs_body and runs_body.get("runs"):
             final_status = runs_body["runs"][0]["status"]
             r.check(
-                final_status == "Settled",
+                final_status == "settled",
                 f"run 终态 Settled（实际 {final_status}）",
             )
             task_status = runs_body  # current_run 已在
         status, graph = server.req("GET", "/projects/demo-app/tasks/planning-run/graph")
         if status == 200:
             r.check(
-                graph.get("status") in ("Completed", "Failed"),
+                graph.get("status") in ("completed", "failed"),
                 f"任务终态 {graph.get('status')}（期望 Completed；Failed 记链路问题）",
             )
-            if graph.get("status") == "Failed":
+            if graph.get("status") == "failed":
                 r.issue(
                     "P8-ISSUE-03", "high",
                     "规划 run 以 Failed 终态结束——模型调用/认证/提示词链路存在真实故障，"

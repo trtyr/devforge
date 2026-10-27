@@ -177,7 +177,7 @@ pub(super) fn the_heartbeat_is_refreshed_by_the_watchdog_for_every_sop_including
     obs::begin_run_in(root.clone(), run_id, "plan");
     let before = obs::heartbeat::read(&root, run_id).expect("心跳应已落盘");
     std::thread::sleep(Duration::from_millis(1100));
-    obs::touch_run(run_id);
+    obs::touch_run(run_id).expect("心跳回写应成功");
     let after = obs::heartbeat::read(&root, run_id).expect("心跳应仍在");
     obs::end_run(run_id);
     assert!(

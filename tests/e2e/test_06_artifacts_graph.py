@@ -33,7 +33,7 @@ def main() -> int:
         # 2. 运行图端点：Pending 态
         status, graph = server.req("GET", "/projects/p/tasks/t/graph")
         r.check(status == 200, "GET graph == 200", f"status={status}")
-        r.check(graph.get("status") == "Pending", "图状态 Pending", f"{graph.get('status')}")
+        r.check(graph.get("status") == "pending", "图状态 Pending", f"{graph.get('status')}")
         r.check(graph.get("sop") == "planning", "图含 SOP 标识", f"{graph.get('sop')}")
         r.check(graph.get("nodes") == [], "Pending 无节点", f"{graph.get('nodes')}")
 

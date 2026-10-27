@@ -245,7 +245,7 @@ def main() -> int:
             while time.time() - t0 < CHANGE_TIMEOUT:
                 _, runs_body = server.req("GET", f"/projects/{project}/tasks/c1/runs")
                 runs = runs_body.get("runs", [])
-                if runs and runs[-1]["status"] in ("Settled", "Failed"):
+                if runs and runs[-1]["status"] in ("settled", "failed"):
                     final = runs[-1]["status"]
                     break
                 time.sleep(15.0)
@@ -269,8 +269,8 @@ def main() -> int:
             "每条应答都对应一个真实的 ui.request",
         )
 
-        r.check(final == "Settled", f"run 终态 Settled（{elapsed/60:.0f}min）", f"final={final}")
-        if final != "Settled":
+        r.check(final == "settled", f"run 终态 Settled（{elapsed/60:.0f}min）", f"final={final}")
+        if final != "settled":
             return r.finish()
 
         changes_dir = server.home / ".devforge" / "plantree" / project / "changes"

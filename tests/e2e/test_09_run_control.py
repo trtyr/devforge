@@ -70,13 +70,13 @@ def main() -> int:
         r.check(cancel_status == 200, "cancel 端点受理 200", f"last={cancel_status}")
 
         # 4. run / task 进入 Failed（任务状态经列表端点读：无单任务详情路由）
-        final, runs_body = wait_run_status(server, "rc", "cancel-me", {"Failed"}, timeout=90.0)
-        r.check(final == "Failed", "取消后 run 进 Failed", f"{runs_body}")
+        final, runs_body = wait_run_status(server, "rc", "cancel-me", {"failed"}, timeout=90.0)
+        r.check(final == "failed", "取消后 run 进 Failed", f"{runs_body}")
         status, body = server.req("GET", "/projects/rc/tasks")
         tasks = body.get("tasks", []) if isinstance(body, dict) else []
         me = next((t for t in tasks if t.get("id") == "cancel-me"), {})
         r.check(
-            status == 200 and me.get("status") == "Failed",
+            status == 200 and me.get("status") == "failed",
             "任务状态同步 Failed", f"status={status}, task={me}",
         )
 

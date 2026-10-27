@@ -76,7 +76,6 @@ fn findings_file_without_done_mark_is_recovered_not_rereviewed() {
 /// 错误不得伪装成 Quality，批次发现不落盘、报告不生成（无「成功审计」假象）。
 #[test]
 fn batch_instance_failure_aborts_whole_run_not_abandoned() {
-    use std::sync::atomic::Ordering;
     struct PlanOnlySession;
     impl super::super::pipeline::AuditSession for PlanOnlySession {
         fn ask(&mut self, _: &str) -> crate::error::Result<String> {
@@ -108,7 +107,7 @@ fn batch_instance_failure_aborts_whole_run_not_abandoned() {
     let mut task = crate::domain::task::Task::new("audit-self", "p-audit", "code-review", 1);
     task.workspace = ws.path().to_path_buf();
     let control = crate::domain::runner::RunControl::new();
-    assert!(!control.cancel.load(Ordering::SeqCst));
+    assert!(!control.is_cancelled());
     let mut factory = Stage0OkThenFailFactory { opens: 0 };
     let err = run_audit(&task, root.path(), &control, &mut factory).unwrap_err();
     assert!(
@@ -142,9 +141,7 @@ fn cancelled_control_aborts_audit_before_any_session() {
     let mut task = crate::domain::task::Task::new("audit-self", "p-audit", "code-review", 1);
     task.workspace = ws.path().to_path_buf();
     let control = crate::domain::runner::RunControl::new();
-    control
-        .cancel
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    control.cancel();
     let mut factory = PanicFactory;
     let err = run_audit(&task, root.path(), &control, &mut factory).unwrap_err();
     assert!(err.to_string().contains("干预"), "应报干预中断：{err:?}");

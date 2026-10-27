@@ -133,7 +133,7 @@ def main() -> int:
             time.sleep(1.0)
         r.check(cancel_status == 200, "cancel 端点受理 200", f"last={cancel_status}")
 
-        final, runs_body = wait_run_status(server, "p", "t1", {"Failed"}, 90.0)
+        final, runs_body = wait_run_status(server, "p", "t1", {"failed"}, 90.0)
         elapsed = time.time() - t0
         if final is None:
             r.issue(
@@ -157,7 +157,7 @@ def main() -> int:
                 break
             time.sleep(1.0)
         r.check(cancel2 == 200, "t2 取消受理", f"last={cancel2}")
-        wait_run_status(server, "p", "t2", {"Failed"}, 90.0)
+        wait_run_status(server, "p", "t2", {"failed"}, 90.0)
 
         # ---- 重跑留档（Q004）：终态后可再跑，runs 递增且旧 run 留档 ----
         run1_id = runs_body["runs"][0]["id"]
@@ -172,8 +172,8 @@ def main() -> int:
             if status == 200:
                 break
             time.sleep(1.0)
-        final2, runs_body2 = wait_run_status(server, "p", "t1", {"Failed"}, 90.0)
-        r.check(final2 == "Failed", "第二次 run 取消收场", f"{runs_body2}")
+        final2, runs_body2 = wait_run_status(server, "p", "t1", {"failed"}, 90.0)
+        r.check(final2 == "failed", "第二次 run 取消收场", f"{runs_body2}")
         runs = runs_body2["runs"]
         r.check(len(runs) == 2, "重跑后 runs 留档 2 条", f"{len(runs)}")
         r.check(
