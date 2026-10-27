@@ -544,6 +544,19 @@ pub fn audit_plan_file_with_contract(
     Ok(audit_with_contract(&text, repo, contract))
 }
 
+/// 同上，但**复用已读到的正文**（自审 minor 24）。
+///
+/// 旧口径编排层先 `read_to_string` 拿正文做「必须裁决」硬门，再让本模块**再读一次**
+/// 同一文件审计——两次读取之间文件可能被改（agent 仍在写），两次判定可能基于不同内容；
+/// 且读失败闭在两个地方分别归因。现在正文只读一次，审计只做纯函数部分。
+pub fn audit_plan_text_with_contract(
+    plan_text: &str,
+    repo: &Path,
+    contract: Option<&crate::domain::contract::WorkItemContract>,
+) -> PlanAudit {
+    audit_with_contract(plan_text, repo, contract)
+}
+
 #[cfg(test)]
 #[path = "plan_audit_tests.rs"]
 mod tests;

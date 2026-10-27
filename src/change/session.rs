@@ -331,7 +331,19 @@ impl ProdChangeSession {
         // 计划文在台账根（不在目标仓），审查子进程 cwd 是黑板：必须把路径与全文一起给审查官
         let plan_path = self.ctx.plan_path();
         let plan_text = std::fs::read_to_string(&plan_path).map_err(|e| {
-            DevforgeError::Quality(format!("计划文件不可读（{}）：{e}", plan_path.display()))
+            // 自审 minor（24）：读失败要分归因——文件不存在 = agent 没把计划落盘（质量失败，
+            // 带修复回路）；权限/IO 故障 = 基础设施（System，可自动重启）。
+            if e.kind() == std::io::ErrorKind::NotFound {
+                DevforgeError::Quality(format!(
+                    "计划文件不存在（{}）：change-plan-agent 必须把计划写进该路径，不能只贴在回复里",
+                    plan_path.display()
+                ))
+            } else {
+                DevforgeError::System(format!(
+                    "计划文件不可读（{}）：{e}",
+                    plan_path.display()
+                ))
+            }
         })?;
         // 确定性硬门：标了「必须裁决」却没留痕 → 直接打回，不进审查轮
         // （确定性判定不交给审查官重判；打回走既有修复回路，轮次由 MAX_PLAN_FIXES 约束）
@@ -343,15 +355,13 @@ impl ProdChangeSession {
                 issues: tagged("确定性审计", verdicts.issues),
             });
         }
-        let audit =
-            crate::change::plan_audit::audit_plan_file_with_contract(
-                &plan_path,
-                &self.ctx.repo,
-                self.ctx.contract.as_ref(),
-            )
-            .map_err(|e| {
-                DevforgeError::Quality(format!("计划文件不可读（{}）：{e}", plan_path.display()))
-            })?;
+        // 自审 minor（24）：审计复用**已读到的正文**——旧口径再读一次同一文件，
+        // 两次读取之间文件可能被改（agent 还在写），两个判定可能基于不同内容。
+        let audit = crate::change::plan_audit::audit_plan_text_with_contract(
+            &plan_text,
+            &self.ctx.repo,
+            self.ctx.contract.as_ref(),
+        );
         // 自审 PA-04（P012 门禁批次）：确定性审计结论接成硬门——旧实现只注入提示词，
         // 「路径不存在/白名单为空/契约越界」这些零成本布尔判定全靠 LLM 听话，
         // 与上方 VerdictAudit 硬门同文件两种强度。现在不过即打回（走既有
