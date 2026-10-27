@@ -338,7 +338,10 @@ pub fn run<S: ChangeSession>(
                         state.roundtrips,
                         &gaps,
                     )?;
-                    boundary::merge_gaps_into_whitelist(&mut whitelist, &gaps);
+                    // 自审 minor（16）：旧口径在这里 merge 白名单，但 amend 成功后整份白名单被
+                    // 新计划覆盖（`whitelist = w`）——merge 的产出被唯一消费方丢弃，「补完边界后
+                    // 重新校验」在生产上不成立。现在合并挪到「拿到新计划之后」，并按归一化路径
+                    // 校验申报缺口是否真的被写进新白名单（漏了要留痕）。
                     // 补边界往返：fix.start → 补计划 → fix.end（含往返轮次）
                     fix_step(&state, "boundary", state.roundtrips, true);
                     tracing::info!(
@@ -367,8 +370,22 @@ pub fn run<S: ChangeSession>(
                                 criteria = c;
                             }
                             if !w.is_empty() {
+                                // 申报过的文件必须进新白名单（缺 = 计划没补全边界，留痕后仍然
+                                // 合并进去：coding 已经在这些文件上动过，回退成本高于放行）。
+                                for g in &gaps {
+                                    let norm = g.file.trim_start_matches("./");
+                                    if !w.iter().any(|x| x.trim_start_matches("./") == norm) {
+                                        tracing::warn!(
+                                            component = "change-orchestrator",
+                                            event = "boundary.gap_not_in_new_whitelist",
+                                            file = g.file.as_str(),
+                                            "补边界后的新计划白名单仍缺申报文件——已合并兜底"
+                                        );
+                                    }
+                                }
                                 whitelist = w;
                             }
+                            boundary::merge_gaps_into_whitelist(&mut whitelist, &gaps);
                             save(run.store, &state)?;
                             continue;
                         }

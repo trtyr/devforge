@@ -8,6 +8,7 @@
 //! - 往返上限 3 次，第 4 次必须停下（防止边界被一轮轮撑大）。
 
 use crate::error::{DevforgeError, Result};
+use std::fmt::Write as _;
 
 /// 允许的 plan↔coding 往返次数。
 pub const MAX_ROUNDTRIPS: usize = 3;
@@ -31,12 +32,6 @@ pub enum BoundaryVerdict {
     RoutePlan { gaps: Vec<ImpactGap>, reason: String },
     /// 一段越界且没申报（或申报不完整）→ 范围膨胀，FAIL。
     OutOfBoundary { extra: Vec<String> },
-}
-
-impl BoundaryVerdict {
-    pub fn is_fail(&self) -> bool {
-        matches!(self, Self::OutOfBoundary { .. })
-    }
 }
 
 /// 解析 `<route>...</route>`：**只认尾部协议位**。
@@ -95,9 +90,29 @@ pub fn parse_route(text: &str) -> Option<String> {
 /// 旧实现 `text.find` 取全文第一个块，正文里引用的协议示例块会劫持解析：
 /// 真申报被丢弃（误判 FAIL），或越界文件被示例块凭空合法化。
 pub fn parse_impact_gaps(text: &str) -> Vec<ImpactGap> {
-    let Some(start) = text.rfind("<impact-gap>") else {
+    // 自审 minor（11）：与 parse_route 同口径——只认尾部协议位。旧实现 rfind 全文任意位置
+    // 都认，正文里引用的格式示例块（恰好排最后）即被当成正式申报。
+    let trimmed = text.trim_end();
+    let Some(start) = trimmed.rfind("<impact-gap>") else {
         return Vec::new();
     };
+    {
+        let tail = &trimmed[start..];
+        let closed_to_end = match tail.rfind("</impact-gap>") {
+            Some(close_at) => tail[close_at + "</impact-gap>".len()..].trim().is_empty(),
+            // 被截断的块（无闭合标签）定义上延伸到文末
+            None => true,
+        };
+        if !closed_to_end {
+            tracing::warn!(
+                component = "change-boundary",
+                event = "boundary.gap_ignored",
+                "impact-gap 块不在回复尾部（尾部仍有正文）——按尾位纪律不认这次申报"
+            );
+            return Vec::new();
+        }
+    }
+    let text = trimmed;
     let body_start = start + "<impact-gap>".len();
     let body_end = text[body_start..]
         .find("</impact-gap>")
@@ -106,6 +121,10 @@ pub fn parse_impact_gaps(text: &str) -> Vec<ImpactGap> {
     let body = &text[body_start..body_end];
 
     let mut gaps: Vec<ImpactGap> = Vec::new();
+    // 自审 minor（42）：理由/证据写在「文件」行之前时旧实现直接丢弃 → 合法申报被判范围膨胀。
+    // 现在先攒 pending，遇到文件行再落地（字段顺序不敏感）。
+    let mut pending_reason = String::new();
+    let mut pending_evidence = String::new();
     for line in body.lines() {
         let t = line.trim().trim_start_matches(['-', '*']).trim();
         let Some((key, value)) = t.split_once([':', '：']) else {
@@ -121,26 +140,31 @@ pub fn parse_impact_gaps(text: &str) -> Vec<ImpactGap> {
             .to_string();
         match key.trim() {
             "文件" | "file" | "File" => {
-                if !gaps.is_empty() {
-                    // 新条目的文件行：前一条若没有理由/证据就丢掉（不完整申报不算数）
-                    if gaps.last().is_some_and(|g| g.reason.is_empty()) {
-                        gaps.pop();
-                    }
+                // 自审 minor（39）：文件字段零校验——带空白/绝对路径/协议尖括号的值不可能是
+                // 仓内相对路径，直接丢弃（否则归一化后也匹配不上，只会误导诊断）。
+                if !is_plausible_repo_path(&value) {
+                    continue;
                 }
+                // 自审 minor（41）：注释与实现对齐——不完整条目统一在末尾按三字段过滤，
+                // 这里不再单独 pop（旧注释声称「没有理由/证据就丢掉」，实现只查 reason）。
                 gaps.push(ImpactGap {
                     file: value,
-                    reason: String::new(),
-                    evidence: String::new(),
+                    reason: std::mem::take(&mut pending_reason),
+                    evidence: std::mem::take(&mut pending_evidence),
                 });
             }
             "为什么必须改" | "理由" | "reason" => {
                 if let Some(last) = gaps.last_mut() {
                     last.reason = value;
+                } else {
+                    pending_reason = value;
                 }
             }
             "证据" | "evidence" => {
                 if let Some(last) = gaps.last_mut() {
                     last.evidence = value;
+                } else {
+                    pending_evidence = value;
                 }
             }
             _ => {}
@@ -158,6 +182,15 @@ pub fn parse_impact_gaps(text: &str) -> Vec<ImpactGap> {
 /// 比对前两侧先归一化（复验 #7：去 `./` 前缀 + 迁移表换算），白名单匹配
 /// 与申报覆盖都按归一化后的精确路径相等——不再子串包含（`src/a.rs.bak`
 /// 不得覆盖 `src/a.rs`）。
+/// 申报里的文件值是否像一个仓内相对路径（自审 minor 39：零校验会让垃圾值也进白名单）。
+fn is_plausible_repo_path(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains(char::is_whitespace)
+        && !value.contains(['<', '>'])
+        && !value.starts_with('/')
+        && !value.contains("..")
+}
+
 /// 归一化单路径：去 `./` 前缀 + 迁移表换算（比对前两侧同处理，复验 #7）。
 fn normalize_one(f: &str) -> &str {
     let stripped = f.strip_prefix("./").unwrap_or(f);
@@ -165,6 +198,26 @@ fn normalize_one(f: &str) -> &str {
 }
 
 pub fn classify(changed: &[String], whitelist: &[String], reply: &str) -> BoundaryVerdict {
+    let verdict = classify_inner(changed, whitelist, reply);
+    // 自审 minor（13）：boundary 是 change 五道机械门里唯一不落事件的——越界清单只埋在
+    // Quality 错误文本里，日志无法按字段还原判定结论。
+    let (kind, extra) = match &verdict {
+        BoundaryVerdict::InBoundary => ("in_boundary", 0usize),
+        BoundaryVerdict::RoutePlan { gaps, .. } => ("route_plan", gaps.len()),
+        BoundaryVerdict::OutOfBoundary { extra } => ("out_of_boundary", extra.len()),
+    };
+    tracing::info!(
+        component = "change-boundary",
+        event = "boundary.verdict",
+        verdict = kind,
+        changed = changed.len(),
+        extra_or_gaps = extra,
+        "边界判定"
+    );
+    verdict
+}
+
+fn classify_inner(changed: &[String], whitelist: &[String], reply: &str) -> BoundaryVerdict {
     let norm_whitelist: Vec<&str> = whitelist.iter().map(|w| normalize_one(w)).collect();
     let declared_route = parse_route(reply).as_deref() == Some("plan");
     let extra: Vec<String> = changed
@@ -222,7 +275,7 @@ fn prose_reason(text: &str) -> String {
 pub fn check_roundtrip(n: usize) -> Result<()> {
     if n > MAX_ROUNDTRIPS {
         return Err(DevforgeError::Quality(format!(
-            "plan↔coding 已经往返 {n} 次（上限 {MAX_ROUNDTRIPS}）——停下来问人，不再自动扩边界"
+            "plan↔coding 又请求了第 {n} 次往返（上限 {MAX_ROUNDTRIPS}，已完成 {MAX_ROUNDTRIPS} 次）——停下来问人，不再自动扩边界"
         )));
     }
     Ok(())
@@ -230,13 +283,15 @@ pub fn check_roundtrip(n: usize) -> Result<()> {
 
 /// 把申报的文件并进白名单（引擎用于「补完边界后重新校验」与审计展示）。
 pub fn merge_gaps_into_whitelist(whitelist: &mut Vec<String>, gaps: &[ImpactGap]) {
+    // 自审 minor（45）：旧口径按**原始字符串**比较再 sort+dedup——同一文件用两种拼写
+    // （`src/a.rs` 与 `./src/a.rs`）能同时进白名单，且 sort 打乱了计划原有的白名单顺序
+    // （顺序对审计展示有意义）。现在按归一化路径去重，保持原顺序追加。
     for g in gaps {
-        if !whitelist.iter().any(|w| w == &g.file) {
+        let key = normalize_one(&g.file);
+        if !whitelist.iter().any(|w| normalize_one(w) == key) {
             whitelist.push(g.file.clone());
         }
     }
-    whitelist.sort();
-    whitelist.dedup();
 }
 
 /// 打回 plan 时给 plan agent 的指令：把这些缺口补进计划，然后重新交审。
@@ -251,17 +306,14 @@ pub fn replan_instruction(gaps: &[ImpactGap], roundtrip: usize, reason: &str) ->
         out.push_str("无边界缺口申报（coding 未申报具体文件缺口）。");
     }
     for g in gaps {
-        out.push_str(&format!(
-            "- `{}`：{}（证据：{}）\n",
-            g.file, g.reason, g.evidence
-        ));
+        let _ = writeln!(out, "- `{}`：{}（证据：{}）", g.file, g.reason, g.evidence);
     }
     out.push_str(
         "\n要求：更新「影响面」与「三张表」，把上述文件写进白名单，并在「风险」里记录这次缺口。\
 补完重新交审（审查只审增量，仍不看代码）。",
     );
     if !reason.is_empty() {
-        out.push_str(&format!("\n\ncoding 的回退理由（原文）：{reason}"));
+        let _ = write!(out, "\n\ncoding 的回退理由（原文）：{reason}");
     }
     out
 }

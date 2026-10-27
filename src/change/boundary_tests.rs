@@ -90,21 +90,27 @@ fn declaration_must_cover_every_extra_file() {
         &s(&["src/a.rs"]),
         REPLY_DECLARE,
     );
-    assert!(v.is_fail(), "申报只盖一半也是范围膨胀：{v:?}");
+    assert!(
+        matches!(v, BoundaryVerdict::OutOfBoundary { .. }),
+        "申报只盖一半也是范围膨胀：{v:?}"
+    );
 }
 
 #[test]
 fn incomplete_gap_entry_counts_as_missing_declaration() {
     let reply = "<route>plan</route>\n<impact-gap>\n- 文件：src/extra.rs\n</impact-gap>";
     let v = classify(&s(&["src/extra.rs"]), &s(&["src/a.rs"]), reply);
-    assert!(v.is_fail(), "缺理由/证据的申报不算申报：{v:?}");
+    assert!(
+        matches!(v, BoundaryVerdict::OutOfBoundary { .. }),
+        "缺理由/证据的申报不算申报：{v:?}"
+    );
 }
 
 #[test]
 fn route_other_than_plan_is_not_a_declaration() {
     let reply = "<route>coding</route>\n<impact-gap>\n- 文件：src/extra.rs\n- 为什么必须改：x\n- 证据：src/extra.rs:1\n</impact-gap>";
     let v = classify(&s(&["src/extra.rs"]), &s(&["src/a.rs"]), reply);
-    assert!(v.is_fail(), "{v:?}");
+    assert!(matches!(v, BoundaryVerdict::OutOfBoundary { .. }), "{v:?}");
 }
 
 #[test]
@@ -230,4 +236,116 @@ fn route_block_must_stand_alone_on_its_line() {
         "行内提及 → 不是 route 块"
     );
     assert_eq!(parse_route("<route></route>").as_deref(), None, "空路由值无效");
+}
+
+// ── 2026-10-27 自审 boundary 批：归一化不变量 + 解析纪律回归 ──
+
+/// 自审 minor（43）：注释点名的「复验 #7」不变量此前无任何测试守护——改成子串匹配
+/// 也不会变红。这里把三条不变量钉死：去 `./` 前缀、归一化后精确相等、`.bak` 不覆盖。
+#[test]
+fn whitelist_matching_is_normalized_and_exact() {
+    // `./` 前缀两侧同处理 → 视作同一文件
+    assert_eq!(
+        classify(&s(&["./src/a.rs"]), &s(&["src/a.rs"]), ""),
+        BoundaryVerdict::InBoundary
+    );
+    // 精确相等，不是子串包含：`src/a.rs.bak` 不得被 `src/a.rs` 覆盖
+    assert_eq!(
+        classify(&s(&["src/a.rs.bak"]), &s(&["src/a.rs"]), ""),
+        BoundaryVerdict::OutOfBoundary {
+            extra: s(&["src/a.rs.bak"])
+        }
+    );
+    // 申报侧同样归一化：申报写 `./src/x.rs` 也要覆盖改动 `src/x.rs`
+    assert_eq!(
+        classify(
+            &s(&["src/x.rs"]),
+            &s(&["src/a.rs"]),
+            "补边界\n<route>plan</route>\n<impact-gap>\n- 文件：./src/x.rs\n- 理由：依赖\n- 证据：src/a.rs:3\n</impact-gap>"
+        ),
+        BoundaryVerdict::RoutePlan {
+            gaps: vec![ImpactGap {
+                file: "./src/x.rs".into(),
+                reason: "依赖".into(),
+                evidence: "src/a.rs:3".into(),
+            }],
+            reason: "补边界".into()
+        }
+    );
+}
+
+/// 自审 minor（40）：申报文件值带反引号/引号包裹时也必须能匹配（模型常见写法）。
+#[test]
+fn declared_file_with_backticks_still_matches() {
+    let v = classify(
+        &s(&["src/x.rs"]),
+        &s(&["src/a.rs"]),
+        "<route>plan</route>\n<impact-gap>\n- 文件：`src/x.rs`\n- 理由：依赖\n- 证据：src/a.rs:3\n</impact-gap>",
+    );
+    assert!(matches!(v, BoundaryVerdict::RoutePlan { .. }), "{v:?}");
+}
+
+/// 自审 minor（11）：impact-gap 与 route 同口径，只认尾部协议位——
+/// 尾部仍有正文时，最后那个块是正文里的示例，不是正式申报。
+#[test]
+fn impact_gap_must_be_at_the_tail() {
+    assert!(
+        parse_impact_gaps(
+            "<impact-gap>\n- 文件：src/x.rs\n- 理由：r\n- 证据：e:1\n</impact-gap>\n补充说明一句"
+        )
+        .is_empty(),
+        "块后还有正文 → 不认这次申报"
+    );
+    assert_eq!(
+        parse_impact_gaps(
+            "<impact-gap>\n- 文件：src/x.rs\n- 理由：r\n- 证据：e:1\n</impact-gap>\n"
+        )
+        .len(),
+        1,
+        "块在尾部（后随空白）→ 正式申报"
+    );
+}
+
+/// 自审 minor（42）：字段顺序不敏感——理由/证据写在「文件」行之前也要能落地。
+#[test]
+fn gap_field_order_is_not_significant() {
+    let gaps = parse_impact_gaps(
+        "<impact-gap>\n- 理由：为什么\n- 证据：src/a.rs:1\n- 文件：src/x.rs\n</impact-gap>",
+    );
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert_eq!(gaps[0].file, "src/x.rs");
+    assert_eq!(gaps[0].reason, "为什么");
+    assert_eq!(gaps[0].evidence, "src/a.rs:1");
+}
+
+/// 自审 minor（39）：垃圾文件值（绝对路径/带空白/含尖括号）不得进申报。
+#[test]
+fn implausible_declared_paths_are_dropped() {
+    let gaps = parse_impact_gaps(
+        "<impact-gap>\n- 文件：/etc/passwd\n- 理由：r\n- 证据：e:1\n- 文件：src/ok.rs\n- 理由：r2\n- 证据：e:2\n</impact-gap>",
+    );
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert_eq!(gaps[0].file, "src/ok.rs");
+}
+
+/// 自审 minor（45）：merge 按归一化去重且不重排（顺序对审计展示有意义）。
+#[test]
+fn merge_keeps_order_and_dedupes_by_normalized_path() {
+    let mut wl = s(&["src/b.rs", "src/a.rs"]);
+    merge_gaps_into_whitelist(
+        &mut wl,
+        &[
+            ImpactGap {
+                file: "./src/a.rs".into(),
+                reason: "r".into(),
+                evidence: "e:1".into(),
+            },
+            ImpactGap {
+                file: "src/c.rs".into(),
+                reason: "r".into(),
+                evidence: "e:2".into(),
+            },
+        ],
+    );
+    assert_eq!(wl, s(&["src/b.rs", "src/a.rs", "src/c.rs"]));
 }

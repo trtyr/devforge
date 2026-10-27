@@ -1,0 +1,33 @@
+{
+ "unit-id": "unit-src-34",
+ "phase": "generated",
+ "status": "pending-review",
+ "files": [
+  "docs/contexts/src/docgen/inventory/mod.rs.md",
+  "docs/contexts/src/docgen/inventory/data.rs.md",
+  "docs/contexts/src/docgen/inventory/closure.rs.md",
+  "docs/contexts/src/docgen/inventory/imports.rs.md",
+  "docs/contexts/src/docgen/inventory/scanner.rs.md",
+  "docs/contexts/src/docgen/inventory/support.rs.md",
+  "docs/contexts/src/docgen/inventory/tests.rs.md"
+ ],
+ "docs-written": [
+  "docs/contexts/src/docgen/inventory/mod.rs.md",
+  "docs/contexts/src/docgen/inventory/data.rs.md",
+  "docs/contexts/src/docgen/inventory/closure.rs.md",
+  "docs/contexts/src/docgen/inventory/imports.rs.md",
+  "docs/contexts/src/docgen/inventory/scanner.rs.md",
+  "docs/contexts/src/docgen/inventory/support.rs.md",
+  "docs/contexts/src/docgen/inventory/tests.rs.md"
+ ],
+ "docs-lines": 1077,
+ "facts": "docs/contexts/_meta/facts/unit-src-34.md（新建；7 个文件 1613 行的公开符号/私有条目/行为细节/24 个用例行号/消费方/可重放命令）。",
+ "gaps": "docs/contexts/_meta/gaps.md 的 unit-src-34 段共 10 条 🟡（assets 排除=覆盖盲区、public_symbols 漏 pub(crate)/pub(super)、is_entry_file 白名单窄、scan_source_files/scan_support_files 的 Result 无 Err 路径、sql_objects 返回小写名、package_scripts 行号靠字符串搜索、imports 三条分支无用例（Go 顺序不稳 / Rust 不认 #[path] 与内联 mod）、chunk 内混合 unit_id 被静默合并、codegraph_indexed 只是目录存在性、save 非原子无并发保护、.env 与代码侧键白名单不一致）。",
+ "inventory-marked-covered": 62,
+ "inventory-note": "62 条（module×7 各由 frontmatter module_path 自报家门 + symbol×31 各一节/表项 + behavior×24 由 tests.rs.md 的「用例清单」24 行承接）。机械复核：doc-audit --level detailed 中 src/docgen/inventory 的条目在「未在文档中出现」里 0 条。inventory.json 的 status 未改写（无标记工具）。",
+ "doc-lint-exit": 0,
+ "doc-lint-summary": "devforge doc-lint docs/contexts --repo /home/trtyr/code-work/devforge → EXIT=0，doc-lint: 通过（0 违规）",
+ "evidence": "①本轮实跑（仓树干净，git status --short 仅未跟踪的 .pi/ 与 docs/contexts/）：RUSTUP_HOME=/home/trtyr/.rustup RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=/var/tmp/u34-target TMPDIR=/var/tmp/u34-tmp CARGO_NET_OFFLINE=true cargo test --lib docgen::inventory → 24 passed; 0 failed; 0 ignored; 595 filtered out，EXIT=0；`-- --list` = 24 tests, 0 benchmarks。②覆盖复核：doc-audit --level detailed 中 src/docgen/inventory 条目 0 条缺失（module 7 + symbol 31 + behavior 24）。③逐行对账（grep -n 核对全部符号/私有条目/用例起始行）：mod.rs mod :18-:22 / tests :24-:25 / pub use :12-:16 / 共享导入 :5 :6 :8 :10；data.rs SOURCE_EXTENSIONS :6（21 条，其中 13 条 Other :15-:27）/ Lang :32 / from_path :42 / EntryKind :53 / Coverage :64 / one :87 / InventoryEntry :70 / InventoryMeta :92 / Inventory :102 / Closure :108 / as_str :115 / ClosureFinding :125 / entry_paths :133 / symbol_names :141 / save :149 / load :158；closure.rs check_closures :6（① :13-:24、② :26-:44、③ :46-:89、排序 :91-:93）/ export_glossary :98（标题 :99、分组 :100、Symbol :102、排序 :107、未分组 :108、别名 :111-:115、模板 :116-:119、缺口段 :123-:128）；imports.rs resolve_imports :6（candidate :13、逐行 :37、Python :40、TsJs :68、Go :86、Rust :99、Other :124、返回 :127）/ add_relative :130 / cargo_crate_name :142 / resolve_by_suffix :159 / norm :183；scanner.rs build_inventory :6（Module :14-:24、Other :27-:35、sym :40-:51、cfg :52-:63、spec :64-:81、entry :85-:96、支持文件 :99-:141、meta :143-:152）/ SKIP_DIRS :156-:170 / is_skipped_dir :173 / scan_source_files :178（排除 :189-:204、sort :213）/ module_name :217 / is_entry_file :226 / public_symbols :248（Py :254、TsJs :269、Go :290、Rust :309、Other :327）/ MAX_UNIT_MODULES :337 / assign_units :340（分组 :342-:351、水位 :354-:364、切片 :366-:370、复用/新增 :372-:383、回填 :389-:402、回写 :403）/ group_of :406 / sanitize :413 / parse_unit_seq :427；support.rs config_keys :8 / env_file_keys :26 / sql_objects :48 / make_targets :73 / package_scripts :97 / keys_after :118 / scan_support_files :148（NAMES :149）/ is_test_file :183 / test_specs :202；tests.rs touch :5 + 24 个 #[test] 起于 :12/:27/:39/:48/:76/:90/:103/:116/:128/:139/:150/:162/:175/:194/:213/:234/:251/:259/:268/:280/:329/:356/:382/:392（:349 的 #[test] 是夹具字符串）。④本轮按源码纠正：data.rs 扩展名 Other 计数 11→13 且区间改 :15-:27；scanner.rs 12 处区间（Other 分支 :27-:35、sym/cfg/spec/entry/支持文件/meta 六段、chunks/sort/水位、排除三条、public_symbols 五个语言分支、速查表 9 行）；support.rs 5 处（scan_support_files 剪枝/后缀/strip、is_test_file 三组判据、test_specs 五个分支）；closure.rs 2 处（:113→:114、:132-134→:132-:133）。⑤跨模块引用复核命中：src/main.rs:113/:114/:115/:132-:133/:135-:140、src/sop/doc/wiring.rs:45-:49/:50/:51-:60、src/change/docs.rs:35-:46、src/docgen/impact.rs:360-:363、Cargo.toml:4/:27。⑥doc-lint 门禁返工 1 轮：新写的 4 篇文档初版有 127 条幽灵实体/幽灵路径（doc-lint 只对 inline code 校验，且把含 `/` 的 span 当路径、把 `Type::method` 当整体名字），按「bare 名 + 散文」改写后归零。",
+ "review-round": "本单元首次以 unit-src-34 提交（此前只有 closure.rs 一篇以旧编号 unit-src-33 存在，本轮已收敛并补齐其余 6 篇）。closure.rs.md 原内容经逐行复核基本准确，只改 unit 字段与 2 处区间并补本轮实跑证据。",
+ "note": "7 篇模块文档一一对应 7 个源文件；无单元级 index/runbook/overview 枢纽（各篇内嵌 Runbook 分片，与本仓其它单元一致）。跨模块只建引用（mod.rs 的「公开成员」表用相对链接指向 6 篇兄弟文档，其余按符号名与源码路径指认）。"
+}
