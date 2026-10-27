@@ -693,7 +693,9 @@ pub async fn list_runs(
         "project": project,
         "task": task,
         "current_run": t.current_run,
-        "plan_tree_dir": st.plans_root.join(&project).join(&task),
+        // 自审 minor（208）：不回显主机绝对路径（与 project 的 public_view 同口径）——
+        // 只给相对台账根的尾巴，客户端拿它拼自己的展示，不拿它拼真实磁盘路径。
+        "plan_tree_rel": plan_tree_rel(&st.plans_root, &project, &task),
         "runs": runs,
     })))
 }
@@ -730,9 +732,21 @@ fn obs_root_of(st: &SharedState) -> std::path::PathBuf {
         .unwrap_or_else(crate::observability::root)
 }
 
+/// 结构化日志在观测根下的相对位置（自审 minor 208：对外只回相对路径）。
+const LOG_FILE_REL: &str = "logs/devforge.log.jsonl";
+
+/// 台账目录相对形式（`<台账根名>/<project>/<task>`）：对外不回绝对路径。
+fn plan_tree_rel(plans_root: &std::path::Path, project: &str, task: &str) -> String {
+    let root_name = plans_root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "plans".to_string());
+    format!("{root_name}/{project}/{task}")
+}
+
 /// 结构化日志路径（与 logging::init 同根同约定：`<root>/logs/devforge.log.jsonl`）。
 fn log_file_path(st: &SharedState) -> std::path::PathBuf {
-    obs_root_of(st).join("logs").join("devforge.log.jsonl")
+    obs_root_of(st).join(LOG_FILE_REL)
 }
 
 /// 读 JSONL 日志并按事件名子串过滤、分页。返回（命中总数，本页事件）。
@@ -903,7 +917,8 @@ pub async fn get_run_detail(
         "heartbeat": heartbeat,
         "agent": agent,
         "progress": progress,
-        "log_file": log_path,
+        // 自审 minor（208）：日志文件只回相对路径（观测根下的约定位置），不回主机绝对路径。
+        "log_file_rel": LOG_FILE_REL,
         // P012 M0 · T0.3：阶段转换历史（串行分数四段的边界戳，相邻 at_ms 差值即段耗时）
         "phases": crate::observability::phase_log(&run_id),
     })))
@@ -1008,7 +1023,12 @@ pub async fn run_transcript(
     let page: Vec<serde_json::Value> = entries.into_iter().skip(from).take(limit).collect();
     Ok(Json(json!({
         "run": run_id,
-        "files": files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        // 自审 minor（208）：会话文件名（`<ts>_<run_id>.jsonl`）即可唯一定位，
+        // 回主机绝对路径等于把目录布局白送出去。
+        "files": files
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect::<Vec<_>>(),
         "total": total,
         "from": from,
         "limit": limit,

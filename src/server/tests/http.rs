@@ -274,6 +274,30 @@ async fn run_detail_aggregates_observability() {
         "agent 活性聚合位要在: {body}"
     );
     assert!(body["progress"].is_null(), "planning sop 无进度段: {body}");
+    // 自审 minor（208）回归：详情/列表响应不得回显主机绝对路径（目录布局不入口径）——
+    // 逐字段扫字符串值，任何以 / 开头或含观测根/台账根绝对路径的都算泄露。
+    let plans_root = f.state.plans_root.display().to_string();
+    fn scan(v: &Value, plans_root: &str, out: &mut Vec<String>) {
+        match v {
+            Value::String(s) => {
+                if s.starts_with('/') || (!plans_root.is_empty() && s.contains(plans_root)) {
+                    out.push(s.clone());
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| scan(x, plans_root, out)),
+            Value::Object(o) => o.values().for_each(|x| scan(x, plans_root, out)),
+            _ => {}
+        }
+    }
+    let mut leaks = Vec::new();
+    scan(&body, &plans_root, &mut leaks);
+    assert!(leaks.is_empty(), "run 详情不得回显主机绝对路径：{leaks:?}");
+    // 列表端点同样收口
+    let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
+    let list = body_json(resp).await;
+    let mut leaks = Vec::new();
+    scan(&list, &plans_root, &mut leaks);
+    assert!(leaks.is_empty(), "run 列表不得回显主机绝对路径：{leaks:?}");
     // 未知 run → 404
     let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs/nope", None).await;
     assert_eq!(resp.status(), 404);

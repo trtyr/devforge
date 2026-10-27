@@ -68,6 +68,15 @@ pub struct ProdChangeSession {
 
 // ---------------- 提示词 ----------------
 
+/// 给确定性判定给出的明细加来源标签（自审 minor 81）：同一句话术里混着「机器拦的」与
+/// 「审查官拦的」两类失败，事后无法归因；标签直接进明细，agent 与日志都能看见。
+fn tagged(kind: &str, issues: Vec<String>) -> Vec<String> {
+    issues
+        .into_iter()
+        .map(|i| format!("【{kind}】{i}"))
+        .collect()
+}
+
 pub fn plan_kickoff(ctx: &ChangeCtx) -> String {
     format!(
         "你是 change-plan-agent。change-id：`{}`\n\
@@ -310,6 +319,10 @@ fn review_once(
 impl ProdChangeSession {
     /// plan / amend 共用：发指令 → 等标记 → 审计计划 → 审查。
     fn run_plan_with(&mut self, ui: &mut dyn UserLink, message: &str) -> Result<PlanTurn> {
+        // 自审 minor（80）：本轮实例数归零——确定性硬门短路时不走 review_once，
+        // 旧口径会把**上一轮**的实例数留在字段里，编排层每轮 `+= plan_reviews()`，
+        // 报告里的「审查轮次」逐轮虚高（没有任何审查发生却涨数）。
+        self.plan_review_instances = 0;
         let first = self.plan_agent.converse(message, ui)?;
         // 计划正文从台账文件读（不解析回复），这里只要「标记补完」的副作用
         let _reply = require_marker_nudged("change-plan-agent", first, |m| {
@@ -324,8 +337,10 @@ impl ProdChangeSession {
         // （确定性判定不交给审查官重判；打回走既有修复回路，轮次由 MAX_PLAN_FIXES 约束）
         let verdicts = crate::change::plan_audit::audit_verdicts(&plan_text);
         if !verdicts.is_clean() {
+            // 自审 minor（81）：明细自带来源标签——旧口径 agent 与日志都分不清
+            // 这是机器拦的还是审查官拦的。
             return Ok(PlanTurn::Fail {
-                issues: verdicts.issues,
+                issues: tagged("确定性审计", verdicts.issues),
             });
         }
         let audit =
@@ -343,7 +358,7 @@ impl ProdChangeSession {
         // MAX_PLAN_FIXES 修复回路）；审查指令继续注入作为审查官额外上下文。
         if !audit.is_clean() {
             return Ok(PlanTurn::Fail {
-                issues: audit.issues,
+                issues: tagged("确定性审计", audit.issues),
             });
         }
         // plan 侧的审查实例数（= 审查轮次）落字段：报告里的轮次如实反映重审（D026 · Q12）。
@@ -379,6 +394,10 @@ impl ProdChangeSession {
                 component = "change-engine",
                 event = "gate.self_check",
                 passed = false,
+                // 自审 minor（82）：与基线门同口径——红时也要把退出码**按字段**带出来。
+                // 旧口径只有 error 正文，「退出码多少」埋在字符串里，按字段过滤看不到。
+                exit_code =
+                    evidence_exit_code(&self.ctx.blackboard.join(crate::change::coding_gate::SELF_CHECK_LOG)),
                 error = %e,
                 "自证门未通过"
             ),
@@ -469,8 +488,11 @@ impl ChangeSession for ProdChangeSession {
         issues: &[String],
         round: usize,
     ) -> Result<PlanTurn> {
+        // 自审 minor（81）：话术不得预设「审查打回」——明细自带来源标签（【确定性审计】= 引擎机检拦截，
+        // 其余为审查官裁决），测试→plan 回退这一支也不是审查打回。
         let message = format!(
-            "计划审查第 {round} 轮打回，逐条修复计划文件 `{}` 后重交：\n{}\n\n\
+            "计划第 {round} 轮打回，逐条修复计划文件 `{}` 后重交\
+             （明细已标来源：【确定性审计】= 引擎机检拦截，其余为审查官裁决）：\n{}\n\n\
              只改计划文件本身（补全 path:line 全路径、补缺失块、修验收标准）；\
              问询纪律：若某条歧义标了 `[必须裁决]` 却缺 `用户裁决：` 留痕，先用 ask-user-question 问用户，\
 把答复逐字写进该条目（不许带默认值自决放行）；\n\

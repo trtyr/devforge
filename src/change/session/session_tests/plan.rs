@@ -149,15 +149,29 @@ fn plan_with_must_ask_without_answer_fails_before_review() {
         plan_review,
     );
     match session.run_plan(&mut NoUser, 0).unwrap() {
-        PlanTurn::Fail { issues } => assert!(
-            issues.iter().any(|i| i.contains("必须裁决")),
-            "打回问题要点名必须裁决：{issues:?}"
-        ),
+        PlanTurn::Fail { issues } => {
+            assert!(
+                issues.iter().any(|i| i.contains("必须裁决")),
+                "打回问题要点名必须裁决：{issues:?}"
+            );
+            // 自审 minor（81）回归：确定性判定必须自带来源标签，不得伪装成审查官裁决
+            assert!(
+                issues.iter().all(|i| i.starts_with("【确定性审计】")),
+                "确定性硬门的明细要标来源：{issues:?}"
+            );
+        }
         other => panic!("应为 Fail，实际 {other:?}"),
     }
     assert!(
         seen_review.borrow().is_empty(),
         "硬门不过不得进审查轮（确定性判定不交审查官重判）"
+    );
+    // 自审 minor（80）回归：硬门短路时本轮审查实例数必须是 0——旧口径留着上一轮的数值，
+    // 编排层每轮 `+= plan_reviews()` → 报告里的「审查轮次」逐轮虚高。
+    assert_eq!(
+        session.plan_reviews(),
+        0,
+        "没有真开审查实例时 plan_reviews 必须归零"
     );
 }
 
