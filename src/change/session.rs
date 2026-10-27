@@ -276,13 +276,30 @@ fn review_once(
         "审查开庭"
     );
     let mut budget = ReviewBudget::default();
-    review_with_gate(
+    let (report, instances) = review_with_gate(
         factory,
         0,
         |_| instruction.to_string(),
         &mut budget,
         |text| Ok(outcome_of_review_report(parse_review_report(text)?)),
-    )
+    )?;
+    // 2026-10-27 自审 minor（79）：审查结论必须可事件化——旧口径只有 review.open，
+    // 「审了几轮、判了什么」从日志里无法重建（违例重审也归不到角色）。
+    tracing::info!(
+        component = "change-engine",
+        event = "review.verdict",
+        role,
+        round,
+        verdict = if report.verdict == StageVerdict::Pass {
+            "pass"
+        } else {
+            "fail"
+        },
+        issues = report.issues.len(),
+        instances,
+        "审查裁决"
+    );
+    Ok((report, instances))
 }
 
 impl ProdChangeSession {
@@ -536,7 +553,7 @@ impl ChangeSession for ProdChangeSession {
                     nudges += 1;
                     if nudges > MAX_EMPTY_ISSUES_NUDGES {
                         return Err(DevforgeError::Quality(format!(
-                            "测试阶段连续 {nudges} 次回注路由但未给出 issues 明细（未给出 issues 明细），判定为质量失败（不自动重启）"
+                            "测试阶段连续 {nudges} 次回注路由但未给出 issues 明细（<issues> 空块），判定为质量失败（不自动重启）"
                         )));
                     }
                     message = ISSUES_NUDGE.to_string();
