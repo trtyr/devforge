@@ -432,11 +432,13 @@ pub fn run_audit(
         serde_json::to_vec_pretty(&report).ctx("序列化审计报告")?,
     )
     .ctx("写审计报告")?;
+    // 自审 minor（24）：MD 报告也带代码版本（与 JSON 同源），报告文件才能溯到具体 commit
+    let head = workspace_sha(&task.workspace);
     let md = super::report::render_markdown(
         &task.project,
         &task.id,
         &merged,
-        &[],
+        head.as_deref(),
         &all_dropped,
         &abandoned,
     );
@@ -716,22 +718,15 @@ fn precheck_report(workspace: &Path, files: &[String], range: Option<(usize, usi
 /// 严重度汇总（全仓审计 M8：只接受**已跨层去重**的单一集合——旧的 local+cross 双参数
 /// 直接相加，同一条发现被本地与跨单元各算一次，critical 数量虚高）。
 fn severity_summary_of(findings: &[Finding]) -> serde_json::Value {
-    let count = |sev: &str| {
-        findings
-            .iter()
-            .filter(|f| {
-                serde_json::to_value(f.severity)
-                    .ok()
-                    .and_then(|v| v.as_str().map(|s| s == sev))
-                    .unwrap_or(false)
-            })
-            .count()
-    };
+    // 自审 minor（22）：改用 report::by_severity（旧口径在这里另写一套字符串比对，
+    // 同一能力两套实现，改一处必漂移）。
+    let grouped = super::report::by_severity(findings);
+    let n = |s| grouped.get(&s).map(|v| v.len()).unwrap_or(0);
     serde_json::json!({
-        "critical": count("critical"),
-        "major": count("major"),
-        "minor": count("minor"),
-        "nit": count("nit"),
+        "critical": n(crate::audit::finding::Severity::Critical),
+        "major": n(crate::audit::finding::Severity::Major),
+        "minor": n(crate::audit::finding::Severity::Minor),
+        "nit": n(crate::audit::finding::Severity::Nit),
     })
 }
 

@@ -14,10 +14,22 @@ fn finding(path: &str, line: u32) -> Finding {
     }
 }
 
+/// 带「引用原文」的证据（夹具文件是 `let lineN = N;` 形态）。
+fn quoted(path: &str, line: u32) -> Finding {
+    let mut f = finding(path, line);
+    f.evidence = format!("`let line{line} = {line};`（{path}:{line}）这里有问题");
+    f
+}
+
 fn fixture() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join("src")).unwrap();
-    std::fs::write(tmp.path().join("src/real.rs"), "line1\nline2\nline3\n").unwrap();
+    // 自审 minor（8）：短行不再整条豁免「引用原文」——夹具行必须够长才谈得上引用
+    std::fs::write(
+        tmp.path().join("src/real.rs"),
+        "let line1 = 1;\nlet line2 = 2;\nlet line3 = 3;\n",
+    )
+    .unwrap();
     tmp
 }
 
@@ -46,7 +58,7 @@ fn evidence_must_quote_the_source_line() {
 #[test]
 fn ghost_file_findings_are_dropped() {
     let r = fixture();
-    let findings = vec![finding("src/ghost.rs", 5), finding("src/real.rs", 2)];
+    let findings = vec![finding("src/ghost.rs", 5), quoted("src/real.rs", 2)];
     let v = verify(r.path(), &findings);
     assert_eq!(v.kept.len(), 1);
     assert_eq!(v.kept[0].path, "src/real.rs");
@@ -57,7 +69,7 @@ fn ghost_file_findings_are_dropped() {
 #[test]
 fn out_of_range_line_is_dropped() {
     let r = fixture();
-    let findings = vec![finding("src/real.rs", 99)];
+    let findings = vec![quoted("src/real.rs", 99)];
     let v = verify(r.path(), &findings);
     assert!(v.kept.is_empty());
     assert!(v.dropped[0].1.contains("行号越界"), "{}", v.dropped[0].1);
@@ -67,8 +79,8 @@ fn out_of_range_line_is_dropped() {
 fn valid_findings_pass_with_ghost_counting() {
     let r = fixture();
     let findings = vec![
-        finding("src/real.rs", 1),
-        finding("src/real.rs", 3),
+        quoted("src/real.rs", 1),
+        quoted("src/real.rs", 3),
         finding("src/nope.rs", 1),
     ];
     let v = verify(r.path(), &findings);
@@ -76,15 +88,26 @@ fn valid_findings_pass_with_ghost_counting() {
     assert_eq!(v.dropped.len(), 1);
 }
 
+/// 自审 minor（38）：次要引用指向**不存在**的文件不再判死整条发现（URL 端口、semver、
+/// 仓外绝对路径、别处快照里的文件都会命中这一类）——只留痕忽略。
 #[test]
-fn evidence_ref_to_nonexistent_file_is_dropped() {
+fn evidence_ref_to_nonexistent_file_is_ignored_not_fatal() {
     let r = fixture();
-    let mut f = finding("src/real.rs", 2);
-    // 自身引用在位（过「证据指错位置」门），幽灵引用触发「引用越界」门
-    f.evidence = "src/real.rs:2 参照 src/ghost.rs:1 的实现".into();
+    let mut f = quoted("src/real.rs", 2);
+    f.evidence = format!("{}；另外参照 src/ghost.rs:1 的同类实现", f.evidence);
     let v = verify(r.path(), &[f]);
-    assert!(v.kept.is_empty(), "证据引用幽灵文件应整条丢弃");
-    assert!(v.dropped[0].1.contains("文件不存在"), "{}", v.dropped[0].1);
+    assert_eq!(v.kept.len(), 1, "幽灵次要引用不得判死整条：{:?}", v.dropped);
+}
+
+/// 但**存在**文件的引用行号越界仍然判死（证据与代码不一致 = 在猜）。
+#[test]
+fn evidence_ref_line_out_of_range_is_still_fatal() {
+    let r = fixture();
+    let mut f = quoted("src/real.rs", 1);
+    f.evidence = format!("{}；参照 src/real.rs:999 的第二处", f.evidence);
+    let v = verify(r.path(), &[f]);
+    assert!(v.kept.is_empty(), "引用行号越界应判死");
+    assert!(v.dropped[0].1.contains("越界"), "{}", v.dropped[0].1);
 }
 
 /// 自审 major 回归：证据全部指向别的文件 = 「读过再报」失效，整条丢弃。
@@ -176,4 +199,96 @@ fn quoted_prefix_adjacent_to_ref_passes() {
     f.evidence = "src/m.rs:2 的 `use crate::error::B;` 拼写错误".into();
     let v = verify(tmp.path(), &[f]);
     assert_eq!(v.kept.len(), 1, "组合与原文紧邻应通过：{:?}", v.dropped);
+}
+
+// ── 自审 minor（37）：本文件唯二的安全分支此前没有任何回归测试 ──
+
+/// 安全分支 A：仓内符号链接指向仓外 → 拒绝读（不把核验器变成任意路径读盘器）。
+#[cfg(unix)]
+#[test]
+fn symlinked_path_escaping_the_repo_is_refused() {
+    let r = fixture();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.rs"), "let secret = 1;\n").unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("secret.rs"),
+        r.path().join("src/link.rs"),
+    )
+    .unwrap();
+
+    let f = quoted("src/link.rs", 1);
+    let v = verify(r.path(), &[f]);
+    assert!(
+        v.kept.is_empty(),
+        "经符号链接越界必须拒绝读取：{:?}",
+        v.kept
+    );
+    assert!(
+        v.dropped[0].1.contains("符号链接") || v.dropped[0].1.contains("拒绝"),
+        "丢弃原因要说明越界：{}",
+        v.dropped[0].1
+    );
+}
+
+/// 安全分支 B：证据里的**穿越引用**直接忽略（不读盘、不判死整条）。
+#[test]
+fn evidence_ref_with_traversal_is_ignored() {
+    let r = fixture();
+    let mut f = quoted("src/real.rs", 1);
+    f.evidence = format!("{}；参照 ../../etc/passwd:1 与 https://x:8080/a 与 v1:2", f.evidence);
+    let v = verify(r.path(), &[f]);
+    assert_eq!(v.kept.len(), 1, "穿越/URL 次要引用不得判死：{:?}", v.dropped);
+    assert!(
+        v.dropped.is_empty(),
+        "不得因为仓外引用产生丢弃记录：{:?}",
+        v.dropped
+    );
+}
+
+/// 自审 minor（8）：短结构行不再整条豁免引用原文——必须与 `path:line` 相邻地引用到。
+#[test]
+fn short_lines_still_need_an_adjacent_quote() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(tmp.path().join("src/s.rs"), "fn f() {\n}\n").unwrap();
+
+    let mut unquoted = finding("src/s.rs", 2);
+    unquoted.evidence = "src/s.rs:2 这里少了处理".into();
+    let v = verify(tmp.path(), &[unquoted]);
+    assert!(
+        v.kept.is_empty(),
+        "短行也要引用原文（旧口径整条豁免）：{:?}",
+        v.kept
+    );
+
+    let mut quoted_ok = finding("src/s.rs", 2);
+    quoted_ok.evidence = "`}`（src/s.rs:2）收尾过早".into();
+    assert_eq!(
+        verify(tmp.path(), &[quoted_ok]).kept.len(),
+        1,
+        "相邻引用短行原文应通过"
+    );
+}
+
+/// 自审 minor（36）：读盘失败不得被改写成「文件不存在」（基础设施故障 vs 路径幻觉）。
+#[cfg(unix)]
+#[test]
+fn unreadable_file_is_reported_as_infrastructure_not_ghost() {
+    let r = fixture();
+    // 用**目录**占位同名的 .rs：canonicalize 成功但读不出内容 → Io 类
+    std::fs::create_dir_all(r.path().join("src/dir.rs")).unwrap();
+    let mut f = finding("src/dir.rs", 1);
+    f.evidence = "src/dir.rs:1 有问题".into();
+    let v = verify(r.path(), &[f]);
+    assert!(v.kept.is_empty());
+    assert!(
+        v.dropped[0].1.contains("基础设施故障"),
+        "读失败要归类为基础设施：{}",
+        v.dropped[0].1
+    );
+    assert!(
+        !v.dropped[0].1.contains("幽灵发现"),
+        "不得把读不到写成路径幻觉：{}",
+        v.dropped[0].1
+    );
 }

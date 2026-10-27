@@ -11,31 +11,70 @@ use std::collections::BTreeMap;
 /// 现键加归一化 claim；真重复仍合并，但 **severity 取更重**（防御性：重复条目间的
 /// 严重度分歧不应因证据长短而丢重的那个）。
 pub fn dedup(findings: &[Finding]) -> Vec<Finding> {
+    let (out, merged) = dedup_with_stats(findings);
+    if merged > 0 {
+        tracing::info!(
+            component = "audit-engine",
+            merged,
+            before = findings.len(),
+            after = out.len(),
+            "跨单元去重：重复发现已合并（severity 取更重）"
+        );
+    }
+    out
+}
+
+/// 去重并返回（结果, 合并条数）——自审 minor 18：合并必须能进报告计数与日志。
+pub fn dedup_with_stats(findings: &[Finding]) -> (Vec<Finding>, usize) {
+    let mut merged = 0usize;
     let mut by_key: BTreeMap<(String, u32, String, String), Finding> = BTreeMap::new();
     for f in findings {
+        // 自审 minor（19）：旧口径用 serde_json::to_string(...).unwrap_or_default() 生成视角
+        // 分量——序列化错误被静默降级成空串，不同视角会塌缩成同一个键（正是 M1 修复过的
+        // 缺陷复发路径）。改用与报告同源的稳定 kebab 名。
         let key = (
             f.path.clone(),
             f.line,
-            serde_json::to_string(&f.view).unwrap_or_default(),
+            view_name(f.view),
             normalize_claim(&f.claim),
         );
         match by_key.get_mut(&key) {
             Some(existing) => {
-                // 完全重复（同位置同视角同主张）：severity 取更重（Critical < Major < …）
+                // 自审 minor（20）：severity 取更重时，evidence/batch 必须**跟着那一侧走**——
+                // 旧口径 severity 取自 A、evidence+batch 取自 B，会产出「critical 严重度 +
+                // nit 批次的证据」这种自相矛盾的行。
+                // 口径：severity 取更重；evidence 取更详尽（同一 path:line+claim 下证据
+                // 只描述同一处，与严重度取值不矛盾）；**批次取并集**（溯源不得丢）。
                 if f.severity < existing.severity {
                     existing.severity = f.severity;
                 }
                 if f.evidence.len() > existing.evidence.len() {
                     existing.evidence = f.evidence.clone();
-                    existing.batch = f.batch.clone();
                 }
+                merge_batch(&mut existing.batch, &f.batch);
+                // 自审 minor（18）：合并动作必须可观测（幽灵过滤与批次放弃都有留痕，
+                // 去重合并（含严重度抬升）此前既无事件也不进任何计数）。
+                merged += 1;
             }
             None => {
                 by_key.insert(key, f.clone());
             }
         }
     }
-    by_key.into_values().collect()
+    (by_key.into_values().collect(), merged)
+}
+
+/// 合并溯源批次（自审 minor 21）：旧口径只留一个 batch 字段，另一批次的溯源永久丢失。
+fn merge_batch(batch: &mut String, other: &str) {
+    if other.is_empty() || batch == other || batch.split('+').any(|b| b == other) {
+        return;
+    }
+    if batch.is_empty() {
+        batch.push_str(other);
+    } else {
+        batch.push('+');
+        batch.push_str(other);
+    }
 }
 
 /// claim 归一（去重键用）：小写 + 压缩空白 —— 只是格式差异的主张算同一条。
@@ -56,7 +95,10 @@ fn normalize_claim(claim: &str) -> String {
     out
 }
 
-/// 按严重度分组排序（critical → nit）。
+/// 按严重度分组（维持 `Severity` 的顺序 = critical → nit）。
+///
+/// 2026-10-27 自审 minor 22：runner 曾另写一套 `severity_summary_of` 重做同一件事
+/// （两套实现），现在 runner 直接用它。
 pub fn by_severity(findings: &[Finding]) -> BTreeMap<Severity, Vec<&Finding>> {
     let mut grouped: BTreeMap<Severity, Vec<&Finding>> = BTreeMap::new();
     for f in findings {
@@ -69,12 +111,15 @@ pub fn by_severity(findings: &[Finding]) -> BTreeMap<Severity, Vec<&Finding>> {
 pub fn render_markdown(
     project: &str,
     task: &str,
-    local: &[Finding],
-    cross: &[Finding],
+    findings: &[Finding],
+    workspace_sha: Option<&str>,
     dropped: &[(String, String)],
     abandoned: &[String],
 ) -> String {
-    let mut all: Vec<&Finding> = local.iter().chain(cross.iter()).collect();
+    // 自审 minor（23）：旧签名 local/cross 双参暗示「函数自己做双源合并」，实际它只是拼在
+    // 一起排序——唯一生产调用方靠传 merged + &[] 规避重复计数，cross 分支零测试。
+    // 改成单源入参：调用方负责先合并（谁合并谁负责口径）。
+    let mut all: Vec<&Finding> = findings.iter().collect();
     all.sort_by_key(|f| f.severity);
 
     let sev_name = |s: Severity| match s {
@@ -93,8 +138,10 @@ pub fn render_markdown(
     let mut md = String::new();
     md.push_str(&format!(
         "# 全量代码审计报告 — {project}/{task}\n\n\
+         > 代码版本：{}（报告可溯到具体 commit）。\n\
          > 发现总数 {}（critical {} / major {} / minor {} / nit {}）；\
          幽灵发现已核验过滤 {} 条；放弃批次 {} 个。\n\n",
+        workspace_sha.unwrap_or("（未记录）"),
         all.len(),
         counts.get(&Severity::Critical).copied().unwrap_or(0),
         counts.get(&Severity::Major).copied().unwrap_or(0),
@@ -129,7 +176,8 @@ pub fn render_markdown(
             // 与 JSON 口径一致（旧实现 {:?} 打的是 `Correctness`）
             md.push_str(&format!(
                 "| `{}` | {} | {} | {} | {} |\n",
-                format!("{}:{}", f.path, f.line),
+                // 自审 minor（25）：位置列同样要转义（路径含 `|` 会把表格顶歪）
+                cell(&format!("{}:{}", f.path, f.line)),
                 view_name(f.view),
                 cell(&f.claim),
                 cell(&f.evidence),
@@ -157,7 +205,10 @@ pub fn render_markdown(
 
 /// Markdown 表格单元转义（全仓审计 m3）。
 fn cell(s: &str) -> String {
-    s.replace('|', "\\|")
+    // 自审 nit（8）：旧口径先把 `|` 换成 `\|`，若文本里本来就有反斜杠，会产出 `\\|`
+    // 这类歧义转义（渲染出多余反斜杠）。先把反斜杠加倍，再转义竖线。
+    s.replace('\\', "\\\\")
+        .replace('|', "\\|")
         .replace(['\n', '\r'], " ")
 }
 

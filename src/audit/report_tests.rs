@@ -63,7 +63,7 @@ fn markdown_groups_by_severity_with_summary() {
         finding("src/a.rs", 1, View::Correctness, Severity::Critical, "e1"),
         finding("src/b.rs", 2, View::Security, Severity::Nit, "e2"),
     ];
-    let md = render_markdown("p", "t", &local, &[], &[], &[]);
+    let md = render_markdown("p", "t", &local, Some("abc1234"), &[], &[]);
     assert!(md.contains("critical 1"), "{md}");
     assert!(md.contains("## critical（1 条）"));
     assert!(md.contains("`src/a.rs:1`"));
@@ -76,7 +76,7 @@ fn dropped_and_abandoned_are_recorded() {
         "p",
         "t",
         &[],
-        &[],
+        Some("sha-abc"),
         &[("src/ghost.rs:1".into(), "文件不存在".into())],
         &["unit-009：两次协议违例".into()],
     );
@@ -97,7 +97,7 @@ fn markdown_escapes_table_cells_and_uses_kebab_view() {
         "证据|带管道\n第二行",
     );
     f.claim = "主张|带管道".into();
-    let md = render_markdown("p", "t", &[f], &[], &[], &[]);
+    let md = render_markdown("p", "t", &[f], None, &[], &[]);
     assert!(md.contains("correctness"), "view 应为 kebab-case：{md}");
     assert!(!md.contains("Correctness"), "不得出现 Debug 形态：{md}");
     assert!(md.contains("主张\\|带管道"), "claim 的管道应转义：{md}");
@@ -110,4 +110,45 @@ fn markdown_escapes_table_cells_and_uses_kebab_view() {
         6,
         "转义后结构分隔应仍为 6 个管道：{row}"
     );
+}
+
+/// 自审 minor（18/21）：合并必须可计数，且**两个批次的溯源都要保住**（旧口径只留一个）。
+#[test]
+fn merge_keeps_both_batches_and_reports_count() {
+    let mut a = finding("src/x.rs", 3, View::Security, Severity::Major, "短");
+    a.claim = "同一主张".into();
+    a.batch = "unit-001".into();
+    let mut b = finding("src/x.rs", 3, View::Security, Severity::Critical, "更长证据描述");
+    b.claim = "同一主张".into();
+    b.batch = "unit-002".into();
+
+    let (out, merged) = dedup_with_stats(&[a, b]);
+    assert_eq!(merged, 1, "合并条数必须可计数（旧口径既无事件也不进任何计数）");
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].severity, Severity::Critical);
+    assert!(
+        out[0].batch.contains("unit-001") && out[0].batch.contains("unit-002"),
+        "两个批次的溯源都要保留：{}",
+        out[0].batch
+    );
+}
+
+/// 自审 minor（19）：视角分量必须用稳定 kebab 名——不同视角不得塌缩成同一个去重键。
+#[test]
+fn different_views_never_collapse_into_one_key() {
+    let mut a = finding("src/x.rs", 5, View::Correctness, Severity::Major, "证据");
+    a.claim = "同名主张".into();
+    let mut b = finding("src/x.rs", 5, View::Security, Severity::Major, "证据");
+    b.claim = "同名主张".into();
+    let out = dedup(&[a, b]);
+    assert_eq!(out.len(), 2, "不同视角是不同问题：{out:?}");
+}
+
+/// 自审 minor（24）：人读版 MD 必须带代码版本（可溯到具体 commit）。
+#[test]
+fn markdown_carries_workspace_sha() {
+    let md = render_markdown("p", "t", &[], Some("deadbeef"), &[], &[]);
+    assert!(md.contains("deadbeef"), "MD 报告缺代码版本：{md}");
+    let md2 = render_markdown("p", "t", &[], None, &[], &[]);
+    assert!(md2.contains("未记录"), "拿不到 sha 时也要显式说明：{md2}");
 }
