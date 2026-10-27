@@ -202,6 +202,13 @@ fn route_is_only_recognized_at_the_tail() {
         Some("coding"),
         "尾部独立行 → 是回退"
     );
+    // 自审 minor（23）：agent 把 <stage-complete> 放在 route **后面**（开工语同时要两个），
+    // 旧口径因「route 之后还有东西」认不出路由，回退被降级成范围膨胀。
+    assert_eq!(
+        parse_route("已声明\n<route>plan</route>\n<stage-complete>1</stage-complete>").as_deref(),
+        Some("plan"),
+        "marker 在 route 之后不得弄丢路由"
+    );
     assert_eq!(
         parse_route("已声明\n<route>coding</route>\n<issues>\n- tests/a_test.rs:10 断言失败\n</issues>")
             .as_deref(),

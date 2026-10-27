@@ -44,7 +44,15 @@ pub fn parse_route(text: &str) -> Option<String> {
     // 剥掉尾部的协议块（`<issues>` / `<impact-gap>`，可多个）——route 块之后只允许它们
     loop {
         let mut stripped = false;
-        for (open, close) in [("<issues>", "</issues>"), ("<impact-gap>", "</impact-gap>")] {
+        // 剥掉尾部的协议块（`<issues>` / `<impact-gap>` / `<stage-complete>`，可多个）——
+    // 自审 minor（23）：`<stage-complete>` 也算无意义的尾巴——开工语同时要了「声明块放在末尾」
+    // 与「完成后输出 <stage-complete>」，agent 把它放到 route 后面时，旧口径直接认不出路由，
+    // route=plan 被降级成「越界未申报」，一次格式顺序差异就变成范围膨胀。
+    for (open, close) in [
+        ("<issues>", "</issues>"),
+        ("<impact-gap>", "</impact-gap>"),
+        ("<stage-complete>", "</stage-complete>"),
+    ] {
             let Some(end) = rest.rfind(close) else {
                 continue;
             };
