@@ -16,6 +16,14 @@ fn store(root: &Path) -> StateStore {
     )
 }
 
+/// 真基线 sha（store() 已把它落到 `.git/head-sha`）：报告 diff 现在用断点里的基线，
+/// 断点种子必须用**真实存在的 commit**，否则 git 直接 bad revision。
+fn head_sha(repo: &Path) -> String {
+    std::fs::read_to_string(repo.join(".git/head-sha"))
+        .map(|s| s.trim().to_string())
+        .expect("store() 已初始化 git 仓并落 head-sha")
+}
+
 fn s(v: &[&str]) -> Vec<String> {
     v.iter().map(|x| x.to_string()).collect()
 }
@@ -182,7 +190,7 @@ fn cfg<'a>(store: &'a StateStore, repo: &'a Path, wl: &[&str], criteria: &[&str]
     // 才回退占位——diff_stats 会如实报错。
     let baseline_sha = std::fs::read_to_string(repo.join(".git/head-sha"))
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "base123".to_string());
+        .unwrap_or_else(|_| "abcdef1234".to_string());
     let leaked: &'a str = Box::leak(baseline_sha.into_boxed_str());
     ChangeRun {
         store,
@@ -371,7 +379,7 @@ fn coding_routes_back_to_plan_then_reenters_coding() {
         "补完边界必须重进 coding"
     );
     // 断点里往返计数已落盘
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(saved.roundtrips, 1);
     // 往返历史已写进目标仓（T013）
     let hist = std::fs::read_to_string(crate::change::history::history_path(plantree_change_dir(
@@ -399,7 +407,7 @@ fn out_of_boundary_without_declaration_fails_and_stays_coding() {
         .unwrap_err();
     assert!(err.to_string().contains("范围膨胀"), "{err}");
     assert!(err.is_quality_failure());
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(saved.phase, ChangePhase::Coding, "不能把失败当推进");
     assert_eq!(saved.roundtrips, 0);
 }
@@ -426,7 +434,7 @@ fn fourth_roundtrip_is_refused() {
         .unwrap_err();
     assert!(err.to_string().contains("上限 3"), "{err}");
     assert!(err.is_quality_failure(), "往返超限不该自动重启");
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(saved.roundtrips, 3, "停在第四次之前");
 }
 
@@ -456,7 +464,7 @@ fn roundtrip_count_survives_amend_failure() {
         matches!(err, DevforgeError::System(_)),
         "amend 基础设施故障必须分类 System：{err}"
     );
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(
         saved.roundtrips, 1,
         "amend 失败时 roundtrip 计数必须已保存（先落盘再 amend）"
@@ -468,7 +476,7 @@ fn resume_from_checkpoint_skips_plan_and_keeps_roundtrips() {
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
     // 预置断点：plan 已完成、coding 阶段、已往返 2 次
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Coding;
     seeded.bump_roundtrip();
     seeded.bump_roundtrip();
@@ -496,7 +504,7 @@ fn the_failure_context_reaches_the_coding_session() {
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
     // 预置断点：coding 阶段 + 一份失败上下文
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Coding;
     seeded.set_test_failure(1, vec!["tests/test_a.py:12 断言失败".to_string()]);
     save(&st, &seeded).unwrap();
@@ -537,7 +545,7 @@ fn testing_failure_routes_back_and_is_bounded() {
         msg.contains("tests/test_a.py:12"),
         "回注必须带定位（失败明细逐条原文）：{msg}"
     );
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(saved.phase, ChangePhase::Coding, "应回到 coding");
 }
 
@@ -565,7 +573,7 @@ fn reroute_writes_the_failure_context_into_the_checkpoint() {
         msg.contains("tests/change_ask_ring.rs:557"),
         "失败原因文本要带明细原文（三出口同源）：{msg}"
     );
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(saved.test_reroutes, 1, "回注计数要记 1");
     let ctx = saved.last_test_failure.expect("回注必须写入失败上下文");
     assert_eq!(ctx.round, 1, "轮次 = 第几轮回注");
@@ -605,7 +613,7 @@ fn failure_context_survives_across_sessions() {
         tmp.path(),
         StateKey::new("proj", "task", crate::change::state::CHANGE_SOP),
     );
-    let resumed = load(&st2, "change-20261020-x", "base123");
+    let resumed = load(&st2, "change-20261020-x", "abcdef1234");
     let ctx = resumed
         .last_test_failure
         .expect("跨会话必须保留失败上下文");
@@ -622,7 +630,7 @@ fn coding_success_clears_the_failure_context() {
     // 错实现形态：coding 过门后不消费上下文（过期失败被继续喂给下一轮）→ 本用例必须变红
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Coding;
     seeded.set_test_failure(1, vec!["tests/change_ask_ring.rs:557 断言失败".to_string()]);
     save(&st, &seeded).unwrap();
@@ -643,7 +651,7 @@ fn coding_success_clears_the_failure_context() {
         "测试回注必须分类 Quality：{err}"
     );
 
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(
         saved.last_test_failure, None,
         "coding 过门后上下文应被消费清空"
@@ -655,7 +663,7 @@ fn second_reroute_overwrites_the_failure_context() {
     // 错实现形态：新一次回注把 issues 追加到旧列表 → 已修好的旧失败又被喂回去
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Testing;
     seeded.test_reroutes = 1;
     seeded.set_test_failure(1, vec!["旧失败".to_string()]);
@@ -675,7 +683,7 @@ fn second_reroute_overwrites_the_failure_context() {
         "测试回注必须分类 Quality：{err}"
     );
 
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     let ctx = saved.last_test_failure.expect("应有上下文");
     assert_eq!(ctx.round, 2, "轮次 = 第几轮回注");
     assert_eq!(ctx.issues, s(&["新失败"]), "新 issues 覆盖旧的，不追加");
@@ -688,7 +696,7 @@ fn second_reroute_overwrites_the_failure_context() {
 fn testing_route_plan_persists_issues_and_counts_toward_fix_budget() {
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Testing;
     save(&st, &seeded).unwrap();
 
@@ -708,7 +716,7 @@ fn testing_route_plan_persists_issues_and_counts_toward_fix_budget() {
         "testing→plan 回退必须分类 Quality：{err}"
     );
 
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(saved.phase, ChangePhase::Plan, "回退后应回到 Plan 阶段");
     assert_eq!(
         saved.last_plan_issues,
@@ -727,7 +735,7 @@ fn testing_route_plan_persists_issues_and_counts_toward_fix_budget() {
 fn resume_after_testing_route_plan_goes_to_fix_plan_not_kickoff() {
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Plan;
     seeded.plan_fix_rounds = 1;
     seeded.last_plan_issues = s(&["验收标准无法落地"]);
@@ -762,7 +770,7 @@ fn testing_pass_clears_the_failure_context() {
     // 错实现形态：run 到 done 不清上下文（收尾留过期状态）→ 本用例必须变红
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Testing;
     seeded.set_test_failure(1, vec!["tests/change_ask_ring.rs:557 断言失败".to_string()]);
     save(&st, &seeded).unwrap();
@@ -781,7 +789,7 @@ fn reroute_over_the_limit_keeps_the_failure_context_untouched() {
     // 错实现形态：超限分支也写/也清上下文 → 本用例必须变红
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Testing;
     seeded.test_reroutes = MAX_TEST_REROUTES;
     seeded.set_test_failure(MAX_TEST_REROUTES, vec!["旧失败".to_string()]);
@@ -795,7 +803,7 @@ fn reroute_over_the_limit_keeps_the_failure_context_untouched() {
     let err = run(cfg(&st, tmp.path(), &["src/a.rs"], &["x=1 → 2"]), &mut session, &mut ui)
         .unwrap_err();
     assert!(err.to_string().contains("上限 3"), "{err}");
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(saved.test_reroutes, MAX_TEST_REROUTES + 1);
     assert_eq!(
         saved.last_test_failure,
@@ -834,7 +842,7 @@ fn mock_chain_produces_report_and_done_state() {
     assert!(text.contains("验收对账: 通过"), "{text}");
     assert!(text.contains("用量:"), "{text}");
     // 断点也落盘：重新读取仍是 done
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(saved.phase, ChangePhase::Done);
 }
 
@@ -843,7 +851,7 @@ fn test_reroutes_are_bounded_across_sessions() {
     // 回注次数记在断点里：跳会话累计，不会被重启清零
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Testing;
     seeded.test_reroutes = MAX_TEST_REROUTES;
     save(&st, &seeded).unwrap();
@@ -858,7 +866,7 @@ fn test_reroutes_are_bounded_across_sessions() {
         .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("上限 3"), "{msg}");
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(saved.test_reroutes, MAX_TEST_REROUTES + 1);
     assert_eq!(
         saved.last_test_failure, None,
@@ -921,7 +929,7 @@ fn red_baseline_stops_before_coding_agent_work() {
         .unwrap_err();
     assert!(err.to_string().contains("基线不是绿的"), "{err}");
     assert_eq!(session.log, vec!["plan(rt=0)", "coding(rt=0)"], "不得回 plan、不得重试");
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(saved.phase, ChangePhase::Coding, "停在 coding 入口，等人处理");
 }
 
@@ -951,7 +959,7 @@ fn checkpoint_path_is_change_state_on_blackboard() {
 fn over_limit_plan_fix_rounds_is_rejected_at_entry() {
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Plan;
     seeded.plan_fix_rounds = MAX_PLAN_FIXES + 1;
     seeded.last_plan_issues = s(&["影响面缺调用方"]);
@@ -974,7 +982,7 @@ fn over_limit_plan_fix_rounds_is_rejected_at_entry() {
         "入口必须拦下，不得调用 fix_plan：{:?}",
         session.log
     );
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(saved.phase, ChangePhase::Plan, "阶段不得被推进");
 }
 
@@ -1046,7 +1054,7 @@ fn coding_review_fail_over_the_limit_is_quality() {
     .unwrap_err();
     assert!(err.is_quality_failure(), "超限是 Quality：{err}");
     assert!(err.to_string().contains("上限 3"), "{err}");
-    let saved = load(&st, "change-20261020-x", "base123");
+    let saved = load(&st, "change-20261020-x", "abcdef1234");
     assert_eq!(
         saved.coding_fix_rounds,
         MAX_CODING_FIXES + 1,

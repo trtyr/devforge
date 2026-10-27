@@ -129,17 +129,24 @@ pub trait ChangeSession {
         Ok((Vec::new(), Vec::new()))
     }
 
-    /// plan 阶段消耗的审查轮次（计入报告；默认 0，脚本化 session 不审）。
+    /// **本次调用**新开的 plan 审查实例数（不是累计轮次——编排层自己按轮累加；
+    /// 自审 minor 18：旧文案写「消耗的审查轮次」，实现若改成累计值就会双计）。
+    /// 默认 0（脚本化 session 不审）。
     fn plan_reviews(&self) -> usize {
         0
     }
 
     /// 编码审查打回后的回注：把审查失败明细交给 coding agent 逐条修复。
     ///
-    /// 默认空实现（脚本化 session 不审）；生产实现见 `ProdChangeSession`。
+    /// 默认实现**显式失败**（自审 minor 71：旧口径静默 no-op 返回 Ok，编排层却把这当作
+    /// 「修复已送达」落 fix.end 并消耗持久化额度——额度烧完了问题根本没送给 agent）。
+    /// 脚本化 session 不产 review issues，因此不会走到这里。
     fn fix_coding(&mut self, ui: &mut dyn UserLink, issues: &[String], round: usize) -> Result<()> {
         let _ = (ui, issues, round);
-        Ok(())
+        Err(DevforgeError::Agent {
+            role: "change-coding".into(),
+            message: "该会话未实现 fix_coding（编码审查回注无法送达）".into(),
+        })
     }
 }
 
@@ -170,6 +177,73 @@ pub struct ChangeOutcome {
     pub report: ChangeReport,
 }
 
+
+/// 判终态（自审 minor 72/74）：把原因写进断点（续跑立即失败）+ 落结构化事件，
+/// 再返回质量失败。所有「判死」路径都走它——事件流才能以终态结论收尾，
+/// 而不是以 fix.end/phase.change 结尾、失败原因只活在返回值里。
+fn terminate<S: ChangeSession>(
+    run: &ChangeRun<'_>,
+    state: &mut crate::change::state::ChangeState,
+    reason: String,
+) -> crate::error::Result<ChangeOutcome> {
+    let _ = std::marker::PhantomData::<S>;
+    state.terminal_reason = Some(reason.clone());
+    if let Err(e) = save(run.store, state) {
+        tracing::error!(
+            component = "change-orchestrator",
+            change_id = %run.change_id,
+            error = %e,
+            "终态原因落盘失败（续跑可能重跑一整段后再次撞同一上限）"
+        );
+    }
+    tracing::error!(
+        component = "change-orchestrator",
+        event = "change.terminal",
+        change_id = %run.change_id,
+        reason = %reason,
+        "change 判终态"
+    );
+    Err(DevforgeError::Quality(reason))
+}
+
+/// 运行入口（外层包一层终态日志：任何出口都留一条结论事件）。
+pub fn run_with_terminal_log<S: ChangeSession>(
+    input: ChangeRun<'_>,
+    session: &mut S,
+    ui: &mut dyn UserLink,
+) -> Result<ChangeOutcome> {
+    let change_id_for_log = input.change_id.to_string();
+    let out = run(input, session, ui);
+    match &out {
+        Ok(o) => tracing::info!(
+            component = "change-orchestrator",
+            event = "change.outcome",
+            change_id = %change_id_for_log,
+            phase = %o.state.phase.as_str(),
+            "change 收尾（成功出口）"
+        ),
+        Err(e) => {
+            let root = e.root_cause();
+            let kind = if root.is_quality_failure() {
+                "quality"
+            } else if root.is_agent_failure() {
+                "agent"
+            } else {
+                "infra"
+            };
+            tracing::error!(
+                component = "change-orchestrator",
+                event = "change.failed",
+                change_id = %change_id_for_log,
+                kind,
+                error = %e,
+                "change 收尾（失败出口）"
+            );
+        }
+    }
+    out
+}
+
 /// 跑完整条 change 流程（从断点继续）。
 pub fn run<S: ChangeSession>(
     run: ChangeRun<'_>,
@@ -179,6 +253,20 @@ pub fn run<S: ChangeSession>(
     let mut state = load_strict(run.store, run.change_id, run.baseline_sha)?;
     if state.baseline_sha.is_empty() {
         state.baseline_sha = run.baseline_sha.to_string();
+    }
+    // 自审 minor（74）：已判终态的变更不得再重跑一整段（旧口径只有往返上限会先落盘比较，
+    // 其余上限撞线时什么都不写 → 续跑重跑 coding 再撞同一个上限）。
+    if let Some(reason) = &state.terminal_reason {
+        tracing::error!(
+            component = "change-orchestrator",
+            event = "change.terminal",
+            change_id = %run.change_id,
+            reason = %reason,
+            "该变更已判终态，拒绝继续续跑（确需重跑请带 fresh:true）"
+        );
+        return Err(DevforgeError::Quality(format!(
+            "该变更已判终态（{reason}）——拒绝重跑；确需重跑请带 fresh:true"
+        )));
     }
     let mut whitelist = run.whitelist.clone();
     let mut criteria = run.criteria.clone();
@@ -194,10 +282,11 @@ pub fn run<S: ChangeSession>(
         // change 批次 #1：入口守卫——testing→plan 回退是「先落盘再比较上限」，超限断点仍停在
         // Plan；旧实现从入口直接开跑，再跑一轮 fix_plan 就能 Pass 进 coding，额度被绕过。
         if fix_round > MAX_PLAN_FIXES {
-            return Err(DevforgeError::Quality(format!(
+            let reason = format!(
                 "计划修复轮已达上限 {MAX_PLAN_FIXES} 轮（断点 plan_fix_rounds={fix_round}），拒绝继续修复：{}",
                 issues.join("；")
-            )));
+            );
+            return terminate::<S>(&run, &mut state, reason);
         }
         loop {
             let turn = if fix_round == 0 {
@@ -241,10 +330,12 @@ pub fn run<S: ChangeSession>(
                     state.plan_fix_rounds = fix_round;
                     save(run.store, &state)?;
                     if fix_round > MAX_PLAN_FIXES {
-                        return Err(DevforgeError::Quality(format!(
+                        let reason = format!(
                             "计划审查连续 {fix_round} 轮未通过（上限 {MAX_PLAN_FIXES} 轮修复）：{}",
                             next.join("；")
-                        )));
+                        );
+                        issues = next;
+                        return terminate::<S>(&run, &mut state, reason);
                     }
                     issues = next;
                 }
@@ -265,10 +356,11 @@ pub fn run<S: ChangeSession>(
                 state.coding_fix_rounds = next;
                 save(run.store, &state)?;
                 if next > MAX_CODING_FIXES {
-                    return Err(DevforgeError::Quality(format!(
+                    let reason = format!(
                         "编码审查连续 {next} 轮未通过（上限 {MAX_CODING_FIXES} 轮修复）：{}",
                         review_issues.join("；")
-                    )));
+                    );
+                    return terminate::<S>(&run, &mut state, reason);
                 }
                 fix_step(&state, "coding", next, true);
                 tracing::info!(
@@ -311,10 +403,8 @@ pub fn run<S: ChangeSession>(
                         extra = ?extra,
                         "边界门：越界未申报（范围膨胀）"
                     );
-                    return Err(DevforgeError::Quality(format!(
-                        "越界改动未申报（范围膨胀）：{}",
-                        extra.join("、")
-                    )));
+                    let reason = format!("越界改动未申报（范围膨胀）：{}", extra.join("、"));
+                    return terminate::<S>(&run, &mut state, reason);
                 }
                 BoundaryVerdict::RoutePlan { gaps, reason } => {
                     tracing::info!(
@@ -390,10 +480,8 @@ pub fn run<S: ChangeSession>(
                             continue;
                         }
                         PlanTurn::Fail { issues } => {
-                            return Err(DevforgeError::Quality(format!(
-                                "补边界后计划审查仍未过：{}",
-                                issues.join("；")
-                            )));
+                            let reason = format!("补边界后计划审查仍未过：{}", issues.join("；"));
+                            return terminate::<S>(&run, &mut state, reason);
                         }
                     }
                 }
@@ -419,19 +507,22 @@ pub fn run<S: ChangeSession>(
                 // 复验 N3：criteria 为空（计划用表格写验收标准，plan_facts 只认列表项）时
                 // 独立报错，不再产生「缺 0 条」的误导性对账输出。
                 if criteria.is_empty() {
-                    return Err(DevforgeError::Quality(
+                    return terminate::<S>(
+                        &run,
+                        &mut state,
                         "计划里没有可对账的验收标准——plan_facts 只认「验收标准」块里的列表项，\
                          用表格/段落写法会抽不到，请改用列表并在 plan 阶段重新过审"
                             .into(),
-                    ));
+                    );
                 }
                 let summary = summarize_acceptance(&criteria, &acceptance_done);
                 if !summary.passed() {
-                    return Err(DevforgeError::Quality(format!(
+                    let reason = format!(
                         "验收对账缺 {} 条：{}",
                         summary.missing.len(),
                         summary.missing.join("；")
-                    )));
+                    );
+                    return terminate::<S>(&run, &mut state, reason);
                 }
                 phase_change(&mut state, ChangePhase::Done);
                 // 终态清：收尾不留过期状态
@@ -441,16 +532,23 @@ pub fn run<S: ChangeSession>(
             TestingTurn::RouteCoding { failures } => {
                 state.bump_test_reroute();
                 if state.test_reroutes > MAX_TEST_REROUTES {
-                    save(run.store, &state)?;
-                    return Err(DevforgeError::Quality(format!(
+                    let reason = format!(
                         "测试→coding 已回注 {} 次（上限 {MAX_TEST_REROUTES}），停止：{}",
                         state.test_reroutes,
                         failures.join("；")
-                    )));
+                    );
+                    return terminate::<S>(&run, &mut state, reason);
                 }
                 // 回注带失败明细原文（含 path:line）——明细同源：coding 拿到的与日志面/失败原因文本一致
                 let msg = crate::change::testing_gate::route_back_message("coding", &failures);
-                tracing::warn!(component = "change-orchestrator", %msg, "测试失败回注 coding");
+                tracing::warn!(
+                    component = "change-orchestrator",
+                    event = "fix.reinject",
+                    stage = "testing→coding",
+                    failures = ?failures,
+                    %msg,
+                    "测试失败回注 coding"
+                );
                 // 写入失败上下文（下一轮 coding 的送达面）；超限分支不写——那里没有下一次 coding 轮
                 let round = state.test_reroutes;
                 // 测试→coding 回注：fix.start → 写入送达面 → fix.end（含回注轮次）
@@ -477,6 +575,16 @@ pub fn run<S: ChangeSession>(
             }
             TestingTurn::RoutePlan { failures } => {
                 let msg = crate::change::testing_gate::route_back_message("plan", &failures);
+                // 自审 minor（76）：testing→plan 与 testing→coding 同级的回退，旧口径既没有
+                // fix.start/fix.end 事件对，也没有失败明细日志——事件流无法重建回退原因。
+                tracing::warn!(
+                    component = "change-orchestrator",
+                    event = "fix.start",
+                    stage = "testing→plan",
+                    round = state.plan_fix_rounds + 1,
+                    failures = ?failures,
+                    "测试发现计划问题，回注 plan 开始"
+                );
                 // 引擎审计修复 #5：testing→plan 回退与 plan 审查打回同一条额度管线——
                 // issues 持久化进 state（resume 后 plan 循环读它走 fix_plan 而非重新
                 // kickoff），计数复用 plan_fix_rounds（MAX_PLAN_FIXES cap 生效，
@@ -485,11 +593,19 @@ pub fn run<S: ChangeSession>(
                 state.plan_fix_rounds += 1;
                 phase_change(&mut state, ChangePhase::Plan);
                 save(run.store, &state)?;
+                tracing::info!(
+                    component = "change-orchestrator",
+                    event = "fix.end",
+                    stage = "testing→plan",
+                    round = state.plan_fix_rounds,
+                    "测试发现计划问题，回注 plan 结束（本次 run 到此收束）"
+                );
                 if state.plan_fix_rounds > MAX_PLAN_FIXES {
-                    return Err(DevforgeError::Quality(format!(
+                    let reason = format!(
                         "testing→plan 回退后计划修复已达上限 {MAX_PLAN_FIXES} 轮：{}",
                         failures.join("；")
-                    )));
+                    );
+                    return terminate::<S>(&run, &mut state, reason);
                 }
                 return Err(DevforgeError::Quality(format!(
                     "测试发现计划问题，已回注 plan。{msg}"
@@ -501,7 +617,10 @@ pub fn run<S: ChangeSession>(
     // ---- 报告（引擎写）----
     // 引擎审计修复 #7：diff 失败必须 Err（reverify #1 同类）——吞成空统计会让
     // 报告看起来像一次 no-op 改动，事后无从察觉 git 究竟坏在哪。
-    let diff = report::diff_stats(run.repo, run.baseline_sha)?;
+    // 自审 minor（77）：报告里的「基线」字段与 diff 锚点必须**同源**——旧口径 diff 用
+    // run.baseline_sha、报告字段用 state.baseline_sha，两者背离时报告所述基线与实际 diff
+    // 口径不符。统一用断点里的基线（门 0 记下后全程不动）。
+    let diff = report::diff_stats(run.repo, &state.baseline_sha)?;
     let acceptance: AcceptanceSummary = summarize_acceptance(&criteria, &acceptance_done);
     let timeline = ChangeReport {
         change_id: run.change_id.to_string(),

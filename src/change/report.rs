@@ -93,8 +93,16 @@ impl ChangeReport {
 
 /// `git diff --numstat <baseline>` → 统计（只看工作区相对基线的改动）。
 pub fn diff_stats(repo: &Path, baseline: &str) -> Result<DiffStats> {
+    // 自审 minor（20）：外部传入的基线串直接作为 git 参数 = 选项注入面（`--output=/x`
+    // 之类可让本命令写文件/改变输出）。先做形状校验，再用 `--` 端选项分隔符收口。
+    let ok = (7..=40).contains(&baseline.len()) && baseline.bytes().all(|b| b.is_ascii_hexdigit());
+    if !ok {
+        return Err(DevforgeError::Config(format!(
+            "diff 基线形状非法：`{baseline}`（必须是 7..=40 位十六进制 commit，不能含选项前缀）"
+        )));
+    }
     let out = Command::new("git")
-        .args(["diff", "--numstat", baseline])
+        .args(["diff", "--numstat", baseline, "--"])
         .current_dir(repo)
         .output()
         .map_err(|e| DevforgeError::System(format!("执行 git diff 失败：{e}")))?;

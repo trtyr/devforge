@@ -74,6 +74,13 @@ pub(super) fn git(root: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
+/// 真基线 sha（store() 已把它落到 `.git/head-sha`）。
+pub(super) fn head_sha(repo: &Path) -> String {
+    std::fs::read_to_string(repo.join(".git/head-sha"))
+        .map(|s| s.trim().to_string())
+        .expect("store() 已初始化 git 仓并落 head-sha")
+}
+
 pub(super) fn store(root: &Path) -> StateStore {
     // 引擎审计修复 #7：Done 路径的 diff_stats 不再吞失败——测试环境升级为真 git 仓，
     // 基线 sha 落文件供 cfg 读取（与 orchestrator_tests 同方案）。

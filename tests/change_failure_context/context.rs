@@ -14,7 +14,7 @@ pub(super) fn a1_new_state_has_no_context_and_none_kickoff_is_verbatim_unchanged
     let tmp = tempfile::tempdir().unwrap();
     let ctx = ctx_in(tmp.path());
 
-    // ① 新建状态 = 无上下文
+    // ① 新建状态 = 无上下文（本条不起 git，不需要真 sha）
     let st = ChangeState::new("change-20261020-x", "base123");
     assert!(
         st.last_test_failure.is_none(),
@@ -273,7 +273,7 @@ pub(super) fn a8_coding_success_clears_the_failure_context() {
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
     // 预置断点：coding 阶段 + 一份失败上下文
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Coding;
     seeded.set_test_failure(1, issues());
     save(&st, &seeded).unwrap();
@@ -352,7 +352,7 @@ pub(super) fn a9_second_reroute_overwrites_the_failure_context() {
     // 覆盖语义的直接观测：断点里**已有**上下文时再回注一次，新列表必须覆盖旧的（不追加）
     let tmp2 = tempfile::tempdir().unwrap();
     let st2 = store(tmp2.path());
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Testing;
     seeded.test_reroutes = 1;
     seeded.set_test_failure(1, issues());
@@ -393,7 +393,7 @@ pub(super) fn a10_testing_pass_clears_the_failure_context() {
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
     // 预置断点：testing 阶段 + 一份失败上下文
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Testing;
     seeded.set_test_failure(1, issues());
     save(&st, &seeded).unwrap();
@@ -429,7 +429,7 @@ pub(super) fn a11_reroute_over_the_limit_neither_writes_nor_clears() {
     let tmp = tempfile::tempdir().unwrap();
     let st = store(tmp.path());
     // 预置断点：testing 阶段、回注计数已达上限、**已有一份**上下文
-    let mut seeded = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded.phase = ChangePhase::Testing;
     seeded.test_reroutes = 3;
     seeded.set_test_failure(1, issues());
@@ -460,7 +460,7 @@ pub(super) fn a11_reroute_over_the_limit_neither_writes_nor_clears() {
     // 超限前**没有**上下文 → 超限后仍为「无上下文」
     let tmp2 = tempfile::tempdir().unwrap();
     let st2 = store(tmp2.path());
-    let mut seeded2 = ChangeState::new("change-20261020-x", "base123");
+    let mut seeded2 = ChangeState::new("change-20261020-x", head_sha(tmp.path()));
     seeded2.phase = ChangePhase::Testing;
     seeded2.test_reroutes = 3;
     save(&st2, &seeded2).unwrap();

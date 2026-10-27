@@ -87,6 +87,11 @@ pub struct ChangeState {
     /// 不再直接判 Quality，而是回注修复；同样落盘，重启不重置额度。
     #[serde(default)]
     pub coding_fix_rounds: usize,
+    /// 已经判定终态的原因（自审 minor 74）：四个上限里此前只有往返是「先比较后落盘」，
+    /// 其余三个撞上限时不写断点——续跑会先重跑一整段 coding、再在同一个上限上失败。
+    /// 有值 = 本次变更已判死，续跑立即失败（要重跑得带 fresh）。
+    #[serde(default)]
+    pub terminal_reason: Option<String>,
 }
 
 impl ChangeState {
@@ -103,6 +108,7 @@ impl ChangeState {
             last_plan_issues: Vec::new(),
             plan_fix_rounds: 0,
             coding_fix_rounds: 0,
+            terminal_reason: None,
         }
     }
 
@@ -111,7 +117,8 @@ impl ChangeState {
     pub fn from_run(state: &RunState, change_id: &str, baseline: &str) -> Result<Self> {
         match state.data.get("change") {
             None => Ok(Self::new(change_id, baseline)),
-            Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
+            Some(v) => {
+                let mut out: Self = serde_json::from_value(v.clone()).map_err(|e| {
                 tracing::error!(
                     component = "change-orchestrator",
                     change_id,
@@ -121,7 +128,29 @@ impl ChangeState {
                 DevforgeError::Config(format!(
                     "change 断点损坏（{e}）；为避免计数被重置、额度被绕过，拒绝冷启动重跑——确需重跑请带 fresh:true"
                 ))
-            }),
+                })?;
+                // 自审 minor（19）：断点里持久化了 change_id，但旧口径从不与本次 run 核对——
+                // 陈旧断点（换了 change id 但复用同一黑板）会被静默采纳。
+                if !out.change_id.is_empty() && out.change_id != change_id {
+                    tracing::error!(
+                        component = "change-orchestrator",
+                        expected = %change_id,
+                        found = %out.change_id,
+                        "断点属于另一个 change-id——拒绝采纳（陈旧断点）"
+                    );
+                    return Err(DevforgeError::Config(format!(
+                        "断点 change_id 不符（文件 `{}` / 请求 `{change_id}`）：陈旧断点不得复用，确需重跑请带 fresh:true",
+                        out.change_id
+                    )));
+                }
+                if out.change_id.is_empty() {
+                    out.change_id = change_id.to_string();
+                }
+                if out.baseline_sha.is_empty() {
+                    out.baseline_sha = baseline.to_string();
+                }
+                Ok(out)
+            }
         }
     }
 
