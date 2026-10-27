@@ -49,7 +49,14 @@ fn resolve_root_prefers_devforge_home_then_home() {
         resolve_root(Some("  "), Some("/home/u")),
         PathBuf::from("/home/u/.devforge")
     );
-    assert_eq!(resolve_root(None, None), PathBuf::from(".devforge"));
+    // 自审 minor（39）：HOME/DEVFORGE_HOME 都没设时不得回落**相对**路径（证据落点随 CWD 漂移）
+    let fallback = resolve_root(None, None);
+    assert!(
+        fallback.is_absolute(),
+        "回落路径必须绝对化：{}",
+        fallback.display()
+    );
+    assert!(fallback.ends_with(".devforge"), "{}", fallback.display());
 }
 
 #[test]
@@ -115,7 +122,16 @@ fn error_chain_keeps_every_source_layer() {
     let chain = error_chain(&wrapped);
     assert!(chain.contains("审查轮"), "缺上下文层：{chain}");
     assert!(chain.contains("判负"), "缺源头层：{chain}");
-    assert!(chain.contains('→'), "层与层之间要有连接符：{chain}");
+    // 两层以上才谈连接符；这里内层已内嵌在顶层文本里 → 只有一个逻辑段
+
+    // 自审 minor（168）：WithContext 的 Display 已内嵌内层链——不得把同一段文本再拼一遍
+    // （旧口径链里重复 2~3 次，「→」不再对应层边界）。这里钉「不重复」而不是「必须有 →」。
+    assert_eq!(
+        chain.matches("判负").count(),
+        1,
+        "同一层文本不得重复出现：{chain}"
+    );
+    assert!(chain.contains("审查轮"), "上下文层仍须在：{chain}");
 }
 
 #[test]

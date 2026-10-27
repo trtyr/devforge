@@ -105,9 +105,17 @@ fn tombstone_uses_a_placeholder_run_id_when_no_run_is_active() {
         .collect();
     assert_eq!(dir_entries.len(), 1, "无活动 run 也要留墓碑：{dir_entries:?}");
     let text = std::fs::read_to_string(&dir_entries[0]).unwrap();
+    // 自审 minor（80）后 tombstone 会回落进程级快照表：并行测试里若有别的 run 活着，
+    // 归因到它也是**正确**行为（非 run 线程崩溃不再丢归属）。这里钉的是「必有 run_id 行」：
+    // 要么是本线程无 run 的占位值，要么是进程里那个活动 run（不得为空串）。
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("run_id: "))
+        .expect("墓碑必须有 run_id 行");
+    let value = line.trim_start_matches("run_id: ").trim();
     assert!(
-        text.contains(&format!("run_id: {NO_RUN}")),
-        "无活动 run 时用占位 run id：{text}"
+        !value.is_empty(),
+        "run_id 行不得为空（占位 {NO_RUN} 或活动 run）：{text}"
     );
 }
 
@@ -119,4 +127,39 @@ fn tombstone_path_shape_is_timestamp_and_run_id() {
         PathBuf::from("/root/tombstones/1700000000000-run-9.txt"),
         "墓碑文件名必须含时间戳与 run id"
     );
+}
+
+/// 自审 minor（80）回归：panic hook 在**非 run 线程**上也要能归因到活动 run。
+/// 旧口径 `current()` 是线程本地 → 别的线程崩溃时墓碑退化成 no-run + 空 phase/step。
+#[test]
+fn tombstone_attributes_the_active_run_from_a_foreign_thread() {
+    let _guard = hook_guard();
+    let id = "run-foreign-thread";
+    let obs = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    super::super::begin_run_in(obs.path().to_path_buf(), id, "testing");
+    super::super::set_step("review:change-test-review");
+
+    let original = std::panic::take_hook();
+    let handle = install_hook(out.path().to_path_buf());
+    // panic 发生在另一个线程（该线程没有 thread-local run 上下文）
+    std::thread::spawn(|| {
+        let _ = std::panic::catch_unwind(|| panic!("boom-foreign"));
+    })
+    .join()
+    .unwrap();
+    handle.restore();
+    std::panic::set_hook(original);
+
+    let entries: Vec<PathBuf> = std::fs::read_dir(out.path().join("tombstones"))
+        .expect("墓碑目录应存在")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    assert_eq!(entries.len(), 1, "非 run 线程也要留墓碑：{entries:?}");
+    let text = std::fs::read_to_string(&entries[0]).unwrap();
+    assert!(
+        text.contains(&format!("run_id: {id}")),
+        "非 run 线程的墓碑必须归因到活动 run：{text}"
+    );
+    super::super::end_run(id);
 }

@@ -82,18 +82,22 @@ impl LocalState {
     }
 }
 
-/// 置位 run 上下文（run 开始，在 run 线程上调用）：登记快照并清零角色内审查轮次计数。
-///
-/// 观测根在**此刻捕获**（见 [`begin_run_in`]）→ 本次 run 的证据落点固定，不因进程级注入漂移。
-pub fn begin_run(run_id: &str, phase: &str) {
-    begin_run_in(root(), run_id, phase);
-}
-
 /// 置位 run 上下文并**指定**观测根（本次 run 的心跳落点）。
 ///
 /// 服务端按 run 注入（单测把落点钉在自己的临时目录 → 不落用户 HOME，R13）；
 /// 进程级注入（[`set_root`]）只是**默认**来源。
 pub fn begin_run_in(root: PathBuf, run_id: &str, phase: &str) {
+    if !safe_run_id(run_id) {
+        // 自审 minor（162）：run_id 被原样拼进心跳文件名——含 `../` 会逃出观测根，
+        // 绝对路径会整体替换路径。生产 id 是 UUID，这里是纵深防御（不置位即不落盘）。
+        tracing::error!(
+            component = "observability",
+            event = "observability.bad_run_id",
+            run_id = %run_id,
+            "run_id 形状非法（含路径分隔/上跳/空白），拒绝建立观测上下文"
+        );
+        return;
+    }
     begin_run_in_ctx(root, run_id, phase);
     if let Err(e) = write_heartbeat(run_id) {
         tracing::debug!(component = "observability", error = %e, "周期心跳落盘失败（下个 tick 重试）");
@@ -110,7 +114,26 @@ pub fn begin_run_in(root: PathBuf, run_id: &str, phase: &str) {
 /// 基线 worktree 120 连跑 0 红）。纯内存置位 + 周期刷新：取证语义无损
 /// （死亡现场的心跳由阶段转换事件与 watchdog 持续刷新，墓碑归属不走盘写）。
 pub fn begin_run_in_deferred(root: PathBuf, run_id: &str, phase: &str) {
+    if !safe_run_id(run_id) {
+        tracing::error!(
+            component = "observability",
+            event = "observability.bad_run_id",
+            run_id = %run_id,
+            "run_id 形状非法（含路径分隔/上跳/空白），拒绝建立观测上下文"
+        );
+        return;
+    }
     begin_run_in_ctx(root, run_id, phase);
+}
+
+/// run_id 能否安全用作路径成分（自审 minor 162）。
+fn safe_run_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && !id.contains("..")
+        && !id.contains(['/', '\\'])
+        && !id.chars().any(char::is_whitespace)
+        && !id.chars().any(char::is_control)
 }
 
 /// 内存置位（快照表 / 根表 / 线程本地），不落盘。
@@ -149,6 +172,9 @@ pub struct PhaseSpan {
     /// 目标阶段。
     pub to: String,
 }
+
+/// 单 run 保留的阶段跨度条数上限（自审 minor 163：无上限 = 长驻进程内存增长）。
+const MAX_PHASE_SPANS: usize = 256;
 
 static PHASE_LOGS: OnceLock<Mutex<HashMap<String, Vec<PhaseSpan>>>> = OnceLock::new();
 
@@ -189,12 +215,25 @@ pub fn end_run(run_id: &str) {
     roots().lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
     // 地基批次 #2：run 结束后摘掉本 run 的 agent 事件槽（下一 run 不得继承旧戳）
     agent_events().lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
+    // 自审 minor（163）：心跳节流表是进程级 map，run 结束不清 → 按 run 无界增长
+    forget_run_throttle(run_id);
+    // 自审 minor（164）：线程本地 attempt / review_rounds 也要清——不清则 run 结束后
+    // `attempt()` 仍返回上轮值（违反「无 run 上下文 = 0」契约），审查轮次继续累加。
     LOCAL.with(|l| {
         let mut l = l.borrow_mut();
         if l.run_id.as_deref() == Some(run_id) {
             l.run_id = None;
+            l.attempt = 0;
+            l.review_rounds.clear();
         }
     });
+    // 自审 minor（165）：状态迁移自身落事件（audit SOP 的阶段序列此前无法从日志重建）
+    tracing::debug!(
+        component = "observability",
+        event = "observability.run_end",
+        run_id = %run_id,
+        "run 观测上下文清位"
+    );
 }
 
 /// 更新阶段（编排层阶段转换时调用；顺带刷心跳）。
@@ -212,16 +251,27 @@ pub fn set_phase(phase: &str) {
         };
         let from = snap.phase.clone();
         snap.phase = phase.to_string();
-        phase_logs()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(run_id.clone())
-            .or_default()
-            .push(PhaseSpan {
-                at_ms: crate::domain::now_ms(),
-                from,
-                to: phase.to_string(),
-            });
+        let mut table2 = phase_logs().lock().unwrap_or_else(|e| e.into_inner());
+        let spans = table2.entry(run_id.clone()).or_default();
+        // 自审 minor（163）：单 run 阶段跨度无上限 → 循环打点会撑爆长驻进程；
+        // 保留最近 MAX_PHASE_SPANS 条（串行分数只需要相邻差值）。
+        if spans.len() >= MAX_PHASE_SPANS {
+            spans.remove(0);
+        }
+        spans.push(PhaseSpan {
+            at_ms: crate::domain::now_ms(),
+            from,
+            to: phase.to_string(),
+        });
+        // 自审 minor（165）：状态迁移自身也落事件（此前只有调用方自觉补 phase.change，
+        // audit SOP 的阶段序列无法从日志重建）。
+        tracing::debug!(
+            component = "observability",
+            event = "observability.phase",
+            run_id = %run_id,
+            phase = %phase,
+            "run 阶段转换"
+        );
     }
     if let Err(e) = write_heartbeat(&run_id) {
         tracing::debug!(component = "observability", error = %e, "周期心跳落盘失败（下个 tick 重试）");
@@ -270,6 +320,26 @@ pub fn attempt() -> u32 {
     LOCAL.with(|l| l.borrow().attempt)
 }
 
+/// 进程级「当前 run」快照（自审 minor 80）：**不依赖线程本地**。
+///
+/// panic hook / watchdog 在别的线程上跑，`current()` 在那里恒为空 → 墓碑丢失 run 归属。
+/// 本函数按快照表回答：只有唯一活动 run 时直接给它；多个 run 并存时给**最近开跑**的那个
+/// （至少归属不丢；调用方可用 [`current_run_id`] 优先）。
+pub fn current_process_wide() -> Option<RunSnapshot> {
+    let table = runs().lock().unwrap_or_else(|e| e.into_inner());
+    let mut it = table.values();
+    let first = it.next()?.clone();
+    Some(
+        it.fold(first, |acc, cand| {
+            if cand.started_at_ms >= acc.started_at_ms {
+                cand.clone()
+            } else {
+                acc
+            }
+        }),
+    )
+}
+
 /// 当前 run 快照（无活动 run = `None`）。
 pub fn current() -> Option<RunSnapshot> {
     let id = LOCAL.with(|l| l.borrow().run_id.clone())?;
@@ -280,8 +350,17 @@ pub fn current() -> Option<RunSnapshot> {
 /// 供活性与停滞告警判定。**按 run 分槽**（地基批次 #2）；无 run 上下文（单测/非 run 路径）
 /// 记在空键下，不污染任何真 run 的判定。
 pub fn note_agent_event() {
-    let key = current_run_id().unwrap_or_default();
-    note_agent_event_for(&key);
+    // 自审 minor（81）：无 run 上下文的线程（worker）不得把事件记进共享空键——空键被所有
+    // run 混用，既治不了本 run 的停滞，又会被别的 run 读到。调用方该用
+    // `note_agent_event_for(run_id)`（RPC 客户端已持有 run-id）。
+    match current_run_id() {
+        Some(id) => note_agent_event_for(&id),
+        None => tracing::debug!(
+            component = "observability",
+            event = "observability.agent_event_unattributed",
+            "无 run 上下文的线程上报 agent 事件，已忽略（调用方应传 run-id）"
+        ),
+    }
 }
 
 /// 指定 run 键的活性打点（2026-10-27 自审 major）：RPC 客户端跑在 worker 线程上，
@@ -337,10 +416,31 @@ pub fn run_started_at(run_id: &str) -> Option<u64> {
 
 /// 停滞告警阈值（ms）；`DEVFORGE_STALL_WARN_MS` 可覆盖（测试用小值），默认 15 分钟。
 pub fn stall_warn_ms() -> u64 {
-    std::env::var("DEVFORGE_STALL_WARN_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(900_000)
+    // 自审 minor（166）：环境变量零校验——`0` 被接受会让 watchdog 每一跳都报 agent.stall，
+    // 非法值静默回落。现在：0 与解析失败都回落默认并 WARN 一次。
+    const DEFAULT_STALL_WARN_MS: u64 = 900_000;
+    let Ok(raw) = std::env::var("DEVFORGE_STALL_WARN_MS") else {
+        return DEFAULT_STALL_WARN_MS;
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(ms) if ms > 0 => ms,
+        _ => {
+            warn_once_bad_stall_env(&raw);
+            DEFAULT_STALL_WARN_MS
+        }
+    }
+}
+
+/// 非法 `DEVFORGE_STALL_WARN_MS` 只告警一次（避免每跳刷屏）。
+fn warn_once_bad_stall_env(raw: &str) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            component = "observability",
+            value = raw,
+            "DEVFORGE_STALL_WARN_MS 非法（须为正整数），回落默认 15 分钟"
+        );
+    });
 }
 
 /// 角色内审查轮次（1-based）：同一角色在本次 run 内第几次开庭。
@@ -399,7 +499,12 @@ pub fn touch_run(run_id: &str) -> std::io::Result<()> {
         }
         table.insert(run_id.to_string(), now);
     }
-    write_heartbeat(run_id)
+    let out = write_heartbeat(run_id);
+    if out.is_err() {
+        // 自审 minor（167）：节流戳不能在写盘成功前消耗掉——否则写失败还要再等 1s 才重试。
+        forget_run_throttle(run_id);
+    }
+    out
 }
 
 /// 清掉某 run 的心跳节流记录（2026-10-27 自审 minor 174：LAST_TOUCH 是进程级 map，
@@ -411,10 +516,19 @@ pub fn forget_run_throttle(run_id: &str) {
         .remove(run_id);
 }
 
-/// 注入观测根（单测用；生产由 `DEVFORGE_HOME` / `HOME/.devforge` 解析）。
+/// 注入观测根（**生产也调用**：`src/main.rs` 按启动参数注入；单测用它把落点钉在临时目录）。
+///
+/// 自审 minor（38）：旧文档写「单测用」与事实不符；也没有复位 API，单测注入后进程级
+/// 永久指向一个已删除的临时目录。复位用 [`clear_root`]。
 pub fn set_root(root: impl Into<PathBuf>) {
     let mut slot = root_slot().lock().unwrap_or_else(|e| e.into_inner());
     *slot = Some(root.into());
+}
+
+/// 清掉进程级注入（回落 `DEVFORGE_HOME` / `HOME` 解析）。
+pub fn clear_root() {
+    let mut slot = root_slot().lock().unwrap_or_else(|e| e.into_inner());
+    *slot = None;
 }
 
 fn root_slot() -> &'static Mutex<Option<PathBuf>> {
@@ -441,7 +555,18 @@ fn resolve_root(devforge_home: Option<&str>, home: Option<&str>) -> PathBuf {
     if let Some(h) = home.map(str::trim).filter(|s| !s.is_empty()) {
         return PathBuf::from(h).join(".devforge");
     }
-    PathBuf::from(".devforge")
+    // 自审 minor（39）：HOME 未设时旧口径返回**相对**路径 `.devforge` → 心跳/墓碑落进程
+    // CWD，证据落点随启动目录漂移。现在绝对化并 WARN 一次。
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            component = "observability",
+            "DEVFORGE_HOME 与 HOME 均未设置，观测根回落 CWD/.devforge（证据落点不稳定）"
+        );
+    });
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".devforge")
 }
 
 /// 错误链：顶层 + source 链每一层，`→` 连接。
@@ -449,11 +574,22 @@ fn resolve_root(devforge_home: Option<&str>, home: Option<&str>) -> PathBuf {
 /// 质量失败（`DevforgeError::Quality`）没有 `#[source]` → 链里只有顶层一段
 /// （字段存在、值不为空，Q2）。
 pub fn error_chain(e: &DevforgeError) -> String {
-    let mut parts = vec![e.to_string()];
-    let mut cur: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
-    while let Some(src) = cur {
-        parts.push(src.to_string());
-        cur = src.source();
+    // 2026-10-27 自审 minor（168）：旧口径把顶层 Display 与 source 链首尾相接——而
+    // `WithContext` 的 Display 本身已内嵌内层链，同一段文本会出现 2~3 次，「→」不再对应
+    // 层边界。现在按**结构**拆层：WithContext 只取它的 context，内层单独成层。
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = e;
+    loop {
+        match cur {
+            DevforgeError::WithContext { context, source } => {
+                parts.push(context.clone());
+                cur = source;
+            }
+            other => {
+                parts.push(other.to_string());
+                break;
+            }
+        }
     }
     parts.join(" → ")
 }

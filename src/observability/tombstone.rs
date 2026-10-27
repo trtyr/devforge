@@ -71,7 +71,10 @@ pub fn tombstone_path(root: &Path, timestamp_ms: u64, run_id: &str) -> PathBuf {
 /// 写墓碑：panic 原文 + 位置（file:line）+ 当时的阶段/步骤 + 时间戳 + run id。
 pub fn write_tombstone(root: &Path, info: &PanicHookInfo<'_>) -> std::io::Result<PathBuf> {
     let now = crate::domain::now_ms();
-    let snap = super::current();
+    // 自审 minor（80）：panic hook 跑在崩掉的那个线程上，`current()` 是线程本地口径 →
+    // 非 run 线程（worker/审查子会话）崩溃时归因退化成 no-run + 空 phase/step。改用进程级
+    // 快照表（唯一活动 run / 最近开跑者），线程本地有值时才优先它。
+    let snap = super::current().or_else(super::current_process_wide);
     let run_id = snap
         .as_ref()
         .map(|s| s.run_id.clone())

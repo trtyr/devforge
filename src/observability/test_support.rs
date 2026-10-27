@@ -7,12 +7,29 @@ thread_local! {
     static BUFFER: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
+/// 进程级兜底缓冲（自审 minor 170）：里程碑常常从 **worker 线程**发出，旧口径只按线程
+/// 分流 → 仓内捕获器看不见（集成测试侧却是进程级缓冲）。现在两处都写：线程缓冲给
+/// 「本线程日志面」断言，进程缓冲给「跨线程里程碑」断言。
+static PROC_BUFFER: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn proc_push(text: &str) {
+    let mut guard = PROC_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
+    guard.get_or_insert_with(String::new).push_str(text);
+}
+
+fn proc_take_and_clear() -> String {
+    let mut guard = PROC_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
+    guard.take().unwrap_or_default()
+}
+
 /// 写进本线程缓冲的 writer（全局订阅器的落盘口）。
 struct ThreadBufferWriter;
 
 impl std::io::Write for ThreadBufferWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        BUFFER.with(|b| b.borrow_mut().push_str(&String::from_utf8_lossy(buf)));
+        let text = String::from_utf8_lossy(buf);
+        BUFFER.with(|b| b.borrow_mut().push_str(&text));
+        proc_push(&text);
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -35,7 +52,11 @@ pub fn install() {
             .json()
             .with_writer(ThreadBufferWriter)
             .finish();
-        let _ = tracing::subscriber::set_global_default(subscriber);
+        // 自审 minor（169）：吞掉 set_global_default 的失败 = 捕获器静默退化成空缓冲，
+        // 失败表现为「莫名其妙的红测」。这里必须显式报出来（已装过则允许——那是幂等）。
+        if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
+            panic!("测试日志捕获器装不上（已有别的全局订阅器在位？）：{e}");
+        }
     });
 }
 
@@ -43,8 +64,20 @@ pub fn install() {
 pub fn capture_jsonl(f: impl FnOnce()) -> String {
     install();
     BUFFER.with(|b| b.borrow_mut().clear());
+    let _ = proc_take_and_clear();
     f();
     BUFFER.with(|b| b.borrow().clone())
+}
+
+/// 跑一段闭包并返回**进程级**（含 worker 线程）的 JSONL 日志全文。
+///
+/// 自审 minor（170）：里程碑从 worker 线程发出时本线程缓冲为空——
+/// 「日志面」断言必须能用这个口径，而不是把跨线程事件当成「没记」。
+pub fn capture_jsonl_process_wide(f: impl FnOnce()) -> String {
+    install();
+    let _ = proc_take_and_clear();
+    f();
+    proc_take_and_clear()
 }
 
 /// 断言一条**里程碑**条目的形状：级别 INFO + 带 `component` 字段。
