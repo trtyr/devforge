@@ -41,7 +41,9 @@ impl Default for SchedulerConfig {
 #[derive(Debug, Default, Clone, PartialEq, Serialize)]
 pub struct TickReport {
     /// 派工计划：`project/task`（循环据此 launch）。
-    pub dispatched: Vec<String>,
+    /// 派工计划：**结构化对**（自审 minor 232：旧口径用 `project/task` 复合字符串传递、
+    /// 再用 split_once('/') 反解——标识符含 '/' 时解析错位，派工静默落空）。
+    pub dispatched: Vec<(String, String)>,
     /// 阻塞：`project/task` + 原因（capacity / exclusive_window / dependency_failed）。
     pub blocked: Vec<(String, String)>,
     /// 超预算熔断。
@@ -62,10 +64,47 @@ fn load_kick() -> bool {
 }
 
 /// 单次调度（纯决策：改状态/入队/发事件；launch 由调用方执行）。
+/// 已熔断过的 run id（自审 minor 227：重复熔断 = 重复 SIGKILL + 重复事件）。
+///
+/// 进程级集合：run 收场时无需清理（id 唯一，容量与「本进程见过的超预算 run 数」同阶）。
+fn fused_runs() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static FUSED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    FUSED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 本进程已做过 NeedsRebase 扫动的项目（自审 minor 229）。
+fn swept_projects_insert(project: &str) -> bool {
+    static SWEPT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SWEPT
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(project.to_string())
+}
+
+fn already_fused(run_id: &str) -> bool {
+    fused_runs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(run_id)
+}
+
+fn mark_fused(run_id: &str) {
+    fused_runs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(run_id.to_string());
+}
+
 pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
     let mut report = TickReport::default();
 
     // ① 超预算熔断：Running 且 started_at + budget < now → cancel 置位 + 台账强杀。
+    //    自审 minor（227）：必须有幂等标记——旧口径同一个仍 Running 的超预算 run 每 30s
+    //    重复熔断一次（重复 SIGKILL + 重复 budget_fused 事件），且 killed=0 时不做任何
+    //    升级处置，run 永久占着并发槽。
     // 复验归因：cancel 是协作式（SOP 轮询间隙检查），pi 子进程工具挂死时无人消费，
     // run 永驻 Running（M3 挂死 14h 的直接教训）——必须台账精确 SIGKILL。
     let to_fuse: Vec<(String, String, String)> = {
@@ -82,10 +121,23 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
                         && now_ms().saturating_sub(r.started_at_ms) > budget_ms
                 })
                 .map(|r| (r.task_project.clone(), r.task_id.clone(), r.id.0.clone()))
+                .filter(|(_, _, run_id)| !already_fused(run_id))
                 .collect()
         }
     };
     for (project, task, run_id) in &to_fuse {
+        // 自审 major（127）：project/task 是用户可控标识，进路径前必须校验
+        if crate::domain::store::Store::validate_path_name(project).is_err()
+            || crate::domain::store::Store::validate_path_name(task).is_err()
+        {
+            tracing::error!(
+                component = "scheduler",
+                project = %project,
+                task = %task,
+                "熔断：标识符形状非法（拒绝拼进文件路径）"
+            );
+            continue;
+        }
         // 强杀统一入口（引擎审计修复 #9：台账精确优先，缺失降级扫盘兕底+WARN）
         let ledger_path = st.plans_root.join(project).join("spawn-ledger.json");
         let killed = crate::engine::ledger::kill_run(Some(&ledger_path), run_id);
@@ -106,6 +158,32 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             .cloned();
         if let Some(c) = control {
             c.cancel();
+        }
+        mark_fused(run_id);
+        // killed=0 且没有在册控制句柄 = 该 run 的线程已经不在了，但 store 里仍是 Running
+        // （占着并发槽）。升级为直接落终态，否则槽位永久泄漏。
+        if killed == 0 && st.runs_control.lock().unwrap_or_else(|e| e.into_inner()).get(&format!("{project}/{task}")).is_none() {
+            let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+            match store.finish_run(
+                &crate::domain::run::RunId(run_id.clone()),
+                crate::domain::store::FinishOutcome::Failed {
+                    reason: format!("超预算 {} 分钟且无存活进程可杀（调度器升级结案）", cfg.budget_wall_minutes),
+                },
+            ) {
+                Ok(()) => tracing::error!(
+                    component = "scheduler",
+                    project = %project,
+                    task = %task,
+                    run_id = %run_id,
+                    "熔断升级：无进程可杀且无控制句柄，直接结案释放并发槽"
+                ),
+                Err(e) => tracing::error!(
+                    component = "scheduler",
+                    run_id = %run_id,
+                    error = %e,
+                    "熔断升级失败：run 仍占并发槽"
+                ),
+            }
         }
         report.fused.push(format!("{project}/{task}"));
         st.emit(serde_json::json!({
@@ -129,6 +207,18 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             .collect()
     };
     for (project, task_id) in settled {
+        // 自审 major（127）：同上，标识符进路径前校验
+        if crate::domain::store::Store::validate_path_name(&project).is_err()
+            || crate::domain::store::Store::validate_path_name(&task_id).is_err()
+        {
+            tracing::error!(
+                component = "scheduler",
+                project = %project,
+                task = %task_id,
+                "自动入队：标识符形状非法（拒绝拼进文件路径）"
+            );
+            continue;
+        }
         let frozen_path = st
             .plans_root
             .join(&project)
@@ -151,18 +241,23 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         // 自审 major：入队走锁定读-改-写（rearm + 去重 + enqueue 同一把锁）——
         // 旧口径无锁 load→save，与 API 入队并发时互相覆写（丢候选）。
         let enqueued = MergeQueue::mutate(&st.plans_root, &project, |queue| {
-            // 全仓审计 #2：NeedsRebase 不是终态——rebase 到新目标后重验；
-            // NeedsRepair 保持终态（修复 = 新候选带新证据 = 新 frozen_sha）。
-            for c in queue.candidates.iter_mut() {
-                if let CandidateStatus::NeedsRebase { target_moved_to } = &c.status {
-                    tracing::warn!(
-                        component = "scheduler",
-                        project = %project,
-                        task = %c.task_id,
-                        target = %target_moved_to,
-                        "NeedsRebase 候选放回 Pending 重验（终态不停滞）"
-                    );
-                    c.status = CandidateStatus::Pending;
+            // 自审 minor（229）：NeedsRebase 扫动（状态机改写）只做**每项目一次**——
+            // 旧口径在「每个 settled 任务」上对项目内全部候选重复扫 + 重复 load/save。
+            // 放在首个入队机会里执行，并只跑一次（PROJECT_SWEPT 记录）。
+            if swept_projects_insert(&project) {
+                // 全仓审计 #2：NeedsRebase 不是终态——rebase 到新目标后重验；
+                // NeedsRepair 保持终态（修复 = 新候选带新证据 = 新 frozen_sha）。
+                for c in queue.candidates.iter_mut() {
+                    if let CandidateStatus::NeedsRebase { target_moved_to } = &c.status {
+                        tracing::warn!(
+                            component = "scheduler",
+                            project = %project,
+                            task = %c.task_id,
+                            target = %target_moved_to,
+                            "NeedsRebase 候选放回 Pending 重验（终态不停滞）"
+                        );
+                        c.status = CandidateStatus::Pending;
+                    }
                 }
             }
             // 去重口径（全仓审计 #2）：Pending/Integrated = 本任务已在队或已合入；
@@ -200,7 +295,21 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             }
             Ok(false) => {}
             Err(e) => {
-                tracing::warn!(component = "scheduler", error = %e, "队列读改写失败，跳过入队");
+                // 自审 minor（230）：入队落盘失败是「候选静默丢失」级别，不能只 warn；
+                // 与相邻回写失败口径一致 → error + 事件。
+                tracing::error!(
+                    component = "scheduler",
+                    project = %project,
+                    task = %task_id,
+                    error = %e,
+                    "自动入队失败（队列读改写/落盘），候选未入队"
+                );
+                st.emit(serde_json::json!({
+                    "type": "integration.auto_enqueue_failed",
+                    "project": project,
+                    "task": task_id,
+                    "error": e.to_string(),
+                }));
             }
         }
     }
@@ -256,7 +365,16 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             {
                 drop(store);
                 let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = store.set_task_status(&project, &task_id, TaskStatus::Blocked);
+                // 自审 minor（231）：状态迁移失败不得静默（否则「报告说已阻塞、store 里仍 Pending」）
+                if let Err(e) = store.set_task_status(&project, &task_id, TaskStatus::Blocked) {
+                    tracing::error!(
+                        component = "scheduler",
+                        project = %project,
+                        task = %task_id,
+                        error = %e,
+                        "置 Blocked 失败（dependency_failed）"
+                    );
+                }
                 report
                     .blocked
                     .push((format!("{project}/{task_id}"), "dependency_failed".into()));
@@ -272,10 +390,18 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         // 独占窗口：已有独占任务在跑，或本 tick 已派工过独占任务（复验 #3：
         // running 集合在后台线程 begin_run 前不变，不追踪本 tick 派工就会同 tick 双独占并行）。
         if exclusive_running || exclusive_dispatched_this_tick {
-            let _ = {
+            {
                 let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-                store.set_task_status(&project, &task_id, TaskStatus::Blocked)
-            };
+                if let Err(e) = store.set_task_status(&project, &task_id, TaskStatus::Blocked) {
+                    tracing::error!(
+                        component = "scheduler",
+                        project = %project,
+                        task = %task_id,
+                        error = %e,
+                        "置 Blocked 失败（exclusive_window）"
+                    );
+                }
+            }
             report.blocked.push((
                 format!("{project}/{task_id}"),
                 "exclusive_window".into(),
@@ -292,10 +418,18 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
                     .min(store.max_concurrent_runs.max(1))
         };
         if !capacity_ok {
-            let _ = {
+            {
                 let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-                store.set_task_status(&project, &task_id, TaskStatus::Blocked)
-            };
+                if let Err(e) = store.set_task_status(&project, &task_id, TaskStatus::Blocked) {
+                    tracing::error!(
+                        component = "scheduler",
+                        project = %project,
+                        task = %task_id,
+                        error = %e,
+                        "置 Blocked 失败（capacity）"
+                    );
+                }
+            }
             report
                 .blocked
                 .push((format!("{project}/{task_id}"), "capacity".into()));
@@ -303,12 +437,20 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         }
         // 解除阻塞态 → 派工计划（begin_run 在 run_in_background 内置 Running）。
         if status == TaskStatus::Blocked {
-            let _ = {
+            {
                 let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-                store.set_task_status(&project, &task_id, TaskStatus::Pending)
-            };
+                if let Err(e) = store.set_task_status(&project, &task_id, TaskStatus::Pending) {
+                    tracing::error!(
+                        component = "scheduler",
+                        project = %project,
+                        task = %task_id,
+                        error = %e,
+                        "解除 Blocked 失败（派工前）"
+                    );
+                }
+            }
         }
-        report.dispatched.push(format!("{project}/{task_id}"));
+        report.dispatched.push((project.clone(), task_id.clone()));
         dispatched_this_tick += 1;
         if exclusive {
             exclusive_dispatched_this_tick = true;
@@ -345,6 +487,13 @@ pub async fn launch(st: &SharedState, project: &str, task_id: &str) {
                     error = %e,
                     "调度派工被准入拦下（任务状态/并发上限）"
                 );
+                // 自审 minor（233）：拦下要落事件（旧口径只有一条 warn，事后无法按字段重建）
+                st.emit(serde_json::json!({
+                    "type": "scheduler.dispatch_rejected",
+                    "project": project,
+                    "task": task_id,
+                    "reason": e.to_string(),
+                }));
                 return;
             }
         }
@@ -399,9 +548,13 @@ pub async fn scheduler_loop(st: SharedState, cfg: SchedulerConfig) {
                 continue;
             }
         };
-        for plan in &report.dispatched {
-            let (project, task) = plan.split_once('/').unwrap_or((plan.as_str(), ""));
-            launch(&st, project, task).await;
+        // 自审 minor（234）：逐个 await launch 会让一个卡在渲染闸门的派工冻结整个调度循环
+        // （连超预算熔断这条安全兜底一起冻住）。改成并发派发，循环不被单个派工拖住。
+        for (project, task) in &report.dispatched {
+            let st3 = st.clone();
+            let project = project.clone();
+            let task = task.clone();
+            tokio::spawn(async move { launch(&st3, &project, &task).await });
         }
         if !report.dispatched.is_empty() || !report.blocked.is_empty() {
             tracing::info!(
@@ -420,107 +573,146 @@ pub async fn scheduler_loop(st: SharedState, cfg: SchedulerConfig) {
 /// 不登机器纯 API 回答「现在几个 worktree 在飞、各自卡在哪、队列多长、冲突了没有」。
 /// 判定逻辑与 tick 同款但零副作用（不置状态不派工）。
 pub fn status(st: &SharedState) -> serde_json::Value {
-    let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-
-    // 在飞：Running runs + 墙钟
-    let running: Vec<serde_json::Value> = store
-        .runs
-        .iter()
-        .filter(|r| r.status == RunStatus::Running)
-        .map(|r| {
-            serde_json::json!({
-                "project": r.task_project,
-                "task": r.task_id,
-                "run_id": r.id.0,
-                "elapsed_ms": now_ms().saturating_sub(r.started_at_ms),
+    // 自审 minor（236）：旧口径全程持 store 互斥锁、并跨越逐项目队列文件 I/O——
+    // 把全部 store 操作（所有 API handler）堵在磁盘读后面。现在锁内只做快照，
+    // 放开锁之后再做文件 I/O（与 tick 的「先放锁再做 I/O」纪律一致）。
+    let (
+        running,
+        runnable,
+        blocked,
+        project_names,
+        store_cap,
+        effective_cap,
+    ): (
+        Vec<serde_json::Value>,
+        Vec<String>,
+        Vec<serde_json::Value>,
+        Vec<String>,
+        usize,
+        usize,
+    ) = {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        let running: Vec<serde_json::Value> = store
+            .runs
+            .iter()
+            .filter(|r| r.status == RunStatus::Running)
+            .map(|r| {
+                serde_json::json!({
+                    "project": r.task_project,
+                    "task": r.task_id,
+                    "run_id": r.id.0,
+                    "elapsed_ms": now_ms().saturating_sub(r.started_at_ms),
+                })
             })
-        })
-        .collect();
-    let exclusive_running = store
-        .tasks
-        .iter()
-        .any(|t| t.status == TaskStatus::Running && t.exclusive);
-    // 自审 major：容量阈值与 tick 同源（调度循环启动同步后写入的有效上限），
-    // 不再看 store 硬上限——否则 capacity 阻塞的任务被误报成可跑。
-    let synced = st
-        .effective_max_concurrent
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let effective_cap = if synced == 0 {
-        store.max_concurrent_runs.max(1)
-    } else {
-        synced
-    };
-    let capacity_full = store.running_run_count() >= effective_cap;
+            .collect();
+        let exclusive_running = store
+            .tasks
+            .iter()
+            .any(|t| t.status == TaskStatus::Running && t.exclusive);
+        let synced = st
+            .effective_max_concurrent
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let effective_cap = if synced == 0 {
+            store.max_concurrent_runs.max(1)
+        } else {
+            synced
+        };
+        let capacity_full = store.running_run_count() >= effective_cap;
 
-    let mut runnable: Vec<String> = Vec::new();
-    let mut blocked: Vec<serde_json::Value> = Vec::new();
-    for t in &store.tasks {
-        let key = format!("{}/{}", t.project, t.id);
-        match t.status {
-            TaskStatus::Blocked => {
-                // 理由只读重算（与 tick 同款判定序）
-                let reason = if deps_failed(&store, t) {
-                    "dependency_failed"
-                } else if exclusive_running {
-                    "exclusive_window"
-                } else if capacity_full {
-                    "capacity"
-                } else {
-                    "recovering" // Blocked 但条件已解——下轮 tick 恢复
-                };
-                blocked.push(serde_json::json!({"task": key, "reason": reason}));
-            }
-            TaskStatus::Pending => {
-                if deps_failed(&store, t) {
-                    blocked.push(serde_json::json!({
-                        "task": key,
-                        "reason": "dependency_failed",
-                    }));
-                } else if deps_ready(&store, t) {
-                    if exclusive_running {
-                        blocked.push(serde_json::json!({
-                            "task": key,
-                            "reason": "exclusive_window",
-                        }));
-                    } else if capacity_full {
-                        blocked.push(serde_json::json!({"task": key, "reason": "capacity"}));
-                    } else {
-                        runnable.push(key);
-                    }
+        let mut runnable: Vec<String> = Vec::new();
+        let mut blocked: Vec<serde_json::Value> = Vec::new();
+        for t in &store.tasks {
+            let key = format!("{}/{}", t.project, t.id);
+            let reason = block_reason(&store, t, exclusive_running, capacity_full);
+            match (t.status, reason) {
+                (TaskStatus::Blocked, Some(r)) => {
+                    blocked.push(serde_json::json!({"task": key, "reason": r}))
                 }
-                // 依赖未就绪且未失败：等待中——不入 blocked（与 tick 的静默等待一致）
+                // Blocked 但条件已解 → 下轮 tick 恢复（与 tick 的判定同源）
+                (TaskStatus::Blocked, None) => blocked
+                    .push(serde_json::json!({"task": key, "reason": "recovering"})),
+                (TaskStatus::Pending, Some(r)) => {
+                    blocked.push(serde_json::json!({"task": key, "reason": r}))
+                }
+                (TaskStatus::Pending, None) => runnable.push(key),
+                _ => {}
             }
-            _ => {}
         }
-    }
+        let project_names: Vec<String> = store.projects.iter().map(|p| p.name.clone()).collect();
+        (
+            running,
+            runnable,
+            blocked,
+            project_names,
+            store.max_concurrent_runs,
+            effective_cap,
+        )
+    };
 
-    // 集成队列：每项目的 Pending/Integrated/NeedsRebase/NeedsRepair 计数（NeedsRepair = 冲突面）
-    let queue: Vec<serde_json::Value> = store
-        .projects
-        .iter()
-        .filter_map(|p| {
-            let q = MergeQueue::load(&st.plans_root, &p.name).ok()?;
-            let count = |f: &dyn Fn(&CandidateStatus) -> bool| {
-                q.candidates.iter().filter(|c| f(&c.status)).count()
-            };
-            Some(serde_json::json!({
-                "project": p.name,
-                "total": q.candidates.len(),
-                "pending": count(&|s| matches!(s, CandidateStatus::Pending)),
-                "integrated": count(&|s| matches!(s, CandidateStatus::Integrated { .. })),
-                "needs_rebase": count(&|s| matches!(s, CandidateStatus::NeedsRebase { .. })),
-                "needs_repair": count(&|s| matches!(s, CandidateStatus::NeedsRepair { .. })),
-            }))
-        })
-        .collect();
+    // 集成队列：每项目的 Pending/Integrated/NeedsRebase/NeedsRepair 计数（锁已释放）
+    let mut queue: Vec<serde_json::Value> = Vec::new();
+    for name in &project_names {
+        let q = match MergeQueue::load(&st.plans_root, name) {
+            Ok(q) => q,
+            Err(e) => {
+                // 自审 minor（237）：旧口径 `.ok()?` 吞掉加载失败——损坏队列在 API 里表现为
+                // 「该项目没有队列」。现在留痕并在响应里显式标注。
+                tracing::warn!(
+                    component = "scheduler",
+                    project = %name,
+                    error = %e,
+                    "调度状态：集成队列不可读（按 error 标注，不静默当成空队）"
+                );
+                queue.push(serde_json::json!({
+                    "project": name,
+                    "error": e.to_string(),
+                }));
+                continue;
+            }
+        };
+        let count = |f: &dyn Fn(&CandidateStatus) -> bool| {
+            q.candidates.iter().filter(|c| f(&c.status)).count()
+        };
+        queue.push(serde_json::json!({
+            "project": name,
+            "total": q.candidates.len(),
+            "pending": count(&|s| matches!(s, CandidateStatus::Pending)),
+            "integrated": count(&|s| matches!(s, CandidateStatus::Integrated { .. })),
+            "needs_rebase": count(&|s| matches!(s, CandidateStatus::NeedsRebase { .. })),
+            "needs_repair": count(&|s| matches!(s, CandidateStatus::NeedsRepair { .. })),
+        }));
+    }
 
     serde_json::json!({
         "running": running,
         "runnable": runnable,
         "blocked": blocked,
         "queue": queue,
-        "max_concurrent_runs": store.max_concurrent_runs,
+        "max_concurrent_runs": store_cap,
+        "effective_max_concurrent": effective_cap,
     })
+}
+
+/// 阻塞理由判定（**单一事实源**，自审 minor 131/235）：tick 与 status 都调它，
+/// 两套语义不许漂移。返回 None = 条件已解（可派工 / 待恢复）。
+fn block_reason(
+    store: &crate::domain::store::Store,
+    t: &crate::domain::task::Task,
+    exclusive_running: bool,
+    capacity_full: bool,
+) -> Option<&'static str> {
+    if deps_failed(store, t) {
+        Some("dependency_failed")
+    } else if !deps_ready(store, t) {
+        // 缺依赖但未失败：等待中（tick 静默等；status 也要显式报出来，不许隐形）
+        Some("dependency_pending")
+    } else if exclusive_running {
+        Some("exclusive_window")
+    } else if capacity_full {
+        Some("capacity")
+    } else {
+        None
+    }
 }
 
 fn deps_failed(store: &crate::domain::store::Store, t: &crate::domain::task::Task) -> bool {

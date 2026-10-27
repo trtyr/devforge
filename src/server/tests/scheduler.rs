@@ -53,11 +53,17 @@ async fn ready_tasks_are_dispatched_in_dependency_order() {
     let report = tick(&f.state, &cfg);
     // a 已 Completed 不再派；b 依赖全 Completed → 派工
     assert!(
-        report.dispatched.contains(&"devforge/dag-b".to_string()),
+        report
+            .dispatched
+            .iter()
+            .any(|(p, t)| p == "devforge" && t == "dag-b"),
         "b 应就绪派工：{report:?}"
     );
     assert!(
-        !report.dispatched.contains(&"devforge/dag-a".to_string()),
+        !report
+            .dispatched
+            .iter()
+            .any(|(p, t)| p == "devforge" && t == "dag-a"),
         "已完成的 a 不应再派"
     );
 }
@@ -122,7 +128,10 @@ async fn capacity_saturation_blocks_and_recovers() {
     }
     let report = tick(&f.state, &SchedulerConfig::default());
     assert!(
-        report.dispatched.contains(&"devforge/queued".to_string()),
+        report
+            .dispatched
+            .iter()
+            .any(|(p, t)| p == "devforge" && t == "queued"),
         "容量释放后 queued 应恢复派工：{report:?}"
     );
 }
@@ -236,7 +245,10 @@ async fn exclusive_running_window_blocks_dispatch() {
         .expect("独占窗口期 other 应停派");
     assert_eq!(entry.1, "exclusive_window");
     assert!(
-        !report.dispatched.iter().any(|t| t != "devforge/solo"),
+        report
+            .dispatched
+            .iter()
+            .all(|(p, t)| p == "devforge" && t == "solo"),
         "独占窗口期不应有任何派工：{report:?}"
     );
 }
@@ -319,7 +331,7 @@ async fn same_tick_double_exclusive_dispatches_at_most_one() {
     let dispatched_ex = report
         .dispatched
         .iter()
-        .filter(|t| t.contains("ex-"))
+        .filter(|(_, t)| t.contains("ex-"))
         .count();
     assert_eq!(dispatched_ex, 1, "同 tick 双独占只能派一个：{report:?}");
     assert!(
@@ -347,7 +359,10 @@ async fn capacity_one_with_running_run_dispatches_nothing() {
     let cfg = SchedulerConfig::default();
     let report = tick(&f.state, &cfg);
     assert!(
-        !report.dispatched.iter().any(|t| t == "devforge/waiting"),
+        !report
+            .dispatched
+            .iter()
+            .any(|(p, t)| p == "devforge" && t == "waiting"),
         "容量 1 已占满，waiting 不得派工：{report:?}"
     );
     assert!(

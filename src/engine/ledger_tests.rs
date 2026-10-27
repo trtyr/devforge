@@ -320,7 +320,8 @@ fn startup_reconcile_kills_our_orphans() {
         .spawn()
         .unwrap();
     let pid = child.id();
-    assert_eq!(wait_for_marker(pid, 2000).as_deref(), Some("run-1"));
+    // 5s 而非 2s：全量并行跑时 spawn→exec 的 environ 就绪可能被拖到 2s 之外（flake 源）
+    assert_eq!(wait_for_marker(pid, 5000).as_deref(), Some("run-1"));
     let mut ledger = SpawnLedger::default();
     ledger.record(entry(pid));
     ledger.save(&path).unwrap();
