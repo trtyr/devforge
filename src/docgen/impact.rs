@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use crate::error::{Context as _, DevforgeError, Result};
 
 use crate::docgen::inventory::{Inventory, build_inventory};
 
@@ -185,13 +185,13 @@ fn run_git(repo: &Path, args: &[&str]) -> Result<String> {
         .args(args)
         .current_dir(repo)
         .output()
-        .with_context(|| format!("跑 git {} 失败（{}）", args.join(" "), repo.display()))?;
+        .ctx(format!("跑 git {} 失败（{}）", args.join(" "), repo.display()))?;
     if !out.status.success() {
-        anyhow::bail!(
+        return Err(DevforgeError::System(format!(
             "git {} 退出码非 0：{}",
             args.join(" "),
             String::from_utf8_lossy(&out.stderr).trim()
-        );
+        )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -287,7 +287,7 @@ fn walk(
     f: &mut impl FnMut(String, &str) -> Result<()>,
 ) -> Result<()> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
-        .with_context(|| format!("读目录 {}", dir.display()))?
+        .ctx(format!("读目录 {}", dir.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .collect();
     entries.sort();
@@ -409,7 +409,7 @@ fn assembly_pages_mentioning(
 pub fn plan_impact(repo: &Path, docs_root: &Path, changes: &[ChangedFile]) -> Result<Impact> {
     let old_path = docs_root.join("_meta/inventory.json");
     let old = Inventory::load(&old_path)
-        .with_context(|| format!("读旧清单 {} 失败（增量需要上次的清单做对照）", old_path.display()))?;
+        .ctx(format!("读旧清单 {} 失败（增量需要上次的清单做对照）", old_path.display()))?;
     let new = build_inventory(repo)?;
     let mut impact = impacted(repo, &old, &new, changes, docs_root)?;
     if impact.units.is_empty() && !changes.is_empty() {
