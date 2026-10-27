@@ -149,7 +149,16 @@ pub(super) async fn the_error_entry_is_logged_before_the_restart_warning() {
         let mut store = f.state.store.lock().expect("store 锁");
         store.begin_run("p", "t").expect("准入")
     };
-    devforge::server::run_in_background(f.state.clone(), "p".into(), "t".into(), engine, run);
+    // 自审 minor（223）后：干预面由调用方先登记，run_in_background 只收已可见的 control。
+    let control = f.state.register_control("p", "t");
+    devforge::server::run_in_background(
+        f.state.clone(),
+        "p".into(),
+        "t".into(),
+        engine,
+        run,
+        control,
+    );
     let text = cap.lines();
     let err_at = text
         .iter()

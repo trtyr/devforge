@@ -637,6 +637,10 @@ pub async fn start_task(
     }
     let engine = (st.engine_factory)();
     let run_id = run.id.0.clone();
+    // 自审 minor（223）：干预面在**返回 202 之前**同步登记（与准入同口径）——
+    // 旧口径由后台线程登记，紧跟 start 的 cancel 会打在一个尚未登记的控制对象上（404），
+    // 而 run 已准入在跑。
+    let control = st.register_control(&project, &task);
     tracing::info!(
         component = "server",
         event = "start.accepted",
@@ -647,9 +651,9 @@ pub async fn start_task(
         resumed = decision.resumed,
         fresh,
         sop_override,
-        "start 已受理（202 已返回后后台执行）"
+        "start 已受理（202 已返回后后台执行；干预面已同步登记）"
     );
-    std::thread::spawn(move || run_in_background(st, project, task, engine, run));
+    std::thread::spawn(move || run_in_background(st, project, task, engine, run, control));
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({

@@ -140,6 +140,9 @@ async fn capacity_saturation_blocks_and_recovers() {
 async fn over_budget_run_is_fused() {
     let f = fixture();
     make_task(&f, "devforge", "long-runner", TaskDeps::default());
+    // 模拟真实派工：干预面已在派发前登记（自审 minor 223 后的口径），
+    // 这样熔断才能置位到真正被 run 线程看见的那个 control 上。
+    let control = f.state.register_control("devforge", "long-runner");
     {
         let mut store = f.state.store.lock().unwrap();
         let run = store.begin_run("devforge", "long-runner").unwrap();
@@ -153,17 +156,33 @@ async fn over_budget_run_is_fused() {
         report.fused.contains(&"devforge/long-runner".to_string()),
         "超预算 run 应熔断：{report:?}"
     );
-    // cancel 置位后 control 应存在且已取消
-    let control = f
-        .state
-        .runs_control
-        .lock()
-        .unwrap()
-        .get("devforge/long-runner")
-        .cloned();
-    if let Some(c) = control {
-        assert!(c.is_cancelled(), "熔断应置位取消");
-    }
+    // 自审 minor 228：旧口径把断言包在 `if let Some(c)` 里——在册与否都跳过，
+    // 删掉熔断实现仍全绿。这里 control 由测试自己登记，断言必须是硬断言。
+    assert!(control.is_cancelled(), "熔断应置位取消（在册 control 必须被置位）");
+}
+
+#[tokio::test]
+async fn over_budget_run_without_a_control_handle_is_closed_outright() {
+    let f = fixture();
+    make_task(&f, "devforge", "lost-run", TaskDeps::default());
+    let run_id = {
+        let mut store = f.state.store.lock().unwrap();
+        let run = store.begin_run("devforge", "lost-run").unwrap();
+        if let Some(r) = store.runs.iter_mut().find(|r| r.id == run.id) {
+            r.started_at_ms = now_ms().saturating_sub(300 * 60_000);
+        }
+        run.id
+    };
+    // 不登记 control：模拟「run 线程已经不在，但 store 里仍是 Running」（占着并发槽）
+    let report = tick(&f.state, &SchedulerConfig::default());
+    assert!(report.fused.contains(&"devforge/lost-run".to_string()), "{report:?}");
+    let store = f.state.store.lock().unwrap();
+    let row = store.runs.iter().find(|r| r.id == run_id).expect("run 应在库里");
+    assert_eq!(
+        row.status,
+        crate::domain::run::RunStatus::Failed,
+        "无控制句柄且 kille=0 时必须升级结案，否则并发槽永久泄漏"
+    );
 }
 
 #[tokio::test]

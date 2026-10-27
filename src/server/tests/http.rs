@@ -126,17 +126,14 @@ async fn cancel_endpoint_stops_running_task() {
     let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
     assert_eq!(resp.status(), 202);
 
-    // control 在 begin_run 后登记；轮询到取消端点可用为止
-    let mut cancelled = false;
-    for _ in 0..100 {
-        let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t/cancel", None).await;
-        if resp.status() == 200 {
-            cancelled = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(cancelled, "取消端点应命中运行中的 run");
+    // 自审 minor（223）回归：干预面必须**在 202 之前**登记——紧跟 start 的第一次 cancel
+    // 就得命中（旧口径 control 由 run 线程登记，这里只能轮询，且真实客户端会吃 404）。
+    let resp = send(&f.router, "POST", "/api/v1/projects/p/tasks/t/cancel", None).await;
+    assert_eq!(
+        resp.status(),
+        200,
+        "202 之后立刻 cancel 必须命中（不得有登记窗口）"
+    );
 
     // 引擎响应取消 → run Failed(已取消)，任务 Failed，不留悬空 Running
     let mut final_runs = Value::Null;

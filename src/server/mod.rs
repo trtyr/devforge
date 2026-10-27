@@ -251,6 +251,32 @@ impl ServerState {
     pub fn emit(&self, value: serde_json::Value) {
         self.bus.emit(value);
     }
+
+    /// 干预面登记（自审 minor 223）：**在派发线程之前同步调用**，返回已可见的 control。
+    ///
+    /// 旧口径由后台线程自己登记，导致「紧跟 start 的 cancel」打在一个还没登记的控制对象上
+    /// （404 当前无运行中的 run），而 run 已经准入在跑：取消点了却没生效。
+    /// 两个派发口（start 端点 / 调度器）必须走本函数，以后不要再各自 `insert`。
+    pub fn register_control(&self, project: &str, task_id: &str) -> Arc<RunControl> {
+        let mut control = RunControl::new();
+        if let Some(timeout) = self.run_timeout_ms {
+            control = control.with_deadline(crate::domain::now_ms() + timeout);
+        }
+        let control = Arc::new(control);
+        self.runs_control
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(format!("{project}/{task_id}"), control.clone());
+        control
+    }
+
+    /// 收尾时摘除干预面（只摘自己那一个 key）。
+    pub fn unregister_control(&self, project: &str, task_id: &str) {
+        self.runs_control
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&format!("{project}/{task_id}"));
+    }
 }
 
 // ---------- 后台执行（编排控制的 start 端点用） ----------
@@ -261,12 +287,18 @@ pub type EngineBox = Box<dyn RunEngine + Send>;
 /// 在独立线程跑一个 run（不持锁执行引擎——Store 锁只在 begin/finish 短暂持有）。
 /// 准入（`begin_run`）已在 handler 里**同步完成**（server #1：202 不能早于准入），
 /// 这里拿到已建好的 `Run`，只负责取快照与开跑。
+///
+/// 自审 minor（223）：干预面（`runs_control`）也已在 handler 里**同步登记**，
+/// 这里只收下那个 `Arc` 并在收尾时摘除——旧口径在线程体里登记，导致「紧跟 start
+/// 的 cancel」打在一个还没登记的控制对象上（404 当前无运行中的 run），
+/// 而 run 实际上已经准入在跑：取消点了却没生效。
 pub fn run_in_background(
     state: SharedState,
     project: String,
     task_id: String,
     mut engine: EngineBox,
     run: crate::domain::run::Run,
+    control: Arc<RunControl>,
 ) {
     let task_snapshot = {
         let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
@@ -325,18 +357,8 @@ pub fn run_in_background(
         "run 开始"
     );
 
-    // 干预面登记（P8-ISSUE-01）：cancel 端点置位 / 可选超时，watchdog 杀自家 pi
-    let mut control = RunControl::new();
-    if let Some(timeout) = state.run_timeout_ms {
-        control = control.with_deadline(crate::domain::now_ms() + timeout);
-    }
-    let control = Arc::new(control);
-    state
-        .runs_control
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(format!("{project}/{task_id}"), control.clone());
-
+    // 干预面已在 handler 同步登记（自审 minor 223）——这里不再新建/插入，
+    // 直接用那个已可见的 control，否则「先登记后覆盖」会让 cancel 置在旧对象上。
     // 基础设施故障自动重启（plan 010 T005/D004）：只重 System 类，质量失败不重试
     let policy = state.retry_policy.clone();
     let sop_for_state = task_snapshot.sop.clone();
@@ -395,14 +417,9 @@ pub fn run_in_background(
         }
     });
 
-    state
-        .runs_control
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&format!("{project}/{task_id}"));
-
     // 契约终校验已在每次尝试内完成（见上，124）——这里不再二次校验（避免两次 diff）。
-
+    // 干预面摘除放在终态落账**之后**：收尾那一小段里 cancel 仍应可见（否则对账完成前
+    // 的取消会吃 404，而 run 看上去还在跑）。
     let finish = match &outcome {
         Ok(RunOutcome::Completed) => crate::domain::store::FinishOutcome::Completed,
         Ok(RunOutcome::Failed { reason }) => crate::domain::store::FinishOutcome::Failed {
@@ -460,6 +477,8 @@ pub fn run_in_background(
     }));
     // 观测上下文清位：心跳文件**保留**最后一次状态（死亡现场的证据，不删）
     crate::observability::end_run(&run.id.0);
+    // 干预面摘除：终态已落账、观测已清位——此后 cancel 就该 404。
+    state.unregister_control(&project, &task_id);
     // P012 M4：run 收尾踢调度器——依赖本任务的后继立即就绪判定 + Settled 自动入队
     crate::server::scheduler::kick();
 }

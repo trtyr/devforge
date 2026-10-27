@@ -491,9 +491,11 @@ pub async fn launch(st: &SharedState, project: &str, task_id: &str) {
         }
     };
     let st2 = st.clone();
+    // 自审 minor（223）：干预面在派发线程之前同步登记（与 start 端点同口径）。
+    let control = st.register_control(project, task_id);
     let project = project.to_string();
     let task_id = task_id.to_string();
-    std::thread::spawn(move || run_in_background(st2, project, task_id, engine, run));
+    std::thread::spawn(move || run_in_background(st2, project, task_id, engine, run, control));
 }
 
 /// 调度循环：1s 心跳看 kick，30s 周期全量 tick（serve 时 spawn；测试可直接调 tick）。

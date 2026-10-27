@@ -271,7 +271,16 @@ async fn the_infra_error_is_logged_before_the_restart_warning() {
         store.begin_run("p", "t").expect("准入")
     };
     let text = crate::observability::test_support::capture_jsonl(|| {
-        crate::server::run_in_background(f.state.clone(), "p".into(), "t".into(), engine, run);
+        // 自审 minor（223）后：干预面由调用方先登记，run_in_background 只收下已可见的 control。
+        let control = f.state.register_control("p", "t");
+        crate::server::run_in_background(
+            f.state.clone(),
+            "p".into(),
+            "t".into(),
+            engine,
+            run,
+            control,
+        );
     });
     let lines: Vec<&str> = text.lines().collect();
     let err_at = lines
