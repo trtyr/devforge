@@ -72,7 +72,7 @@ pub fn plan_kickoff(ctx: &ChangeCtx) -> String {
     format!(
         "你是 change-plan-agent。change-id：`{}`\n\
 目标仓：{}\n\
-需求：{}\n\
+需求：\n{}\n\
 文档档位：{}（计划阶段照常读已有文档；不要自己去跑文档流水线）\n\n\
 产出：`{}`（六块：需求复述与歧义 / 影响面（每条 path:line）/ 三张表 / 白名单 / 验收标准 / 风险）。\n\
 工具纪律：结构问题一律走 codegraph；不要写实施顺序，不要写回归命令，不要改代码。\n\
@@ -81,7 +81,9 @@ pub fn plan_kickoff(ctx: &ChangeCtx) -> String {
 完成后在回复末尾单独一行输出 `<stage-complete>1</stage-complete>`。",
         ctx.change_id,
         ctx.repo.display(),
-        ctx.requirement,
+        // 自审 minor（85）：需求原文是**用户外部文本**——用 untrusted 分隔块包起来
+        // （旧口径直接拼，需求里一句「忽略上述规则」即可接管计划阶段）。
+        crate::sop::review_gate::untrusted_block("user-requirement", &ctx.requirement),
         ctx.doc_level.as_str(),
         ctx.plan_path().display()
     )
@@ -662,12 +664,16 @@ impl ChangeSession for ProdChangeSession {
             "编码审查第 {round} 轮打回，逐条修复后重交（不要重复已完成的工作，不要扩围）：\n{}\n\n\
              只改计划白名单内的文件；修完把本轮自证证据（命令 + 退出码）更新到黑板 `{}`，\
              然后输出 <stage-complete>1</stage-complete>。",
-            issues
-                .iter()
-                .enumerate()
-                .map(|(i, s)| format!("{}. {}", i + 1, s))
-                .collect::<Vec<_>>()
-                .join("\n"),
+            // 自审 minor（85）：审查官产出的 issues 是外部文本，同样走分隔块
+            crate::sop::review_gate::untrusted_block(
+                "review-issues",
+                &issues
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("{}. {}", i + 1, s))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
             crate::change::coding_gate::SELF_CHECK_LOG
         );
         let first = self.coding_agent.converse(&message, ui)?;
