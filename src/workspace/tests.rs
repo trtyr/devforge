@@ -301,3 +301,20 @@ fn ensure_entry_validates_task_id_too() {
     let err = Workspace::ensure(&s).unwrap_err();
     assert!(err.to_string().contains("非法字符"), "got: {err}");
 }
+
+/// 自审 minor（193）：契约基点不得被当成 git 选项解析（`--output=` / `--git-dir=` 一类）。
+#[test]
+fn option_shaped_base_rev_is_refused_before_git_sees_it() {
+    let (dir, _base) = repo_with_base();
+    let err = Workspace::ensure(&WorkspaceSpec {
+        repo: dir.path().to_path_buf(),
+        task_id: "opt-probe".into(),
+        base_rev: "--output=/tmp/pwned".into(),
+    })
+    .unwrap_err();
+    assert!(
+        matches!(err, DevforgeError::Config(_)),
+        "应是契约错误（Config）：{err:?}"
+    );
+    assert!(err.to_string().contains("形状非法"), "{err}");
+}

@@ -126,6 +126,29 @@ pub fn date_segment_now() -> String {
     date_segment(y, m, d)
 }
 
+/// 今天的 `(年, 月, 日)`（本地时钟，`DEVFORGE_TODAY` 同样可覆盖）。
+///
+/// 给需要**数值**而非 id 段的调用方用（自审 44：调用方不该自己字节切片日期段）。
+pub fn today_ymd() -> (i32, u32, u32) {
+    if let Ok(raw) = std::env::var("DEVFORGE_TODAY") {
+        let parts: Vec<&str> = raw.trim().split('-').collect();
+        if parts.len() == 3
+            && let (Ok(y), Ok(m), Ok(d)) = (
+                parts[0].parse::<i32>(),
+                parts[1].parse::<u32>(),
+                parts[2].parse::<u32>(),
+            )
+        {
+            return (y, m, d);
+        }
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    civil_from_days(secs.div_euclid(86_400))
+}
+
 /// 自 1970-01-01 起的天数 → (年, 月, 日)。Howard Hinnant 的 civil_from_days。
 fn civil_from_days(z: i64) -> (i32, u32, u32) {
     let z = z + 719_468;

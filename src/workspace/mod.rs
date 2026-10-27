@@ -370,9 +370,21 @@ fn normalize(p: &str) -> String {
 /// 「契约显示新基点、worktree 还停在旧基点」的错位不可检。
 /// rev 解析失败 = 契约错误（Config，不自动重启），不是环境故障。
 fn resolve_base(repo: &Path, base_rev: &str) -> Result<String> {
+    // 自审 minor（193）：外部串直接当 rev 参数——`--` 前缀会被 git 当**选项**解析
+    // （`--git-dir=`/`--output=` 一类）。合法性由 rev-parse 判，但选项面必须先在门口挡掉。
+    if base_rev.starts_with('-') || base_rev.contains('\0') {
+        return Err(DevforgeError::Config(format!(
+            "契约基点 `{base_rev}` 形状非法（不得以 - 开头或含 NUL）——拒绝当 git 选项解析"
+        )));
+    }
     git_out(
         repo,
-        &["rev-parse", "--verify", &format!("{base_rev}^{{commit}}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{base_rev}^{{commit}}"),
+        ],
     )
     .map(|s| s.trim().to_string())
     .map_err(|_| {

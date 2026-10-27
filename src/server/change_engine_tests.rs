@@ -110,3 +110,119 @@ fn session_dirs_cover_all_six_profiles() {
         "会话目录必须按 run-id 隔离：{dirs:?}"
     );
 }
+
+// ── 2026-10-27 自审 change_engine 批回归 ──
+
+fn test_git(repo: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} 失败：{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// 自审 minor（102/198）：worktree 隔离链路的冻结锚点语义必须可测——
+/// HEAD 未前进时 `freeze()` == 基点（此时不得写盘/当候选入队），有提交后才与基点不同。
+#[test]
+fn freeze_equals_baseline_until_the_agent_commits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    test_git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.rs"), "fn a() {}\n").unwrap();
+    test_git(&repo, &["add", "-A"]);
+    test_git(
+        &repo,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ],
+    );
+    let base = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["-C", &repo.to_string_lossy(), "rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    let ws = crate::workspace::Workspace::ensure(&crate::workspace::WorkspaceSpec {
+        repo: repo.clone(),
+        task_id: "freeze-probe".into(),
+        base_rev: base.clone(),
+    })
+    .unwrap();
+    assert_eq!(
+        ws.freeze().unwrap(),
+        base,
+        "未提交时应冻结在基点（这正是「空候选不得入队」的判据）"
+    );
+
+    // agent 提交之后锚点才前进
+    std::fs::write(ws.path.join("a.rs"), "fn a() { let _x = 1; }\n").unwrap();
+    test_git(&ws.path, &["add", "-A"]);
+    test_git(
+        &ws.path,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "impl",
+        ],
+    );
+    let frozen = ws.freeze().unwrap();
+    assert_ne!(frozen, base, "有提交后冻结锚点必须前进");
+    assert_eq!(frozen.len(), 40, "冻结锚点必须是完整 commit sha：{frozen}");
+    ws.remove(&repo).unwrap();
+}
+
+/// 自审 critical 回归（102）：报告必须落在**主仓**而不是 worktree——
+/// worktree 收尾会被 remove --force 连目录删掉，旧实现写进去 → run 报 Completed
+/// 但 report_path 指向不存在的文件。
+#[test]
+fn finalize_writes_report_outside_the_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let worktree = tmp.path().join("repo-worktrees").join("t1");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let sessions = worktree.join("sessions"); // 会话目录在 worktree 侧
+    let mut out = outcome();
+    let f = finalize(
+        &mut out,
+        &sessions,
+        "run-w",
+        &repo,
+        std::time::Instant::now(),
+    )
+    .unwrap();
+    assert!(
+        f.report_path.starts_with(&repo),
+        "报告必须落在主仓：{}",
+        f.report_path.display()
+    );
+    assert!(
+        !f.report_path.starts_with(&worktree),
+        "报告不得落在会被 remove --force 删掉的 worktree 里"
+    );
+    assert!(f.report_path.is_file());
+}

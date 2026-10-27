@@ -63,7 +63,7 @@ fn dispatch_routes_change_to_its_engine() {
 }
 
 #[test]
-fn change_without_requirement_file_is_quality_failure() {
+fn change_without_requirement_file_is_a_config_error() {
     // 门 0 前先要需求：黑板里没 requirement.md 不得开跑
     let dir = tempfile::tempdir().unwrap();
     let profiles = dir.path().join("profiles");
@@ -89,7 +89,10 @@ fn change_without_requirement_file_is_quality_failure() {
     let control = RunControl::new();
     let err = engine.execute(&task, &run, &control).unwrap_err();
     assert!(err.to_string().contains("requirement.md"), "{err}");
-    assert!(err.is_quality_failure());
+    // 自审 minor（196）：需求文件缺失是装配/配置错误（调用方没备好前置条件），
+    // 不是「内容不合格」——归 Quality 会让重试策略按质量失败处理。
+    assert!(err.is_config_error(), "应是配置错误：{err:?}");
+    assert!(!err.is_quality_failure(), "不得再归为质量失败：{err:?}");
 }
 
 #[test]

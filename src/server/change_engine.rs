@@ -100,6 +100,11 @@ impl BuiltinRpcEngine {
                 }
             }
         }
+        // 自审 minor（195）：profile 门卫必须排在 worktree 创建**之前**——最常见的配置
+        // 错误（profile 未渲染）旧口径会先建后删 worktree，白跑一轮 git。
+        for p in CHANGE_PROFILES {
+            self.require_profile(p)?;
+        }
         let ws_guard = {
             let want = task
                 .contract
@@ -119,7 +124,10 @@ impl BuiltinRpcEngine {
                 })?;
                 tracing::info!(
                     component = "change-engine",
+                    event = "workspace.created",
                     path = %ws.path.display(),
+                    base_sha = %ws.base_rev,
+                    branch = %ws.branch,
                     "worktree 工作区已创建（本 run 全部读写落在其中）"
                 );
                 WsCleanup {
@@ -134,9 +142,6 @@ impl BuiltinRpcEngine {
             Some(ws) => ws.path.clone(),
             None => task.workspace.clone(),
         };
-        for p in CHANGE_PROFILES {
-            self.require_profile(p)?;
-        }
         // change-plan-agent 被要求 codegraph-first：索引必须先建（与其他代码类 SOP 同口径）
         crate::engine::builtin::preflight_codegraph(&run_ws, &self.codegraph_bin);
 
@@ -144,15 +149,17 @@ impl BuiltinRpcEngine {
         std::fs::create_dir_all(&task_root).ctx("建任务黑板目录")?;
         // 需求原文：调用方开跑前写进任务黑板（不给需求就没法规划）
         let requirement_path = task_root.join(REQUIREMENT_FILE);
+        // 自审 minor（196）：需求缺失/为空是**装配/配置错误**（调用方没把前置条件备好），
+        // 不是质量失败——旧口径归 Quality 会让重试策略按「内容不合格」处理。
         let requirement = std::fs::read_to_string(&requirement_path).map_err(|e| {
-            DevforgeError::Quality(format!(
+            DevforgeError::Config(format!(
                 "缺少需求文件 {}（change SOP 开跑前必须写清楚要改什么）：{e}",
                 requirement_path.display()
             ))
         })?;
         if requirement.trim().is_empty() {
-            return Err(DevforgeError::Quality(format!(
-                "需求文件 {} 是空的",
+            return Err(DevforgeError::Config(format!(
+                "需求文件 {} 是空的（装配错误：调用方必须写入非空需求）",
                 requirement_path.display()
             )));
         }
@@ -170,6 +177,7 @@ impl BuiltinRpcEngine {
         )?;
         tracing::info!(
             component = "change-engine",
+            event = "change.gate0_done",
             change_id = %prep.change_id,
             baseline = %prep.baseline.sha,
             doc_level = prep.doc_level.as_str(),
@@ -180,10 +188,23 @@ impl BuiltinRpcEngine {
         let blackboard = prep.blackboard.clone();
 
         // 计划事实（续跑时计划文件已存在，先回读）
-        let (criteria, whitelist) = match std::fs::read_to_string(prep.change_dir.join("change-plan.md"))
-        {
+        // 自审 minor（197）：旧口径把**全部** IO 错误吞成空 vec 且不记日志——
+        // 「首跑没有计划文件（正常）」与「续跑读失败/损坏（异常）」两种语义被混同，
+        // 续跑会带着空验收/空白名单继续跑，越界声明全被当成 scope creep。
+        let plan_path = prep.change_dir.join("change-plan.md");
+        let (criteria, whitelist) = match std::fs::read_to_string(&plan_path) {
             Ok(text) => crate::change::plan_audit::plan_facts(&text),
-            Err(_) => (Vec::new(), Vec::new()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), Vec::new()),
+            Err(e) => {
+                tracing::warn!(
+                    component = "change-engine",
+                    event = "change.plan_read_failed",
+                    path = %plan_path.display(),
+                    error = %e,
+                    "计划文件存在但读不出（验收标准/白名单为空，可能把合法改动判成越界）"
+                );
+                (Vec::new(), Vec::new())
+            }
         };
 
         let ctx = build_ctx(&prep, &run_ws, &requirement, task.contract.clone());
@@ -324,18 +345,39 @@ impl BuiltinRpcEngine {
                 // P012 M1 · T1.1：候选冻结 commit 落黑板（diff 归因锚点）；随后 guard 清 worktree（分支保留）
                 if let Some(ws) = &ws_guard.ws {
                     let frozen = ws.freeze()?;
+                    // 自审 minor（198）：冻结锚点旧口径零校验——HEAD 未前进时 frozen == 基线，
+                    // 仍被写盘并被调度器入队当候选（「候选」= 空改动，下游归因/合入全错）。
+                    if frozen == baseline {
+                        tracing::warn!(
+                            component = "change-engine",
+                            event = "change.frozen_at_baseline",
+                            frozen = %frozen,
+                            branch = %ws.branch,
+                            "候选分支停在基点（没有任何提交）——不写冻结锚点、不作为候选入队"
+                        );
+                    } else if frozen.trim().len() < 7 {
+                        tracing::warn!(
+                            component = "change-engine",
+                            event = "change.frozen_shape_unexpected",
+                            frozen = %frozen,
+                            "冻结锚点不是 commit sha 形状——不写盘（下游会把它当锚点）"
+                        );
+                    } else {
                     let frozen_path = self.plans_root.join(&task.project).join(&task.id).join("frozen-commit.txt");
                     std::fs::write(&frozen_path, format!("{frozen}\n"))
                         .ctx("写冻结 commit 记录")?;
                     tracing::info!(
                         component = "change-engine",
+                        event = "change.frozen",
                         frozen = %frozen,
                         branch = %ws.branch,
                         "候选已冻结（worktree 即将清理，分支保留）"
                     );
+                    }
                 }
                 tracing::info!(
                     component = "change-engine",
+                    event = "change.passed",
                     change_id = %change_id,
                     report = %finalized.report_path.display(),
                     rounds = outcome.report.review_rounds,
@@ -369,12 +411,35 @@ pub fn build_ctx(
 }
 
 /// 今天的 `(年, 月, 日)`（`DEVFORGE_TODAY` 可覆盖）。
+///
+/// 自审 minor（44）：旧口径直接 `seg[0..4]` 字节切片——段长不足或含非 ASCII 时
+/// **panic**（切片越界 / 非字符边界），解析失败又会静默落成 1970-01-01（日期错标）。
+/// 现在按「长度 + 全数字」显式校验，非法即回落到系统时钟并留痕。
 fn today_parts() -> (i32, u32, u32) {
     let seg = crate::change::change_id::date_segment_now();
-    let year: i32 = seg[0..4].parse().unwrap_or(1970);
-    let month: u32 = seg[4..6].parse().unwrap_or(1);
-    let day: u32 = seg[6..8].parse().unwrap_or(1);
-    (year, month, day)
+    let parsed = seg
+        .get(0..8)
+        .filter(|s| s.len() == 8 && s.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|s| {
+            Some((
+                s[0..4].parse::<i32>().ok()?,
+                s[4..6].parse::<u32>().ok()?,
+                s[6..8].parse::<u32>().ok()?,
+            ))
+        });
+    match parsed {
+        Some(t) => t,
+        None => {
+            tracing::warn!(
+                component = "change-engine",
+                event = "change.bad_today_segment",
+                segment = %seg,
+                "日期段不是 8 位数字（DEVFORGE_TODAY 写错了？）——回落到系统时钟"
+            );
+            let (y, m, d) = crate::change::change_id::today_ymd();
+            (y, m, d)
+        }
+    }
 }
 
 /// 供测试/调用方构造会话目录（避免路径拼写在两处漂移）。
