@@ -308,11 +308,14 @@ impl BuiltinRpcEngine {
         let watch_dirs = session_dirs(&self.session_root, &run_id).to_vec();
 
         // 取消/超时/失活与其他 SOP 同口径：跑在 watchdog 里，不然 cancel 端点停不下来
+        // 自审 minor（175）：台账路径进看门狗（强杀走精确路径，扫盘只做降级）
+        let ledger = self.plans_root.join(&task.project).join("spawn-ledger.json");
         let sop_result = super::run_with_watchdog(
             control,
             run_id.clone(),
             self.idle_ms,
             watch_dirs,
+            Some(ledger),
             Some(self.unblock_hook()),
             || {
                 run_orchestrator(

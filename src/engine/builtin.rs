@@ -143,6 +143,8 @@ impl RunEngine for BuiltinRpcEngine {
             );
             let plans_root = self.plans_root.clone();
             let watch_dirs = vec![sessions.join("code-review")];
+            // 自审 minor（175）：看门狗强杀走台账精确路径（旧口径恒 None = 全机扫盘）
+            let ledger = self.plans_root.join(&task.project).join("spawn-ledger.json");
             let sop_result = run_with_watchdog(
                 control,
                 run.id.0.clone(),
@@ -152,6 +154,7 @@ impl RunEngine for BuiltinRpcEngine {
                     crate::audit::runner::DEFAULT_AUDIT_IDLE_MS,
                 )),
                 watch_dirs,
+                Some(ledger),
                 Some(self.unblock_hook()),
                 move || {
                     crate::audit::runner::run_audit(
@@ -268,11 +271,13 @@ impl BuiltinRpcEngine {
         // scope 返回后才置位，而 scope 要等 watchdog 退出——正常完成必死锁，
         // 第 18/19/20 三试 verdict 后挂起的真因）。
         let run_id = run.id.0.clone();
+        let ledger = self.plans_root.join(&task.project).join("spawn-ledger.json");
         let sop_result = run_with_watchdog(
             control,
             run_id.clone(),
             self.idle_ms,
             vec![sessions.join("plan"), sessions.join("reviews")],
+            Some(ledger),
             Some(self.unblock_hook()),
             || {
                 let mut sop_loop = PlanningLoop::new(plan, factory);
@@ -350,11 +355,13 @@ impl BuiltinRpcEngine {
         let workspace = task.workspace.clone();
         let project = task.project.clone();
         let task_id = task.id.clone();
+        let ledger = self.plans_root.join(&task.project).join("spawn-ledger.json");
         let sop_result = run_with_watchdog(
             control,
             run_id,
             self.idle_ms,
             vec![sessions.join("coding"), sessions.join("coding-reviews")],
+            Some(ledger),
             Some(self.unblock_hook()),
             || {
                 let mut sop_loop = CodingSopLoop::new(agent, factory);
@@ -461,6 +468,7 @@ impl BuiltinRpcEngine {
             run_id.clone(),
             self.idle_ms,
             watch_dirs,
+            Some(ledger_path_in_scope.clone()),
             Some(self.unblock_hook()),
             move || {
                 let mut sop_loop = TestingSopLoop::new(agent, test_review_factory);
@@ -605,6 +613,7 @@ impl BuiltinRpcEngine {
             run_id,
             self.idle_ms,
             watch_dirs,
+            Some(self.plans_root.join(&task.project).join("spawn-ledger.json")),
             Some(self.unblock_hook()),
             move || {
                 let mut sop_loop = DocFixSopLoop::new(agent, factory);

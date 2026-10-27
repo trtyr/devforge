@@ -7,7 +7,7 @@ fn watchdog_scope_returns_after_closure_completes() {
     // 回归（verdict 后挂起）：f 正常返回后 scope join 必须解锁（旧实现此处死锁）
     let control = RunControl::new();
     let start = Instant::now();
-    let out = run_with_watchdog(&control, "watchdog-regression".into(), None, vec![], None, || {
+    let out = run_with_watchdog(&control, "watchdog-regression".into(), None, vec![], None, None, || {
         std::thread::sleep(Duration::from_millis(400));
         42
     });
@@ -52,7 +52,7 @@ fn the_watchdog_refreshes_the_heartbeat_while_the_run_is_stalled() {
     let control = RunControl::new();
     // 停 1.6s：心跳节流 1s → watchdog 的周期 tick（~1.2s）必落在观察窗内；
     // mid 在 run 进行中取样，不落收尾刷盘的账。
-    let mid = run_with_watchdog(&control, run_id.into(), None, vec![], None, || {
+    let mid = run_with_watchdog(&control, run_id.into(), None, vec![], None, None, || {
         std::thread::sleep(Duration::from_millis(1600));
         crate::observability::heartbeat::read(dir.path(), run_id)
             .expect("run 进行中心跳应可读")
@@ -91,6 +91,7 @@ fn cancel_path_unblocks_the_run_and_fires_the_intervention_hook() {
         "watchdog-cancel-real".into(),
         None,
         vec![],
+        None,
         Some(std::sync::Arc::new(move |_rid: &str| {
             hooked_h.store(true, std::sync::atomic::Ordering::SeqCst);
             let _ = tx.send(());
@@ -200,6 +201,7 @@ fn idle_configured_growth_keeps_run_alive() {
         Some(600),
         vec![watch],
         None,
+        None,
         || std::thread::sleep(Duration::from_millis(1200)),
     );
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -220,6 +222,7 @@ fn idle_configured_flatline_gets_harvested() {
         Some(400),
         vec![watch],
         None,
+        None,
         || std::thread::sleep(Duration::from_millis(1500)),
     );
     assert!(control.is_stalled(), "平线超阈应被失活收割");
@@ -238,6 +241,7 @@ fn idle_unconfigured_never_harvests() {
         None,
         vec![watch],
         None,
+        None,
         || std::thread::sleep(Duration::from_millis(900)),
     );
     assert!(!control.is_stalled(), "未配置闲置阈值时永不失活收割");
@@ -254,6 +258,7 @@ fn unreadable_watch_dir_disables_idle_harvest() {
         "watchdog-blind".into(),
         Some(400),
         vec![dir.path().join("never-created")], // 目录不存在 → 不可观测
+        None,
         None,
         || std::thread::sleep(Duration::from_millis(1200)),
     );
@@ -289,6 +294,7 @@ fn after_harvest_cancel_is_still_monitored() {
         "watchdog-post-harvest".into(),
         Some(300),
         vec![watch],
+        None,
         Some(std::sync::Arc::new(move |_rid: &str| {
             hc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let _ = tx.send(());

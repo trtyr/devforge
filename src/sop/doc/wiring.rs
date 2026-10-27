@@ -304,11 +304,14 @@ impl BuiltinRpcEngine {
         let final_inv = inv.clone();
         let final_run_id = run.id.0.clone();
         let session_root = run_sessions.clone();
+        // 自审 minor（175）：台账路径进看门狗——强杀走精确路径，扫盘只做降级兜底
+        let ledger = self.plans_root.join(&task.project).join("spawn-ledger.json");
         let sop_result = run_with_watchdog(
             control,
             run_id,
             self.idle_ms,
             vec![session_root.join("doc"), session_root.join("doc-reviews")],
+            Some(ledger),
             Some(self.unblock_hook()),
             || {
                 // DR-14/ARC-R1：pipeline 是唯一 runner（审查(N) 与 写作(N+1) 重叠）；

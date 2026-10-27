@@ -93,6 +93,9 @@ pub(crate) fn run_with_watchdog<T>(
     run_id: String,
     idle_ms: Option<u64>,
     watch_dirs: Vec<PathBuf>,
+    // 自审 minor（175）：台账路径——强杀优先走精确路径，扫盘只是降级兜底。
+    // 旧口径恒传 None，看门狗的杀伤面因此总是「全机带同名标记的进程」，比台账宽。
+    ledger_path: Option<PathBuf>,
     on_intervention: Option<UnblockHook>,
     f: impl FnOnce() -> T,
 ) -> T {
@@ -102,10 +105,15 @@ pub(crate) fn run_with_watchdog<T>(
     let done_main = done.clone();
     // DR-3：停滞告警每回合只发一次（恢复后重置）
     let stall_warned = std::sync::Arc::new(AtomicBool::new(false));
+    // 自审 minor（40）：不再克隆 run_id——`std::thread::scope` 允许借用栈，
+    // 看门狗闭包直接拿 `&run_id`，收尾路径也用同一个借用。
     let stall_wd = stall_warned.clone();
-    let run_id_final = run_id.clone();
     std::thread::scope(|scope| {
+        // 自审 minor（40）：只借用，不搬所有权——scope 允许借用栈，
+        // 看门狗与收尾路径共用同一个 `&run_id`（旧口径为了一条收尾日志白克隆一次）。
+        let run_id_ref: &str = &run_id;
         scope.spawn(move || {
+            let run_id: &str = run_id_ref;
             let mut last_fp = session_fingerprint(&watch_dirs);
             let mut last_progress = crate::domain::now_ms();
             // 失活收割只判一次：收割后停失活判定，但心跳/取消/超时监测继续
@@ -144,8 +152,9 @@ pub(crate) fn run_with_watchdog<T>(
                 }
                 let now = crate::domain::now_ms();
                 if control.is_cancelled() || control.timed_out(now) {
-                    // 引擎审计修复 #9：统一杀进程入口（watchdog 无台账路径上下文 → 直接兕底扫盘，标记校验仍生效）
-                    let killed = crate::engine::ledger::kill_run(None, &run_id);
+                    // 引擎审计修复 #9：统一杀进程入口；自审 minor（175）起带台账路径——
+                    // 精确命中优先，扫盘只在台账缺失时降级（标记校验仍生效）。
+                    let killed = crate::engine::ledger::kill_run(ledger_path.as_deref(), run_id);
                     // 2026-10-27 自审 major：killed==0 是常态（进程已退出/从未 spawn），
                     // 但「看门狗观测到取消」这件事必须无条件留痕——旧口径只在杀到人时记日志。
                     tracing::warn!(
@@ -190,8 +199,8 @@ pub(crate) fn run_with_watchdog<T>(
                                 idle_ms = idle,
                                 "会话无进展超过闲置阈值，失活收割"
                             );
-                            // 引擎审计修复 #9：统一杀进程入口（同上：直接兕底扫盘）
-                            let killed = crate::engine::ledger::kill_run(None, &run_id);
+                            // 引擎审计修复 #9：统一杀进程入口（同上：台账精确路径优先）
+                            let killed = crate::engine::ledger::kill_run(ledger_path.as_deref(), run_id);
                             tracing::warn!(
                                 component = "watchdog",
                                 event = "watchdog.reap.kill",
@@ -230,19 +239,19 @@ pub(crate) fn run_with_watchdog<T>(
         done_main.store(true, Ordering::SeqCst);
         // F18：收尾终态刷盘——run 的最后一次心跳（阶段/步骤定格在终态）。
         // 在 f() 之后（尾部），不占「开跑→首让」竞态窗口（agent 实验证尾部写不触发）。
-        if let Err(e) = crate::observability::touch_run(&run_id_final) {
+        if let Err(e) = crate::observability::touch_run(&run_id) {
             // 2026-10-27 自审 minor（177）：死亡现场的最后一次心跳落盘失败必须响——
             // 旧口径在 write_heartbeat 里只留 debug，现场证据静默缺失。
             tracing::warn!(
                 component = "watchdog",
                 event = "watchdog.heartbeat.final_failed",
-                run_id = %run_id_final,
+                run_id = %run_id,
                 error = %e,
                 "收尾终态心跳落盘失败——run 死亡现场的心跳证据缺失"
             );
         }
         // 自审 minor（174）：节流表是进程级 map，run 收场必须摘条目（否则按 run 无界增长）
-        crate::observability::forget_run_throttle(&run_id_final);
+        crate::observability::forget_run_throttle(&run_id);
         out
     })
 }

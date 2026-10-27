@@ -94,6 +94,7 @@ fn watchdog_intervention_unblocks_pending_ask() {
         run_id.into(),
         None,
         vec![],
+        None,
         Some(hook),
         || std::thread::sleep(std::time::Duration::from_millis(1500)),
     );
