@@ -110,6 +110,7 @@ impl From<crate::error::DevforgeError> for ApiError {
         // 基础设施故障反被判成 404。变体是确定性事实，关键词只在 Store 内细化状态码。
         match e.root_cause() {
             crate::error::DevforgeError::Config(_) => return Self::bad_request(msg),
+            // 自审 ref 144：错误码进响应体（机器可读），消费方不必嗅探中文措辞
             // 请求体/数据 JSON 错 = 客户端输入问题
             crate::error::DevforgeError::Json(_) => return Self::bad_request(msg),
             // 服务端侧问题：任何时候都不得被关键词误判成 404/409

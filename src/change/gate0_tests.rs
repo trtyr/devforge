@@ -201,3 +201,96 @@ fn doc_level_parses_three_tiers_and_defaults_to_none() {
         assert_eq!(DocLevel::parse_strict(lv.as_str()).unwrap(), lv);
     }
 }
+
+// ── 2026-10-27 自审 gate0 批回归 ──
+
+/// 自审 minor（67）：已有 git 仓的**子目录**里不许静默建嵌套仓（会改掉用户 VCS 拓扑）。
+#[test]
+fn nested_repo_inside_an_existing_repo_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    git(root, &["init", "-q"]);
+    commit_all(root, "init");
+    let inner = root.join("sub/dir");
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::write(inner.join("x.txt"), "x\n").unwrap();
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let err = ensure_baseline(&inner, out_dir.path()).unwrap_err();
+    assert!(
+        matches!(err, DevforgeError::Config(_)),
+        "子目录必须报 Config（拒绝建嵌套仓）：{err}"
+    );
+    assert!(
+        !inner.join(".git").exists(),
+        "不得在子目录里留下 .git"
+    );
+}
+
+/// 自审 minor（69）：基线提交必须带 --no-verify——目标仓的 pre-commit 钩子不得被执行。
+#[cfg(unix)]
+#[test]
+fn baseline_commit_skips_repo_hooks() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    git(root, &["init", "-q"]);
+    // 装一个必定失败的 pre-commit 钩子：带 --no-verify 才不会被执行
+    let hooks = root.join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join("pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    let mut perms = std::fs::metadata(&hook).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&hook, perms).unwrap();
+    std::fs::write(root.join("a.txt"), "a\n").unwrap();
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let base = ensure_baseline(root, out_dir.path()).expect("钩子不得阻断基线提交");
+    assert!(!base.sha.is_empty());
+}
+
+/// 自审 minor（68）：疑似密钥文件进基线提交必须告警（不阻断），判定本身要覆盖常见形态。
+#[test]
+fn secret_like_paths_are_recognized() {
+    for p in [
+        "config/.env",
+        ".env.local",
+        "keys/server.pem",
+        "certs/tls.key",
+        "home/.ssh/id_rsa",
+        "deploy/secrets.yaml",
+    ] {
+        assert!(looks_like_secret(p), "应识别为疑似密钥：{p}");
+    }
+    for p in ["src/main.rs", "README.md", "docs/env.md", "tests/fixtures/a.json"] {
+        assert!(!looks_like_secret(p), "不该误报：{p}");
+    }
+}
+
+/// 自审 minor（70）：baseline.txt 为**空文件**时的回退路径必须有用例
+/// （旧口径这条分支零测试，正是 t26 自锁的那条路）。
+#[test]
+fn empty_baseline_record_falls_back_and_reanchors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out_dir = tempfile::tempdir().unwrap();
+    std::fs::write(out_dir.path().join("baseline.txt"), "   \n").unwrap();
+    let base = ensure_baseline(tmp.path(), out_dir.path()).expect("空记录应重记基线");
+    assert!(!base.sha.is_empty());
+    let written = std::fs::read_to_string(out_dir.path().join("baseline.txt")).unwrap();
+    assert_eq!(written.trim(), base.sha, "重记后文件必须是新 sha");
+}
+
+/// 自审 minor（70）：doc 档位是**四**档（None/Essential/Complete/Detailed），
+/// 旧用例名说三档且测的是别处的函数。这里钉四档与 Detailed 分支。
+#[test]
+fn doc_level_has_four_tiers_including_detailed() {
+    let reg = crate::docgen::audit::DocLevel::parse_strict("none").unwrap();
+    assert_eq!(reg.as_str(), "none");
+    let detailed = crate::docgen::audit::DocLevel::parse_strict("detailed").unwrap();
+    assert_eq!(detailed.as_str(), "detailed");
+    assert!(
+        crate::docgen::audit::DocLevel::parse_strict("bogus").is_err(),
+        "未知档位必须报错（strict）"
+    );
+}

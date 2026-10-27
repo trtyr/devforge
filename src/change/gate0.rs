@@ -96,6 +96,15 @@ pub fn ensure_baseline(repo: &Path, out_dir: &Path) -> Result<Baseline> {
             )));
         }
     }
+    // 自审 minor（67）：旧口径只看 `repo/.git` 是否存在——在已有 git 仓的**子目录**里
+    // 会静默 `git init` 建出嵌套仓，并把该子目录下全部内容提交进去（改掉用户的 VCS 拓扑）。
+    if let Some(outer) = enclosing_repo(repo) {
+        return Err(DevforgeError::Config(format!(
+            "目标仓 {} 位于另一个 git 仓 {} 之内——拒绝建嵌套仓（请在仓库根发起变更）",
+            repo.display(),
+            outer.display()
+        )));
+    }
     let git_dir = repo.join(".git");
     if git_dir.exists() {
         match head_sha(repo)? {
@@ -147,7 +156,25 @@ pub fn ensure_baseline(repo: &Path, out_dir: &Path) -> Result<Baseline> {
 
 fn create_baseline_commit(repo: &Path) -> Result<String> {
     run_git(repo, &["add", "-A"])?;
+    // 自审 minor（68）：整份 `add -A` 会把 .env/密钥类文件固化进新 git 历史。不阻断
+    // （会打断正常流程），但必须在提交前大声告警并列出命中文件。
+    if let Ok(staged) = run_git_capture(repo, &["diff", "--cached", "--name-only"]) {
+        let hits: Vec<&str> = staged
+            .lines()
+            .map(str::trim)
+            .filter(|l| looks_like_secret(l))
+            .collect();
+        if !hits.is_empty() {
+            tracing::warn!(
+                component = "change-gate0",
+                files = ?hits,
+                "基线提交包含疑似密钥/环境文件——确认无误后继续（这些内容会进入 git 历史）"
+            );
+        }
+    }
     // 固定身份，避免依赖机器上的全局 git 配置（CI / 新机也能跑）
+    // 自审 minor（69）：加 `--no-verify`——目标仓或全局 core.hooksPath 的 pre-commit/
+    // commit-msg 钩子会在引擎的基线提交上执行（可能改内容/阻塞/带副作用）。
     let out = Command::new("git")
         .args([
             "-c",
@@ -157,19 +184,68 @@ fn create_baseline_commit(repo: &Path) -> Result<String> {
             "commit",
             "-q",
             "--allow-empty",
+            "--no-verify",
             "-m",
             "devforge: baseline",
         ])
         .current_dir(repo)
         .output()
-        .map_err(|e| DevforgeError::System(format!("执行 git commit 失败：{e}")))?;
+        .map_err(|e| {
+            DevforgeError::System(format!("执行 git commit 失败（仓 {}）：{e}", repo.display()))
+        })?;
     if !out.status.success() {
         return Err(DevforgeError::System(format!(
-            "基线提交失败：{}",
+            "基线提交失败（仓 {}）：{}",
+            repo.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    head_sha(repo)?.ok_or_else(|| DevforgeError::System("基线提交后仍取不到 HEAD".into()))
+    head_sha(repo)?
+        .ok_or_else(|| DevforgeError::System(format!("基线提交后仍取不到 HEAD（仓 {}）", repo.display())))
+}
+
+/// 向上探测：`repo` 的**任一祖先**（不含自身）如果是 git 仓，返回那个仓根。
+fn enclosing_repo(repo: &Path) -> Option<std::path::PathBuf> {
+    let mut cur = repo.canonicalize().ok()?;
+    loop {
+        let parent = cur.parent()?.to_path_buf();
+        if parent.join(".git").exists() {
+            return Some(parent);
+        }
+        cur = parent;
+    }
+}
+
+/// 疑似密钥/环境文件（自审 minor 68 的告警名单）。
+fn looks_like_secret(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name == ".env"
+        || name.starts_with(".env.")
+        || name.ends_with(".pem")
+        || name.ends_with(".key")
+        || name.ends_with(".p12")
+        || name.ends_with(".pfx")
+        || name.contains("id_rsa")
+        || name.contains("credentials")
+        || name.contains("secrets")
+        || name.ends_with(".keystore")
+}
+
+/// 取命令 stdout（失败返回 Err，调用方按需忽略）。
+fn run_git_capture(repo: &Path, args: &[&str]) -> Result<String> {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .map_err(|e| DevforgeError::System(format!("执行 git {args:?} 失败：{e}")))?;
+    if !out.status.success() {
+        return Err(DevforgeError::System(format!(
+            "git {args:?} 失败（仓 {}）：{}",
+            repo.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 /// 取 HEAD sha。Ok(None) = 空仓（unborn HEAD，有资格走补基线提交路径）；
@@ -203,10 +279,13 @@ fn run_git(repo: &Path, args: &[&str]) -> Result<()> {
         .args(args)
         .current_dir(repo)
         .output()
-        .map_err(|e| DevforgeError::System(format!("执行 git {args:?} 失败：{e}")))?;
+        .map_err(|e| {
+            DevforgeError::System(format!("执行 git {args:?} 失败（仓 {}）：{e}", repo.display()))
+        })?;
     if !out.status.success() {
         return Err(DevforgeError::System(format!(
-            "git {args:?} 失败：{}",
+            "git {args:?} 失败（仓 {}）：{}",
+            repo.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }

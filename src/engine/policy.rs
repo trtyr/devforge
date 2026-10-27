@@ -64,10 +64,9 @@ impl RetryPolicy {
 /// `Agent`（子 Agent 决策类失败）、`RpcProtocol`（真实协议违例——坏数据不是外部故障）、
 /// `Store`/`Json`（数据模型故障，重启不修数据）。
 pub fn is_infra_failure(result: &crate::error::Result<RunOutcome>) -> bool {
-    matches!(
-        result.as_ref().err().map(|e| e.root_cause()),
-        Some(DevforgeError::System(_) | DevforgeError::Io(_))
-    )
+    // 自审 ref 69：判定收敛到 `DevforgeError::is_restartable()` 这一处（旧口径在这里
+    // 用 matches! 手写一份，与 error.rs 的谓词族互斥——修一处漏一处）。
+    result.as_ref().err().is_some_and(|e| e.is_restartable())
 }
 
 /// 带重试地执行一次 run。
