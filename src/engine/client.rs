@@ -49,6 +49,9 @@ pub struct RpcClient {
     spec: SpawnSpec,
     next_id: u64,
     started_at_ms: u64,
+    /// 台账落点与登记时的 pid（子进程收场时据此摘条目；自审 minor 132）。
+    ledger_path: Option<std::path::PathBuf>,
+    ledger_pid: Option<u32>,
 }
 
 impl RpcClient {
@@ -71,9 +74,10 @@ impl RpcClient {
                 spec.run_id
             ))?;
     // 运行时台账登记（复验熔断归因修复）：budget fuse 强杀与孤儿对账的事实源。
+    // 登记成功后路径与 pid 留在 client 上，收场时据此摘条目（自审 minor 132）。
     // 自审 major：优先用显式指定的台账路径；没有时才退回 working_dir.parent() 涌现
     // 推导（change SOP 的 working_dir 是 plans/<p>/<t>/change，推导会落错层）。
-    {
+    let registered_ledger_path: Option<std::path::PathBuf> = {
         let ledger_path = spec.ledger_path.clone().unwrap_or_else(|| {
             spec.working_dir
                 .parent()
@@ -81,7 +85,7 @@ impl RpcClient {
                 .unwrap_or_else(|| spec.working_dir.join("spawn-ledger.json"))
         });
         // 引擎批次：读-改-写必须跨进程互斥（max_concurrent_mutation 默认 2）
-        crate::engine::ledger::SpawnLedger::with_file_lock(&ledger_path, || {
+        crate::engine::ledger::with_file_lock(&ledger_path, || {
         let mut ledger = crate::engine::ledger::SpawnLedger::load_for_record(&ledger_path);
         ledger.record(crate::engine::ledger::LedgerEntry {
             pid: child.id(),
@@ -92,18 +96,36 @@ impl RpcClient {
         // 引擎审计修复 #4：台账是熔断 SIGKILL 与孤儿对账的事实源（先落盘再打勾铁律）——
         // 写失败不得静默：ERROR 带路径留痕（spawn 继续不回滚：台账缺失只影响未来收割能力，
         // 不影响本 run 正确性；上抛反而把可观测降级放大成 run 失败）。
-        if let Err(e) = ledger.save(&ledger_path) {
-            tracing::error!(
-                component = "engine-ledger",
-                path = %ledger_path.display(),
-                pid = child.id(),
-                run_id = %spec.run_id,
-                error = %e,
-                "spawn 台账落盘失败——熔断事实源缺口，本 run 挂死时无法精确收割"
-            );
+        match ledger.save(&ledger_path) {
+            // 自审 minor（131）：登记这一核心状态迁移此前零事件——日志流无法重建
+            // 「哪个 pid 在什么时候、以什么角色进了台账」。
+            Ok(()) => {
+                tracing::info!(
+                    component = "engine-ledger",
+                    event = "ledger.registered",
+                    path = %ledger_path.display(),
+                    pid = child.id(),
+                    role = %spec.role,
+                    run_id = %spec.run_id,
+                    "子进程已登记进 spawn 台账"
+                );
+                Some(ledger_path.clone())
+            }
+            Err(e) => {
+                tracing::error!(
+                    component = "engine-ledger",
+                    event = "ledger.register_failed",
+                    path = %ledger_path.display(),
+                    pid = child.id(),
+                    run_id = %spec.run_id,
+                    error = %e,
+                    "spawn 台账落盘失败——熔断事实源缺口，本 run 挂死时无法精确收割"
+                );
+                None
+            }
         }
-        });
-    }
+        })
+    };
         let stdin = child.stdin.take().expect("stdin 已 piped");
         let stdout = child.stdout.take().expect("stdout 已 piped");
         let stderr = child.stderr.take().expect("stderr 已 piped");
@@ -175,6 +197,7 @@ impl RpcClient {
                 }
             });
         }
+        let ledger_pid = registered_ledger_path.as_ref().map(|_| child.id());
         Ok(Self {
             child,
             stdin: Some(stdin),
@@ -210,6 +233,8 @@ impl RpcClient {
             spec,
             next_id: 0,
             started_at_ms: now_ms(),
+            ledger_path: registered_ledger_path,
+            ledger_pid,
         })
     }
 
@@ -782,7 +807,15 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
         // 兜底：强杀并收尸，不留 zombie
         self.child.kill().ctx("kill RPC 子进程")?;
         self.child.wait().ctx("reap RPC 子进程")?;
+        self.deregister_from_ledger();
         Ok(())
+    }
+
+    /// 收场摘除台账条目（自审 minor 132）。幂等：摘过一次后 self.pid 置 None。
+    fn deregister_from_ledger(&mut self) {
+        if let (Some(path), Some(pid)) = (self.ledger_path.take(), self.ledger_pid.take()) {
+            crate::engine::ledger::deregister(&path, pid);
+        }
     }
 }
 
@@ -791,6 +824,8 @@ impl Drop for RpcClient {
         // 尽力收尸，避免 zombie
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // 自审 minor（132）：正常退出也要摘台账条目（旧口径只在崩溃路径靠对账清账）
+        self.deregister_from_ledger();
     }
 }
 

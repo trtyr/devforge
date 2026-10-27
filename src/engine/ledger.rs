@@ -42,6 +42,8 @@ impl SpawnLedger {
         self.entries.push(entry);
     }
 
+    /// 摘除一条登记（子进程正常退出后调用；自审 minor 132：旧口径从不摘除，
+    /// `remove` 是生产死代码，长驻服务内台账随 run 数单调增长）。
     pub fn remove(&mut self, pid: u32) {
         self.entries.retain(|e| e.pid != pid);
     }
@@ -72,47 +74,58 @@ impl SpawnLedger {
             std::fs::read_to_string(path).ctx(format!("读台账 {}", path.display()))?;
         serde_json::from_str(&json).ctx("解析台账")
     }
+}
 
-    /// 台账文件的跨进程互斥（引擎批次：`max_concurrent_mutation` 默认 2，两个同项目
-/// run 同时 spawn 时旧的「读-改-写」会互相覆写 PID 记录，后写者抹掉前者的登记）。
+/// 台账（及并入方 queue.json）的跨进程互斥。
 ///
-/// 实现：紧邻台账的 `spawn-ledger.json.lock` + `create_new` 抢占；拿不到就短睡重试，
-/// 超过 deadline 或无法建锁（权限等）时**不加锁也继续**（台账写不进去只影响未来收割，
-/// 不能把 spawn 路径卡死）；陈旧锁（持有者崩溃，>10s）会被清掉重抢。
+/// 实现（2026-10-27 自审 minor 33 重写）：`flock(LOCK_EX | LOCK_NB)` 抢**常驻**锁文件。
+/// 旧口径是 `create_new` 抢锁 + 「mtime > 10s 视为陈旧就删」——陈旧判定与无条件删锁之间
+/// 有竞态：持有者只是跑久了（或机器挂起）就会被别人删锁，自己恢复后又会删掉**别人**的锁，
+/// 互斥静默降级为无。flock 由内核在进程退出/崩溃时自动释放，既没有陈旧判定也不存在
+/// 「删别人的锁」；因此锁文件**不再删除**（删文件会引入 inode 竞态：两个进程各自持有
+/// 不同 inode 上的锁，互斥形同虚设）。
+///
+/// 拿不到锁（超时/无法建文件）时**不加锁也继续**并 WARN——台账写不进去只影响未来收割，
+/// 不能把 spawn 路径卡死。
 pub fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
+    use std::os::unix::io::AsRawFd;
+
     let lock = path.with_extension("json.lock");
     if let Some(parent) = lock.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+    let opened = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock);
     let mut acquired = false;
-    while std::time::Instant::now() < deadline {
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock)
-        {
-            Ok(_) => {
-                acquired = true;
-                break;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let stale = std::fs::metadata(&lock)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.elapsed().ok())
-                    .map(|d| d.as_secs() > 10)
-                    .unwrap_or(false);
-                if stale {
-                    let _ = std::fs::remove_file(&lock);
-                    continue;
+    match &opened {
+        Ok(fh) => {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+            loop {
+                // SAFETY: flock(2)，仅传打开的 fd 与常量，无非空指针参与
+                let rc = unsafe { libc::flock(fh.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+                if rc == 0 {
+                    acquired = true;
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            Err(_) => break,
+        }
+        Err(e) => {
+            tracing::warn!(
+                component = "engine-ledger",
+                lock = %lock.display(),
+                error = %e,
+                "台账锁文件打不开，无锁继续（丢更新风险自担）"
+            );
         }
     }
-    if !acquired {
+    if !acquired && opened.is_ok() {
         // 自审 major：抢锁失败静默降级 = 把锁要防的丢更新竞态原样放回且无迹可查。
         tracing::warn!(
             component = "engine-ledger",
@@ -122,11 +135,55 @@ pub fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
     }
     let out = f();
     if acquired {
-        let _ = std::fs::remove_file(&lock);
+        if let Ok(fh) = &opened {
+            // SAFETY: flock(2) 解锁，同 fd
+            unsafe {
+                libc::flock(fh.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
     }
     out
 }
 
+/// 子进程收场后从台账摘除（自审 minor 132：旧口径条目不摘除、`remove` 是生产死代码，
+/// 长驻服务内台账随 run 数单调增长）。失败只 WARN——台账残留会导致下次对账多判一轮
+/// （已死 = Dead，自动清），不影响正确性。
+pub fn deregister(ledger_path: &Path, pid: u32) {
+    if !ledger_path.exists() {
+        return;
+    }
+    with_file_lock(ledger_path, || {
+        let mut ledger = SpawnLedger::load_for_record(ledger_path);
+        let before = ledger.entries.len();
+        ledger.remove(pid);
+        if ledger.entries.len() == before {
+            return;
+        }
+        match ledger.save(ledger_path) {
+            Ok(()) => tracing::debug!(
+                component = "engine-ledger",
+                event = "ledger.deregistered",
+                pid,
+                "子进程已从 spawn 台账摘除"
+            ),
+            Err(e) => tracing::warn!(
+                component = "engine-ledger",
+                event = "ledger.deregister_failed",
+                path = %ledger_path.display(),
+                pid,
+                error = %e,
+                "从 spawn 台账摘除失败（下次对账会按 Dead 清账）"
+            ),
+        }
+    });
+}
+
+/// 台账文件的标准位置（自审 minor 133：路径契约不再靠各调用方各自推导）。
+pub fn ledger_path(project_plans_root: &Path) -> PathBuf {
+    project_plans_root.join("spawn-ledger.json")
+}
+
+impl SpawnLedger {
 /// 登记前的装载（引擎审计修复 #6）：文件不存在 = 冷启动静默；存在但损坏 =
     /// WARN + 坏文件备份 .bak + 空账起底（与 store.json 口径一致）——
     /// 不许 unwrap_or_default 静默吞掉历史 PID 再覆写成空账。
@@ -139,7 +196,13 @@ pub fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
         match Self::load(path) {
             Ok(l) => l,
             Err(e) => {
-                let backup = path.with_extension("json.bak");
+                // 自审 minor（134）：备份名带时间戳——旧口径固定 `.bak`，第二代损坏会把
+                // 上一代备份覆盖掉，被抹掉的 PID 那一代永久失联。
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                let backup = path.with_extension(format!("json.bak.{stamp}"));
                 let backed_up = std::fs::rename(path, &backup).is_ok();
                 tracing::warn!(
                     component = "engine-ledger",
@@ -190,6 +253,19 @@ pub fn read_managed_marker(pid: u32) -> Option<String> {
                 rest.strip_prefix('=').map(|v| v.to_string())
             })
         })
+}
+
+/// 红线判定的**单一事实源**（自审 minor 135）：PID 存活 **且** environ 标记值 == run_id。
+/// 三条杀路径（reconcile / kill_run_processes / scan_and_kill_run）必须都走这里，不许各写一套。
+pub fn is_ours(pid: u32, run_id: &str) -> bool {
+    process_alive(pid) && read_managed_marker(pid).as_deref() == Some(run_id)
+}
+
+/// 自杀/杀祖先护栏（自审 minor 34）：本进程与父进程永不进杀路径，
+/// 无论环境标记长什么样——标记值是可被继承/伪造的，护栏不该只靠它。
+pub fn is_self_or_ancestor(pid: u32) -> bool {
+    let me = std::process::id();
+    pid == me || pid == std::os::unix::process::parent_id()
 }
 
 /// PID 是否带自家标记。
@@ -243,11 +319,11 @@ pub fn kill_run_processes(ledger_path: &Path, run_id: &str) -> usize {
     };
     let mut killed = 0;
     for e in &ledger.entries {
-        if e.run_id != run_id || !process_alive(e.pid) {
+        if e.run_id != run_id {
             continue;
         }
-        // 双验证：environ 标记必须等于该 run-id（防 PID 复用误杀）
-        if read_managed_marker(e.pid).as_deref() != Some(run_id) {
+        // 双验证走单一事实源（存活 + 标记值 == run_id）+ 自杀护栏
+        if !is_ours(e.pid, run_id) || is_self_or_ancestor(e.pid) {
             continue;
         }
         // SAFETY: kill(2) 系统调用，仅传 pid 与 SIGKILL，无非空指针参与
@@ -267,7 +343,7 @@ pub fn kill_run_processes(ledger_path: &Path, run_id: &str) -> usize {
     }
     if killed > 0 {
         tracing::warn!(
-            component = "scheduler",
+            component = "engine-ledger",
             run_id,
             killed,
             "budget 熔断强杀：台账精确命中并 SIGKILL 挂死进程"
@@ -349,7 +425,7 @@ pub fn reconcile_all(plans_root: &Path) -> (usize, usize, usize) {
         // 直接拿盘上旧账并集会把本已清掉的 Dead 条目复活。
         let known: std::collections::BTreeSet<u32> =
             ledger.entries.iter().map(|e| e.pid).collect();
-        if let Err(e) = crate::engine::ledger::SpawnLedger::with_file_lock(&path, || {
+        if let Err(e) = crate::engine::ledger::with_file_lock(&path, || {
             let mut merged = kept.clone();
             if let Ok(later) = SpawnLedger::load(&path) {
                 for e in later.entries {
@@ -434,13 +510,13 @@ pub fn scan_and_kill_run(run_id: &str) -> usize {
             Ok(p) => p,
             Err(_) => continue,
         };
-        if read_managed_marker(pid).as_deref() == Some(run_id) {
+        if is_ours(pid, run_id) && !is_self_or_ancestor(pid) {
             // SAFETY: kill(2)，SIGKILL 立决
             let rc = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
             if rc == 0 {
                 killed += 1;
                 tracing::warn!(
-                    component = "ledger",
+                    component = "engine-ledger",
                     run_id = %run_id,
                     pid,
                     "已取消/超时：SIGKILL 自家 run 进程"

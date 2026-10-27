@@ -306,7 +306,8 @@ impl ProdChangeSession {
     /// plan / amend 共用：发指令 → 等标记 → 审计计划 → 审查。
     fn run_plan_with(&mut self, ui: &mut dyn UserLink, message: &str) -> Result<PlanTurn> {
         let first = self.plan_agent.converse(message, ui)?;
-        let reply = require_marker_nudged("change-plan-agent", first, |m| {
+        // 计划正文从台账文件读（不解析回复），这里只要「标记补完」的副作用
+        let _reply = require_marker_nudged("change-plan-agent", first, |m| {
             self.plan_agent.converse(m, ui)
         })?;
         // 计划文在台账根（不在目标仓），审查子进程 cwd 是黑板：必须把路径与全文一起给审查官
@@ -411,7 +412,7 @@ impl ChangeSession for ProdChangeSession {
         let turn_started = std::time::SystemTime::now();
         // ① 基线轮：先让 agent 只跑既有测试写证据（此时还没允许改代码）
         let baseline_reply = self.coding_agent.converse(&baseline_kickoff(&self.ctx), ui)?;
-        let baseline_reply =
+        let _baseline_reply =
             require_marker_nudged("change-coding-agent（基线轮）", baseline_reply, |m| {
                 self.coding_agent.converse(m, ui)
             })?;
@@ -578,7 +579,7 @@ impl ChangeSession for ProdChangeSession {
                 _ => TestingTurn::RoutePlan { failures },
             });
         }
-        let reply = require_marker_nudged("change-test-agent", reply, |m| {
+        let _reply = require_marker_nudged("change-test-agent", reply, |m| {
             self.test_agent.converse(m, ui)
         })?;
         // 声称通过 → 回归日志必须是绿的

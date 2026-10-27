@@ -95,7 +95,9 @@ pub fn begin_run(run_id: &str, phase: &str) {
 /// 进程级注入（[`set_root`]）只是**默认**来源。
 pub fn begin_run_in(root: PathBuf, run_id: &str, phase: &str) {
     begin_run_in_ctx(root, run_id, phase);
-    write_heartbeat(run_id);
+    if let Err(e) = write_heartbeat(run_id) {
+        tracing::debug!(component = "observability", error = %e, "周期心跳落盘失败（下个 tick 重试）");
+    }
 }
 
 /// [`begin_run_in`] 的延迟盘写变体：只做内存置位（快照表 / 根表 / 线程本地），
@@ -180,7 +182,9 @@ fn run_root(run_id: &str) -> Option<PathBuf> {
 pub fn end_run(run_id: &str) {
     // F18：终态心跳先落盘再摘快照（摘完 write_heartbeat 就找不到 run 了）；
     // 尾部写不触发开跑竞态（resume6f 实验已证）→ 短 run 也有心跳在案
-    write_heartbeat(run_id);
+    if let Err(e) = write_heartbeat(run_id) {
+        tracing::debug!(component = "observability", error = %e, "周期心跳落盘失败（下个 tick 重试）");
+    }
     runs().lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
     roots().lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
     // 地基批次 #2：run 结束后摘掉本 run 的 agent 事件槽（下一 run 不得继承旧戳）
@@ -219,7 +223,9 @@ pub fn set_phase(phase: &str) {
                 to: phase.to_string(),
             });
     }
-    write_heartbeat(&run_id);
+    if let Err(e) = write_heartbeat(&run_id) {
+        tracing::debug!(component = "observability", error = %e, "周期心跳落盘失败（下个 tick 重试）");
+    }
 }
 
 /// 更新步骤（阶段内更细的一格：审查角色、修复轮次……）。
@@ -236,7 +242,9 @@ pub fn set_step(step: &str) {
         };
         snap.step = step.to_string();
     }
-    write_heartbeat(&run_id);
+    if let Err(e) = write_heartbeat(&run_id) {
+        tracing::debug!(component = "observability", error = %e, "周期心跳落盘失败（下个 tick 重试）");
+    }
 }
 
 /// 当前线程的 run id（无 = 不在这个 run 里）——引擎构造子会话工厂时用它给

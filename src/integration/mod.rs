@@ -130,7 +130,7 @@ impl MergeQueue {
     ) -> Result<T> {
         crate::domain::store::Store::validate_path_name(project).ctx("集成队列项目名校验")?;
         let path = Self::queue_path(plans_root, project);
-        crate::engine::ledger::SpawnLedger::with_file_lock(&path, || {
+        crate::engine::ledger::with_file_lock(&path, || {
             let mut q = Self::load(plans_root, project)?;
             let out = f(&mut q)?;
             q.save()?;
