@@ -440,6 +440,7 @@ impl RpcClient {
         tracing::warn!(
             component = "engine",
             event = "agent.command_failed",
+            run_id = %self.spec.run_id,
             role = %self.spec.role,
             command = %r.command,
             error = %detail,
@@ -530,6 +531,7 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
                 tracing::info!(
                     component = "engine",
                     event = "agent.step",
+                    run_id = %self.spec.run_id,
                     role = %self.spec.role,
                     tool = %tool,
                     phase = "start",
@@ -553,6 +555,7 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
                 tracing::info!(
                     component = "engine",
                     event = "agent.step",
+                    run_id = %self.spec.run_id,
                     role = %self.spec.role,
                     tool = %tool,
                     phase = "end",
@@ -569,6 +572,7 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
                     tracing::warn!(
                         component = "engine",
                         event = "boundary.violation",
+                        run_id = %self.spec.run_id,
                         role = %self.spec.role,
                         tool = %tool,
                         "path-guard 拦截了越界工具调用"
@@ -595,6 +599,7 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
         tracing::info!(
             component = "engine",
             event = "agent.turn_end",
+            run_id = %self.spec.run_id,
             role = %self.spec.role,
             turn_ms = now_ms().saturating_sub(started_at_ms),
             chars = out.text.chars().count(),

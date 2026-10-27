@@ -730,50 +730,92 @@ fn log_file_path(st: &SharedState) -> std::path::PathBuf {
 
 /// 读 JSONL 日志并按事件名子串过滤、分页。返回（命中总数，本页事件）。
 /// 文件缺失/坏行跳过——可观测端点绝不因日志问题 5xx。
+/// `run_id` 给定则只返回**属于该 run** 的事件（带 run_id 字段的行）。
 pub fn read_log_events(
     st: &SharedState,
+    run_id: Option<&str>,
     event_filter: Option<&str>,
     offset: usize,
     limit: usize,
 ) -> (usize, Vec<serde_json::Value>) {
-    read_log_events_at(&log_file_path(st), event_filter, offset, limit)
+    read_log_events_at(&log_file_path(st), run_id, event_filter, offset, limit)
 }
 
 /// 同上，但读指定路径（单测直接喂临时文件用）。
 pub fn read_log_events_at(
     path: &std::path::Path,
+    run_id: Option<&str>,
     event_filter: Option<&str>,
     offset: usize,
     limit: usize,
 ) -> (usize, Vec<serde_json::Value>) {
-    let Ok(content) = std::fs::read_to_string(path) else {
+    // 2026-10-27 自审 minor（209/210 + 110）：① 按 run_id 过滤（旧口径返回全局日志，
+    // 响应里的 "run" 字段是误导标签）；② 流式扫描——旧口径先把全量行读进内存再切片，
+    // limit 完全不约束内存（日志动辄 MB 级）。
+    let Ok(file) = std::fs::File::open(path) else {
         return (0, Vec::new());
     };
-    let matched: Vec<serde_json::Value> = content
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .filter(|v: &serde_json::Value| match event_filter {
-            Some(f) => v
-                .get("fields")
+    use std::io::BufRead as _;
+    let mut total = 0usize;
+    let mut page = Vec::new();
+    for line in std::io::BufReader::new(file).lines() {
+        let Ok(line) = line else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let fields = v.get("fields");
+        // run 归属：只有带 run_id 的行才能归到某个 run（引擎/服务端关键事件均带）
+        if let Some(want) = run_id {
+            let got = fields
+                .and_then(|f| f.get("run_id"))
+                .and_then(|r| r.as_str());
+            if got != Some(want) {
+                continue;
+            }
+        }
+        if let Some(f) = event_filter {
+            let ok = fields
                 .and_then(|fs| fs.get("event"))
                 .and_then(|e| e.as_str())
-                .is_some_and(|e| e.contains(f)),
-            None => true,
-        })
-        .collect();
-    let total = matched.len();
-    let page = matched.into_iter().skip(offset).take(limit).collect();
+                .is_some_and(|e| e.contains(f));
+            if !ok {
+                continue;
+            }
+        }
+        if total >= offset && page.len() < limit {
+            page.push(v);
+        }
+        total += 1;
+    }
     (total, page)
 }
 
-/// 日志里最近一条 agent.* 事件（DR-3：agent 活性的历史侧证据；无文件/无事件 = None）。
-pub fn last_agent_event_from_log(path: &std::path::Path) -> Option<serde_json::Value> {
-    let content = std::fs::read_to_string(path).ok()?;
-    content.lines().rev().find_map(|l| {
-        let v: serde_json::Value = serde_json::from_str(l).ok()?;
-        let ev = v.get("fields")?.get("event")?.as_str()?;
-        ev.starts_with("agent.").then(|| v.clone())
-    })
+/// 日志里最近一条**属于该 run** 的 agent.* 事件（无 run_id / 无文件 = None）。
+/// 2026-10-27 自审 minor（109）：旧口径跳 run 尾扫全量日志——拿到的常是别的 run 的事件。
+pub fn last_agent_event_from_log(
+    path: &std::path::Path,
+    run_id: &str,
+) -> Option<serde_json::Value> {
+    let file = std::fs::File::open(path).ok()?;
+    use std::io::BufRead as _;
+    let mut hit = None;
+    for line in std::io::BufReader::new(file).lines() {
+        let Ok(line) = line else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let Some(fields) = v.get("fields") else { continue };
+        if fields.get("run_id").and_then(|r| r.as_str()) != Some(run_id) {
+            continue;
+        }
+        let Some(ev) = fields.get("event").and_then(|e| e.as_str()) else {
+            continue;
+        };
+        if ev.starts_with("agent.") {
+            hit = Some(v.clone());
+        }
+    }
+    hit
 }
 
 /// DR-7：run 详情聚合——不登机器、纯 API 回答「在干嘛 / 干到哪 / 卡没卡」。
@@ -842,7 +884,7 @@ pub async fn get_run_detail(
     // 无 thread-local run 上下文，旧口径线程局部查询在此恒为 null）
     let log_path = log_file_path(&st);
     let agent = json!({
-        "last_event": last_agent_event_from_log(&log_path),
+        "last_event": last_agent_event_from_log(&log_path, &run_id),
         "last_event_age_ms": crate::observability::last_agent_event_age_for(&run_id),
         "stall_warn_ms": crate::observability::stall_warn_ms(),
     });
@@ -885,9 +927,12 @@ pub async fn run_events(
     }
     let limit = q.limit.unwrap_or(200).min(2000);
     let offset = q.offset.unwrap_or(0);
-    let (total, events) = read_log_events(&st, q.event.as_deref(), offset, limit);
+    let (total, events) = read_log_events(&st, Some(&run_id), q.event.as_deref(), offset, limit);
     Ok(Json(json!({
         "run": run_id,
+        // 2026-10-27 自审 minor：只返回可归属到本 run 的日志行（带 run_id 字段），
+        // 旧口径回全局事件流，"run" 字段是误导标签。
+        "scope": "run",
         "total": total,
         "offset": offset,
         "limit": limit,
