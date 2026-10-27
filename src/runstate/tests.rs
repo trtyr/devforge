@@ -41,7 +41,7 @@ fn truncated_json_is_unusable_not_fatal() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "{\"schema_version\":1,\"sop\":\"doc-fr").unwrap();
     match load(tmp.path(), &k) {
-        Loaded::Unusable(msg) => assert!(msg.contains("解析失败"), "{msg}"),
+        Loaded::Unusable(msg) => assert!(msg.detail.contains("解析失败"), "{msg:?}"),
         other => panic!("应判为不可用：{other:?}"),
     }
 }
@@ -57,7 +57,7 @@ fn identity_mismatch_is_rejected() {
     std::fs::create_dir_all(stolen.path(tmp.path()).parent().unwrap()).unwrap();
     std::fs::copy(writer.path(tmp.path()), stolen.path(tmp.path())).unwrap();
     match load(tmp.path(), &stolen) {
-        Loaded::Unusable(msg) => assert!(msg.contains("身份不符"), "{msg}"),
+        Loaded::Unusable(msg) => assert!(msg.detail.contains("身份不符"), "{msg}"),
         other => panic!("身份不符必须拒绝：{other:?}"),
     }
 }
@@ -119,7 +119,27 @@ fn save_into_readonly_dir_reports_error() {
     back.set_mode(0o700);
     std::fs::set_permissions(&dir, back).unwrap();
     if nix_is_root() {
-        return; // root 可无视权限位，跳过
+        // 自审 minor（184）：root 无视权限位，旧口径整条断言被跳过（CI 常见 root 容器里
+        // 这个错误分支等于没测）。改用**不可写目标**造同一出口：把 state.json 建成目录，
+        // rename 到目录必然失败 → 必须报错且不留残渣。
+        let k2 = key("doc-fix");
+        let path2 = k2.path(tmp.path());
+        std::fs::create_dir_all(&path2).unwrap();
+        let mut st2 = RunState::new(&k2, serde_json::json!({}));
+        let err2 = save(tmp.path(), &k2, &mut st2);
+        assert!(
+            err2.is_err(),
+            "目标路径被目录占位时必须报错（root 下也要覆盖这条出口）"
+        );
+        let dir2 = path2.parent().unwrap();
+        let leftovers: Vec<String> = std::fs::read_dir(dir2)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "失败路径不得残留临时文件：{leftovers:?}");
+        return;
     }
     assert!(err.is_err(), "只读目录必须报错");
 }

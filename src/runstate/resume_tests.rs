@@ -196,27 +196,93 @@ fn start_gate_reports_unusable_checkpoint_as_cold_start() {
     assert!(d.note.is_some(), "损坏的断点必须在响应里回显原因");
 }
 
+/// 自审 minor（191）：旧用例传的是**新建的空 state**、断言的是假 SOP 自己的字符串拼接，
+/// `brief_calls` 记录器全仓无断言——删掉 resume_brief 的真实语义它仍绿。现在断记录器：
+/// 传给 brief 的 redo 集合必须就是 plan 算出来的那份（且 state 是 plan 带出的同一快照）。
 #[test]
 fn brief_receives_redo_set() {
     let tmp = tempfile::tempdir().unwrap();
     seed(tmp.path(), "fake", &["u1", "u2"]);
     let sop = FakeSop::new("fake", tmp.path());
     let p = plan(tmp.path(), "p", "t", &sop, &units(), false);
-    let brief = sop.resume_brief(&RunState::new(&StateKey::new("p", "t", "fake"), serde_json::json!({})), &p.redo);
-    let seen: BTreeSet<String> = p.redo.iter().cloned().collect();
-    assert_eq!(seen.len(), 2);
-    assert!(brief.contains("u1") && brief.contains("u2"), "{brief}");
+    let state = p.state.clone().expect("plan 必须交回同一份断点快照");
+    let _brief = sop.resume_brief(&state, &p.redo);
+
+    let calls = sop.brief_calls.borrow();
+    assert_eq!(calls.len(), 1, "brief 必须被调用一次");
+    assert_eq!(calls[0].0, p.redo.len(), "长度口径一致");
+    let seen: BTreeSet<String> = calls[0].1.iter().cloned().collect();
+    let expected: BTreeSet<String> = p.redo.iter().cloned().collect();
+    assert_eq!(seen, expected, "传给 brief 的 redo 必须就是 plan 的那份");
+    assert_eq!(expected.len(), 2, "red：两个产物都不存在");
+    // 断点快照里的 done 名单必须与输入一致（不是空 state）
+    assert_eq!(
+        crate::runstate::resume::done_units(&state),
+        vec!["u1".to_string(), "u2".to_string()]
+    );
+}
+
+/// 自审 minor（99）：invalidate_done 必须把重做单元从 done 名单摘掉，且幂等。
+#[test]
+fn invalidate_done_removes_redo_units() {
+    let key = StateKey::new("p", "t", "fake");
+    let mut st = RunState::new(&key, serde_json::json!({"done": ["u1", "u2", "u3"]}));
+    assert!(invalidate_done(&mut st, &["u2".to_string()]));
+    assert_eq!(done_units(&st), vec!["u1".to_string(), "u3".to_string()]);
+    assert!(!invalidate_done(&mut st, &["u2".to_string()]), "已摘除即无改动");
+    assert!(!invalidate_done(&mut st, &[]), "空 redo 无改动");
+}
+
+/// 自审 minor（187）：redo 必须与本轮清单求交——不在本轮计划里的单元不得报给 agent。
+#[test]
+fn redo_is_intersected_with_this_rounds_units() {
+    let tmp = tempfile::tempdir().unwrap();
+    seed(tmp.path(), "fake", &["u1", "u2"]);
+    let sop = FakeSop::new("fake", tmp.path());
+    // 本轮只有 u1（u2 的产物缺失，但它不在本轮清单里）
+    let p = plan(tmp.path(), "p", "t", &sop, &["u1".to_string()], false);
+    assert_eq!(p.redo, vec!["u1".to_string()], "只报本轮内的单元");
 }
 
 /// 抽象守卫：trait 所在源文件里不得出现任何具体 SOP 的业务词。
+///
+/// 自审 minor（192）：旧口径的禁用词表是自己编的、与真实业务词不重合（"doc-complete" /
+/// "impl-step" 全仓都不存在）——捕获不到它本想防的泄漏。现在禁用词表**从注册表与真实
+/// 协议标记里生成**，并额外禁止直接依赖 SOP/docgen 模块。
 #[test]
 fn trait_surface_stays_agnostic() {
     let src = include_str!("resume.rs");
     let surface = src.split("#[cfg(test)]").next().unwrap_or("");
-    for forbidden in ["doc-complete", "doc-verdict", "impl-step", "unit-src", "stage-complete"] {
+
+    // ① 真实 SOP id（来自内置注册表，不是我手编的名单）
+    let mut forbidden: Vec<String> = crate::domain::sop::SopRegistry::builtin()
+        .ids()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    // ② 真实协议标记（各 SOP 与 agent 约定的字面量）
+    for marker in [
+        "<stage-complete>",
+        "<doc-verdict>",
+        "<stage-verdict>",
+        "<audit-findings>",
+        "<impact-gap>",
+        "unit-src-",
+        "assembly",
+    ] {
+        forbidden.push(marker.to_string());
+    }
+    for word in &forbidden {
         assert!(
-            !surface.contains(forbidden),
-            "引擎接入面混入了 SOP 业务词：{forbidden}"
+            !surface.contains(word.as_str()),
+            "引擎接入面混入了 SOP 业务词：{word}"
+        );
+    }
+    // ③ 抽象层不得直接依赖具体 SOP / 文档流水线模块
+    for path in ["crate::sop::", "crate::docgen::", "crate::change::"] {
+        assert!(
+            !surface.contains(path),
+            "引擎接入面直接依赖了具体业务模块：{path}"
         );
     }
 }

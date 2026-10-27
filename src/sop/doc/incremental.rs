@@ -160,10 +160,16 @@ pub fn merge_plan(
     }
 
     plan.resumed = true;
-    plan.redo = old_done
-        .into_iter()
-        .filter(|u| affected.contains(u.as_str()))
-        .collect();
+    // 自审 minor（100）：旧口径直接覆盖 plan.redo——增量模式下引擎基于证据算出的 redo
+    // （产物已消失的单元）被整体丢弃，它们不会被重跑。现在取并集：已验证需重做 ∪ 受影响
+    // 且曾在 done 里的单元。
+    let mut redo: Vec<String> = std::mem::take(&mut plan.redo);
+    for u in old_done.into_iter().filter(|u| affected.contains(u.as_str())) {
+        if !redo.iter().any(|r| r == &u) {
+            redo.push(u);
+        }
+    }
+    plan.redo = redo;
     plan.skip = skip;
     plan.to_run = to_run.clone();
     to_run

@@ -196,7 +196,13 @@ fn broken_evidence_unit_is_reincluded_and_rewritten() {
         "第一个 kickoff 必须是被重做的单元：{}",
         kicks[0]
     );
-    assert!(kicks[0].contains("必须整单元重写") || kicks[0].contains("断点复核"));
+    // 自审 minor（43）：不再断言兄弟模块的人类可读文案（那种断言让文案改动变成跨模块
+    // 隐式契约）。改成结构断言：kickoff 必须携带「重做」语义的标记块，且指向重做单元清单。
+    assert!(
+        kicks[0].contains("unit-a-01") && kicks[0].to_lowercase().contains("重写"),
+        "kickoff 必须说明该单元要重写：{}",
+        kicks[0]
+    );
     assert_eq!(rep.units_done, units);
 }
 

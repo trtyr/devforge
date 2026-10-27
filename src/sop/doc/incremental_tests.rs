@@ -17,6 +17,7 @@ fn plan(all: &[&str], done: &[&str]) -> ResumePlan {
         resumed: true,
         to_run: Vec::new(),
         redo: Vec::new(),
+        state: None,
         skip: all.iter().map(|s| s.to_string()).filter(|u| !done.contains(&u.as_str())).collect(),
         note: None,
     }

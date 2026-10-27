@@ -72,9 +72,15 @@ pub(super) fn a_panic_without_an_active_run_still_leaves_a_tombstone() {
         .collect();
     assert_eq!(tombs.len(), 1, "无活动 run 也要留墓碑：{tombs:?}");
     let text = std::fs::read_to_string(&tombs[0]).expect("读墓碑");
+    // 自审 minor（80）后墓碑会回落进程级快照表：本线程无 run 时，若同进程里另有活动 run
+    // （f6 其它用例并发跑 run），归因到它是**正确**行为。这里钉「run_id 行存在且非空」。
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("run_id: "))
+        .expect("墓碑必须有 run_id 行");
     assert!(
-        text.contains(&format!("run_id: {}", obs::tombstone::NO_RUN)),
-        "无活动 run 时用占位 run id：{text}"
+        !line.trim_start_matches("run_id: ").trim().is_empty(),
+        "run_id 不得为空（占位或活动 run 均可）：{text}"
     );
     assert!(text.contains("f6-boom-no-run"), "墓碑要含 panic 原文：{text}");
 }

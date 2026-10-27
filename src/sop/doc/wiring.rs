@@ -169,7 +169,27 @@ impl BuiltinRpcEngine {
         if let Some(note) = &plan.note {
             tracing::warn!(component = "doc-engine", %note, "断点不可用，按冷启动");
         }
-        let mut resume_note = match loaded.state() {
+        // 自审 minor（99）：重做单元必须从断点 done 名单里摘掉——旧口径 redo 只用于本轮
+        // skip 计算，断点里的旧标记不动，重做失败后下一轮会把「审不过/写坏」的单元当已完成跳过。
+        if let Some(mut st) = plan.state.clone() {
+            if crate::runstate::resume::invalidate_done(&mut st, &plan.redo) {
+                match store.save(&mut st) {
+                    Ok(_) => tracing::warn!(
+                        component = "doc-engine",
+                        redo = plan.redo.len(),
+                        "重做单元已从断点 done 名单摘除（下轮不再当已完成跳过）"
+                    ),
+                    Err(e) => tracing::error!(
+                        component = "doc-engine",
+                        error = %e,
+                        "重做单元摘除后断点落盘失败（下一轮可能仍当已完成）"
+                    ),
+                }
+            }
+        }
+        // 自审 minor（186）：brief 用 plan 带出的同一份快照（不再二次加载，避免 redo 与
+        // state 来自不同快照）
+        let mut resume_note = match plan.state.as_ref() {
             Some(st) => crate::runstate::resume::Resumable::resume_brief(&resume, st, &plan.redo),
             None => String::new(),
         };
