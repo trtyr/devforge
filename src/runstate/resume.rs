@@ -46,10 +46,10 @@ pub struct ResumePlan {
 
 /// 计算续跑计划。
 ///
-/// - `fresh = true`：忽略断点，全部重跑（调用方负责清空检查点）。
-///
-/// 2026-10-27 自审 minor 185：**生产路径不经此分支**——`start` 入口走
-/// [`start_gate`]（它负责 clear 断点），这里的 `fresh` 是给直接调用方的兜底。
+/// 2026-10-27 自审 minor 185：**没有 `fresh` 参数了**——旧口径这里另有一个 fresh 分支
+/// （忽略断点全量重跑），但生产路径从不走它（`start` 入口先经 [`start_gate`] 清断点），
+/// 两个入口对「断点被谁清」各有各的理解，语义全靠 server 层兜。现在断点清空只有
+/// [`start_gate`] 一个入口，本函数只答「续到哪」。
 /// - 断点缺失 / 不可用：冷启动，全部跑。
 /// - 断点可用：`verify_done` 复核，证据失效的单元并入重做集合。
 pub fn plan<S: Resumable + ?Sized>(
@@ -58,19 +58,7 @@ pub fn plan<S: Resumable + ?Sized>(
     task: &str,
     sop: &S,
     all_units: &[String],
-    fresh: bool,
 ) -> ResumePlan {
-    if fresh {
-        return ResumePlan {
-            resumed: false,
-            to_run: all_units.to_vec(),
-            redo: Vec::new(),
-            skip: Vec::new(),
-            note: Some("fresh: true —— 忽略断点全量重跑".into()),
-            state: None,
-        };
-    }
-
     let key = StateKey::new(project, task, sop.name());
     match load(plans_root, &key) {
         Loaded::Found(state) => {

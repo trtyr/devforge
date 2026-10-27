@@ -61,23 +61,30 @@ fn seed(root: &Path, sop: &str, done: &[&str]) {
 fn no_checkpoint_means_cold_start() {
     let tmp = tempfile::tempdir().unwrap();
     let sop = FakeSop::new("fake", tmp.path());
-    let p = plan(tmp.path(), "p", "t", &sop, &units(), false);
+    let p = plan(tmp.path(), "p", "t", &sop, &units());
     assert!(!p.resumed);
     assert_eq!(p.to_run, units());
     assert!(p.skip.is_empty() && p.redo.is_empty() && p.note.is_none());
 }
 
 #[test]
-fn fresh_ignores_checkpoint_entirely() {
+/// 自审 minor 185：`plan()` 不再有 fresh 参数——「清断点再冷启动」的唯一入口是
+/// [`start_gate`]。本用例原来断言的是那个已删除的分支，现在改为钉住新口径：
+/// start_gate(fresh) 清完断点之后，plan() 看到的必须是冷启动。
+#[test]
+fn fresh_path_is_owned_by_start_gate_only() {
     let tmp = tempfile::tempdir().unwrap();
     for u in ["u1", "u2"] {
         std::fs::write(tmp.path().join(format!("{u}.txt")), b"x").unwrap();
     }
     seed(tmp.path(), "fake", &["u1", "u2"]);
     let sop = FakeSop::new("fake", tmp.path());
-    let p = plan(tmp.path(), "p", "t", &sop, &units(), true);
-    assert!(!p.resumed);
-    assert_eq!(p.to_run, units(), "fresh 必须全量重跑");
+    // fresh=true 的入口：start_gate 负责清断点
+    start_gate(tmp.path(), "p", "t", "fake", true).expect("start_gate 应成功");
+    // 清完之后 plan() 只能看到空断点 = 冷启动，全量重跑
+    let p = plan(tmp.path(), "p", "t", &sop, &units());
+    assert!(!p.resumed, "断点已被 start_gate 清掉，plan 必须冷启动");
+    assert_eq!(p.to_run, units(), "fresh 之后必须全量重跑");
     assert!(p.skip.is_empty());
 }
 
@@ -89,7 +96,7 @@ fn valid_evidence_is_skipped() {
     }
     seed(tmp.path(), "fake", &["u1", "u2"]);
     let sop = FakeSop::new("fake", tmp.path());
-    let p = plan(tmp.path(), "p", "t", &sop, &units(), false);
+    let p = plan(tmp.path(), "p", "t", &sop, &units());
     assert!(p.resumed);
     assert_eq!(p.skip, vec!["u1".to_string(), "u2".to_string()]);
     assert_eq!(p.to_run, vec!["u3".to_string()]);
@@ -103,7 +110,7 @@ fn broken_evidence_is_redone_not_skipped() {
     std::fs::write(tmp.path().join("u1.txt"), b"x").unwrap();
     seed(tmp.path(), "fake", &["u1", "u2"]);
     let sop = FakeSop::new("fake", tmp.path());
-    let p = plan(tmp.path(), "p", "t", &sop, &units(), false);
+    let p = plan(tmp.path(), "p", "t", &sop, &units());
     assert_eq!(p.skip, vec!["u1".to_string()]);
     assert_eq!(p.redo, vec!["u2".to_string()]);
     assert!(p.to_run.contains(&"u2".to_string()), "证据失效的单元必须重跑");
@@ -118,7 +125,7 @@ fn corrupt_checkpoint_falls_back_to_cold_start_with_note() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "{ broken").unwrap();
     let sop = FakeSop::new("fake", tmp.path());
-    let p = plan(tmp.path(), "p", "t", &sop, &units(), false);
+    let p = plan(tmp.path(), "p", "t", &sop, &units());
     assert!(!p.resumed);
     assert_eq!(p.to_run, units());
     assert!(p.note.as_deref().unwrap_or("").contains("解析失败"));
@@ -129,7 +136,7 @@ fn another_sop_checkpoint_is_invisible() {
     let tmp = tempfile::tempdir().unwrap();
     seed(tmp.path(), "other-sop", &["u1", "u2"]);
     let sop = FakeSop::new("fake", tmp.path());
-    let p = plan(tmp.path(), "p", "t", &sop, &units(), false);
+    let p = plan(tmp.path(), "p", "t", &sop, &units());
     assert!(!p.resumed, "不能读到别的 SOP 的断点");
     assert_eq!(p.to_run, units());
 }
@@ -140,7 +147,7 @@ fn plan_is_order_stable_and_deduped_by_identity() {
     std::fs::write(tmp.path().join("u1.txt"), b"x").unwrap();
     seed(tmp.path(), "fake", &["u1", "ghost-unit"]);
     let sop = FakeSop::new("fake", tmp.path());
-    let p = plan(tmp.path(), "p", "t", &sop, &units(), false);
+    let p = plan(tmp.path(), "p", "t", &sop, &units());
     assert_eq!(p.skip, vec!["u1".to_string()]);
     assert_eq!(p.to_run, vec!["u2".to_string(), "u3".to_string()]);
     // 断点里存在但清单里没有的单元不得凭空复活
@@ -204,7 +211,7 @@ fn brief_receives_redo_set() {
     let tmp = tempfile::tempdir().unwrap();
     seed(tmp.path(), "fake", &["u1", "u2"]);
     let sop = FakeSop::new("fake", tmp.path());
-    let p = plan(tmp.path(), "p", "t", &sop, &units(), false);
+    let p = plan(tmp.path(), "p", "t", &sop, &units());
     let state = p.state.clone().expect("plan 必须交回同一份断点快照");
     let _brief = sop.resume_brief(&state, &p.redo);
 
@@ -240,7 +247,7 @@ fn redo_is_intersected_with_this_rounds_units() {
     seed(tmp.path(), "fake", &["u1", "u2"]);
     let sop = FakeSop::new("fake", tmp.path());
     // 本轮只有 u1（u2 的产物缺失，但它不在本轮清单里）
-    let p = plan(tmp.path(), "p", "t", &sop, &["u1".to_string()], false);
+    let p = plan(tmp.path(), "p", "t", &sop, &["u1".to_string()]);
     assert_eq!(p.redo, vec!["u1".to_string()], "只报本轮内的单元");
 }
 

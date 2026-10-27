@@ -156,7 +156,6 @@ impl BuiltinRpcEngine {
             &task.id,
             &resume,
             &units,
-            false,
         );
         if plan.resumed {
             tracing::info!(

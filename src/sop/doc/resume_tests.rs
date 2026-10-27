@@ -47,7 +47,6 @@ fn done_units_are_skipped_on_resume() {
         "t",
         &resume,
         &all,
-        false,
     );
     assert_eq!(plan.to_run, vec!["unit-b-02".to_string()]);
 
@@ -151,7 +150,6 @@ fn broken_evidence_unit_is_reincluded_and_rewritten() {
         "t",
         &resume,
         &units,
-        false,
     );
     assert!(plan.resumed);
     assert_eq!(plan.redo, vec!["unit-a-01".to_string()]);
@@ -226,7 +224,6 @@ fn intact_evidence_is_not_redispatched() {
         "t",
         &resume,
         &units,
-        false,
     );
     assert_eq!(plan.skip, vec!["unit-a-01".to_string()]);
     assert_eq!(plan.to_run, vec!["unit-b-02".to_string()]);
