@@ -170,9 +170,12 @@ pub fn coding_kickoff(ctx: &ChangeCtx, failure: Option<&TestFailureContext>) -> 
     }
 }
 
-/// 空箱拒收的追补上限/话术：已下沉到 [`crate::sop::review_gate`]（全仓审计 #7——
-/// 同一纪律曾在 change 侧单点落地、MVP testing 侧缺失）。这里保留路径导出。
-pub use crate::sop::review_gate::{ISSUES_NUDGE, MAX_EMPTY_ISSUES_NUDGES};
+/// 空箱拒收的追补上限/话术：真源在 [`crate::sop::review_gate`]（全仓审计 #7——同一纪律
+/// 曾在 change 侧单点落地、MVP testing 侧缺失）。
+///
+/// 自审 minor（86）：改为**内部导入**——它们是本文件的实现依赖，不是对外接口面；
+/// 旧口径 `pub use` 把两个零外消费者的常量挂在了 change::session 的公开面上。
+use crate::sop::review_gate::{ISSUES_NUDGE, MAX_EMPTY_ISSUES_NUDGES};
 
 pub fn testing_kickoff(ctx: &ChangeCtx) -> String {
     format!(
@@ -687,15 +690,9 @@ impl ChangeSession for ProdChangeSession {
     }
 }
 
-/// 只读检查：计划文件是否已存在（编排层判断能否续跑时用）。
-pub fn plan_exists(ctx: &ChangeCtx) -> bool {
-    ctx.plan_path().is_file()
-}
-
-/// 黑板上的基线证据路径（测试注入用）。
-pub fn baseline_log_path(blackboard: &Path) -> PathBuf {
-    blackboard.join(crate::change::coding_gate::BASELINE_LOG)
-}
+// 自审 minor（86）：`plan_exists` / `baseline_log_path` 与 `ISSUES_NUDGE` 重导出已删——
+// 全仓零消费方，注释里承诺的调用方（编排层续跑判判断、测试注入）并不存在；
+// 空箱追补话术的真源在 `sop::review_gate`，这里只留内部使用的导入（见文件顶部）。
 
 #[cfg(test)]
 mod session_tests;
