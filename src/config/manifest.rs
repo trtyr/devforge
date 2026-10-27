@@ -474,6 +474,10 @@ impl ConfigManifest {
                 AgentManifest {
                     name: "change-test-agent".into(),
                     role_prompt: CHANGE_TEST_AGENT_PROMPT.into(),
+                    // P009：变更测试双 Agent（黑盒：不给 codegraph，D019）——黑盒禁的是
+                    // 代码**检索/索引**（codegraph，见下行 mcp: vec![]）；pi-lens 是
+                    // 类型/lint 诊断（写测试后的即时反馈），不是检索工具，不在禁列
+                    // （2026-10-27 用户指正：自审 findings 把它误标成「代码索引工具」）。
                     extra_packages: CODING_AGENT_EXTRA.iter().map(|s| s.to_string()).collect(),
                     model: "deepseek-flash".into(),
                     skills: vec!["python-best-practices".into()],

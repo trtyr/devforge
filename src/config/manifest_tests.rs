@@ -79,6 +79,17 @@ fn change_six_agents_have_pinned_supplies() {
             a.extra_packages
         );
     }
+    // 黑盒纪律的供给面：变更测试 Agent 禁的是**代码检索/索引**（codegraph，走 mcp），
+    // 不是 pi-lens——后者是类型/lint 诊断（写测试后的即时反馈），不在黑盒禁列。
+    // 2026-10-27：自审 findings 曾把 pi-lens 误标成「代码索引工具」并试图删它，
+    // 已回退（用户指正）；这里把正确口径钉死，防着下一轮审计又改回去。
+    let cta = m.get_agent("change-test-agent").unwrap();
+    assert!(cta.mcp.is_empty(), "测试 agent 不得拿到代码事实层（codegraph）");
+    assert!(
+        cta.extra_packages.iter().any(|p| p.contains("pi-lens")),
+        "变更测试 Agent 应保留 pi-lens 诊断（写测试后看类型/lint 反馈）：{:?}",
+        cta.extra_packages
+    );
 }
 
 /// 其余九个 Agent 的差异化包逐字段钉死：改一处不许误伤别处。

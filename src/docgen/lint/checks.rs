@@ -27,6 +27,19 @@ fn lint_with(docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport>
         let in_meta = file.components().any(|c| c.as_os_str() == "_meta");
 
         if !in_meta {
+            // 2026-10-27 自审 major：未知 type 值 = 文档缺陷 FAIL（fail-closed）——
+            // 旧口径静默 None，整篇条目类型门禁全跳过，lint 报告为空 = 判定通过。
+            if let Some(raw) = &doc.unknown_type {
+                report.fail(
+                    file,
+                    1,
+                    Check::RequiredSection,
+                    format!(
+                        "frontmatter type 值未知：`{raw}`（合法值见 doc-contract；\
+                         不认识的类型会让本文件全部条目类型门禁失效）"
+                    ),
+                );
+            }
             check_required_sections(&doc, file, &mut report);
             check_links(&doc, file, &mut report);
             check_banned(&doc, file, &mut report);
@@ -268,6 +281,10 @@ pub(super) struct Heading {
 pub(super) struct ParsedDoc {
     /// 文档声明的条目类型（frontmatter `type:`）
     pub(super) entry_type: Option<EntryType>,
+    /// 2026-10-27 自审 major：frontmatter 写了 type 但值不认识（旧口径静默 None →
+    /// 整篇文档的全部条目类型门禁失效，lint 报告为空 = 判定通过 = fail-open）。
+    /// 记下原值，由主循环报 FAIL。
+    pub(super) unknown_type: Option<String>,
     pub(super) headings: Vec<Heading>,
     /// 1-based 行号 → 原文
     pub(super) lines: Vec<String>,
@@ -277,6 +294,7 @@ impl ParsedDoc {
     pub(super) fn parse(text: &str) -> Self {
         let lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
         let mut entry_type = None;
+        let mut unknown_type: Option<String> = None;
         let mut headings = Vec::new();
 
         // frontmatter：仅当首行是 `---`，读到下一个 `---` 为止
@@ -289,11 +307,15 @@ impl ParsedDoc {
                 if let Some(rest) = line.trim().strip_prefix("type:") {
                     match EntryType::parse(rest) {
                         Some(t) => entry_type = Some(t),
-                        None => tracing::warn!(
-                            component = "doc-engine",
-                            type_value = %rest.trim(),
-                            "frontmatter type 值未知——该文档的全部条目类型门禁将静默失效"
-                        ),
+                        None => {
+                            let raw = rest.trim().to_string();
+                            tracing::warn!(
+                                component = "doc-engine",
+                                type_value = %raw,
+                                "frontmatter type 值未知——按文档缺陷 FAIL（旧口径静默失效门禁）"
+                            );
+                            unknown_type = Some(raw);
+                        }
                     }
                 }
             }
@@ -323,6 +345,7 @@ impl ParsedDoc {
 
         Self {
             entry_type,
+            unknown_type,
             headings,
             lines,
         }
