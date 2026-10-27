@@ -49,10 +49,69 @@ fn complete_level_defers_to_doc_sop_and_writes_nothing() {
     let action = apply(tmp.path(), DocLevel::Complete).unwrap();
     assert_eq!(
         action,
-        DocAction::FullChainRequired,
+        DocAction::FullChainRequired(DocLevel::Complete),
         "完整文档链必须交给 doc-from-zero，不得由引擎假装完成"
     );
     assert!(!tmp.path().join("docs").exists());
+}
+
+// ── 2026-10-27 自审 docs 批回归 ──
+
+/// 自审 minor（63）：detailed 必须保留在自己的归因里（旧口径与 complete 折进同一个变体，
+/// 文案硬编码 complete，detailed 配置的用户被误导）。
+#[test]
+fn detailed_keeps_its_own_level_in_the_verdict() {
+    let tmp = repo_with_code();
+    let action = apply(tmp.path(), DocLevel::Detailed).unwrap();
+    assert_eq!(action, DocAction::FullChainRequired(DocLevel::Detailed));
+    assert_ne!(
+        action,
+        DocAction::FullChainRequired(DocLevel::Complete),
+        "detailed 与 complete 不得相等（否则两者在归因里不可区分）"
+    );
+}
+
+/// 自审 minor（64）：事实层就绪需**两份产物都在**——glossary 缺失时不得判「已就绪」，
+/// 且 apply 必须补写（旧口径只看 inventory.json，半成品被当成已完成）。
+#[test]
+fn glossary_missing_means_not_ready_and_gets_rewritten() {
+    let tmp = repo_with_code();
+    assert_eq!(
+        apply(tmp.path(), DocLevel::Essential).unwrap(),
+        DocAction::EssentialDone
+    );
+    let glossary = glossary_path(tmp.path());
+    assert!(glossary.is_file());
+    // 抹掉 glossary（模拟上次写词表失败）
+    std::fs::remove_file(&glossary).unwrap();
+    assert!(
+        !essential_ready(tmp.path()),
+        "只剩 inventory 不得判就绪（半成品）"
+    );
+    assert_eq!(
+        apply(tmp.path(), DocLevel::Essential).unwrap(),
+        DocAction::EssentialDone
+    );
+    assert!(glossary.is_file(), "apply 必须补写缺失的词表");
+}
+
+/// 自审 minor（64）：已就绪时幂等复用（不重写产物）。
+#[test]
+fn ready_fact_layer_is_reused_not_rewritten() {
+    let tmp = repo_with_code();
+    apply(tmp.path(), DocLevel::Essential).unwrap();
+    let inv = inventory_path(tmp.path());
+    let before = std::fs::metadata(&inv).unwrap().len();
+    assert!(essential_ready(tmp.path()));
+    assert_eq!(
+        apply(tmp.path(), DocLevel::Essential).unwrap(),
+        DocAction::EssentialDone
+    );
+    assert_eq!(
+        std::fs::metadata(&inv).unwrap().len(),
+        before,
+        "复用路径不得重写清单（内容长度不变）"
+    );
 }
 
 fn walk(root: PathBuf) -> Vec<PathBuf> {

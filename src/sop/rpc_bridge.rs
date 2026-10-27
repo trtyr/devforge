@@ -121,27 +121,13 @@ impl RpcReviewFactory {
         }
     }
 
-    /// 便捷构造：同一 profile，每轮递增序号的 session 子目录（planning 沿用：cwd=服务器 cwd）。
-    pub fn per_round(profile_dir: std::path::PathBuf, session_root: std::path::PathBuf) -> Self {
-        let counter = std::sync::atomic::AtomicU32::new(0u32);
-        // 引擎批次 #1（critical）：审查子进程的 `DEVFORGE_MANAGED` 必须是**父 run-id**——
-        // 旧实现每次 spawn 用 `RunId::generate()`，而收割端（ledger）按父 run-id 匹配，
-        // cancel/超时/熔断三条杀路径全部漏杀。这里在**工厂构造时**（= run 线程）取一次。
-        let managed = crate::observability::current_run_id().unwrap_or_else(|| RunId::generate().0);
-        Self::new(move || {
-            let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            SpawnSpec::new(
-                profile_dir.clone(),
-                "plan-review",
-                managed.clone(),
-                session_root.join(format!("review-{n}")),
-            )
-        })
-    }
-
     /// P005：显式指定角色与子进程工作目录（编码审查的 cwd = 黑板，报告与树同址）。
     /// `ledger_path`：spawn 台账显式落点（自审 major：熔断/对账的事实源不能靠
     /// working_dir 涌现推导——change 审查的 cwd 是 task 层黑板，台账必须回 project 层）。
+    ///
+    /// 自审 minor（65）：“不设 cwd”的便捷构造已删——旧口径 `per_round` 让规划审查跑在
+    /// 服务器 cwd，与 `SpawnSpec::working_dir` 文档声明的语义相反，审的根本不是
+    /// plan-agent 产出的那棵树。所有审查构造一律走本入口（cwd 与台账必填）。
     pub fn per_round_in(
         profile_dir: std::path::PathBuf,
         role: impl Into<String> + 'static,

@@ -67,12 +67,9 @@ impl RpcClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()) // P8-ISSUE-08 修复：stderr 落日志（此前 Stdio::null 黑盒）
             .spawn()
-            .ctx(format!(
-                "spawn {} (role={}, run={})",
-                spec.program.display(),
-                spec.role,
-                spec.run_id
-            ))?;
+            // 自审 minor（138）：上下文带 working_dir / session_dir——ENOENT 才能区分
+            // 「可执行程序不存在」与「工作目录不存在」。
+            .ctx(crate::engine::process::spawn_failure_context(&spec))?;
     // 运行时台账登记（复验熔断归因修复）：budget fuse 强杀与孤儿对账的事实源。
     // 登记成功后路径与 pid 留在 client 上，收场时据此摘条目（自审 minor 132）。
     // 自审 major：优先用显式指定的台账路径；没有时才退回 working_dir.parent() 涌现
@@ -382,7 +379,13 @@ impl RpcClient {
                     out.responses.push(r)
                 }
                 crate::engine::protocol::Inbound::Event(e) => {
-                    if let Some(delta) = e.text_delta() {
+                    // 自审 minor（140）：权威终结文本到达即覆盖 delta 拼接（text_end.content /
+                    // message_end.message 才是权威全文；delta 可能漏事件或分块错位）。
+                    if let Some(full) = e.authoritative_text() {
+                        out.text.clear();
+                        out.text.push_str(full);
+                        crate::observability::note_agent_event_for(&self.spec.run_id);
+                    } else if let Some(delta) = e.text_delta() {
                         out.text.push_str(delta);
                         // 2026-10-27 自审 minor（31）：流式文本无上限累积（长轮次线性吃内存）。
                         // 协议块按全仓口径在**尾部**（D026），故超限保尾丢头，并留痕。
@@ -485,7 +488,12 @@ impl RpcClient {
                     out.responses.push(r)
                 }
                 crate::engine::protocol::Inbound::Event(e) => {
-                    if let Some(delta) = e.text_delta() {
+                    // 自审 minor（140）：权威终结文本到达即覆盖 delta 拼接（同 wait_settled）
+                    if let Some(full) = e.authoritative_text() {
+                        out.text.clear();
+                        out.text.push_str(full);
+                        crate::observability::note_agent_event_for(&self.spec.run_id);
+                    } else if let Some(delta) = e.text_delta() {
                         out.text.push_str(delta);
                         // 2026-10-27 自审 minor（31）：流式文本无上限累积（长轮次线性吃内存）。
                         // 协议块按全仓口径在**尾部**（D026），故超限保尾丢头，并留痕。
@@ -604,7 +612,9 @@ impl RpcClient {
     /// 此前这类失败只被归档进 responses 继续傻等 settled，run 无声挂死。
     fn command_failure(&self, r: &ResponseRecord) -> DevforgeError {
         crate::observability::note_agent_event_for(&self.spec.run_id);
-        let detail = r.error.clone().unwrap_or_else(|| "（无错误详情）".into());
+        let detail = r
+            .safe_error()
+            .unwrap_or_else(|| "（无错误详情）".into());
         tracing::warn!(
             component = "engine",
             event = "agent.command_failed",

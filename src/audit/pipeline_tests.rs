@@ -168,8 +168,11 @@ fn stage1_reviews_batch_and_tags_batch_id() {
         "预查：无",
     )
     .unwrap();
-    assert_eq!(findings.len(), 1);
-    assert_eq!(findings[0].batch, "unit-009", "发现应带批次溯源");
+    assert_eq!(findings.findings.len(), 1);
+    assert_eq!(
+        findings.findings[0].batch, "unit-009",
+        "发现应带批次溯源"
+    );
     assert_eq!(factory.opens, 1, "无违例应只开一次会话");
 }
 
@@ -183,7 +186,7 @@ fn stage1_retries_once_on_protocol_violation_then_gives_up() {
     };
     let u = unit("unit-001");
     let f = stage1_review_batch(&mut factory, Path::new("/ws"), &u, &[], "无").unwrap();
-    assert_eq!(f.len(), 1, "第一次违例重开后成功");
+    assert_eq!(f.findings.len(), 1, "第一次违例重开后成功");
     assert_eq!(factory.opens, 2, "违例→成功必须恰好开两次会话（换实例）");
     // 两次全违例 → 放弃
     let mut factory = ScriptFactory {

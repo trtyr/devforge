@@ -134,7 +134,13 @@ fn review_subprocess_marker_carries_the_parent_run_id() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     crate::observability::begin_run_in_deferred(root.clone(), "run-parent-42", "coding");
-    let f = RpcReviewFactory::per_round(root.join("profile"), root.join("sessions"));
+    let f = RpcReviewFactory::per_round_in(
+        root.join("profile"),
+        "plan-review",
+        root.join("sessions"),
+        root.join("planroot"),
+        root.join("spawn-ledger.json"),
+    );
     let s1 = (f.make_spec.lock().expect("spec 生成器锁"))();
     let s2 = (f.make_spec.lock().expect("spec 生成器锁"))();
     assert_eq!(

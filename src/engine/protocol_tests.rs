@@ -3,7 +3,7 @@ use super::*;
 
 #[test]
 fn encode_prompt_exact_shape() {
-    let line = encode_line(&CommandRecord::prompt("req-2", "Review this")).unwrap();
+    let line = CommandRecord::prompt("req-2", "Review this").encode().unwrap();
     assert_eq!(
         line,
         r#"{"id":"req-2","type":"prompt","message":"Review this"}
@@ -13,7 +13,7 @@ fn encode_prompt_exact_shape() {
 
 #[test]
 fn encode_get_state_omits_message() {
-    let line = encode_line(&CommandRecord::get_state("req-3")).unwrap();
+    let line = CommandRecord::get_state("req-3").encode().unwrap();
     assert_eq!(line, r#"{"id":"req-3","type":"get_state"}
 "#);
     assert!(!line.contains("message"), "message 应省略: {line}");

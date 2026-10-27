@@ -228,6 +228,8 @@ pub fn run_audit(
     // 未完成。done_batches 按此重算，有变化才落盘。
     let (mut findings, recovered, bad_batches) =
         load_persisted_findings(&findings_dir, &ordered);
+    // 自审 minor（2）：单批超限被截断的条数累计（进报告产物，不只活在 WARN 里）
+    let mut truncated_findings: usize = 0;
     {
         let recomputed: std::collections::BTreeSet<String> = recovered.iter().cloned().collect();
         let old: std::collections::BTreeSet<String> =
@@ -280,7 +282,14 @@ pub fn run_audit(
         // 发现已在 worker 内落盘——此处任一兄弟失败不会带走已完成批次（第三方 r3 M1）。
         for (_, unit_id, res) in results {
             check_intervention(control)?;
-            apply_batch_outcome(&unit_id, res, &mut findings, &mut progress, &blackboard)?;
+            apply_batch_outcome(
+                &unit_id,
+                res,
+                &mut findings,
+                &mut truncated_findings,
+                &mut progress,
+                &blackboard,
+            )?;
         }
     } else {
         for unit in &ordered {
@@ -300,10 +309,17 @@ pub fn run_audit(
                 &precheck,
                 batch_deadline(),
             );
-            if let Ok(fs) = &res {
-                write_batch_findings(&findings_dir, &unit.id, fs)?;
+            if let Ok(parsed) = &res {
+                write_batch_findings(&findings_dir, &unit.id, &parsed.findings)?;
             }
-            apply_batch_outcome(&unit.id, res, &mut findings, &mut progress, &blackboard)?;
+            apply_batch_outcome(
+                &unit.id,
+                res,
+                &mut findings,
+                &mut truncated_findings,
+                &mut progress,
+                &blackboard,
+            )?;
         }
     }
     // 自审 minor（31）：断点里的 abandoned 可能含历史重复项（旧版本无去重写入过），
@@ -426,6 +442,8 @@ pub fn run_audit(
         "findings": {
             "kept": deduped,
             "dropped_ghosts": all_dropped,
+            // 自审 minor（2）：单批超限被截断的条数——「这次少看了 N 条」必须可对账
+            "truncated": truncated_findings,
         },
         "cross_analysis": {
             "findings": cross_kept,
@@ -562,15 +580,18 @@ fn write_batch_findings(findings_dir: &Path, unit_id: &str, fs: &[Finding]) -> R
 /// 兄弟批次一失败，内存里已审完的批次全丢。现在拆两半，写盘在 worker 内完成。
 fn apply_batch_outcome(
     unit_id: &str,
-    res: Result<Vec<Finding>>,
+    res: Result<crate::audit::finding::ParsedBatch>,
     findings: &mut Vec<Finding>,
+    truncated: &mut usize,
     progress: &mut Progress,
     blackboard: &Path,
 ) -> Result<()> {
     match res {
-        Ok(fs) => {
-            let batch_n = fs.len();
-            findings.extend(fs);
+        Ok(parsed) => {
+            let batch_n = parsed.findings.len();
+            // 自审 minor（2）：截断条数累计进报告（旧口径只活在 WARN 日志里）
+            *truncated += parsed.truncated;
+            findings.extend(parsed.findings);
             progress.done_batches.push(unit_id.to_string());
             progress.save(blackboard)?;
             tracing::info!(
@@ -613,7 +634,7 @@ fn apply_batch_outcome(
 /// 全仓审计 M3：并行跑待审批次（固定并发，工作窃取式取下标），结果按原下标排序返回。
 /// 线程 panic 映射为 System（不静默丢批）。
 /// 并行批次结果：派发下标（排序用） / 单元号 / 该批发现或错误。
-type BatchResult = (usize, String, Result<Vec<Finding>>);
+type BatchResult = (usize, String, Result<crate::audit::finding::ParsedBatch>);
 
 fn run_stage1_parallel(
     factory: &dyn AuditSessionFactory,
@@ -666,8 +687,9 @@ fn run_stage1_parallel(
                     });
                     // 成功即落盘：兄弟批次失败不带走本批发现
                     let res = match res {
-                        Ok(fs) => match write_batch_findings(findings_dir, &unit_id, &fs) {
-                            Ok(()) => Ok(fs),
+                        Ok(parsed) => match write_batch_findings(findings_dir, &unit_id, &parsed.findings)
+                        {
+                            Ok(()) => Ok(parsed),
                             Err(e) => Err(e),
                         },
                         Err(e) => Err(e),

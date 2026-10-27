@@ -18,4 +18,4 @@ mod builtin_tests;
 pub use client::{RpcClient, WaitOutcome};
 pub use ledger::{Reconciliation, SpawnLedger, LedgerEntry};
 pub use process::{build_spawn_command, SpawnSpec};
-pub use protocol::{decode_line, encode_line, CommandRecord, EventRecord, Inbound, ResponseRecord};
+pub use protocol::{decode_line, CommandRecord, EventRecord, Inbound, ResponseRecord};

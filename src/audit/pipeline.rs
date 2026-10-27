@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::error::{Context as _, DevforgeError, Result};
 use crate::sop::planning::{ReviewSession, ReviewSessionFactory};
 
-use super::finding::{parse_findings, Finding};
+use super::finding::{parse_findings, Finding, ParsedBatch};
 use super::AuditUnit;
 
 /// Stage 0 产物：审查计划（优先级分组 + 可跳过 + 跨单元假设）。
@@ -263,7 +263,7 @@ pub fn stage1_review_batch(
     unit: &AuditUnit,
     all_unit_labels: &[String],
     precheck_report: &str,
-) -> Result<Vec<Finding>> {
+) -> Result<ParsedBatch> {
     stage1_review_batch_with_deadline(
         factory,
         workspace,
@@ -283,7 +283,7 @@ pub fn stage1_review_batch_with_deadline(
     all_unit_labels: &[String],
     precheck_report: &str,
     deadline: Option<std::time::Instant>,
-) -> Result<Vec<Finding>> {
+) -> Result<ParsedBatch> {
     let mut last_err = String::new();
     for attempt in 0..2 {
         // 自审 minor（11）：两次尝试共享同一墙钟预算——首尝试慢且违例时第二次几乎无预算，
@@ -318,11 +318,20 @@ pub fn stage1_review_batch_with_deadline(
         };
         drop(session);
         match parse_findings(&reply) {
-            Ok(mut findings) => {
-                for f in &mut findings {
+            Ok(mut parsed) => {
+                for f in &mut parsed.findings {
                     f.batch = unit.id.clone();
                 }
-                return Ok(findings);
+                // 自审 minor（2）：截断条数随结果上抛（进报告产物，不只活在 WARN 里）
+                if parsed.truncated > 0 {
+                    tracing::warn!(
+                        component = "audit-engine",
+                        unit = %unit.id,
+                        truncated = parsed.truncated,
+                        "本批发现数超单批上限，超出部分已丢弃（条数进审计报告）"
+                    );
+                }
+                return Ok(parsed);
             }
             Err(e) => {
                 last_err = format!("第 {} 次协议违例：{e}", attempt + 1);

@@ -55,6 +55,15 @@ pub struct ResponseRecord {
     pub data: Option<serde_json::Value>,
 }
 
+impl ResponseRecord {
+    /// 上游错误文本的**可入日志形**（自审 minor 139）：`error` 字段原样承载上游正文，
+    /// 上游错误体里回显的凭据片段会一字不差进日志。日志/事件面一律走本方法（限长 +
+    /// 刷掉 ANSI/控制字符），需要原文的调用方取 `error` 字段自己负责。
+    pub fn safe_error(&self) -> Option<String> {
+        self.error.as_deref().map(crate::error::sanitize_untrusted)
+    }
+}
+
 /// 入站事件记录（type + 任意附加字段）。
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct EventRecord {
@@ -74,15 +83,35 @@ impl EventRecord {
         if self.r#type != "message_update" {
             return None;
         }
-        self.extra
-            .get("assistantMessageEvent")?
-            .get("type")?
-            .as_str()
-            .filter(|t| *t == "text_delta")?;
-        self.extra
-            .get("assistantMessageEvent")?
-            .get("delta")
-            .and_then(|d| d.as_str())
+        self.assistant_event()?.get("delta")?.as_str()
+    }
+
+    /// 权威终结文本（自审 minor 140）：pi 协议里 `text_end.content` /
+    /// `message_end.message` 才是**权威**完整文本。旧口径只拼 delta，漏事件或分块
+    /// （contentIndex）错位时，累积文本会与真实回复静默不一致。
+    /// 返回（文本, 是否是权威全文）。
+    pub fn authoritative_text(&self) -> Option<&str> {
+        if self.r#type != "message_update" {
+            return None;
+        }
+        let ev = self.assistant_event()?;
+        match ev.get("type")?.as_str()? {
+            "text_end" => ev.get("content")?.as_str(),
+            "message_end" => ev
+                .get("message")?
+                .get("content")
+                .and_then(|c| c.as_str()),
+            _ => None,
+        }
+    }
+
+    /// 消息块序号（contentIndex）：多块消息时用于按块归类，旧口径完全忽略。
+    pub fn content_index(&self) -> Option<u64> {
+        self.assistant_event()?.get("contentIndex")?.as_u64()
+    }
+
+    fn assistant_event(&self) -> Option<&serde_json::Value> {
+        self.extra.get("assistantMessageEvent")
     }
 }
 
@@ -140,10 +169,8 @@ pub fn decode_line(line: &str) -> Result<Inbound> {
     }
 }
 
-/// 编码一行 JSONL。
-pub fn encode_line(record: &CommandRecord) -> Result<String> {
-    record.encode()
-}
+/// 编码一行 JSONL（自审 minor 36：旧口径的 `encode_line` 包装已删——它是
+/// `CommandRecord::encode` 的重复公开面，全仓零调用方）。
 
 #[cfg(test)]
 #[path = "protocol_tests.rs"]

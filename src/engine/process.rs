@@ -6,10 +6,11 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use serde::{Deserialize, Serialize};
-
 /// spawn 规格。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// 自审 minor（35）：**不再派生 Serialize/Deserialize**——全仓无序列化调用点，
+/// 而一旦被落盘就会把可执行名与 profile/session **绝对路径**写进持久化文件。
+#[derive(Debug, Clone)]
 pub struct SpawnSpec {
     /// pi 可执行程序（测试注入 mock 用，生产恒为 "pi"）。
     pub program: PathBuf,
@@ -62,8 +63,15 @@ impl SpawnSpec {
 }
 
 /// 构造 spawn 命令：`pi --mode rpc --session-dir <dir>` + 三层环境标记。
+///
+/// 自审 minor（137）：stdio 在这里就配好（piped）——旧口径返回一个未配 stdio 的
+/// 半成品 Command，最危险的那段留给调用方补；漏配的失败模式是子进程**直写服务器
+/// stdout**，把 SSE/CLI 输出流污染成协议垃圾。调用方要用 inherit 请显式覆写。
 pub fn build_spawn_command(spec: &SpawnSpec) -> Command {
     let mut cmd = Command::new(&spec.program);
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     cmd.arg("--mode")
         .arg("rpc")
         .arg("--session-dir")
@@ -77,6 +85,18 @@ pub fn build_spawn_command(spec: &SpawnSpec) -> Command {
     // P8-ISSUE-04 修复：子进程工作目录 = plan root（decisions/002）
     cmd.current_dir(&spec.working_dir);
     cmd
+}
+
+/// spawn 失败的错误上下文（自审 minor 138）：ENOENT 无法区分「可执行程序不存在」
+/// 与「工作目录不存在」——把两路径都带上，排障不用猜。
+pub fn spawn_failure_context(spec: &SpawnSpec) -> String {
+    format!(
+        "spawn {}（role={} working_dir={} session_dir={}）",
+        spec.program.display(),
+        spec.role,
+        spec.working_dir.display(),
+        spec.session_dir.display()
+    )
 }
 
 #[cfg(test)]

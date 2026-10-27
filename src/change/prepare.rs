@@ -79,12 +79,14 @@ pub fn prepare(
     std::fs::create_dir_all(&plan_dir)
         .map_err(|e| DevforgeError::System(format!("建目录 {} 失败：{e}", plan_dir.display())))?;
 
-    // 2) 文档档位（complete 需要先跑 doc-from-zero，本层不假装自己写完了文档）
+    // 2) 文档档位（complete/detailed 需要先跑 doc-from-zero，本层不假装自己写完了文档）
     let doc_action = docs::apply(repo, level)?;
-    if doc_action == DocAction::FullChainRequired {
-        return Err(DevforgeError::Quality(
-            "doc_level=complete 需要先跑 doc-from-zero 生成文档，change SOP 不代跑（调用方决定）".into(),
-        ));
+    // 自审 minor（63）：归因文案带真实档位——旧口径把 detailed 也说成 complete
+    if let DocAction::FullChainRequired(required) = doc_action {
+        return Err(DevforgeError::Quality(format!(
+            "doc_level={} 需要先跑 doc-from-zero 生成文档，change SOP 不代跑（调用方决定）",
+            required.as_str()
+        )));
     }
 
     // 3) 基线（无 .git 则 init + 全量提交；sha 落到台账根下的计划目录）
