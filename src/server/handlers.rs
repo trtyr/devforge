@@ -162,6 +162,14 @@ pub async fn create_project(
     if let Err(msg) = validate_local_path(std::path::Path::new(&req.local_path)) {
         return Err(ApiError::bad_request(msg));
     }
+    // 自审 S-01 入口收口：name 会被 plans_root.join() 进台账路径与多处文件系统操作，
+    // 出口端点已拦但创建入口本尊不放行 = 半截防线；与 safe_segment 同一 allowlist。
+    if !safe_segment(&req.name) {
+        return Err(ApiError::bad_request(format!(
+            "项目名 `{}` 含非法路径字符（不可为空/./..，不可含分隔符）",
+            req.name
+        )));
+    }
     let project = Project::new(req.name, req.local_path.into(), crate::domain::now_ms());
     let created = {
         let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
@@ -275,6 +283,43 @@ pub async fn create_task(
     Path(project): Path<String>,
     Json(req): Json<CreateTaskReq>,
 ) -> ApiResult<(StatusCode, Json<Task>)> {
+    // 自审 S-01 入口收口：task.id 同样进 plans_root/<project>/<task> 路径与 workspace
+    // worktree 目标路径（WA-01 同源），入口即拦，不依赖下游各出口各自记得。
+    if !safe_segment(&req.id) {
+        return Err(ApiError::bad_request(format!(
+            "任务 id `{}` 含非法路径字符（不可为空/./..，不可含分隔符）",
+            req.id
+        )));
+    }
+    // 自审 S-02 修法②：base_rev 在入口验真实性——写错 rev 会让契约终校验的 git diff
+    // 永远非零退出（旧实现那里是 fail-open 放行，现为 System 拒放行），run 白跑一整轮
+    // 才发现契约不可用。这里提前拒收：`git cat-file -e <rev>^{commit}` 零成本。
+    if let Some(contract) = &req.contract {
+        if let Some(base_rev) = &contract.base_rev {
+            let local_path = {
+                let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+                store.get_project(&project).map(|p| p.local_path.clone())
+            };
+            let Some(local_path) = local_path else {
+                return Err(ApiError::bad_request(format!("项目 `{project}` 不存在")));
+            };
+            let probe = std::process::Command::new("git")
+                .args([
+                    "-C",
+                    &local_path.to_string_lossy(),
+                    "cat-file",
+                    "-e",
+                    &format!("{base_rev}^{{commit}}"),
+                ])
+                .output();
+            let ok = matches!(probe, Ok(o) if o.status.success());
+            if !ok {
+                return Err(ApiError::bad_request(format!(
+                    "contract.base_rev `{base_rev}` 不是项目仓库 `{project}` 里的合法 commit"
+                )));
+            }
+        }
+    }
     let created = {
         let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         let registry = st.registry.clone();

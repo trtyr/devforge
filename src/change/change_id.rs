@@ -63,13 +63,26 @@ pub fn assign_change_id(
     if let Ok(existing) = std::fs::read_to_string(&marker) {
         let id = existing.trim().to_string();
         if !id.is_empty() {
-            let dir = change_root(plans_root, project, task).join(&id);
-            if dir.is_dir() {
+            // 自审 CH-08：marker 是黑板里的普通文本文件（agent/半状态可写），读回的 id
+            // 直接 join 进 change_root 前必须过白名单——`../..` 注入会变成任意目录
+            // create_dir_all。不合法则告警并按无 marker 重新分配（不拒效，避免卡死流水线）。
+            if let Err(e) = validate_change_id(&id) {
+                tracing::warn!(
+                    component = "change-id",
+                    marker = %marker.display(),
+                    raw = %id,
+                    error = %e,
+                    "current marker 里的 change-id 不合法，重新分配"
+                );
+            } else {
+                let dir = change_root(plans_root, project, task).join(&id);
+                if dir.is_dir() {
+                    return Ok((id, dir));
+                }
+                // marker 存在但目录没了（被清过）：按已有 id 重建目录，不换号
+                std::fs::create_dir_all(&dir).ctx(format!("重建黑板目录 {}", dir.display()))?;
                 return Ok((id, dir));
             }
-            // marker 存在但目录没了（被清过）：按已有 id 重建目录，不换号
-            std::fs::create_dir_all(&dir).ctx(format!("重建黑板目录 {}", dir.display()))?;
-            return Ok((id, dir));
         }
     }
 

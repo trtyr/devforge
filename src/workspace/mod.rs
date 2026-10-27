@@ -91,6 +91,45 @@ impl Workspace {
             .join(&spec.task_id)
     }
 
+    /// 自审 WA-01：task_id 路径安全校验（防御纵深——不能依赖 git refname 白名单
+    /// 「恰好挡住」穿越；含分隔符的 task_id 还会造出无法注册的死 worktree）。
+    /// allowlist：字母数字与 `._-`，禁 `..`；并在 target_path 内自断言前缀。
+    fn validate_task_id(spec: &WorkspaceSpec) -> Result<()> {
+        let id = &spec.task_id;
+        let ok = !id.is_empty()
+            && id != "."
+            && id != ".."
+            && !id.contains("..")
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        if !ok {
+            return Err(DevforgeError::Store(format!(
+                "任务 id `{id}` 含非法字符（只允许字母数字与 . _ -，且不得为 . / .. 或含 ..）"
+            )));
+        }
+        let expected_prefix = spec
+            .repo
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(format!(
+                "{}-worktrees",
+                spec.repo
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            ));
+        let target = Self::target_path(spec);
+        if !target.starts_with(&expected_prefix) {
+            return Err(DevforgeError::Store(format!(
+                "worktree 目标路径越界：{} 不在 {} 下",
+                target.display(),
+                expected_prefix.display()
+            )));
+        }
+        Ok(())
+    }
+
     /// 创建 worktree：`git worktree add -b task/{id} <path> <base_rev>`。
     ///
     /// worktree 审计（2026-10-25 自审 critical）：`remove()` **保留**任务分支（候选归因要它），
@@ -101,6 +140,7 @@ impl Workspace {
     /// - 分支已存在但已有提交（上一轮候选）→ 明确拒绝并告诉怎么清理，
     ///   不静默切换基点（否则本轮的 diff 归因会错位）。
     pub fn create(spec: &WorkspaceSpec) -> Result<Workspace> {
+        Self::validate_task_id(spec)?;
         let path = Self::target_path(spec);
         if path.exists() {
             return Err(DevforgeError::Store(format!(

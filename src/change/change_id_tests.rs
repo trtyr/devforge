@@ -83,3 +83,21 @@ fn validate_rejects_weird_ids() {
     assert!(validate_change_id("Change-20261020-x").is_err());
     assert!(validate_change_id("../evil").is_err());
 }
+
+// ── P012-T004 · CH-08：marker 注入的 id 不合法 → 重新分配（不再 join 进路径）──
+#[test]
+fn poisoned_marker_gets_reassigned() {
+    let dir = tempfile::tempdir().unwrap();
+    let plans = dir.path().join("plans");
+    std::fs::create_dir_all(plans.join("p/t/change")).unwrap();
+    // 注入穿越 id
+    std::fs::write(plans.join("p/t/change/current"), "../../evil\n").unwrap();
+    let (id, change_dir) =
+        assign_change_id(&plans, "p", "t", "demo", "20261027").unwrap();
+    assert!(validate_change_id(&id).is_ok(), "重新分配的 id 必须合法：{id}");
+    assert!(!change_dir.starts_with(".."));
+    assert!(change_dir.is_dir());
+    // marker 被重新写入合法 id
+    let rewritten = std::fs::read_to_string(plans.join("p/t/change/current")).unwrap();
+    assert_eq!(rewritten.trim(), id);
+}

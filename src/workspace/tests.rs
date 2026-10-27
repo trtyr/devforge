@@ -189,3 +189,42 @@ fn two_worktrees_run_concurrently_without_stepping_on_each_other() {
     assert!(!dir.path().join("from-a.rs").exists());
     assert!(!dir.path().join("from-b.rs").exists());
 }
+
+// ── P012-T004 · WA-01：task_id 路径安全校验 ──
+
+#[test]
+fn task_id_with_dotdot_is_rejected() {
+    let (dir, base) = repo_with_base();
+    let mut s = spec(dir.path(), &base);
+    s.task_id = "a/../b".into();
+    let err = Workspace::create(&s).unwrap_err();
+    assert!(err.to_string().contains("非法字符"), "got: {err}");
+}
+
+#[test]
+fn task_id_with_separator_is_rejected() {
+    let (dir, base) = repo_with_base();
+    let mut s = spec(dir.path(), &base);
+    s.task_id = "batch/a".into();
+    let err = Workspace::create(&s).unwrap_err();
+    assert!(err.to_string().contains("非法字符"), "got: {err}");
+}
+
+#[test]
+fn task_id_empty_and_dot_are_rejected() {
+    let (dir, base) = repo_with_base();
+    for bad in ["", ".", ".."] {
+        let mut s = spec(dir.path(), &base);
+        s.task_id = bad.to_string();
+        assert!(Workspace::create(&s).is_err(), "task_id {bad:?} 应被拒");
+    }
+}
+
+#[test]
+fn legal_task_id_still_creates_worktree() {
+    let (dir, base) = repo_with_base();
+    let mut s = spec(dir.path(), &base);
+    s.task_id = "af-batch-a".into();
+    let w = Workspace::create(&s).unwrap();
+    assert!(w.path.exists());
+}
