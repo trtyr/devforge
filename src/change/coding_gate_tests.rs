@@ -74,6 +74,48 @@ fn commit(repo: &Path, msg: &str) {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
+#[test]
+fn evidence_older_than_the_last_code_change_is_rejected() {
+    // 自审 minor（48）回归：证据 mtime 过了本轮门槛，但代码之后又改过——
+    // 旧口径只看「门槛」不看「谁更新」，沿用旧绿证据、本轮只补 griff 就能过。
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let log = tmp.path().join("self-check.log");
+    std::fs::write(repo.join("a.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(&log, "command: cargo test\nexit_code: 0\n").unwrap();
+    // 证据写完后，代码又改了一次（mtime 往后推 5s）
+    let code = repo.join("b.rs");
+    std::fs::write(&code, "fn b() {}\n").unwrap();
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+    std::fs::File::options()
+        .write(true)
+        .open(&code)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+
+    let err = check_evidence_after_changes(&log, &repo, &["b.rs".to_string()])
+        .expect_err("证据早于代码改动必须拒收");
+    assert!(
+        err.to_string().contains("早于本轮最后一次代码改动"),
+        "{err}"
+    );
+
+    // 证据晚于代码 → 通过
+    let ev_later = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
+    std::fs::File::options()
+        .write(true)
+        .open(&log)
+        .unwrap()
+        .set_modified(ev_later)
+        .unwrap();
+    check_evidence_after_changes(&log, &repo, &["b.rs".to_string()])
+        .expect("证据晚于代码改动应通过");
+    // 无代码改动 → 无 diff 可覆盖，放行
+    check_evidence_after_changes(&log, &repo, &[]).unwrap();
+}
+
 fn repo_with_baseline() -> (tempfile::TempDir, String) {
     let tmp = tempfile::tempdir().unwrap();
     git(tmp.path(), &["init", "-q"]);

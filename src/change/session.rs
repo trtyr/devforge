@@ -431,7 +431,33 @@ impl ProdChangeSession {
             ),
         }
         step_commits?;
-        changed_files(&self.ctx.repo, &self.ctx.baseline)
+        let changed = changed_files(&self.ctx.repo, &self.ctx.baseline)?;
+        // 自审 minor（48）：证据必须晚于本轮最后一次代码改动——
+        // mtime 门槛只能证明「本轮写过证据文件」（touch 就能满足），而开工语要求的是
+        // 「证据覆盖本轮 diff」。这一条把「沿用旧绿证据、本轮只补 griff」挡在门外。
+        let coverage = crate::change::coding_gate::check_evidence_after_changes(
+            &self.ctx.blackboard.join(crate::change::coding_gate::SELF_CHECK_LOG),
+            &self.ctx.repo,
+            &changed,
+        );
+        match &coverage {
+            Ok(()) => tracing::info!(
+                component = "change-engine",
+                event = "gate.evidence_covers_diff",
+                passed = true,
+                changed = changed.len(),
+                "自证证据晚于最后一次代码改动"
+            ),
+            Err(e) => tracing::info!(
+                component = "change-engine",
+                event = "gate.evidence_covers_diff",
+                passed = false,
+                error = %e,
+                "自证证据早于代码改动（未覆盖本轮 diff）"
+            ),
+        }
+        coverage?;
+        Ok(changed)
     }
 
     /// 编码审查（diff ↔ 计划对账；越界已由引擎先算，这里管语义）+ 产出 turn。

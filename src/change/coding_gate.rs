@@ -236,6 +236,42 @@ fn check_evidence_fresh(
 /// 与基线门同策略：失败即 Quality，不自动重问 Agent（证据红着 = 没证明）。
 /// 自审 major（unit-011）：同基线门，弱化版收进测试底座，生产只用 `_fresh` 版。
 ///
+/// 自审证据必须晚于本轮**最后一次代码改动**（自审 minor 48）。
+///
+/// 一味靠 mtime 门槛只能证明「本轮写过这个文件」，`touch` 一下就过——而开工语要求的是
+/// 「证据覆盖本轮 diff」。把证据的 mtime 与改动文件里最新的 mtime 比一比，就能把
+/// 「沿用上一轮绿色证据、本轮只碰了下文件时间」这类糊弄挡在门外（要伪造得先改代码、
+/// 再重跑测试，而改代码本身另有越界/步提交门）。
+///
+/// `changed` 为空（只改了证据区/无代码改动）时直接放行：没有可覆盖的 diff。
+pub fn check_evidence_after_changes(
+    log: &Path,
+    repo: &Path,
+    changed: &[String],
+) -> Result<()> {
+    let Some(newest) = changed
+        .iter()
+        .filter_map(|f| std::fs::metadata(repo.join(f)).ok())
+        .filter_map(|m| m.modified().ok())
+        .max()
+    else {
+        return Ok(());
+    };
+    let ev_mtime = std::fs::metadata(log).and_then(|m| m.modified()).map_err(|e| {
+        DevforgeError::System(format!("取证据文件 {} 的 mtime 失败：{e}", log.display()))
+    })?;
+    // 同粗略粒度容忍：文件系统时间粒度可能是 1s/2s，本轮刚写也可能略早
+    const GRANULARITY: std::time::Duration = std::time::Duration::from_secs(2);
+    if ev_mtime + GRANULARITY < newest {
+        return Err(DevforgeError::Quality(format!(
+            "证据 {} 早于本轮最后一次代码改动（diff 已经变了，证据还是旧的）：\
+             改完代码必须重跑并覆盖证据，不得沿用",
+            log.display()
+        )));
+    }
+    Ok(())
+}
+
 /// `impl-steps.md` 里的步骤（形如 `## 步骤 1` / `### 步骤 2`，也接受 `## Step 3`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
