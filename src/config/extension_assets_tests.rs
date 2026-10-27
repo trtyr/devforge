@@ -41,3 +41,29 @@ fn index_ts_entry_is_always_distributed() {
     // pi 只加载 index.ts 入口——清单少了它 = 整个插件不加载
     assert!(PATH_GUARD_FILES.iter().any(|(p, _)| *p == "index.ts"));
 }
+
+/// 自审 minor（33）：样例集「双端共同驱动」必须真有两端入口——旧口径只有 Rust 侧在跑，
+/// TS 端（`match.test.ts`）只是躺着，插件运行时判定与 Rust 契约的同构性零护栏。
+/// 这里把 TS 端也拉进 `cargo test`：node 不可用时大声跳过（不伪装成通过）。
+#[test]
+fn ts_side_sample_suite_runs_against_the_same_cases() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/extensions/path-guard");
+    let probe = std::process::Command::new("node").arg("--version").output();
+    let Ok(probe) = probe else {
+        eprintln!("跳过：本机无 node，TS 侧样例集未执行（不是通过）");
+        return;
+    };
+    assert!(probe.status.success(), "node --version 应成功");
+    let out = std::process::Command::new("node")
+        .arg("--test")
+        .arg(dir.join("match.test.ts"))
+        .current_dir(&dir)
+        .output()
+        .expect("运行 node --test");
+    assert!(
+        out.status.success(),
+        "TS 侧样例集必须与 Rust 侧同判：\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
