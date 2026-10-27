@@ -17,6 +17,70 @@ pub fn build_install_command(profile_dir: &Path, package: &str) -> Command {
     cmd
 }
 
+/// 包来源形状校验（自审 minor 34）。
+///
+/// 边界事实：清单可经 HTTP API 改写，而 `pi install` 会真实执行包的 postinstall 脚本——
+/// 即「改清单」等价于「以 devforge 进程身份跑任意代码」。旧口径对来源零校验。
+///
+/// 规则（只放行 npm 注册表安全子集）：
+/// - `name` / `name@version` / `@scope/name` / `@scope/name@version`；
+/// - 字符集限 `[A-Za-z0-9._@/-]`（不允空白/控制符/引号/元字符）；
+/// - 拒本地与相对绝对路径（`/`、`./`、`../`、`~`）、传输协议前缀（`git+`、`file:`、
+///   `http(s):`、`npm:` 等）与选项形态（`-` 开头，防被当成 pi 自己的参数）。
+/// 包来源形状校验（自审 minor 34）。
+///
+/// 边界事实：清单可经 HTTP API 改写，而 `pi install` 会真实执行包的 postinstall 脚本。
+/// 旧口径对来源零校验——一个被改写的清单就能把本地任意目录/脚本拉进来执行，
+/// 或者把参数写成 `--flag` 让 pi 当成自己的选项。
+///
+/// 放行口径（与仓内内置清单一致）：`name` / `name@ver` / `@scope/name` /
+/// `npm:<name>` / `git:host/path`。拒收：本地与相对/绝对路径（`file:`、`link:`、
+/// `/abs`、`./`、`../`、`~`）、`http(s):`/`ssh:` URL、选项形态（`-` 开头）、
+/// 以及含空白/控制字符/引号/元字符的串。
+///
+/// 注：远程包（npm/git）自己的 postinstall 仍会执行——那是 admin 信任模型下的既定行为；
+/// 本函数只堵「把安装面变成任意本地路径执行」。
+pub fn validate_package_source(pkg: &str) -> Result<()> {
+    fn bad(pkg: &str, why: &str) -> DevforgeError {
+        DevforgeError::Config(format!(
+            "非法请求：扩展包来源 `{pkg}` {why}——只接受 `name` / `@scope/name`（可带 `@版本`）、\
+             `npm:<name>` 或 `git:<host>/<path>`；本地路径与 URL 一律拒"
+        ))
+    }
+    if pkg.is_empty() || pkg.trim() != pkg {
+        return Err(bad(pkg, "为空或首尾含空白"));
+    }
+    if pkg.starts_with('-') {
+        return Err(bad(pkg, "以 - 开头（会被当成 pi 的命令行选项）"));
+    }
+    let lower = pkg.to_ascii_lowercase();
+    for prefix in ["file:", "link:", "http:", "https:", "ssh:"] {
+        if lower.starts_with(prefix) {
+            return Err(bad(pkg, "是 URL 而不是包名"));
+        }
+    }
+    // 本地/相对/绝对路径（npm: 与 git: 前缀剥掉后再判）
+    let body = lower
+        .strip_prefix("npm:")
+        .or_else(|| lower.strip_prefix("git:"))
+        .unwrap_or(lower.as_str());
+    if body.starts_with('/')
+        || body.starts_with('.')
+        || body.starts_with('~')
+        || body.contains("..")
+        || body.contains('\\')
+    {
+        return Err(bad(pkg, "是路径而不是包名"));
+    }
+    let charset_ok = pkg
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '@' | '/' | '-' | ':'));
+    if !charset_ok {
+        return Err(bad(pkg, "含非法字符（空白/控制符/引号/元字符）"));
+    }
+    Ok(())
+}
+
 /// 构造安装失败错误：附带 stderr 尾部摘要（F2 教训：上游 postinstall 吞掉
 /// 真实 errno 只留谜语，devforge 侧再把 stderr 丢掉就彻底抓瞎——
 /// 把「为什么装不上」直接带进错误信息）。
@@ -135,6 +199,8 @@ impl PackageInstaller for PiInstallBridge {
             "开始安装 profile 扩展包"
         );
         for pkg in packages {
+            // 自审 minor（34）：落地前先验来源形状——postinstall 会以 devforge 进程身份执行。
+            validate_package_source(pkg)?;
             let output = run_with_timeout(build_install_command(profile_dir, pkg), pkg)?;
             if !output.status.success() {
                 let err = install_failure_error(pkg, &output);

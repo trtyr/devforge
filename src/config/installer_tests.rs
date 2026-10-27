@@ -1,6 +1,40 @@
 //! （2026-10-26 测试分离：自 src/config/installer.rs 内联平移，纯移动零改动。）
 use super::*;
 
+/// 自审 minor（34）回归：安装边界必须验来源形状——旧口径直接 `pi install <用户串>`。
+#[test]
+fn package_source_shape_is_validated() {
+    // 放行：仓内内置清单实际在用的几种形态
+    for ok in [
+        "pi-lens",
+        "@ff-labs/pi-fff",
+        "pi-lens@1.2.3",
+        "npm:pi-blackhole",
+        "git:github.com/NVlabs/SoL-Pi",
+    ] {
+        validate_package_source(ok).unwrap_or_else(|e| panic!("应放行 {ok}：{e}"));
+    }
+    // 拒收：本地路径 / URL / 选项形态 / 元字符
+    for bad in [
+        "/etc/passwd",
+        "../evil",
+        "./local-pkg",
+        "~/pkg",
+        "file:/tmp/pkg",
+        "link:../x",
+        "https://evil.example/pkg.tgz",
+        "--registry=http://evil",
+        "pkg; rm -rf /",
+        "pkg name",
+        "",
+    ] {
+        assert!(
+            validate_package_source(bad).is_err(),
+            "必须拒收非法来源：{bad}"
+        );
+    }
+}
+
 #[test]
 fn install_command_carries_profile_env() {
     let cmd = build_install_command(Path::new("/profiles/plan-agent"), "npm:pi-blackhole");
