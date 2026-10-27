@@ -37,11 +37,17 @@ use crate::sop::planning::UserLink;
 
 // ---------- UI 中继（交互中继域） ----------
 
+/// 待答请求表的值：(应答通道, 归属 run id)
+///
+/// 自审 minor（48）：旧口径把这段嵌套泛型直接写在字段上（clippy::type_complexity），
+/// 与本文件顶部导入的 `std::sync::*` 风格也不一致。
+type PendingAsk = (std::sync::mpsc::Sender<String>, Option<String>);
+
 /// ask-user-question 的 API 中继：请求推 SSE，应答经 POST 端点回填。
 pub struct UiRelay {
     next_id: AtomicU64,
     bus: std::sync::Arc<EventBus>,
-    pending: Mutex<HashMap<String, (std::sync::mpsc::Sender<String>, Option<String>)>>,
+    pending: Mutex<HashMap<String, PendingAsk>>,
 }
 
 impl UiRelay {
@@ -267,7 +273,37 @@ pub fn run_in_background(
         match store.get_task(&project, &task_id).cloned() {
             Some(t) => t,
             None => {
-                state.emit(json!({"type": "run.error", "project": project, "task": task_id, "error": "任务不存在（准入后消失）"}));
+                // 自审 minor（222）：旧口径直接 return——run 永久停在 Running 占死串行槽，
+                // 而且这件事只有 SSE 事件、日志里查不到。现在落终态 + 双面留痕。
+                let reason = "任务不存在（准入后消失）".to_string();
+                {
+                    let mut store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Err(e) = store.finish_run(
+                        &run.id,
+                        crate::domain::store::FinishOutcome::Failed {
+                            reason: reason.clone(),
+                        },
+                    ) {
+                        tracing::error!(
+                            component = "run",
+                            event = "run.finish_failed",
+                            run_id = %run.id.0,
+                            error = %e,
+                            "任务快照缺失且结案失败：该 run 仍为 Running，需人工核对 store"
+                        );
+                    }
+                }
+                tracing::error!(
+                    component = "run",
+                    event = "run.no_task",
+                    project = %project,
+                    task = %task_id,
+                    run_id = %run.id.0,
+                    "准入后任务消失，run 已按失败结案"
+                );
+                state.emit(json!({"type": "run.error", "project": project, "task": task_id, "error": reason}));
+                crate::observability::end_run(&run.id.0);
+                crate::server::scheduler::kick();
                 return;
             }
         }
@@ -323,8 +359,12 @@ pub fn run_in_background(
         // 全仓审计 #1：引擎 panic 兜底——SOP 里任何一次 panic 都会展开 run 线程，
         // 而 Running 终态只由下方 finish_run 出清（准入看 running_run_count）。
         // 裸展开 = 串行槽位与任务状态永久卡死，只能重启进程。
+        // 自审 minor（124）：契约终校验的 System 类错误必须发生在**重试作用域之内**——
+        // 旧口径在 run_with_retry 返回之后才做（注释宣称的「基础设施故障可重启」在该路径上
+        // 永不成立，且没有重试记录）。现在每次尝试的产出立即过契约门。
         let exec = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            engine.execute(&task_snapshot, &run, &control)
+            let out = engine.execute(&task_snapshot, &run, &control);
+            contract_boundary_check(&state_for_retry, &project_for_retry, &task_for_retry, out)
         }));
         match exec {
             Ok(r) => r,
@@ -335,7 +375,9 @@ pub fn run_in_background(
                     event = "run.panic",
                     run_id = %run.id.0,
                     panic = %msg,
-                    "引擎 panic 已兜底：按 System 失败收尾（不裸展开 run 线程）"
+                    // 自审 minor（224）：旧文案写「按 System 失败收尾」，代码实际归类 Quality——
+                    // 日志与真实分类矛盾，事后按级别筛选会误判。
+                    "引擎 panic 已兜底：按**质量失败**收尾（引擎 bug 不自动重启，不裸展开 run 线程）"
                 );
                 state_for_retry.emit(json!({
                     "type": "run.panic",
@@ -359,8 +401,7 @@ pub fn run_in_background(
         .unwrap_or_else(|e| e.into_inner())
         .remove(&format!("{project}/{task_id}"));
 
-    // P012 M0 · T0.2：契约终校验——run 成功后实际改动 ⊆ 契约 owned_paths，越界改判 Failed
-    let outcome = contract_boundary_check(&state, &project, &task_id, outcome);
+    // 契约终校验已在每次尝试内完成（见上，124）——这里不再二次校验（避免两次 diff）。
 
     let finish = match &outcome {
         Ok(RunOutcome::Completed) => crate::domain::store::FinishOutcome::Completed,
@@ -391,18 +432,41 @@ pub fn run_in_background(
             }
         }
     };
+    let completed = ok && matches!(outcome, Ok(RunOutcome::Completed));
+    // 自审 minor（225）：run 终态此前只活在事件总线的内存环形缓冲里，日志侧没有记录
+    // （boundary.ok 也只有事件没有日志）。日志必须能独立回溯「这次 run 怎么收的场」。
+    tracing::info!(
+        component = "run",
+        event = "run.finished",
+        project = %project,
+        task = %task_id,
+        run_id = %run.id.0,
+        attempts,
+        ok = completed,
+        store_finished = ok,
+        reason = ?outcome.as_ref().err().map(|e| e.to_string()),
+        "run 收尾"
+    );
+    // 自审 minor（226）：结案失败时 store 里该 run 仍是 Running——事件流不得宣称已终态
+    // （两个事实源互相矛盾）。用 store_finished 显式区分，消费方据此决定是否重查。
     state.emit(json!({
         "type": "run.finished",
         "project": project,
         "task": task_id,
         "run_id": run.id.0,
         "attempts": attempts,
-        "ok": ok && matches!(outcome, Ok(RunOutcome::Completed)),
+        "ok": completed,
+        "store_finished": ok,
     }));
     // 观测上下文清位：心跳文件**保留**最后一次状态（死亡现场的证据，不删）
     crate::observability::end_run(&run.id.0);
     // P012 M4：run 收尾踢调度器——依赖本任务的后继立即就绪判定 + Settled 自动入队
     crate::server::scheduler::kick();
+}
+
+/// base_rev 是否是可安全交给 git 的纯 commit sha（自审 major 125：注入面收口）。
+fn is_plain_git_sha(s: &str) -> bool {
+    (7..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// 引擎 panic 兜底（全仓审计 #1）：从 panic payload 取人读文本。
@@ -448,6 +512,13 @@ fn contract_boundary_check(
     let Some(base) = contract.base_rev.as_deref() else {
         return Ok(outcome);
     };
+    // 自审 major（125）：base_rev 直接进 git 参数——旧口径零校验，`--output=/x` 这类选项
+    // 注入能让 diff 结果落盘到指定路径并让 stdout 变空，从而强制边界门放行（fail-open）。
+    if !is_plain_git_sha(base) {
+        return Err(crate::error::DevforgeError::Config(format!(
+            "契约 base_rev 形状非法：`{base}`（必须是 7..=40 位十六进制 commit，不能含选项前缀）"
+        )));
+    }
     // 自审 critical：worktree 隔离下主仓 HEAD 纹丝不动（agent 的改动全部在 task/{id}
     // 分支上，worktree 已在引擎收尾时删除）——对 HEAD 求 diff 恒为空集，越界 run
     // 被判 boundary.ok（门 fail-open，正是本函数注释声称已修掉的那类假绿）。改对
@@ -483,7 +554,7 @@ fn contract_boundary_check(
             &format!("{base}..{diff_target}"),
         ])
         .output();
-    let changed: Vec<String> = match out {
+    let committed: Vec<String> = match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
             .lines()
             .filter(|l| !l.trim().is_empty())
@@ -504,6 +575,48 @@ fn contract_boundary_check(
             )));
         }
     };
+    // 自审 minor（126）：改动集口径必须含**未提交改动与未跟踪文件**——仓内 coding gate
+    // 已明确点过这个盲区（只 diff 已提交会让「改完不提交」的越界完全隐身）。
+    let mut changed: Vec<String> = committed;
+    let worktree_status = std::process::Command::new("git")
+        .args([
+            "-C",
+            &task.workspace.to_string_lossy(),
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ])
+        .output();
+    match worktree_status {
+        Ok(o) if o.status.success() => {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                // porcelain 格式：XY <path>（rename 时形如 "old -> new"，两边都算改动）
+                let path = line.get(3..).unwrap_or("").trim();
+                if path.is_empty() {
+                    continue;
+                }
+                if let Some((a, b)) = path.split_once(" -> ") {
+                    changed.push(a.trim().to_string());
+                    changed.push(b.trim().to_string());
+                } else {
+                    changed.push(path.to_string());
+                }
+            }
+            changed.sort();
+            changed.dedup();
+        }
+        Ok(o) => {
+            return Err(crate::error::DevforgeError::System(format!(
+                "契约终校验无法取工作区状态（git status 非零退出）：{}——不能放行为 Completed",
+                String::from_utf8_lossy(&o.stderr).trim()
+            )));
+        }
+        Err(e) => {
+            return Err(crate::error::DevforgeError::System(format!(
+                "契约终校验无法调用 git status：{e}——不能放行为 Completed"
+            )));
+        }
+    }
     // ① forbidden_paths 绝对禁令（P012 挂账补全）：命中即越界，优先于 owned 覆盖判定——
     //    即便文件在 owned 内，禁改条目仍然生效（如 assets/prompts/** 等系统资产）。
     let forbidden_hits: Vec<&String> = changed
@@ -570,6 +683,6 @@ fn run_phase_for_sop(sop: &str) -> &str {
     }
 }
 
-// 台账条目类型在本模块的再导出（spawn 侧调用方记录用）
-pub use crate::engine::ledger::LedgerEntry as SpawnLedgerEntry;
+// 自审 minor（49）：旧口径在这里再导出 SpawnLedgerEntry，注释称「spawn 侧调用方记录用」——
+// 全仓零引用。死再导出已删除（需要时直接用 crate::engine::ledger::LedgerEntry）。
 

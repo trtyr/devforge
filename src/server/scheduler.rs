@@ -73,17 +73,6 @@ fn fused_runs() -> &'static std::sync::Mutex<std::collections::HashSet<String>> 
     FUSED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
-/// 本进程已做过 NeedsRebase 扫动的项目（自审 minor 229）。
-fn swept_projects_insert(project: &str) -> bool {
-    static SWEPT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-        std::sync::OnceLock::new();
-    SWEPT
-        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(project.to_string())
-}
-
 fn already_fused(run_id: &str) -> bool {
     fused_runs()
         .lock()
@@ -206,6 +195,9 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             .map(|t| (t.project.clone(), t.id.clone()))
             .collect()
     };
+    // 自审 minor（229）：NeedsRebase 状态机扫动只在**本 tick 每项目一次**（不是每 settled
+    // 任务都扫一遍——旧口径对项目内全部候选重复扫 + 重复 load/save）。
+    let mut swept_this_tick: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (project, task_id) in settled {
         // 自审 major（127）：同上，标识符进路径前校验
         if crate::domain::store::Store::validate_path_name(&project).is_err()
@@ -244,7 +236,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             // 自审 minor（229）：NeedsRebase 扫动（状态机改写）只做**每项目一次**——
             // 旧口径在「每个 settled 任务」上对项目内全部候选重复扫 + 重复 load/save。
             // 放在首个入队机会里执行，并只跑一次（PROJECT_SWEPT 记录）。
-            if swept_projects_insert(&project) {
+            if swept_this_tick.insert(project.clone()) {
                 // 全仓审计 #2：NeedsRebase 不是终态——rebase 到新目标后重验；
                 // NeedsRepair 保持终态（修复 = 新候选带新证据 = 新 frozen_sha）。
                 for c in queue.candidates.iter_mut() {

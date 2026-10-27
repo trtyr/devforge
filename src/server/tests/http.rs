@@ -364,4 +364,48 @@ fn stall_check_returns_age_even_without_agent_events() {
     crate::observability::end_run("stall-probe");
 }
 
+/// 自审 minor（221）：`abort_run`（按 run 精确解阻，server #3 并发隔离的关键行为）此前
+/// 全仓零测试——只覆盖了 abort_all 的全局解阻。这里用真 run 上下文钉「只解自己那个 run」。
+#[tokio::test]
+async fn ui_abort_run_unblocks_only_its_own_run() {
+    let f = fixture();
+    let ui = f.state.ui.clone();
+    let obs_a = tempfile::tempdir().unwrap();
+    let obs_b = tempfile::tempdir().unwrap();
+    let (root_a, root_b) = (obs_a.path().to_path_buf(), obs_b.path().to_path_buf());
 
+    // 两个线程各在自己的 run 上下文里挂一个 dialog → 待答条目带上归属
+    let ui_a = ui.clone();
+    let a = std::thread::spawn(move || {
+        crate::observability::begin_run_in(root_a, "run-a", "plan");
+        let r = ui_a.ask_blocking("run-a 的提问", &["完成"]);
+        crate::observability::end_run("run-a");
+        r
+    });
+    let ui_b = ui.clone();
+    let b = std::thread::spawn(move || {
+        crate::observability::begin_run_in(root_b, "run-b", "plan");
+        let r = ui_b.ask_blocking("run-b 的提问", &["完成"]);
+        crate::observability::end_run("run-b");
+        r
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while ui.pending_count() < 2 {
+        assert!(std::time::Instant::now() < deadline, "两个 dialog 未挂起");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    // 别的 run 不得误伤
+    assert_eq!(ui.abort_run("run-other"), 0, "别的 run 不得解阻");
+    assert_eq!(ui.pending_count(), 2, "两条待答都应原样保留");
+
+    // 自己的 run 必须解阻，且只解自己那条
+    assert_eq!(ui.abort_run("run-a"), 1, "run-a 的待答必须被解阻");
+    let ra = a.join().unwrap();
+    assert!(ra.is_err(), "被解阻的 ask 必须失败返回");
+    assert_eq!(ui.pending_count(), 1, "只剩 run-b 那条（并发隔离）");
+
+    let _ = ui.abort_all();
+    let _ = b.join();
+}
