@@ -91,7 +91,7 @@ impl Store {
             && !name.contains('\0');
         if !path_ok {
             return Err(DevforgeError::Store(format!(
-                "名称 `{name}` 含非法路径字符（不可为空/./..，不可含分隔符）"
+                "非法请求：名称 `{name}` 含非法路径字符（不可为空/./..，不可含分隔符）"
             )));
         }
         // 自审 minor（19）：文档承诺 kebab-case（`mvp-from-zero`），旧口径只挡路径穿越、
@@ -102,8 +102,11 @@ impl Store {
             && !name.starts_with('-')
             && !name.ends_with('-');
         if !kebab_ok {
+            // 自审 minor（45）：客户端输入类校验错误统一前缀「非法请求：」——
+            // HTTP 层据此映射 400；旧口径靠中文关键词子串猜，kebab 文案不在关键词表里
+            // 就静默落进 500（已文档化的契约被违反）。
             return Err(DevforgeError::Store(format!(
-                "名称 `{name}` 不是 kebab-case（只允许 a-z0-9 与 -，首尾不得为 -）"
+                "非法请求：名称 `{name}` 不是 kebab-case（只允许 a-z0-9 与 -，首尾不得为 -）"
             )));
         }
         Ok(())

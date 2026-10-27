@@ -34,6 +34,30 @@ async fn create_project_rejects_non_empty_non_git_dir() {
     );
 }
 
+#[tokio::test]
+async fn create_project_rejects_non_kebab_name_with_400_not_500() {
+    // 自审 minor（45）回归：kebab-case 字符集校验在域层，HTTP 层只挡路径字符——
+    // 旧口径这条错误不带任何关键词 → ApiError 兜底 500，已文档化的「请求不合法 → 400」被违反。
+    let f = fixture();
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "My.Project", "local_path": "/tmp/never"})),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        400,
+        "非 kebab-case 项目名是客户端输入问题，不得 500"
+    );
+    let body = body_json(resp).await;
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("kebab"),
+        "文案要点明 kebab-case：{body}"
+    );
+}
+
 /// 合法形态：不存在（从 0 创建）/ 空目录 / 已是 git 仓 都应放行。
 #[tokio::test]
 async fn create_project_accepts_empty_dir_and_git_repo() {

@@ -14,28 +14,23 @@ pub fn check_baseline_log(blackboard: &Path) -> Result<BaselineEvidence> {
     )
 }
 
+/// （自生产文件迁入：cfg(test) 专用帮手，消费方全在测试。）
+///
+/// 自审 minor（51）：与 `check_baseline_log` 同形——都**复用生产实现**、只把新鲜度
+/// 阈值换成 UNIX_EPOCH。旧口径这一份是手写的第三套实现（自己读文件、自己解析、
+/// 自己比对退出码），生产门改一处它就静默漂移，测试还会继续给假绿灯。
 #[cfg(test)]
-pub fn check_self_check(blackboard: &Path) -> Result<BaselineEvidence> {    let path = blackboard.join(SELF_CHECK_LOG);
-    let text = std::fs::read_to_string(&path).map_err(|e| {
-        DevforgeError::Quality(format!(
-            "缺少自证证据 {}（提交前必须留下命令原文 + 退出码 + 摘要）：{e}",
-            path.display()
-        ))
-    })?;
-    let ev = parse_evidence_log(&text, SELF_CHECK_LOG, "自证")?;
-    if ev.exit_code != 0 {
-        return Err(DevforgeError::Quality(format!(
-            "自证不是绿的（exit_code={}，命令：{}）——先证后报：证据红着不许提交",
-            ev.exit_code,
-            if ev.command.is_empty() {
-                "未记录".to_string()
-            } else {
-                ev.command
-            }
-        )));
-    }
-    Ok(ev)
+pub fn check_self_check(blackboard: &Path) -> Result<BaselineEvidence> {
+    check_evidence_fresh(
+        blackboard.join(SELF_CHECK_LOG),
+        "缺少自证证据 {}（提交前必须留下命令原文 + 退出码 + 摘要）",
+        "自证不是绿的",
+        "先证后报：证据红着不许提交",
+        |text| parse_evidence_log(text, SELF_CHECK_LOG, "自证"),
+        std::time::SystemTime::UNIX_EPOCH,
+    )
 }
+
 fn git(repo: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(args)

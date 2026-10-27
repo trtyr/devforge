@@ -124,7 +124,10 @@ impl From<crate::error::DevforgeError> for ApiError {
         }
         // P3-ISSUE-01 修复：变体优先（配置类错误 = 客户端输入问题 → 400），
         // 语义关键词兜底；后续可给错误加机器可读 code（原则 §3）
-        if matches!(e, crate::error::DevforgeError::Config(_)) {
+        // 自审 minor（45）：客户端输入类校验错误带统一前缀「非法请求：」（域层约定），
+        // 不靠个别中文关键词碰运气——否则新加的校验（如 kebab-case）会静默落进 500。
+        // （Config 变体已在上面按变体优先拦掉，这里不重复。）
+        if msg.contains("非法请求") {
             Self::bad_request(msg)
         } else if msg.contains("已存在") {
             Self::conflict(msg)
