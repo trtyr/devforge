@@ -97,3 +97,67 @@ fn failure_error_handles_empty_stderr() {
     let err = install_failure_error("pkg", &out).to_string();
     assert!(err.contains("stderr 为空"), "{err}");
 }
+
+// ── 2026-10-27 自审 installer 批回归 ──
+
+/// 自审 minor（95）：重装路径不得在 packages 数组里堆重复条目（旧口径只 push，
+/// 而相关测试只断言安装计数、不校验数组内容 → 这个分叉无护栏）。
+#[test]
+fn reinstalling_does_not_duplicate_package_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let installer = FakeInstaller;
+    installer
+        .install(dir.path(), &["npm:a".to_string(), "npm:b".to_string()])
+        .unwrap();
+    installer
+        .install(dir.path(), &["npm:a".to_string()])
+        .unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap())
+            .unwrap();
+    let arr = settings["packages"].as_array().unwrap();
+    let names: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+    assert_eq!(names, vec!["npm:a", "npm:b"], "重复安装不得堆条目：{names:?}");
+}
+
+/// 自审 minor（93/94）：损坏的 settings.json 必须报错（旧口径静默降级成空对象再回写，
+/// 丢掉其余所有设置键）；合法 JSON 但形状错误也不得 panic。
+#[test]
+fn corrupt_settings_is_an_error_not_a_silent_wipe() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    std::fs::write(&path, "{not json").unwrap();
+    let err = FakeInstaller
+        .install(dir.path(), &["npm:a".to_string()])
+        .unwrap_err();
+    assert!(err.to_string().contains("损坏"), "{err}");
+    // 原文件不得被回写成空对象
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+
+    // 形状错误：顶层是数组
+    std::fs::write(&path, "[]").unwrap();
+    let err = FakeInstaller
+        .install(dir.path(), &["npm:a".to_string()])
+        .unwrap_err();
+    assert!(err.to_string().contains("顶层不是对象"), "{err}");
+
+    // packages 不是数组
+    std::fs::write(&path, "{\"packages\": 3}").unwrap();
+    let err = FakeInstaller
+        .install(dir.path(), &["npm:a".to_string()])
+        .unwrap_err();
+    assert!(err.to_string().contains("不是数组"), "{err}");
+}
+
+/// 自审 minor（24）：退出码文案不得重复（旧口径产出「（exit: exit status: 1）」）。
+#[test]
+fn failure_text_has_no_duplicated_exit_prefix() {
+    let out = std::process::Command::new("sh")
+        .args(["-c", "exit 3"])
+        .output()
+        .unwrap();
+    let err = install_failure_error("npm:x", &out);
+    let msg = err.to_string();
+    assert!(msg.contains("exit code 3"), "{msg}");
+    assert!(!msg.contains("exit: exit status"), "退出码文案重复：{msg}");
+}

@@ -37,9 +37,15 @@ fn install_failure_error(pkg: &str, output: &std::process::Output) -> DevforgeEr
     };
     // 自审 major：安装失败归 System（可重试）而非 Config——网络抖动/ENOSPC 是
     // 环境瞬时故障，与仓库自身「瞬时故障归 System 可重试」的约定一致。
+    // 自审 minor（24）：`ExitStatus` 的 Display 已是「exit status: N」，旧模板再拼
+    // 「exit: 」会得到「（exit: exit status: 1）」。用 code() 取纯数字。
+    let code = output
+        .status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| format!("terminated by signal（{}）", output.status));
     DevforgeError::System(format!(
-        "pi install {pkg} 失败（exit: {}）\nstderr 尾部: {tail}",
-        output.status
+        "pi install {pkg} 失败（exit code {code}）\nstderr 尾部: {tail}"
     ))
 }
 
@@ -161,22 +167,46 @@ impl PackageInstaller for FakeInstaller {
     fn install(&self, profile_dir: &Path, packages: &[String]) -> Result<()> {
         // 记录 1：settings.json packages 数组追加
         let settings_path = profile_dir.join("settings.json");
+        // 自审 minor（93）：损坏的 settings.json 旧口径被 `.unwrap_or(json!({}))` 静默降级成
+        // 空对象再回写——**丢掉其余所有设置键**，既不报错也不留日志。现在：损坏即报错
+        // （宁可失败，不可静默吞用户配置）。
         let mut settings: serde_json::Value = if settings_path.exists() {
-            serde_json::from_str(&std::fs::read_to_string(&settings_path).ctx("读 settings")?)
-                .unwrap_or(serde_json::json!({}))
+            let text = std::fs::read_to_string(&settings_path).ctx("读 settings")?;
+            serde_json::from_str(&text).map_err(|e| {
+                DevforgeError::Config(format!(
+                    "settings.json 损坏（{}）：{e}——拒绝回写（会丢掉其余设置键）",
+                    settings_path.display()
+                ))
+            })?
         } else {
             serde_json::json!({})
         };
-        let arr = settings
-            .as_object_mut()
-            .expect("settings 应为对象")
+        // 自审 minor（94）：形状错误不再 expect panic（合法 JSON 但类型不对）
+        let obj = settings.as_object_mut().ok_or_else(|| {
+            DevforgeError::Config(format!(
+                "settings.json 顶层不是对象（{}）",
+                settings_path.display()
+            ))
+        })?;
+        let arr = obj
             .entry("packages")
             .or_insert_with(|| serde_json::json!([]));
+        let arr = arr.as_array_mut().ok_or_else(|| {
+            DevforgeError::Config(format!(
+                "settings.json 的 packages 不是数组（{}）",
+                settings_path.display()
+            ))
+        })?;
         for pkg in packages {
-            arr.as_array_mut().expect("packages 应为数组").push(serde_json::json!(pkg));
+            // 自审 minor（95）：重装路径不得在数组里堆重复条目（旧口径只 push）
+            if !arr.iter().any(|v| v.as_str() == Some(pkg.as_str())) {
+                arr.push(serde_json::json!(pkg));
+            }
         }
-        std::fs::write(&settings_path, serde_json::to_string_pretty(&settings).unwrap())
-            .ctx("写 settings")?;
+        let body = serde_json::to_string_pretty(&settings).map_err(|e| {
+            DevforgeError::Config(format!("settings.json 序列化失败：{e}"))
+        })?;
+        std::fs::write(&settings_path, body).ctx("写 settings")?;
 
         // 记录 2：npm/package.json dependencies
         let npm_dir = profile_dir.join("npm");
