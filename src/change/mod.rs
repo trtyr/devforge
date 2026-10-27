@@ -31,7 +31,8 @@ pub use docs::{DocAction, apply as apply_doc_level, essential_ready};
 pub use gate0::{Baseline, DocLevel, ensure_baseline};
 pub use history::{append_roundtrip, history_path};
 pub use orchestrator::{
-    ChangeOutcome, ChangeRun, ChangeSession, CodingTurn, PlanTurn, TestingTurn, run as run_change,
+    ChangeOutcome, ChangeRun, ChangeSession, CodingTurn, MAX_CODING_FIXES, MAX_PLAN_FIXES,
+    MAX_TEST_REROUTES, PlanTurn, TestingTurn, run as run_change,
 };
 pub use plan_audit::{PlanAudit, audit as audit_plan, review_instruction};
 pub use prepare::{ChangePrep, prepare as prepare_change};
