@@ -172,7 +172,7 @@ impl ReviewSessionFactory for RpcReviewFactory {
         let spec = (self
             .make_spec
             .lock()
-            .expect("spec 生成器锁"))();
+            .unwrap_or_else(|e| e.into_inner()))();
         let role = spec.role.clone();
         let client = RpcClient::spawn(spec)?;
         Ok(Box::new(RpcReviewSession { client, role }))

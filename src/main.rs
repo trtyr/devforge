@@ -257,13 +257,13 @@ async fn main() -> anyhow::Result<()> {
     *state
         .manifest_path
         .lock()
-        .expect("manifest_path 锁") = Some(manifest_path);
+        .unwrap_or_else(|e| e.into_inner()) = Some(manifest_path);
     // 自审 critical：启动对账 store 里的僵尸 Running——进程崩溃/被杀后遗留的 Running
     // run 会永久占死并发槽、任务停在 Running 无法再发起，无自愈即整机拒绝服务。
     let zombies = state
         .store
         .lock()
-        .expect("store 锁")
+        .unwrap_or_else(|e| e.into_inner())
         .reconcile_zombie_runs();
     if zombies > 0 {
         tracing::warn!(

@@ -291,13 +291,14 @@ impl<'a> Renderer<'a> {
                         break;
                     }
                     let res = self.render_agent(profiles_root, &agents[i].name);
-                    *slots[i].lock().expect("slot 锁") = Some(res);
+                    *slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(res);
                 });
             }
         });
         let mut rendered = Vec::with_capacity(agents.len());
         for slot in slots {
-            match slot.into_inner().expect("slot 锁") {
+            // 锁中毒口径统一：into_inner 拿 PoisonError 也恢复读取（渲染结果一致性不受 poison 影响）
+            match slot.into_inner().unwrap_or_else(|e| e.into_inner()) {
                 Some(res) => rendered.push(res?),
                 None => {
                     return Err(DevforgeError::System(

@@ -29,14 +29,14 @@ impl RenderGate {
 
     /// 登记一次在途渲染（`PUT /config/manifest` 受理后调用）。
     pub fn begin_render(&self) {
-        let mut n = self.in_flight.lock().expect("render gate 锁");
+        let mut n = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
         *n += 1;
     }
 
     /// 结束一次渲染（成功/失败都算）并广播。
     pub fn end_render(&self) {
         {
-            let mut n = self.in_flight.lock().expect("render gate 锁");
+            let mut n = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
             *n = n.saturating_sub(1);
         }
         self.notify.send_modify(|v| *v += 1);
@@ -44,7 +44,7 @@ impl RenderGate {
 
     /// 是否有渲染在途。
     pub fn is_in_flight(&self) -> bool {
-        *self.in_flight.lock().expect("render gate 锁") > 0
+        *self.in_flight.lock().unwrap_or_else(|e| e.into_inner()) > 0
     }
 
     /// 等「所需 profile 的 `settings.json` 落盘」或「渲染结束」。

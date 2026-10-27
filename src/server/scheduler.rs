@@ -69,7 +69,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
     // 复验归因：cancel 是协作式（SOP 轮询间隙检查），pi 子进程工具挂死时无人消费，
     // run 永驻 Running（M3 挂死 14h 的直接教训）——必须台账精确 SIGKILL。
     let to_fuse: Vec<(String, String, String)> = {
-        let store = st.store.lock().expect("store 锁");
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         if cfg.budget_wall_minutes == 0 {
             Vec::new()
         } else {
@@ -101,7 +101,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         let control = st
             .runs_control
             .lock()
-            .expect("runs_control 锁")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&format!("{project}/{task}"))
             .cloned();
         if let Some(c) = control {
@@ -120,7 +120,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
 
     // ② 自动入集成队列：Completed + 带契约 + frozen-commit 落盘 + 队列内无此任务。
     let settled: Vec<(String, String)> = {
-        let store = st.store.lock().expect("store 锁");
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store
             .tasks
             .iter()
@@ -142,7 +142,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             continue;
         }
         let contract = {
-            let store = st.store.lock().expect("store 锁");
+            let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
             store
                 .get_task(&project, &task_id)
                 .and_then(|t| t.contract.clone())
@@ -207,7 +207,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
 
     // ③ 就绪判定 + 准入 → 派工计划。
     let snapshot: Vec<(String, String, TaskStatus, Vec<String>, bool)> = {
-        let store = st.store.lock().expect("store 锁");
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store
             .tasks
             .iter()
@@ -223,7 +223,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             .collect()
     };
     let exclusive_running = {
-        let store = st.store.lock().expect("store 锁");
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store
             .tasks
             .iter()
@@ -249,13 +249,13 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         }
         // 依赖判定：任一 Failed → blocked{dependency_failed}；任一未完成 → 继续等。
         {
-            let store = st.store.lock().expect("store 锁");
+            let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
             if deps
                 .iter()
                 .any(|d| dep_status(&store, &project, d) == TaskStatus::Failed)
             {
                 drop(store);
-                let mut store = st.store.lock().expect("store 锁");
+                let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
                 let _ = store.set_task_status(&project, &task_id, TaskStatus::Blocked);
                 report
                     .blocked
@@ -273,7 +273,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         // running 集合在后台线程 begin_run 前不变，不追踪本 tick 派工就会同 tick 双独占并行）。
         if exclusive_running || exclusive_dispatched_this_tick {
             let _ = {
-                let mut store = st.store.lock().expect("store 锁");
+                let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
                 store.set_task_status(&project, &task_id, TaskStatus::Blocked)
             };
             report.blocked.push((
@@ -285,7 +285,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         // 容量：running + 本 tick 已派工（预留）< min(准入上限, store 硬上限)——
         // begin_run 发生在后台线程，tick 内 running_run_count 不变，必须本地预留。
         let capacity_ok = {
-            let store = st.store.lock().expect("store 锁");
+            let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
             store.running_run_count() + dispatched_this_tick
                 < cfg
                     .max_concurrent_mutation
@@ -293,7 +293,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         };
         if !capacity_ok {
             let _ = {
-                let mut store = st.store.lock().expect("store 锁");
+                let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
                 store.set_task_status(&project, &task_id, TaskStatus::Blocked)
             };
             report
@@ -304,7 +304,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         // 解除阻塞态 → 派工计划（begin_run 在 run_in_background 内置 Running）。
         if status == TaskStatus::Blocked {
             let _ = {
-                let mut store = st.store.lock().expect("store 锁");
+                let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
                 store.set_task_status(&project, &task_id, TaskStatus::Pending)
             };
         }
@@ -320,7 +320,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
 /// 派工执行（async：渲染闸门等待；run 本体仍在独立线程）。
 pub async fn launch(st: &SharedState, project: &str, task_id: &str) {
     let sop = {
-        let store = st.store.lock().expect("store 锁");
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         match store.get_task(project, task_id) {
             Some(t) => t.sop.clone(),
             None => return,
@@ -334,7 +334,7 @@ pub async fn launch(st: &SharedState, project: &str, task_id: &str) {
     // 准入在派发线程之前完成（与 start_task 同口径：202/派发不得早于 begin_run）；
     // 失败只打日志——调度器没有请求方可以回错了。
     let run = {
-        let mut store = st.store.lock().expect("store 锁");
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         match store.begin_run(project, task_id) {
             Ok(r) => r,
             Err(e) => {
@@ -360,7 +360,7 @@ pub async fn scheduler_loop(st: SharedState, cfg: SchedulerConfig) {
     // 启动同步（复验 #3）：store 硬上限 ≥ 准入上限，否则 min() 恒等准入上限被 store 压平，
     // 并发永不开闸（默认 1×1）。取 max：用户手动调大的配置不被压回。
     {
-        let mut store = st.store.lock().expect("store 锁");
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store.max_concurrent_runs = store.max_concurrent_runs.max(cfg.max_concurrent_mutation);
     }
     let mut last = std::time::Instant::now() - Duration::from_secs(60);
@@ -420,7 +420,7 @@ pub async fn scheduler_loop(st: SharedState, cfg: SchedulerConfig) {
 /// 不登机器纯 API 回答「现在几个 worktree 在飞、各自卡在哪、队列多长、冲突了没有」。
 /// 判定逻辑与 tick 同款但零副作用（不置状态不派工）。
 pub fn status(st: &SharedState) -> serde_json::Value {
-    let store = st.store.lock().expect("store 锁");
+    let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
 
     // 在飞：Running runs + 墙钟
     let running: Vec<serde_json::Value> = store

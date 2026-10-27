@@ -83,7 +83,7 @@ impl UiRelay {
         let owner = crate::observability::current_run_id();
         self.pending
             .lock()
-            .expect("pending 锁")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(id.clone(), (tx, owner));
         // 先登记后广播：应答端点在事件可见后仍能命中 pending
         self.bus.emit(json!({
@@ -111,7 +111,7 @@ impl UiRelay {
         };
         if outcome.is_err() {
             // 超时路径清残条目：迟到应答拿到干净的「无此待答」，不会悄悄发进虚空
-            self.pending.lock().expect("pending 锁").remove(&id);
+            self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
         }
         outcome
     }
@@ -121,7 +121,7 @@ impl UiRelay {
         let (tx, _owner) = self
             .pending
             .lock()
-            .expect("pending 锁")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(id)
             .ok_or_else(|| {
                 crate::error::DevforgeError::Store(format!("无此待答 UI 请求 `{id}`"))
@@ -133,14 +133,14 @@ impl UiRelay {
 
     /// 待答请求数（测试用）。
     pub fn pending_count(&self) -> usize {
-        self.pending.lock().expect("pending 锁").len()
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// 中止全部待答（cancel 端点解阻用）：丢弃 sender 使所有阻塞中的
     /// `ask_blocking` 立刻失败解阻，引擎得以按 cancel 语义收场——
     /// 修复 dialog 挂起态 cancel 半效（杀 pi 不解阻 mpsc recv）。
     pub fn abort_all(&self) -> usize {
-        let mut map = self.pending.lock().expect("pending 锁");
+        let mut map = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let n = map.len();
         map.clear();
         n
@@ -150,7 +150,7 @@ impl UiRelay {
     /// 并发 run 的 dialog 不受影响。无归属信息的历史条目（不在 run 上下文里发起）
     /// 保持不动——它们不归任何 run 管，宁可不打也不误伤。
     pub fn abort_run(&self, run_id: &str) -> usize {
-        let mut map = self.pending.lock().expect("pending 锁");
+        let mut map = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let before = map.len();
         map.retain(|_, (_, owner)| owner.as_deref() != Some(run_id));
         before - map.len()
@@ -263,7 +263,7 @@ pub fn run_in_background(
     run: crate::domain::run::Run,
 ) {
     let task_snapshot = {
-        let store = state.store.lock().expect("store 锁");
+        let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
         match store.get_task(&project, &task_id).cloned() {
             Some(t) => t,
             None => {
@@ -298,7 +298,7 @@ pub fn run_in_background(
     state
         .runs_control
         .lock()
-        .expect("runs_control 锁")
+        .unwrap_or_else(|e| e.into_inner())
         .insert(format!("{project}/{task_id}"), control.clone());
 
     // 基础设施故障自动重启（plan 010 T005/D004）：只重 System 类，质量失败不重试
@@ -356,7 +356,7 @@ pub fn run_in_background(
     state
         .runs_control
         .lock()
-        .expect("runs_control 锁")
+        .unwrap_or_else(|e| e.into_inner())
         .remove(&format!("{project}/{task_id}"));
 
     // P012 M0 · T0.2：契约终校验——run 成功后实际改动 ⊆ 契约 owned_paths，越界改判 Failed
@@ -372,7 +372,7 @@ pub fn run_in_background(
         },
     };
     let ok = {
-        let mut store = state.store.lock().expect("store 锁");
+        let mut store = state.store.lock().unwrap_or_else(|e| e.into_inner());
         match store.finish_run(&run.id, finish) {
             Ok(()) => true,
             Err(e) => {
@@ -432,7 +432,7 @@ fn contract_boundary_check(
         return Ok(outcome);
     }
     let task = {
-        let store = state.store.lock().expect("store 锁");
+        let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
         store.get_task(project, task_id).cloned()
     };
     let Some(task) = task else {

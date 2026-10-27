@@ -164,13 +164,13 @@ pub async fn create_project(
     }
     let project = Project::new(req.name, req.local_path.into(), crate::domain::now_ms());
     let created = {
-        let mut store = st.store.lock().expect("store 锁");
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store.create_project(project).cloned()?
     };
     // 本地关系落地：从 0 = 建目录；已有 = 幂等确认（decisions/001）
     // P1-ISSUE-01 修复：目录落地失败时回滚 store 插入，不留半注册项目
     if let Err(e) = created.ensure_local_dir() {
-        let mut store = st.store.lock().expect("store 锁");
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store.remove_project(&created.name);
         return Err(ApiError::from(e));
     }
@@ -203,7 +203,7 @@ pub async fn create_project(
 }
 
 pub async fn list_projects(State(st): State<SharedState>) -> Json<serde_json::Value> {
-    let store = st.store.lock().expect("store 锁");
+    let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
     Json(json!({"projects": store.list_projects()}))
 }
 
@@ -211,7 +211,7 @@ pub async fn get_project(
     State(st): State<SharedState>,
     Path(name): Path<String>,
 ) -> ApiResult<Json<Project>> {
-    let store = st.store.lock().expect("store 锁");
+    let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
     store
         .get_project(&name)
         .cloned()
@@ -237,7 +237,7 @@ pub async fn audit_report(
         return Err(ApiError::bad_request("项目/任务名含非法路径字符"));
     }
     let exists = {
-        let store = st.store.lock().expect("store 锁");
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store.get_project(&project).is_some() && store.get_task(&project, &task).is_some()
     };
     if !exists {
@@ -276,7 +276,7 @@ pub async fn create_task(
     Json(req): Json<CreateTaskReq>,
 ) -> ApiResult<(StatusCode, Json<Task>)> {
     let created = {
-        let mut store = st.store.lock().expect("store 锁");
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         let registry = st.registry.clone();
         store.create_task(
             &registry,
@@ -303,7 +303,7 @@ pub async fn cancel_task(
     let control = st
         .runs_control
         .lock()
-        .expect("runs_control 锁")
+        .unwrap_or_else(|e| e.into_inner())
         .get(&format!("{project}/{task}"))
         .cloned();
     match control {
@@ -312,7 +312,7 @@ pub async fn cancel_task(
             // 解阻 dialog 挂起：丢掟全部待答 sender，阻塞中的 ask 立刻失败，
             // SOP 以错误解阻 → 下方 execute 的 is_cancelled 映射为 Failed
             let run_id = {
-                let store = st.store.lock().expect("store 锁");
+                let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
                 store
                     .get_task(&project, &task)
                     .and_then(|t| t.current_run.clone())
@@ -338,7 +338,7 @@ pub async fn list_tasks(
     State(st): State<SharedState>,
     Path(project): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let store = st.store.lock().expect("store 锁");
+    let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
     if store.get_project(&project).is_none() {
         return Err(ApiError::not_found(format!("项目 `{project}` 不存在")));
     }
@@ -375,7 +375,7 @@ pub async fn start_task(
     let sop_override = requested_sop.is_some();
     // 前置校验（只读）：任务存在性 + 已完成 change 的隐式空转
     let registered_sop = {
-        let store = st.store.lock().expect("store 锁");
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         let t = store
             .get_task(&project, &task)
             .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
@@ -396,7 +396,7 @@ pub async fn start_task(
     // Running）——所以准入失败时**回滚**旧 sop，不让一次失败的 start 改写任务身份（server #2）。
     let mut previous_sop: Option<String> = None;
     if let Some(sop) = requested_sop.clone() {
-        let mut store = st.store.lock().expect("store 锁");
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store
             .set_task_sop(&st.registry, &project, &task, sop)
             .map_err(ApiError::from)?;
@@ -413,7 +413,7 @@ pub async fn start_task(
     // *** 准入在响应之前 ***（server #1）：旧实现直接回 202，真正的 can_begin_run 在后台线程，
     // 失败只发一条 run.error 事件——调用方永远不知道 run 没起来，两个并发请求都能拿到 202。
     let run = {
-        let mut store = st.store.lock().expect("store 锁");
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         match store.begin_run(&project, &task) {
             Ok(r) => r,
             Err(e) => {
@@ -436,7 +436,7 @@ pub async fn start_task(
     ) {
         Ok(d) => d,
         Err(e) => {
-            let mut store = st.store.lock().expect("store 锁");
+            let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
             let _ = store.finish_run(
                 &run.id,
                 crate::domain::store::FinishOutcome::Failed {
@@ -459,7 +459,7 @@ pub async fn start_task(
             if let Err(e) = std::fs::remove_dir_all(&change_root) {
                 // 已准入：失败要回滚槽位再抛，否则任务卡 Running
                 {
-                    let mut store = st.store.lock().expect("store 锁");
+                    let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
                     let _ = store.finish_run(
                         &run.id,
                         crate::domain::store::FinishOutcome::Failed {
@@ -494,7 +494,7 @@ pub async fn list_runs(
     State(st): State<SharedState>,
     Path((project, task)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let store = st.store.lock().expect("store 锁");
+    let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
     let t = store
         .get_task(&project, &task)
         .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
@@ -525,7 +525,7 @@ pub async fn task_graph(
     State(st): State<SharedState>,
     Path((project, task)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let store = st.store.lock().expect("store 锁");
+    let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
     let t = store
         .get_task(&project, &task)
         .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
@@ -613,7 +613,7 @@ pub async fn get_run_detail(
 ) -> ApiResult<Json<serde_json::Value>> {
     let now = crate::domain::now_ms();
     let (run, sop) = {
-        let store = st.store.lock().expect("store 锁");
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         let t = store
             .get_task(&project, &task)
             .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
@@ -704,7 +704,7 @@ pub async fn run_events(
     Query(q): Query<EventsQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     {
-        let store = st.store.lock().expect("store 锁");
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         let t = store
             .get_task(&project, &task)
             .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
@@ -740,7 +740,7 @@ pub async fn run_transcript(
     Query(q): Query<TranscriptQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     {
-        let store = st.store.lock().expect("store 锁");
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         let t = store
             .get_task(&project, &task)
             .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;
@@ -849,7 +849,7 @@ pub async fn events(
 
 pub async fn get_manifest(State(st): State<SharedState>) -> Json<ConfigManifest> {
     // 自审 critical：api_key 明文不回传（脱敏占位；PUT 见占位保持原值）
-    Json(st.manifest.lock().expect("manifest 锁").redacted())
+    Json(st.manifest.lock().unwrap_or_else(|e| e.into_inner()).redacted())
 }
 
 /// 整份替换清单（P002；P7-ISSUE-03 修复：渲染异步化——同步只做真源落盘与内存生效，
@@ -863,7 +863,7 @@ pub async fn put_manifest(
     // 自审 critical：GET 回传的是脱敏占位——PUT 见占位 = 保持现有 Key（往返不丢凭据）。
     // 服务端没有可保留的 Key 却收到占位 = 客户端凭空构造，拒收防止占位字面量落盘。
     if manifest.api_key.as_deref() == Some(crate::config::manifest::REDACTED_API_KEY) {
-        let existing = st.manifest.lock().expect("manifest 锁").api_key.clone();
+        let existing = st.manifest.lock().unwrap_or_else(|e| e.into_inner()).api_key.clone();
         if existing.is_none() {
             return Err(ApiError::bad_request(
                 "api_key 为脱敏占位但服务端没有可保留的原值——请显式提供真实 Key 或置 null",
@@ -892,13 +892,13 @@ pub async fn put_manifest(
         manifest.resolve_provider(agent).map_err(ApiError::from)?;
     }
     {
-        let mut m = st.manifest.lock().expect("manifest 锁");
+        let mut m = st.manifest.lock().unwrap_or_else(|e| e.into_inner());
         *m = manifest;
-        if let Some(path) = st.manifest_path.lock().expect("manifest_path 锁").as_ref() {
+        if let Some(path) = st.manifest_path.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             m.save(path).map_err(ApiError::from)?;
         }
     }
-    let agents = st.manifest.lock().expect("manifest 锁").agents.len();
+    let agents = st.manifest.lock().unwrap_or_else(|e| e.into_inner()).agents.len();
     // 渲染闸门：登记「渲染在途」——`start` 端点据此等本 run 所需 profile 就绪
     // （用户裁决 A：开跑前等 profile 就绪，而不是开跑后被门卫判成「未渲染」而盲重启）
     st.render_gate.begin_render();
@@ -938,7 +938,7 @@ fn render_body(st: SharedState, emit: impl FnOnce(serde_json::Value)) {
     let _guard = RenderInFlightGuard { st: st.clone() };
     // 渲染本身异常也要发通知（故把渲染包在 catch_unwind 里）
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let m = st.manifest.lock().expect("manifest 锁").clone();
+        let m = st.manifest.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let renderer = crate::config::Renderer {
             manifest: &m,
             installer: st.installer.as_ref(),

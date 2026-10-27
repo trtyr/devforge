@@ -66,7 +66,7 @@ fn spawn_review_worker<F>(
             let mut violations = 0usize;
             loop {
                 let mut session = {
-                    let mut f = factory.lock().expect("审查工厂锁");
+                    let mut f = factory.lock().unwrap_or_else(|e| e.into_inner());
                     f.open()?
                 };
                 match session.review(&instruction) {
