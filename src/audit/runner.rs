@@ -64,6 +64,12 @@ pub fn run_audit(
     factory: &mut dyn AuditSessionFactory,
 ) -> Result<RunOutcome> {
     check_intervention(control)?;
+    // 2026-10-27 自审 major（纵深）：project/id 拼黑板路径——store 创建/加载入口已拦，
+    // 执行入口再验一次，防未来绕过入口的调用方。
+    crate::domain::store::Store::validate_path_name(&task.project)
+        .ctx("审计黑板项目名校验")?;
+    crate::domain::store::Store::validate_path_name(&task.id)
+        .ctx("审计黑板任务名校验")?;
     let blackboard = plans_root.join(&task.project).join(&task.id);
     std::fs::create_dir_all(&blackboard).ctx("创建黑板目录")?;
     let mut progress = Progress::load(&blackboard);
