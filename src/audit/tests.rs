@@ -204,3 +204,90 @@ fn non_source_entries_are_not_sliced() {
         "切片只含源码：{all:?}"
     );
 }
+
+// ── 2026-10-27 自审 audit/mod 批回归 ──
+
+/// 自审 minor（4）：首片必须从第 1 行起——文件头（模块文档/import）不得落在所有片之外。
+#[test]
+fn first_piece_starts_at_line_one_covering_the_header() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("src");
+    std::fs::create_dir_all(&dir).unwrap();
+    // 2000 行文件：头部 50 行注释 + 若干符号
+    let mut body = String::new();
+    for i in 0..50 {
+        body.push_str(&format!("// header line {i}\n"));
+    }
+    for f in 0..5 {
+        body.push_str(&format!("fn f{f}() {{\n"));
+        for _ in 0..380 {
+            body.push_str("    let _x = 1;\n");
+        }
+        body.push_str("}\n");
+    }
+    std::fs::write(dir.join("big.rs"), body).unwrap();
+    let plan = build_plan(tmp.path()).unwrap();
+    let pieces: Vec<_> = plan
+        .units
+        .iter()
+        .filter(|u| u.files.iter().any(|f| f.ends_with("big.rs")))
+        .collect();
+    assert!(!pieces.is_empty(), "big.rs 必须进切片");
+    // 契约：**文件头不得落在所有片之外**。两种合法形态：
+    // ① 整文件一片（range = 1..=n 或 None = 整文件）；
+    // ② 多片时最小起点必须是第 1 行。
+    let starts: Vec<usize> = pieces
+        .iter()
+        .map(|u| u.focus_range.map(|(a, _)| a).unwrap_or(1))
+        .collect();
+    assert_eq!(
+        starts.iter().copied().min(),
+        Some(1),
+        "首片必须从第 1 行起（旧口径从首个符号行起，文件头不属于任何片）：{starts:?}"
+    );
+}
+
+/// 自审 minor（7）：单元 id 超过三位数时排序不得错序（字典序会让 unit-1000 排在 unit-999 前）。
+#[test]
+fn unit_ids_sort_numerically_beyond_three_digits() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 造 1010 个小文件，每个独立目录 → 每个目录一批，id 会超过 999
+    for i in 0..1010 {
+        let dir = tmp.path().join(format!("m{i}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rs"), format!("fn f{i}() {{}}\n")).unwrap();
+    }
+    let plan = build_plan(tmp.path()).unwrap();
+    let ids: Vec<String> = plan.units.iter().map(|u| u.id.clone()).collect();
+    let nums: Vec<usize> = ids
+        .iter()
+        .map(|i| i.trim_start_matches("unit-").parse().unwrap())
+        .collect();
+    assert_eq!(nums.len(), 1010, "每个目录一批");
+    assert!(
+        nums.windows(2).all(|w| w[0] < w[1]),
+        "id 必须数值递增（旧口径字典序会错序）"
+    );
+}
+
+/// 自审 minor（5）：排除计数只算**整份文件从未进切片**的路径，不得把已切片文件的
+/// 其它条目也算成「没进切片」。
+#[test]
+fn excluded_entries_counts_files_not_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    // 一个普通源文件（会有 Module + Symbol 等多条目）
+    std::fs::write(
+        tmp.path().join("src/a.rs"),
+        "pub fn a() {}\npub fn b() {}\n",
+    )
+    .unwrap();
+    let plan = build_plan(tmp.path()).unwrap();
+    assert!(!plan.units.is_empty());
+    assert!(
+        plan.excluded_entries <= plan.source_files,
+        "排除计数（{}）不得大于源文件数（{}）——旧口径按条目计会越界",
+        plan.excluded_entries,
+        plan.source_files
+    );
+}

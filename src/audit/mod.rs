@@ -52,14 +52,30 @@ pub struct AuditPlan {
 pub const MAX_UNIT_FILES: usize = 7;
 
 /// 每单元源码行数上限（第三方 r2 M3）：文件数上限挡不住同目录多个大文件——
-/// 本仓 src/audit 六个源文件（含 1073 行 runner.rs）会整包成一批 ≈2300 行，
-/// 超出单会话能可靠审查的量。超限按顺序切批；单文件自身超限独占一批（文件不可再分）。
+/// 一个目录里几个上千行的源文件会整包成一批，超出单会话能可靠审查的量。
+///
+/// 超限按顺序切批；**单文件自身超限时按符号边界分片**（r3 m5，见
+/// [`split_oversized_file`]），不再「独占一批不可再分」——自审 minor 3b：旧注释与
+/// 后来的符号分片能力自相矛盾，行数也已过时。
 pub const MAX_UNIT_LINES: usize = 800;
 
+/// 文件行数。读不到时按 1 计（**不是 0**）并留痕——自审 minor 3：旧口径
+/// `unwrap_or(0)` 把读失败当空文件，行数预算静默失效且日志里没有任何线索；
+/// 按 0 计还会让「超限才分片」的判定永远为假。
 fn line_count(workspace: &Path, rel: &str) -> usize {
-    std::fs::read_to_string(workspace.join(rel))
-        .map(|c| c.lines().count())
-        .unwrap_or(0)
+    match std::fs::read_to_string(workspace.join(rel)) {
+        Ok(c) => c.lines().count(),
+        Err(e) => {
+            tracing::warn!(
+                component = "audit-engine",
+                event = "audit.line_count_failed",
+                file = %rel,
+                error = %e,
+                "读不到源文件行数（按 1 计，行数预算对该文件不生效）"
+            );
+            1
+        }
+    }
 }
 
 /// 分片：文件列表 / 重点符号 / 行区间（1-based 闭区间；None = 整文件）。
@@ -98,10 +114,15 @@ fn split_oversized_file(
         }
     }
     let n = groups.len();
-    let starts: Vec<usize> = groups
+    let mut starts: Vec<usize> = groups
         .iter()
         .map(|g| g.first().map(|(l, _)| *l).unwrap_or(1))
         .collect();
+    // 自审 minor（4）：首片从**第 1 行**起算——旧口径从首个符号行起，文件头
+    //（模块文档 / import 段）不属于任何一片，预查永远统计不到那块区域。
+    if let Some(first) = starts.first_mut() {
+        *first = 1;
+    }
     let ends: Vec<usize> = (0..n)
         .map(|i| {
             if i + 1 < n {
@@ -186,7 +207,12 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
     let mut symbols: std::collections::BTreeMap<String, Vec<(usize, String)>> =
         std::collections::BTreeMap::new();
     // 全仓审计 M6：非源码面条目（Config/Data/Behavior）不再静默丢弃——计数进报告
-    let mut excluded_entries = 0usize;
+    // 排除计数在循环后统一回填（见 reconciled）
+    let excluded_entries: usize;
+    // 已进切片的文件集合（自审 minor 5：旧口径按「条目 kind」计数，同一文件的
+    // Config/Data 条目被算成「没进切片」，可它的 Module 条目其实已经进了 → coverage 自相矛盾）
+    let mut sliced_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut non_sliced_entries: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for e in &inventory.entries {
         if e.kind == crate::docgen::inventory::EntryKind::Symbol {
             symbols
@@ -197,12 +223,16 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
         if e.kind != crate::docgen::inventory::EntryKind::Module
             && e.kind != crate::docgen::inventory::EntryKind::Symbol
         {
-            excluded_entries += 1;
+            // 先收集候选，循环后按「整份文件是否进过切片」统一判定（见下方 reconciled）
+            non_sliced_entries.insert(e.path.clone());
             continue; // 只切源码面（Config/Data/Behavior 条目不是切片对象）
         }
+        sliced_paths.insert(e.path.clone());
         if !seen.insert(e.path.clone()) {
             continue;
         }
+        // 自审 minor（4b）：`unit_id` 为空时也要产出**可读 label**——旧口径的 `dir:` 键
+        // 在 label 解析处被剥掉前缀后变成一个裸目录名，与 `unit:` 分支口径不统一。
         let key = if e.unit_id.is_empty() {
             let dir = Path::new(&e.path)
                 .parent()
@@ -221,16 +251,22 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
         groups.entry(key).or_default().push(e.path.clone());
     }
 
+    // 自审 minor（5）：排除计数 = 整份文件**从未**进切片的路径数（旧口径按条目 kind 计数，
+    // 同一文件的 Config/Data 条目被算成「没进切片」，而它的 Module 条目其实已进 → 自相矛盾）。
+    excluded_entries = non_sliced_entries
+        .iter()
+        .filter(|p| !sliced_paths.contains(*p))
+        .count();
+
     // 超限切分：文件数（MAX_UNIT_FILES）+ 行数（MAX_UNIT_LINES）双预算——
     // 只按文件数挡不住「同目录多个大文件」（第三方 r2 M3）。
     let mut units: Vec<AuditUnit> = Vec::new();
     let mut seq = 0usize;
     for (key, mut files) in groups {
         files.sort();
-        let label = key
-            .split_once(':')
-            .map(|(_, v)| v.to_string())
-            .unwrap_or(key.clone());
+        // 键形如 `unit:<id>:<dir>` 或 `dir:<dir>`：统一取**最后一段**作为人读 label
+        // （自审 minor 4b：旧口径 split_once 只剥一层，`unit:` 分支会露出 `<id>:<dir>`）。
+        let label = key.rsplit_once(':').map(|(_, v)| v.to_string()).unwrap_or(key.clone());
         // 审计修复 #10：分片标签用组内局部序号（全局 seq 当分子会出现「分片 4/2」）
         let chunks = split_by_budget(workspace, &files);
         let n_chunks = chunks.len();
@@ -266,7 +302,13 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
             }
         }
     }
-    units.sort_by(|a, b| a.id.cmp(&b.id));
+    // 自审 minor（7）：id 含数字，必须按数值序（旧口径字典序：unit-1000 排在 unit-999 前，
+    // 重排后 id↔内容的映射不稳定）。
+    units.sort_by_key(|u| {
+        u.id.trim_start_matches("unit-")
+            .parse::<usize>()
+            .unwrap_or(usize::MAX)
+    });
     // 重排 id 保证连续（二分插入后序号乱）
     for (i, u) in units.iter_mut().enumerate() {
         u.id = format!("unit-{:03}", i + 1);
