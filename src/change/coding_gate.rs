@@ -37,8 +37,26 @@ pub struct BaselineEvidence {
 fn parse_evidence_log(text: &str, file: &str, label: &str) -> Result<BaselineEvidence> {
     let mut exit_code = None;
     let mut command = String::new();
+    // 自审 CG-02（P012 门禁批次）：「首中即停」会被**格式示例**抢先——agent 习惯先写
+    // 「证据格式应为：exit_code: 0」再写真实结果，示例里的具体数字会把红的基线判绿
+    // （探针实证：真实 101 被前置示例的 0 遮蔽）。修法：围栏内 / 示例关键词上下文的
+    // 命中一律跳过；反向验证的「能失败」证据（在真结果**后**）由「首个合格命中即停」
+    // 的语义自然排除，维持原设计意图。
+    let example_markers = ["格式", "示例", "样例", "模板", "应为", "形如"];
+    let mut in_fence = false;
+    let mut prev_was_example = false;
     for line in text.lines() {
         let mut t = line.trim();
+        // 围栏跟踪（``` 与 ~~~ 双支持，与 docgen lint 同款）：围栏内是示例文本非证据
+        let starts_fence = t.starts_with("```") || t.starts_with("~~~");
+        if starts_fence {
+            in_fence = !in_fence;
+            prev_was_example = in_fence;
+            continue;
+        }
+        let is_example_ctx =
+            in_fence || prev_was_example || example_markers.iter().any(|m| line.contains(m));
+        prev_was_example = example_markers.iter().any(|m| line.contains(m));
         // F16：markdown 列表项容差——`- exit_code: 0` 与 `exit_code: 0` 语义相同，
         // 列表符号不参与语义（10-22 c7b 场：agent 用列表项写证据，解析器判死）。
         if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")).or_else(|| t.strip_prefix("+ ")) {
@@ -46,6 +64,7 @@ fn parse_evidence_log(text: &str, file: &str, label: &str) -> Result<BaselineEvi
         }
         let lower = t.to_ascii_lowercase();
         if command.is_empty()
+            && !is_example_ctx
             && (lower.starts_with("command:") || t.starts_with("命令:") || t.starts_with("命令："))
         {
             command = t
@@ -63,6 +82,10 @@ fn parse_evidence_log(text: &str, file: &str, label: &str) -> Result<BaselineEvi
             "退出码：",
         ];
         let mut found = false;
+        if is_example_ctx {
+            // 示例上下文的 exit_code 不作数（CG-02）：继续扫，找真实结果
+            continue;
+        }
         for prefix in candidates {
             let l = if prefix.starts_with("exit") { lower.as_str() } else { t };
             if let Some(rest) = l.strip_prefix(prefix) {

@@ -314,6 +314,15 @@ impl ProdChangeSession {
             .map_err(|e| {
                 DevforgeError::Quality(format!("计划文件不可读（{}）：{e}", plan_path.display()))
             })?;
+        // 自审 PA-04（P012 门禁批次）：确定性审计结论接成硬门——旧实现只注入提示词，
+        // 「路径不存在/白名单为空/契约越界」这些零成本布尔判定全靠 LLM 听话，
+        // 与上方 VerdictAudit 硬门同文件两种强度。现在不过即打回（走既有
+        // MAX_PLAN_FIXES 修复回路）；审查指令继续注入作为审查官额外上下文。
+        if !audit.is_clean() {
+            return Ok(PlanTurn::Fail {
+                issues: audit.issues,
+            });
+        }
         // plan 侧的审查实例数（= 审查轮次）落字段：报告里的轮次如实反映重审（D026 · Q12）。
         let (report, plan_instances) = review_once(
             &mut *self.plan_review,
@@ -569,12 +578,20 @@ impl ChangeSession for ProdChangeSession {
         ))?;
         let table = parse_acceptance_table(&table_text);
         let done: Vec<String> = table.iter().map(|m| m.criterion.clone()).collect();
-        // 表里每条都必须指到具体测试（path:line）
+        // 表里每条都必须指到具体测试（path:line），且引用必须真实存在 + 行号在范围内
+        //（自审 CG-09：只查词形 = 写一个不存在的测试文件也能机械判绿）
         for m in &table {
-            if crate::change::plan_audit::path_refs(&m.test_ref).is_empty() {
+            let refs = crate::change::plan_audit::path_refs(&m.test_ref);
+            if refs.is_empty() {
                 return Err(DevforgeError::Quality(format!(
                     "验收项 `{}` 没有指到测试 path:line（实际写的是 `{}`）",
                     m.criterion, m.test_ref
+                )));
+            }
+            if let Err(msg) = crate::change::plan_audit::ref_resolves(&self.ctx.repo, &refs) {
+                return Err(DevforgeError::Quality(format!(
+                    "验收项 `{}` 的测试引用不可解析：{msg}",
+                    m.criterion
                 )));
             }
         }

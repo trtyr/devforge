@@ -143,3 +143,37 @@ fn empty_or_referenceless_evidence_is_dropped() {
         assert!(reason.contains("零证据"), "{reason}");
     }
 }
+
+// ── P012-T007 · AU-01：借前缀不再能过——不出现指认行的 path:line 组合即拒 ──
+#[test]
+fn borrowed_prefix_without_line_ref_is_dropped() {
+    // 高频前缀攻击面：evidence 引同文件**另一行**（前缀同族），贴了指认行原文——
+    // 旧判据（前缀 contains 就过）放行；新判据要求出现指认行的 path:line 组合。
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/m.rs"),
+        "use crate::error::A;\nuse crate::error::B;\n",
+    )
+    .unwrap();
+    let mut f = finding("src/m.rs", 2);
+    f.evidence = "同族问题见 src/m.rs:1，形如 `use crate::error::B;`".into();
+    let v = verify(tmp.path(), &[f]);
+    assert!(v.kept.is_empty(), "借前缀不得进 kept：{:?}", v.kept);
+    assert!(v.dropped[0].1.contains("未引用原文"), "{}", v.dropped[0].1);
+}
+
+#[test]
+fn quoted_prefix_adjacent_to_ref_passes() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/m.rs"),
+        "use crate::error::A;\nuse crate::error::B;\n",
+    )
+    .unwrap();
+    let mut f = finding("src/m.rs", 2);
+    f.evidence = "src/m.rs:2 的 `use crate::error::B;` 拼写错误".into();
+    let v = verify(tmp.path(), &[f]);
+    assert_eq!(v.kept.len(), 1, "组合与原文紧邻应通过：{:?}", v.dropped);
+}

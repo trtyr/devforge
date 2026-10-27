@@ -15,8 +15,7 @@ pub fn check_baseline_log(blackboard: &Path) -> Result<BaselineEvidence> {
 }
 
 #[cfg(test)]
-pub fn check_self_check(blackboard: &Path) -> Result<BaselineEvidence> {
-    let path = blackboard.join(SELF_CHECK_LOG);
+pub fn check_self_check(blackboard: &Path) -> Result<BaselineEvidence> {    let path = blackboard.join(SELF_CHECK_LOG);
     let text = std::fs::read_to_string(&path).map_err(|e| {
         DevforgeError::Quality(format!(
             "缺少自证证据 {}（提交前必须留下命令原文 + 退出码 + 摘要）：{e}",
@@ -526,4 +525,39 @@ fn eleven_steps_with_prose_digits_reconcile_cleanly() {
         .collect();
     declared.sort_unstable();
     assert_eq!(declared, (1..=11).collect::<Vec<_>>());
+}
+
+// ── P012-T007 · CG-02：格式示例不再遮蔽真实结果 ──
+
+#[test]
+fn format_example_with_concrete_number_does_not_mask_real_red() {
+    // 报告探针用例 C：示例具体数字 0 在前，真实 101 在后 → 必须取 101（旧实现取 0 判绿）
+    let text = "## 1 基线测试\n\n\
+        证据格式应为：\n\
+        exit_code: 0\n\n\
+        实际执行：\n\
+        command: cargo test\n\
+        exit_code: 101\n";
+    let e = parse_evidence_log(text, "baseline.log", "基线").unwrap();
+    assert_eq!(e.exit_code, 101);
+}
+
+#[test]
+fn fenced_example_does_not_mask_real_green() {
+    let text = "说明：\n\
+        ```text\n\
+        exit_code: 0\n\
+        ```\n\
+        command: cargo test\n\
+        exit_code: 0\n";
+    let e = parse_evidence_log(text, "baseline.log", "基线").unwrap();
+    assert_eq!(e.exit_code, 0);
+}
+
+#[test]
+fn reverse_verification_after_real_result_still_loses() {
+    // 原设计意图回归：真结果（绿 0）在前，反向验证故意 101 在后 → 仍取 0
+    let text = "command: cargo test\nexit_code: 0\n\n## 反向验证\nexit_code: 101\n";
+    let e = parse_evidence_log(text, "baseline.log", "基线").unwrap();
+    assert_eq!(e.exit_code, 0);
 }

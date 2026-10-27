@@ -306,6 +306,28 @@ fn resolves(repo: &Path, plantree: Option<&Path>, path: &str) -> bool {
     }
 }
 
+/// P012-T007（CG-09）：`path:line` 引用的存在性 + 行号范围校验（pub 供验收对账等
+/// 机械门复用——只查词形不查存在性 = 写一个不存在的测试文件就能整条过账）。
+pub fn ref_resolves(repo: &Path, refs: &[(String, u32)]) -> Result<(), String> {
+    for (path, line) in refs {
+        let full = repo.join(path);
+        if !full.exists() {
+            return Err(format!(
+                "`{path}:{line}` 文件不存在（对账表只认仓内真实文件）"
+            ));
+        }
+        let total = std::fs::read_to_string(&full)
+            .map(|c| c.lines().count() as u32)
+            .unwrap_or(0);
+        if *line == 0 || *line > total {
+            return Err(format!(
+                "`{path}:{line}` 行号越界（文件共 {total} 行）"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn audit_inner_roots(plan: &str, repo: &Path, plantree: Option<&Path>) -> PlanAudit {
     let mut a = PlanAudit::default();
 
@@ -389,21 +411,24 @@ fn split_path_line(tok: &str) -> Option<(String, u32)> {
     Some((path.to_string(), n))
 }
 
-/// 某块（到下一个标题为止）的内容行。
+/// 某块（到下一个标题为止）的内容行——**最后一个**含该词的标题生效。
+///
+/// 自审 PA-01（P012）：旧实现合并所有同名标题的段落（每个标题都重新计算 inside），
+/// 与本函数及注释声称的「后者覆盖前者」相反——旧草稿段会混入白名单集合放宽校验。
+/// 现与 `ambiguity_block` 同构：rposition 取最后一个同名标题。
 fn section_lines<'a>(plan: &'a str, title: &str) -> Vec<&'a str> {
-    let mut out = Vec::new();
-    let mut inside = false;
-    for line in plan.lines() {
-        let is_heading = line.trim_start().starts_with('#');
-        if is_heading {
-            inside = line.contains(title);
-            continue;
-        }
-        if inside {
-            out.push(line);
-        }
-    }
-    out
+    let lines: Vec<&str> = plan.lines().collect();
+    let start = lines
+        .iter()
+        .rposition(|l| l.trim_start().starts_with('#') && l.contains(title));
+    let Some(start) = start else {
+        return Vec::new();
+    };
+    lines[start + 1..]
+        .iter()
+        .take_while(|l| !l.trim_start().starts_with('#'))
+        .copied()
+        .collect()
 }
 
 /// 某块里出现的文件路径（按行解析反引号或裸路径 token）。

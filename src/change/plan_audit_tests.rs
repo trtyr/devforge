@@ -379,3 +379,22 @@ fn agents_change_doc_matches_the_implemented_contract() {
     assert!(text.contains("留痕核对"), "文档缺留痕核对审点");
     assert!(text.contains("分类恰当性"), "文档缺分类恰当性审点");
 }
+
+// ── P012-T007 · PA-01：同名标题取最后一个（后者覆盖）──
+#[test]
+fn section_lines_takes_the_last_same_name_heading() {
+    let plan = "## 白名单\n- src/old.rs\n\n## 其它\nx\n\n## 白名单（定稿）\n- src/new.rs\n";
+    let lines = section_lines(plan, "白名单");
+    assert_eq!(lines, vec!["- src/new.rs"], "旧草稿段不得混入集合");
+}
+
+// ── P012-T007 · CG-09：引用存在性 + 行号范围 ──
+#[test]
+fn ref_resolves_rejects_missing_file_and_out_of_range_line() {
+    let r = repo(); // src/a.rs（1 行）
+    assert!(ref_resolves(r.path(), &[("src/a.rs".into(), 1)]).is_ok());
+    let missing = ref_resolves(r.path(), &[("src/nope.rs".into(), 1)]).unwrap_err();
+    assert!(missing.contains("不存在"), "got: {missing}");
+    let oob = ref_resolves(r.path(), &[("src/a.rs".into(), 99)]).unwrap_err();
+    assert!(oob.contains("越界"), "got: {oob}");
+}

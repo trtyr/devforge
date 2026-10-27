@@ -91,6 +91,14 @@ fn fixture(with_git: bool) -> Fixture {
     let repo = tmp.path().join("repo");
     std::fs::create_dir_all(repo.join("src")).unwrap();
     std::fs::write(repo.join("src/a.rs"), "// a\n").unwrap();
+    // P012-T007（CG-09）：验收对账引用的测试文件必须真实存在且行号在范围内——
+    // fixture 预置 tests/a_test.rs（≥10 行），对账表示例 `tests/a_test.rs:10` 才是真实引用
+    std::fs::create_dir_all(repo.join("tests")).unwrap();
+    std::fs::write(
+        repo.join("tests/a_test.rs"),
+        (1..=12).map(|i| format!("// line {i}\n")).collect::<String>(),
+    )
+    .unwrap();
     let blackboard = tmp.path().join("bb");
     std::fs::create_dir_all(&blackboard).unwrap();
     let change_dir = repo.join("docs/plantree/changes/change-1");

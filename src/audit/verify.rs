@@ -38,10 +38,26 @@ fn line_prefix(line: Option<&str>) -> Option<String> {
     Some(normalize_ws(&t.chars().take(40).collect::<String>()))
 }
 
+/// 自审 AU-01（P012）：evidence 中出现 `path:line` 字面组合，且该组合前后各 200 字符
+/// 窗口内出现目标行前缀——引用与被引原文紧邻才算「真的引了这一行」。
+fn quoted_next_to_ref(hay: &str, path: &str, line: u32, prefix: &str) -> bool {
+    let needle = format!("{path}:{line}");
+    let mut from = 0usize;
+    while let Some(pos) = hay[from..].find(&needle) {
+        let abs = from + pos;
+        let start = abs.saturating_sub(200);
+        let end = (abs + needle.len() + 200).min(hay.len());
+        if hay[start..end].contains(prefix) {
+            return true;
+        }
+        from = abs + needle.len();
+    }
+    false
+}
+
 /// 解析 evidence 里的全部 `path:line` 引用，返回路径段（含扩展名或目录分隔 + 纯数字行号）。
 /// [`has_evidence_ref`] 与「引用自身位置」校验共用本解析，两道门不会漂移。
-fn evidence_ref_paths(evidence: &str) -> Vec<String> {
-    let mut out = Vec::new();
+fn evidence_ref_paths(evidence: &str) -> Vec<String> {    let mut out = Vec::new();
     let mut i = 0usize;
     while let Some(pos) = evidence[i..].find(':') {
         let abs = i + pos;
@@ -145,8 +161,14 @@ pub fn verify(workspace: &Path, findings: &[Finding]) -> VerifyReport {
         // 猜一个真实行号就能进报告（自审「从未真正读过代码」的最后一环）。
         // 判据取目标行的前 40 字符前缀（空白压缩后包含），够宽松不卡正常引用，
         // 但猜行号的人不可能正好凑中原文。行太短（<8 字符，如 `}`）不强制。
+        // 自审 AU-01（P012）：前缀 contains 只证「evidence 里出现过这个开头」，
+        // 高频前缀（use crate::…/let …）可借任意同前缀行通过，且不要求引用的就是
+        // 指认行。加一档：evidence 必须出现 `path:line` 字面组合，且该组合前后窗口
+        // 内出现目标行前缀——引用与原文紧邻，杜绝「引别处 + 借前缀」。
         if let Some(prefix) = line_prefix(file_lines.get(f.line as usize - 1).map(|s| s.as_str())) {
-            let quoted = normalize_ws(&f.evidence).contains(&prefix);
+            let hay = normalize_ws(&f.evidence);
+            let quoted = hay.contains(&prefix)
+                && quoted_next_to_ref(&hay, &f.path, f.line, &prefix);
             if !quoted {
                 report.dropped.push((
                     format!("{}/{}", f.path, f.line),

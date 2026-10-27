@@ -157,6 +157,12 @@ pub(super) fn fixture() -> Fixture {
     let repo = tmp.path().join("repo");
     std::fs::create_dir_all(repo.join("src")).unwrap();
     std::fs::write(repo.join("src/a.rs"), "// a\n").unwrap();
+    // P012-T007（CG-09）：验收对账表引用的 `tests/change_review_protocol.rs:1`
+    // 必须在目标仓里真实存在——且必须在**基线提交之前**预置（让它进基线、
+    // 不进「相对基线改动集」——否则 CG-10 修复后的 untracked 可见性会让
+    // 边界门判它「越界改动未申报」）
+    std::fs::create_dir_all(repo.join("tests")).unwrap();
+    std::fs::write(repo.join("tests/change_review_protocol.rs"), "// fixture marker\n").unwrap();
 
     // git：基线提交 + 一步一提交（编码门要核对「步骤 ↔ 提交」）
     git(&repo, &["init", "-q"]);
@@ -234,10 +240,20 @@ pub(super) fn fixture() -> Fixture {
     )
     .unwrap();
 
+    // P012-T007（CG-09）：验收对账表引用的 `tests/change_review_protocol.rs:1`
+    // 必须在目标仓里真实存在——引用检查现在会验存在性与行号范围
+    std::fs::create_dir_all(repo.join("tests")).unwrap();
+    std::fs::write(repo.join("tests/change_review_protocol.rs"), "// fixture marker\n").unwrap();
+
     // 计划文件（放在目标仓的 changes 目录里，审查轮要读它）
     let change_dir = repo.join("docs/plantree/changes/change-1");
     std::fs::create_dir_all(&change_dir).unwrap();
     std::fs::write(change_dir.join("change-plan.md"), plan_text()).unwrap();
+
+    // P012-T007（CG-09）：验收对账表引用的 `tests/change_review_protocol.rs:1`
+    // 必须在目标仓里真实存在——引用检查现在会验存在性与行号范围
+    std::fs::create_dir_all(repo.join("tests")).unwrap();
+    std::fs::write(repo.join("tests/change_review_protocol.rs"), "// fixture marker\n").unwrap();
 
     Fixture {
         _tmp: tmp,
