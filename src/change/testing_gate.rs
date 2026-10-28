@@ -168,10 +168,7 @@ fn is_exempt_or_junk(path: &str) -> bool {
     if EXEMPT.iter().any(|p| path.starts_with(p)) {
         return true;
     }
-    if JUNK_DIRS
-        .iter()
-        .any(|p| path.contains(&format!("{p}")))
-    {
+    if JUNK_DIRS.iter().any(|p| path.contains(p)) {
         return true;
     }
     // 带源码扩展名 = 产品代码 → 不豁免（进快照）；无源码扩展名（report.html、

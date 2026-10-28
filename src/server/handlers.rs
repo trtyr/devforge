@@ -330,30 +330,30 @@ pub async fn create_task(
     // 自审 S-02 修法②：base_rev 在入口验真实性——写错 rev 会让契约终校验的 git diff
     // 永远非零退出（旧实现那里是 fail-open 放行，现为 System 拒放行），run 白跑一整轮
     // 才发现契约不可用。这里提前拒收：`git cat-file -e <rev>^{commit}` 零成本。
-    if let Some(contract) = &req.contract {
-        if let Some(base_rev) = &contract.base_rev {
-            let local_path = {
-                let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-                store.get_project(&project).map(|p| p.local_path.clone())
-            };
-            let Some(local_path) = local_path else {
-                return Err(ApiError::bad_request(format!("项目 `{project}` 不存在")));
-            };
-            let probe = std::process::Command::new("git")
-                .args([
-                    "-C",
-                    &local_path.to_string_lossy(),
-                    "cat-file",
-                    "-e",
-                    &format!("{base_rev}^{{commit}}"),
-                ])
-                .output();
-            let ok = matches!(probe, Ok(o) if o.status.success());
-            if !ok {
-                return Err(ApiError::bad_request(format!(
-                    "contract.base_rev `{base_rev}` 不是项目仓库 `{project}` 里的合法 commit"
-                )));
-            }
+    if let Some(contract) = &req.contract
+        && let Some(base_rev) = &contract.base_rev
+    {
+        let local_path = {
+            let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+            store.get_project(&project).map(|p| p.local_path.clone())
+        };
+        let Some(local_path) = local_path else {
+            return Err(ApiError::bad_request(format!("项目 `{project}` 不存在")));
+        };
+        let probe = std::process::Command::new("git")
+            .args([
+                "-C",
+                &local_path.to_string_lossy(),
+                "cat-file",
+                "-e",
+                &format!("{base_rev}^{{commit}}"),
+            ])
+            .output();
+        let ok = matches!(probe, Ok(o) if o.status.success());
+        if !ok {
+            return Err(ApiError::bad_request(format!(
+                "contract.base_rev `{base_rev}` 不是项目仓库 `{project}` 里的合法 commit"
+            )));
         }
     }
     let created = {
@@ -518,18 +518,18 @@ pub async fn start_task(
             Ok(r) => r,
             Err(e) => {
                 // 回滚 sop 覆盖：准入没通过，任务身份不得被改写
-                if let Some(old) = previous_sop.clone() {
-                    if let Err(re) = store.set_task_sop(&st.registry, &project, &task, old) {
-                        // 2026-10-27 自审 minor：回滚失败必须响（不变量靠它维持）
-                        tracing::error!(
-                            component = "server",
-                            event = "start.sop_rollback_failed",
-                            project = %project,
-                            task = %task,
-                            error = %re,
-                            "准入失败后回滚 SOP 覆盖失败——任务身份可能已被改写，需人工核对"
-                        );
-                    }
+                if let Some(old) = previous_sop.clone()
+                    && let Err(re) = store.set_task_sop(&st.registry, &project, &task, old)
+                {
+                    // 2026-10-27 自审 minor：回滚失败必须响（不变量靠它维持）
+                    tracing::error!(
+                        component = "server",
+                        event = "start.sop_rollback_failed",
+                        project = %project,
+                        task = %task,
+                        error = %re,
+                        "准入失败后回滚 SOP 覆盖失败——任务身份可能已被改写，需人工核对"
+                    );
                 }
                 tracing::warn!(
                     component = "server",
@@ -572,17 +572,17 @@ pub async fn start_task(
                     "准入失败回滚时 finish_run 落账失败——run 可能停在 Running 占住串行槽，需人工检查 store.json"
                 );
             }
-            if let Some(old) = previous_sop.clone() {
-                if let Err(re) = store.set_task_sop(&st.registry, &project, &task, old) {
-                    tracing::error!(
-                        component = "server",
-                        event = "start.sop_rollback_failed",
-                        project = %project,
-                        task = %task,
-                        error = %re,
-                        "续跑门失败后回滚 SOP 覆盖失败——任务身份可能已被改写"
-                    );
-                }
+            if let Some(old) = previous_sop.clone()
+                && let Err(re) = store.set_task_sop(&st.registry, &project, &task, old)
+            {
+                tracing::error!(
+                    component = "server",
+                    event = "start.sop_rollback_failed",
+                    project = %project,
+                    task = %task,
+                    error = %re,
+                    "续跑门失败后回滚 SOP 覆盖失败——任务身份可能已被改写"
+                );
             }
             tracing::warn!(
                 component = "server",
@@ -602,40 +602,40 @@ pub async fn start_task(
     if fresh && sop_name == "change" {
         let change_root =
             crate::change::change_id::change_root(&st.plans_root, &project, &task);
-        if change_root.is_dir() {
-            if let Err(e) = std::fs::remove_dir_all(&change_root) {
-                // 已准入：失败要回滚槽位再抛，否则任务卡 Running
-                {
-                    let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Err(fe) = store.finish_run(
-                        &run.id,
-                        crate::domain::store::FinishOutcome::Failed {
-                            reason: format!("清空 change 黑板失败：{e}"),
-                        },
-                    ) {
-                        tracing::error!(
-                            component = "server",
-                            event = "run.finish_failed",
-                            run_id = %run.id.0,
-                            error = %fe,
-                            "清黑板失败回滚时 finish_run 落账失败——run 可能停在 Running 占住串行槽"
-                        );
-                    }
+        if change_root.is_dir()
+            && let Err(e) = std::fs::remove_dir_all(&change_root)
+        {
+            // 已准入：失败要回滚槽位再抛，否则任务卡 Running
+            {
+                let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+                if let Err(fe) = store.finish_run(
+                    &run.id,
+                    crate::domain::store::FinishOutcome::Failed {
+                        reason: format!("清空 change 黑板失败：{e}"),
+                    },
+                ) {
+                    tracing::error!(
+                        component = "server",
+                        event = "run.finish_failed",
+                        run_id = %run.id.0,
+                        error = %fe,
+                        "清黑板失败回滚时 finish_run 落账失败——run 可能停在 Running 占住串行槽"
+                    );
                 }
-                tracing::warn!(
-                    component = "server",
-                    event = "start.rejected",
-                    project = %project,
-                    task = %task,
-                    reason = "change-blackboard-clear",
-                    error = %e,
-                    "start 已准入但清黑板失败，已回滚槽位"
-                );
-                return Err(ApiError::internal(format!(
-                    "清空 change 黑板 {} 失败：{e}",
-                    change_root.display()
-                )));
             }
+            tracing::warn!(
+                component = "server",
+                event = "start.rejected",
+                project = %project,
+                task = %task,
+                reason = "change-blackboard-clear",
+                error = %e,
+                "start 已准入但清黑板失败，已回滚槽位"
+            );
+            return Err(ApiError::internal(format!(
+                "清空 change 黑板 {} 失败：{e}",
+                change_root.display()
+            )));
         }
     }
     let engine = (st.engine_factory)();

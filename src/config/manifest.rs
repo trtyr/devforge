@@ -585,7 +585,7 @@ impl ConfigManifest {
             f.write_all(json.as_bytes()).ctx("写清单临时文件")?;
             f.sync_all().ctx("刷清单临时文件")?;
             std::fs::rename(&tmp, path).ctx("原子替换清单文件")?;
-            return Ok(());
+            Ok(())
         }
         #[cfg(not(unix))]
         {

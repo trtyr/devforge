@@ -321,13 +321,12 @@ impl RpcClient {
             // 2026-10-27 自审 major：Plan 侧等待也要墙钟——「流式刷活性但不再收尾」
             // 的活死批 idle 收割打不中，只能靠墙钟叫停（与 wait_settled_deadline 同口径）。
             // review_deadline() 为 None = 显式不限时（零硬限制），行为同旧。
-            if let Some(at) = crate::sop::review_gate::review_deadline() {
-                if std::time::Instant::now() >= at {
-                    return Err(DevforgeError::Quality(
-                        "会话超过墙钟仍未收尾（流式刷活性但不再推进）——按质量失败放弃"
-                            .into(),
-                    ));
-                }
+            if let Some(at) = crate::sop::review_gate::review_deadline()
+                && std::time::Instant::now() >= at
+            {
+                return Err(DevforgeError::Quality(
+                    "会话超过墙钟仍未收尾（流式刷活性但不再推进）——按质量失败放弃".into(),
+                ));
             }
             let line = match self.next_line() {
                 Ok(l) => l,

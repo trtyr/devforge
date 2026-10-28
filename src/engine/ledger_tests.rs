@@ -85,7 +85,6 @@ fn reconcile_never_claims_a_process_with_mismatched_run_id() {
     assert_eq!(wait_for_marker(pid, 2000).as_deref(), Some("run-other"));
     let ledger = SpawnLedger {
         entries: vec![entry(pid)],
-        ..Default::default()
     };
     let rec = ledger.reconcile();
     let _ = child.kill();
@@ -111,7 +110,6 @@ fn reconcile_claims_ours_only_when_marker_value_matches() {
     assert_eq!(wait_for_marker(pid, 2000).as_deref(), Some("run-1"));
     let ledger = SpawnLedger {
         entries: vec![entry(pid)],
-        ..Default::default()
     };
     let rec = ledger.reconcile();
     let _ = child.kill();
@@ -451,3 +449,108 @@ fn deregister_removes_the_entry() {
     deregister(&missing, 1);
     assert!(!missing.exists());
 }
+
+/// 2026-10-28 flake 根因回归："已死待收尸"（zombie）必须算「走人」。
+///
+/// 旧口径 `process_gone` 的判定写反了（`!starts_with('Z')`）——zombie 被判「还活着」，
+/// `kill_orphan_wait` 于是白等满整份预算后报「孤儿杀不掉」，台账条目被保留。
+/// 全量测试里子进程先自行退出（变 zombie）的那一次就成了随机红。
+#[test]
+fn a_zombie_child_counts_as_gone() {
+    let mut child = Command::new("true").stdout(Stdio::null()).spawn().unwrap();
+    // 等它退出成 zombie（父进程不 wait 就不会被收尸）：看 state 位变成 Z
+    let pid = child.id();
+    let mut zombied = false;
+    for _ in 0..100 {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            && stat.rsplit_once(')').is_some_and(|(_, r)| r.trim_start().starts_with('Z'))
+        {
+            zombied = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(zombied, "子进程应已退出待收尸");
+    let started = std::time::Instant::now();
+    assert!(
+        kill_orphan_wait_within(pid, 1000).unwrap(),
+        "已死待收尸必须判已退出（旧口径会白等满预算后报杀失败）"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1000),
+        "判定要立刻出结论，不能把预算耗光：{:?}",
+        started.elapsed()
+    );
+    child.wait().unwrap();
+}
+
+/// 反向回归：忽略 SIGTERM 的进程不得被报成「已退出」。
+///
+/// 旧口径（判定取反）会对**活着的**进程第一个 tick 就返 Ok(true)——刚好把这一类
+/// 错报成杀成功，而调用方会把台账条目删掉，孤儿从此失联。
+/// 已死待收尸（zombie）的自家条目必须归 Dead（清账），不得归 Foreign（绝不动）。
+///
+/// zombie 的 `/proc/<pid>/environ` 不可读 → 标记读不到 → 旧口径（只看 /proc 存在性）
+/// 把自家死孤儿归 Foreign：条目永久保留、孤儿永不清理。收尸由内核完成，
+/// 「environ 读不到」不等于「不是我们的」。
+#[test]
+fn a_zombie_entry_is_dead_not_foreign() {
+    let plans = tempfile::tempdir().unwrap();
+    let proj = plans.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let path = proj.join("spawn-ledger.json");
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .env(MANAGED_ENV, "run-1")
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    assert_eq!(wait_for_marker(pid, 2000).as_deref(), Some("run-1"));
+    let mut ledger = SpawnLedger::default();
+    ledger.record(entry(pid));
+    ledger.save(&path).unwrap();
+    // 直接 SIGKILL 且**不收尸**：子进程变 zombie，/proc 条目还在
+    child.kill().unwrap();
+    let mut zombied = false;
+    for _ in 0..100 {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            && stat.rsplit_once(')').is_some_and(|(_, r)| r.trim_start().starts_with('Z'))
+        {
+            zombied = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(zombied, "子进程应已退出待收尸");
+
+    let (killed, cleared, foreign) = reconcile_all(plans.path());
+    assert_eq!(
+        (killed, cleared, foreign),
+        (0, 1, 0),
+        "zombie 条目必须归 Dead 清账，不得当 Foreign 永久保留"
+    );
+    assert!(SpawnLedger::load(&path).unwrap().entries.is_empty());
+    child.wait().unwrap();
+}
+
+#[test]
+fn a_process_that_ignores_term_is_not_reported_as_killed() {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg("trap '' TERM; sleep 30")
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    // 等 trap 装上（否则 SIGTERM 会落在 exec 之前，测的就变成默认处置）
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let pid = child.id();
+    assert!(
+        !kill_orphan_wait_within(pid, 300).unwrap(),
+        "忽略 SIGTERM 的活进程不得报成已退出"
+    );
+    assert!(process_alive(pid), "它确实还活着");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+

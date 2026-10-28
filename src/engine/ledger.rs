@@ -134,12 +134,12 @@ pub fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
         );
     }
     let out = f();
-    if acquired {
-        if let Ok(fh) = &opened {
-            // SAFETY: flock(2) 解锁，同 fd
-            unsafe {
-                libc::flock(fh.as_raw_fd(), libc::LOCK_UN);
-            }
+    if acquired
+        && let Ok(fh) = &opened
+    {
+        // SAFETY: flock(2) 解锁，同 fd
+        unsafe {
+            libc::flock(fh.as_raw_fd(), libc::LOCK_UN);
         }
     }
     out
@@ -225,7 +225,11 @@ impl SpawnLedger {
         self.entries
             .iter()
             .map(|e| {
-                if !process_alive(e.pid) {
+                // 自审 major（2026-10-28）：用 `process_gone` 而不是「/proc 不存在」——
+                // 已死待收尸（zombie）的进程 /proc 条目还在，但 environ 已不可读，
+                // 旧口径于是把**自家**死孤儿归为 Foreign（绝不动）：条目永久保留、
+                // 孤儿永不清理。zombie 的正确答案是 Dead（清账）。
+                if process_gone(e.pid) {
                     Reconciliation::Dead(e.clone())
                 } else if read_managed_marker(e.pid).as_deref() == Some(e.run_id.as_str()) {
                     Reconciliation::Ours(e.clone())
@@ -448,24 +452,46 @@ pub fn reconcile_all(plans_root: &Path) -> (usize, usize, usize) {
     (killed, cleared, foreign)
 }
 
-/// 杀掉自家孤儿（Q005：直接杀，不收养）。SIGTERM 后短等退出。
-/// 返回 Ok(true) = 已退出；Ok(false) = 送达但仍在跑（调用方应保留台账条目）。
+/// 杀掉自家孤儿（Q005：直接杀，不收养）。SIGTERM 后等退出。
+/// 返回 Ok(true) = 已退出（含已死待收尸）；Ok(false) = 送达但仍在跑（调用方应保留台账条目）。
 pub fn kill_orphan_wait(pid: u32) -> Result<bool> {
+    // 预算 10s：孤儿是 pi 子进程，正常退出会先刷会话/日志，满载与慢盘下几秒才退；
+    // 旧口径 2s 太紧。忽略 SIGTERM 的硬骨头仍留给下次（条目保留，不丢痕迹）。
+    kill_orphan_wait_within(pid, 10_000)
+}
+
+/// [`kill_orphan_wait`] 的可注入预算版本（单测用：测「忽略 SIGTERM」不用真等 10s）。
+pub(crate) fn kill_orphan_wait_within(pid: u32, budget_ms: u64) -> Result<bool> {
+    let started = std::time::Instant::now();
     kill_orphan(pid)?;
-    // 最多等 2 秒让它自己退；忽略 SIGTERM 的硬骨头留给下次（台账条目保留）。
-    for _ in 0..40 {
+    let rounds = budget_ms.div_ceil(50);
+    for _ in 0..rounds {
         if process_gone(pid) {
             return Ok(true);
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    Ok(process_gone(pid))
+    let gone = process_gone(pid);
+    if !gone {
+        tracing::error!(
+            component = "engine-ledger",
+            pid,
+            waited_ms = started.elapsed().as_millis() as u64,
+            "孤儿 SIGTERM 后迟迟未退出（已等满预算），保留台账条目待下次启动再杀"
+        );
+    }
+    Ok(gone)
 }
 
 /// 进程是否已经走人（不存在**或 zombie**）。
 /// 自审 major：SIGTERM 后子进程变 zombie（父进程未 wait 收尸时 /proc 条目还在），
-/// 只看 /proc/<pid> 存在性会把「已死待收尸」当「还活着」，白等 2 秒后误报杀失败。
+/// 只看 /proc/<pid> 存在性会把「已死待收尸」当「还活着」，白等满预算后误报杀失败。
 /// 生产里孤儿会被 init 收养自动收尸，但判定本身必须对 Z 态诚实。
+///
+/// 2026-10-28 flake 根因：上一版把这里的判定**写反了**（`!starts_with('Z')`）——
+/// 结果是「活着的进程算已走人、zombie 算还活着」：`kill_orphan_wait` 对活进程
+/// 第一个 tick 就报成功（根本没等），而对已死待收尸的子进程要耗满整份预算才报
+/// 「杀不掉」。全量测试里子进程先自行退出（变 zombie）的那一次就成了随机红。
 fn process_gone(pid: u32) -> bool {
     let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(s) => s,
@@ -474,7 +500,9 @@ fn process_gone(pid: u32) -> bool {
     // stat 格式：pid (comm) state ...——comm 可含任意字符（含空格与括号），
     // 取最后一个 ')' 之后的第一个非空白字符才是 state。
     match stat.rsplit_once(')') {
-        Some((_, rest)) => !rest.trim_start().starts_with('Z'),
+        // Z = 已退出待收尸：对「进程还在跑吗」的答案是不在。
+        Some((_, rest)) => rest.trim_start().starts_with('Z'),
+        // 解析不出 state 时不当作已走人（宁可多等一轮，不谎报击杀）
         None => false,
     }
 }

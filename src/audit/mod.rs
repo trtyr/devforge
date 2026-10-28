@@ -55,6 +55,7 @@ pub struct AuditPlan {
 /// - 同一模块下文件超 7 个 → 本预算确实会拆批；
 /// - 同一目录下的**多个模块**不会被合并成一个批次（分组合并发生在分组之前，本预算不参与）——
 ///   这是有意的：批次语义连贯（一个审查官一次读懂一个模块）优先于批次数。
+///
 /// 换句话说，批次粒度由「分组 + 本预算」两级共同决定，只读本常量看不到全貌。
 pub const MAX_UNIT_FILES: usize = 7;
 
@@ -154,7 +155,7 @@ fn split_oversized_file(
             .filter(|(l, _)| *l >= s && *l <= e)
             .map(|(l, name)| format!("{name}（第 {l} 行）"))
             .collect();
-        if e.saturating_sub(s) + 1 <= MAX_UNIT_LINES {
+        if e.saturating_sub(s) < MAX_UNIT_LINES {
             pieces.push((vec![path.to_string()], focus, Some((s, e))));
         } else {
             let mut cs = s;
@@ -171,10 +172,10 @@ fn split_oversized_file(
         }
     }
     // 只产出一片 = 整文件一片（不存在「其它片由其它批次负责」），focus 清空。
-    if pieces.len() == 1 {
-        if let Some((_, focus, _)) = pieces.first_mut() {
-            focus.clear();
-        }
+    if pieces.len() == 1
+        && let Some((_, focus, _)) = pieces.first_mut()
+    {
+        focus.clear();
     }
     pieces
 }
@@ -215,7 +216,6 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
         std::collections::BTreeMap::new();
     // 全仓审计 M6：非源码面条目（Config/Data/Behavior）不再静默丢弃——计数进报告
     // 排除计数在循环后统一回填（见 reconciled）
-    let excluded_entries: usize;
     // 已进切片的文件集合（自审 minor 5：旧口径按「条目 kind」计数，同一文件的
     // Config/Data 条目被算成「没进切片」，可它的 Module 条目其实已经进了 → coverage 自相矛盾）
     let mut sliced_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -260,7 +260,7 @@ pub fn build_plan(workspace: &Path) -> Result<AuditPlan> {
 
     // 自审 minor（5）：排除计数 = 整份文件**从未**进切片的路径数（旧口径按条目 kind 计数，
     // 同一文件的 Config/Data 条目被算成「没进切片」，而它的 Module 条目其实已进 → 自相矛盾）。
-    excluded_entries = non_sliced_entries
+    let excluded_entries = non_sliced_entries
         .iter()
         .filter(|p| !sliced_paths.contains(*p))
         .count();

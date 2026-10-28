@@ -171,7 +171,7 @@ impl Workspace {
                 return Err(DevforgeError::Store(format!(
                     "任务分支 `{branch}` 已存在且指向 {tip}（上一轮候选保留，不等于本轮基点 {}）——
                      同一 task 重建工作区请先 `git branch -D {branch}`，或换 task id",
-                    &base_sha
+                    base_sha
                 )));
             }
             Some(_) => {

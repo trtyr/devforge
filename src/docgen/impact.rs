@@ -108,18 +108,17 @@ pub fn parse_porcelain(text: &str) -> Vec<ChangedFile> {
             continue;
         }
         // 重命名/复制：diff 形态 `R100\told\tnew`；porcelain 形态 `R  old -> new`
-        if status.contains('R') || status.contains('C') {
-            if let Some((old, new)) = path
+        if (status.contains('R') || status.contains('C'))
+            && let Some((old, new)) = path
                 .split_once('\t')
                 .or_else(|| path.split_once(" -> "))
-            {
-                out.push(ChangedFile {
-                    kind: 'R',
-                    path: new.to_string(),
-                    old_path: Some(old.to_string()),
-                });
-                continue;
-            }
+        {
+            out.push(ChangedFile {
+                kind: 'R',
+                path: new.to_string(),
+                old_path: Some(old.to_string()),
+            });
+            continue;
         }
         let kind = if status.contains('A') || status.contains('?') {
             'A'

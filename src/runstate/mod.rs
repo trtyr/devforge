@@ -327,13 +327,13 @@ pub fn clear(plans_root: &Path, key: &StateKey) -> Result<()> {
     let path = key.path(plans_root);
     // 自审 minor（182）：清断点时连带清掉历史临时文件（旧固定名 state.json.tmp 与
     // 新的唯一名都清），否则黑板里永久残留半截文件。
-    if let Some(dir) = path.parent() {
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            for e in rd.flatten() {
-                let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with(&format!("{STATE_FILE}.")) && name.ends_with(TMP_SUFFIX) {
-                    let _ = std::fs::remove_file(e.path());
-                }
+    if let Some(dir) = path.parent()
+        && let Ok(rd) = std::fs::read_dir(dir)
+    {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with(&format!("{STATE_FILE}.")) && name.ends_with(TMP_SUFFIX) {
+                let _ = std::fs::remove_file(e.path());
             }
         }
     }

@@ -75,20 +75,15 @@ pub fn resolve_imports(lang: Lang, rel: &str, text: &str, root: &Path) -> Vec<St
                     Some(&line[pos + 5..])
                 } else if let Some(pos) = line.find("from \"") {
                     Some(&line[pos + 5..])
-                } else if let Some(pos) = line.find("from ") {
-                    Some(line[pos + 5..].trim_start())
                 } else {
-                    None
+                    line.find("from ").map(|pos| line[pos + 5..].trim_start())
                 };
-                if let Some(rest) = rest {
-                    match rest.chars().next() {
-                        Some(q @ ('\'' | '"')) => {
-                            let end = rest[1..].find(q).map(|i| i + 1).unwrap_or(rest.len());
-                            let spec = rest[..end].trim_matches(q).trim();
-                            add_relative(&mut out, dir, spec, &candidate);
-                        }
-                        _ => {} // 非字符串字面量形态（import x = require 等由 require 分支接）
-                    }
+                if let Some(rest) = rest
+                    && let Some(q @ ('\'' | '"')) = rest.chars().next()
+                {
+                    let end = rest[1..].find(q).map(|i| i + 1).unwrap_or(rest.len());
+                    let spec = rest[..end].trim_matches(q).trim();
+                    add_relative(&mut out, dir, spec, &candidate);
                 } else if let Some(pos) = line.find("require(") {
                     let rest = &line[pos + 8..];
                     let spec: String = rest

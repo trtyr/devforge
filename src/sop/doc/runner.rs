@@ -19,6 +19,13 @@ use std::path::Path;
 type FileSnapshot = std::collections::BTreeMap<String, (u64, u128)>;
 /// unit → (写前基线, 交卷时点)——快照跟单元走，lead=1 下互不冲掉。
 type UnitSnapshots = std::collections::HashMap<String, (FileSnapshot, FileSnapshot)>;
+/// 待回填的审查槽（lead=1 写超前）：单元坐标 + 审查线程的结果通道。
+type PendingReview = (
+    usize,
+    String,
+    u32,
+    std::sync::mpsc::Receiver<(String, u32, Result<String, DevforgeError>)>,
+);
 
 use crate::error::{DevforgeError, Result};
 use crate::runstate::StateStore;
@@ -160,7 +167,7 @@ where
         .or_insert_with(|| serde_json::json!(units.len()));
     store.save(&mut state)?;
 
-    let mut pending: Option<(usize, String, u32, std::sync::mpsc::Receiver<(String, u32, Result<String, DevforgeError>)>)> = None;
+    let mut pending: Option<PendingReview> = None;
     // lead=1 写超前：审查槽被占时交卷的单元先排队，槽空出时补派
     let mut written_unreviewed: std::collections::VecDeque<(usize, String, u32)> = Default::default();
     let mut fix_queue: std::collections::VecDeque<(String, String, Vec<String>, u32)> = Default::default();

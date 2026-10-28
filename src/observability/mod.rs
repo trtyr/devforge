@@ -325,19 +325,26 @@ pub fn attempt() -> u32 {
 /// panic hook / watchdog 在别的线程上跑，`current()` 在那里恒为空 → 墓碑丢失 run 归属。
 /// 本函数按快照表回答：只有唯一活动 run 时直接给它；多个 run 并存时给**最近开跑**的那个
 /// （至少归属不丢；调用方可用 [`current_run_id`] 优先）。
+///
+/// 2026-10-28：同时开跑的 run 决胜负按 `(started_at_ms, run_id)`——毫秒同值时
+/// 旧口径依赖 HashMap 迭代顺序，同一场景两次跑能得到不同归属（全量并行测试里撞过）。
 pub fn current_process_wide() -> Option<RunSnapshot> {
     let table = runs().lock().unwrap_or_else(|e| e.into_inner());
     let mut it = table.values();
     let first = it.next()?.clone();
-    Some(
-        it.fold(first, |acc, cand| {
-            if cand.started_at_ms >= acc.started_at_ms {
-                cand.clone()
-            } else {
-                acc
-            }
-        }),
-    )
+    Some(it.fold(first, |acc, cand| {
+        if later_than(cand, &acc) {
+            cand.clone()
+        } else {
+            acc
+        }
+    }))
+}
+
+/// 两个快照谁更新（自审 minor 2026-10-28）：按 `(started_at_ms, run_id)` 字典序。
+/// 纯函数——决胜规则本身可单测，不必把进程级快照表当成测试夹具。
+fn later_than(cand: &RunSnapshot, acc: &RunSnapshot) -> bool {
+    (cand.started_at_ms, cand.run_id.as_str()) >= (acc.started_at_ms, acc.run_id.as_str())
 }
 
 /// 当前 run 快照（无活动 run = `None`）。
@@ -480,11 +487,8 @@ pub fn write_heartbeat(run_id: &str) -> std::io::Result<()> {
     let Some(root) = run_root(run_id) else {
         return Ok(());
     };
-    match heartbeat::write(&root, &snap) {
-        // 刷心跳失败不打断 run（best-effort）：调用方（watchdog）决定日志级别
-        Err(e) => Err(e),
-        ok => ok,
-    }
+    // 刷心跳失败不打断 run（best-effort）：直接透传，日志级别由调用方（watchdog）定
+    heartbeat::write(&root, &snap)
 }
 
 /// 低频兜底刷新（watchdog 调用）：节流到 [`HEARTBEAT_REFRESH_MS`] 一次

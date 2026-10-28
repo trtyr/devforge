@@ -50,7 +50,7 @@ pub fn preflight_codegraph(workspace: &Path, codegraph_bin: &Path) {
     if let Some(stderr) = child.stderr.take() {
         std::thread::spawn(move || {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(stderr).lines().flatten() {
+            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
                 tracing::warn!(component = "coding-engine", "codegraph init: {line}");
             }
         });

@@ -157,9 +157,41 @@ fn tombstone_attributes_the_active_run_from_a_foreign_thread() {
         .collect();
     assert_eq!(entries.len(), 1, "非 run 线程也要留墓碑：{entries:?}");
     let text = std::fs::read_to_string(&entries[0]).unwrap();
+    // 本用例钉的是**不退化**：非 run 线程崩了也得归因到某个活动 run（不得是占位 no-run）。
+    // 不断言「就是本用例的 id」：全量并行时兄弟用例也会 `begin_run_in`，而
+    // `current_process_wide` 的既定口径是「最近开跑者」——那条 heuristic 本身在
+    // `prefers_the_latest_started_run` 里单独钉，混在这里断言等于让并行调度决定结果。
     assert!(
-        text.contains(&format!("run_id: {id}")),
-        "非 run 线程的墓碑必须归因到活动 run：{text}"
+        !text.contains(&format!("run_id: {NO_RUN}")),
+        "非 run 线程的墓碑退化成 no-run（丢失 run 归属）：{text}"
     );
+    let attributed = text
+        .lines()
+        .find_map(|l| l.strip_prefix("run_id: "))
+        .map(str::trim)
+        .unwrap_or_default();
+    assert!(!attributed.is_empty(), "run_id 行不得为空：{text}");
     super::super::end_run(id);
+}
+
+/// `current_process_wide` 的决胜规则：最近开跑者胜，**毫秒同值时按 run id 定序**——
+/// 旧口径只比 `started_at_ms`，同值时就靠 HashMap 迭代顺序决定，同一场景两次跑可能不同。
+/// 直接测纯函数，不碰进程级快照表（那边并行用例会同时改）。
+#[test]
+fn later_than_breaks_ties_by_run_id() {
+    let snap = |id: &str, ms: u64| super::super::RunSnapshot {
+        run_id: id.into(),
+        started_at_ms: ms,
+        ..Default::default()
+    };
+    assert!(super::super::later_than(&snap("b", 10), &snap("a", 5)), "后开跑的胜");
+    assert!(!super::super::later_than(&snap("a", 5), &snap("b", 10)), "先开跑的不胜");
+    assert!(
+        super::super::later_than(&snap("run-b", 7), &snap("run-a", 7)),
+        "毫秒同值必须按 run id 定序（否则归属看 HashMap 迭代顺序）"
+    );
+    assert!(
+        super::super::later_than(&snap("run-a", 7), &snap("run-a", 7)),
+        "同一条比较为真（fold 用 >=，不丢当前项）"
+    );
 }

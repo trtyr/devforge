@@ -165,18 +165,18 @@ pub fn start_gate(
         }),
     };
     // 自审 minor（189）：断点不可用导致的冷启动必须能从日志重建（不只活在响应体里）
-    if let Ok(d) = &decision {
-        if let Some(note) = &d.note {
-            tracing::warn!(
-                component = "runstate",
-                event = "runstate.start_cold",
-                project = %key.project,
-                task = %key.task,
-                sop = %key.sop,
-                reason = %note,
-                "start：断点不可用，冷启动"
-            );
-        }
+    if let Ok(d) = &decision
+        && let Some(note) = &d.note
+    {
+        tracing::warn!(
+            component = "runstate",
+            event = "runstate.start_cold",
+            project = %key.project,
+            task = %key.task,
+            sop = %key.sop,
+            reason = %note,
+            "start：断点不可用，冷启动"
+        );
     }
     decision
 }

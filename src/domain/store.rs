@@ -83,15 +83,15 @@ impl Store {
 
     /// 变更落盘（persist_path 未设则空操作）。失败只 WARN 不阻断（可观测优先于强一致）。
     fn persist(&self) {
-        if let Some(path) = &self.persist_path {
-            if let Err(e) = self.save(path) {
-                tracing::warn!(
-                    component = "store",
-                    path = %path.display(),
-                    error = %e,
-                    "store 落盘失败（内存态继续，重启将丢自上次成功落盘后的变更）"
-                );
-            }
+        if let Some(path) = &self.persist_path
+            && let Err(e) = self.save(path)
+        {
+            tracing::warn!(
+                component = "store",
+                path = %path.display(),
+                error = %e,
+                "store 落盘失败（内存态继续，重启将丢自上次成功落盘后的变更）"
+            );
         }
     }
 

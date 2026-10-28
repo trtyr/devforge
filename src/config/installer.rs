@@ -27,6 +27,7 @@ pub fn build_install_command(profile_dir: &Path, package: &str) -> Command {
 /// - 字符集限 `[A-Za-z0-9._@/-]`（不允空白/控制符/引号/元字符）；
 /// - 拒本地与相对绝对路径（`/`、`./`、`../`、`~`）、传输协议前缀（`git+`、`file:`、
 ///   `http(s):`、`npm:` 等）与选项形态（`-` 开头，防被当成 pi 自己的参数）。
+///
 /// 包来源形状校验（自审 minor 34）。
 ///
 /// 边界事实：清单可经 HTTP API 改写，而 `pi install` 会真实执行包的 postinstall 脚本。
