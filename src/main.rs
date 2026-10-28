@@ -432,3 +432,246 @@ mod tests {
         }
     }
 }
+
+/// 验收测试模块（计划 §5 的 11 条验收标准 → ac01..ac09、ac11 共 10 条用例）。
+///
+/// 来源：测试阶段备好的验收用例模块（上一轮遗留的交付项：契约 `owned_paths` 只允许
+/// `src/main.rs`，不新增 `tests/` 文件，模块当时无处可落，导致 11 条验收标准逐条「无法对账」）。
+/// 交付时相对原件只做两处必要修正，其余（断言内容、用例名、契约签名）逐字未改：
+/// - ac11 的基线 sha 由 `dd610645…` 改为本变更真基线 `bb9c824…`：原值不在本仓，
+///   `git diff` 会报 bad object，该条会走「跳过」分支静默不生效（等于假绿）；
+/// - 去掉模块尾部残留的 `// scratch tweak` 半成品注释。
+// ---------------- 验收测试（change-20261028-2026-10-28-4） ----------------
+#[cfg(test)]
+mod acceptance_tests {
+    use super::resolve_runtime_root;
+    use std::path::PathBuf;
+
+    /// src/main.rs 的**生产段**（首个 `#[cfg(test)]` 之前）——测试模块自身的文本不参与断言，
+    /// 免得断言字符串把自己匹配上。
+    fn production_source() -> &'static str {
+        let src = include_str!("main.rs");
+        src.split("#[cfg(test)]").next().unwrap_or(src)
+    }
+
+
+    // ---------------- 验收测试（change-20261028-2026-10-28-4） ----------------
+    // 黑盒立场：断言只钉「对外可观察的结果」——解析返回值、错误文案、以及 src/main.rs
+    // 文本层面的口径漂移；不钉实现步骤数 / 内部调用次序（纯内部重构不该让它们变红）。
+    // 每条用例的注释写明「换成哪种错实现会红」——不会红的测试是装饰品。
+
+    /// 验收 1：`DEVFORGE_HOME = "/x/devforge"`、`HOME = None` → 解析成功并返回
+    /// `/x/devforge`（不再因缺 HOME 返回错误）。
+    /// 错实现 A（无条件先读 HOME 并 `?` 退进程）→ 这条红（HOME 闭包被调用）。
+    #[test]
+    fn ac01_devforge_home_alone_resolves_without_home() {
+        let mut home_read = false;
+        let root = resolve_runtime_root(Some("/x/devforge"), || {
+            home_read = true;
+            Some("/home/u".to_string())
+        })
+        .expect("DEVFORGE_HOME 已设时不得因缺 HOME 失败");
+        assert_eq!(
+            root,
+            PathBuf::from("/x/devforge"),
+            "DEVFORGE_HOME 已设时运行根就是它本身"
+        );
+        assert!(!home_read, "DEVFORGE_HOME 已设时不得读取 HOME");
+    }
+
+    /// 验收 2：`DEVFORGE_HOME = "/x/devforge"`、`HOME = Some("/home/u")` → 返回
+    /// `/x/devforge`（HOME 不影响结果）。
+    /// 错实现 B（优先 HOME）→ 这条红。
+    #[test]
+    fn ac02_devforge_home_wins_over_home() {
+        let root = resolve_runtime_root(Some("/x/devforge"), || Some("/home/u".to_string()))
+            .expect("DEVFORGE_HOME 与 HOME 同时存在时必须解析成功");
+        assert_eq!(
+            root,
+            PathBuf::from("/x/devforge"),
+            "两个变量同时存在时 DEVFORGE_HOME 优先"
+        );
+    }
+
+    /// 验收 3：`DEVFORGE_HOME = None`、`HOME = Some("/home/u")` → 返回 `/home/u/.devforge`。
+    /// 错实现 C（只认 DEVFORGE_HOME、忽略 HOME）→ 这条红（解析失败）。
+    #[test]
+    fn ac03_home_only_resolves_to_home_dot_devforge() {
+        let root = resolve_runtime_root(None, || Some("/home/u".to_string()))
+            .expect("仅设 HOME 时必须解析成功");
+        assert_eq!(
+            root,
+            PathBuf::from("/home/u").join(".devforge"),
+            "未设 DEVFORGE_HOME 时回落 $HOME/.devforge"
+        );
+    }
+
+    /// 验收 4：`DEVFORGE_HOME = Some("")`（空串）与 `Some("  ")`（纯空白）、
+    /// `HOME = Some("/home/u")` → 返回 `/home/u/.devforge`（空串/空白视为未设置）。
+    /// 错实现 D（空串按 var_os 口径视作已设）→ 这条红。
+    #[test]
+    fn ac04_blank_devforge_home_falls_back_to_home() {
+        for blank in ["", "  ", "\t", "\n  "] {
+            let root = resolve_runtime_root(Some(blank), || Some("/home/u".to_string()))
+                .expect("DEVFORGE_HOME 只有空白时必须回落 HOME 而不是失败");
+            assert_eq!(
+                root,
+                PathBuf::from("/home/u").join(".devforge"),
+                "DEVFORGE_HOME={blank:?} 视作未设，应回落 $HOME/.devforge"
+            );
+        }
+    }
+
+    /// 验收 5：`DEVFORGE_HOME = Some("  ")`、`HOME = None` → 返回错误，错误文案同时包含
+    /// `DEVFORGE_HOME` 与 `HOME` 两个字面名（双未设 fail fast，且给出两条出路）。
+    /// 错实现 E（文案只点 HOME）→ 这条红。
+    #[test]
+    fn ac05_blank_devforge_home_without_home_fails_naming_both_vars() {
+        let err = resolve_runtime_root(Some("  "), || None)
+            .expect_err("DEVFORGE_HOME 只有空白且无 HOME 时必须 fail fast");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("DEVFORGE_HOME"),
+            "错误文案须点名 DEVFORGE_HOME：{msg}"
+        );
+        assert!(msg.contains("HOME"), "错误文案须点名 HOME：{msg}");
+    }
+
+    /// 验收 6：`DEVFORGE_HOME = None`、`HOME = None` → 返回错误，错误文案同时包含
+    /// `DEVFORGE_HOME` 与 `HOME` 两个字面名。
+    /// 错实现 E（文案只点 HOME）→ 这条红。
+    #[test]
+    fn ac06_both_missing_fails_naming_both_vars() {
+        let err = resolve_runtime_root(None, || None)
+            .expect_err("DEVFORGE_HOME 与 HOME 都没有时必须 fail fast");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("DEVFORGE_HOME"),
+            "错误文案须点名 DEVFORGE_HOME：{msg}"
+        );
+        assert!(msg.contains("HOME"), "错误文案须点名 HOME：{msg}");
+    }
+
+    /// 验收 7：`resolve_runtime_root(...)` 返回的根是 `main` 里所有 `root.join(...)` 落点
+    /// （logs / manifest.json / profiles / plans / sessions / store.json）的唯一来源——
+    /// 不存在第二处 HOME 推导。
+    /// 错实现 F（在 main 里另起一条 HOME/.devforge 推导）→ 这条红。
+    #[test]
+    fn ac07_all_landing_points_derive_from_one_root() {
+        let prod = production_source();
+        for landing in [
+            "logs",
+            "manifest.json",
+            "profiles",
+            "plans",
+            "sessions",
+            "store.json",
+        ] {
+            assert!(
+                prod.contains(&format!(".join(\"{landing}\")")),
+                "落点 {landing} 必须由运行根 join 派生（不得另起推导）"
+            );
+        }
+        let home_reads = prod.matches("env::var(\"HOME\")").count();
+        assert!(
+            home_reads <= 1,
+            "生产段里读 HOME 的地方只能有一处（兜底分支），实测 {home_reads} 处"
+        );
+    }
+
+    /// 验收 8：`src/main.rs` 的根解析路径中不再存在「无条件 `std::env::var("HOME")?`」形态
+    /// 的调用（HOME 读取只发生在 DEVFORGE_HOME 判空之后的兜底分支）。
+    /// 错实现 A（无条件读 HOME + `?` 退进程）→ 这条红。
+    #[test]
+    fn ac08_no_unconditional_home_read_in_root_resolution() {
+        let prod = production_source();
+        for stale in [
+            "env::var(\"HOME\").context(",
+            "env::var(\"HOME\")?",
+            "env::var(\"HOME\").ok().context(",
+        ] {
+            assert!(
+                !prod.contains(stale),
+                "生产段仍存在无条件读 HOME 的形态：{stale}"
+            );
+        }
+        // HOME 的读取不得发生在「先绑定 HOME 再解析根」的形态里（惰性闭包除外）：
+        // 旧口径 `let home = std::env::var("HOME")...` 先行 = 无条件依赖 HOME。
+        for line in prod.lines() {
+            if !line.contains("env::var(\"HOME\")") {
+                continue;
+            }
+            if line.contains("||") {
+                continue; // 惰性闭包（兜底分支）——正确形态
+            }
+            assert!(
+                !line.contains("let "),
+                "HOME 被提前绑定到变量（无条件依赖 HOME）：{}",
+                line.trim()
+            );
+        }
+        let devforge_home_at = prod.find("env::var(\"DEVFORGE_HOME\")");
+        let home_at = prod.find("env::var(\"HOME\")");
+        if let (Some(d), Some(h)) = (devforge_home_at, home_at) {
+            assert!(
+                d < h,
+                "DEVFORGE_HOME 的读取必须排在 HOME 读取之前（HOME 只在兜底分支被读）"
+            );
+        }
+    }
+
+    /// 验收 9：根解析口径注释与观测根注释都表述为「DEVFORGE_HOME 优先；HOME 仅在
+    /// DEVFORGE_HOME 未设时兜底；双未设 fail fast」，无「HOME 必需」或
+    /// 「DEVFORGE_HOME 只改观测根」表述。
+    /// 错实现 G（注释沿用旧口径）→ 这条红。
+    #[test]
+    fn ac09_root_resolution_comments_match_the_contract() {
+        let prod = production_source();
+        for stale in ["HOME 必需", "只改观测根", "只改观测/日志根", "DEVFORGE_HOME 只能改"] {
+            assert!(
+                !prod.contains(stale),
+                "注释仍带旧口径表述：{stale}"
+            );
+        }
+        let contract_comment = prod.lines().any(|l| {
+            let t = l.trim_start();
+            t.starts_with("//") && t.contains("DEVFORGE_HOME") && t.contains("HOME")
+        });
+        assert!(
+            contract_comment,
+            "口径注释须有一行同时点名 DEVFORGE_HOME 与 HOME（DEVFORGE_HOME 优先 / HOME 兜底 / 双未设 fail fast）"
+        );
+    }
+
+    /// 验收 11：`git diff --name-only <baseline>..HEAD` → 输出仅 `src/main.rs` 一行
+    /// （契约 owned_paths 只有 src/main.rs）。
+    /// 错实现 H（顺手改了别的文件）→ 这条红。
+    #[test]
+    fn ac11_diff_scope_is_only_main_rs() {
+        const BASELINE: &str = "bb9c82408968bcb350a653d64d42404e6851b49a";
+        let out = std::process::Command::new("git")
+            .args(["diff", "--name-only", &format!("{BASELINE}..HEAD")])
+            .output();
+        let Ok(out) = out else {
+            panic!("git 不可用，无法核对改动面");
+        };
+        if !out.status.success() {
+            // 本仓不在 git 仓里（打包发行等场景）→ 本条无从核对，不判失败。
+            eprintln!("ac11：当前目录不在 git 仓里（或基线不在本仓），本条跳过");
+            return;
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let files: Vec<String> = stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            files,
+            vec!["src/main.rs".to_string()],
+            "相对基线的改动面必须只有 src/main.rs 一行"
+        );
+    }
+}
+
