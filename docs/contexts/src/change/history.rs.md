@@ -40,7 +40,7 @@ description: 往返历史——每次 coding→plan 回退把越界文件逐行�
 |---|---|---|
 | `src/change/mod.rs` | 声明子模块并转发导出两个函数 | `src/change/mod.rs:15`、`src/change/mod.rs:32` |
 | `src/change/orchestrator.rs` | 边界判定为「回退到计划」时：先 `check_roundtrip`、再 `bump_roundtrip`、再 `append_roundtrip` | `src/change/orchestrator.rs:243`、`src/change/orchestrator.rs:244`、`src/change/orchestrator.rs:246` |
-| `src/change/orchestrator/orchestrator_tests.rs` | 用 `history_path` 定位并读回历史，断言越界文件已落盘 | `src/change/orchestrator/orchestrator_tests.rs:288` |
+| `src/change/orchestrator_tests.rs` | 用 `history_path` 定位并读回历史，断言越界文件已落盘 | `src/change/orchestrator_tests.rs:288` |
 
 **向下依赖**
 
@@ -78,7 +78,7 @@ description: 往返历史——每次 coding→plan 回退把越界文件逐行�
   - `change_id: &str` — 变更 id，作为子目录名。
 - **返回**：`PathBuf` —— 历史文件路径；文件可以尚不存在。
 - **异常**：N/A —— 无 IO，不可能失败。
-- **示例**：编排层测试用它在临时仓里定位历史文件，再读回断言内容（`src/change/orchestrator/orchestrator_tests.rs:288` 至 `src/change/orchestrator/orchestrator_tests.rs:293`）。
+- **示例**：编排层测试用它在临时仓里定位历史文件，再读回断言内容（`src/change/orchestrator_tests.rs:288` 至 `src/change/orchestrator_tests.rs:293`）。
 
 ### append_roundtrip
 
@@ -102,7 +102,7 @@ description: 往返历史——每次 coding→plan 回退把越界文件逐行�
 - **示例**：
   - 首次追加 → 建文件，表头只出现一次，行内出现往返序号与文件名（`src/change/history.rs:57`）。
   - 第二次追加（往返 2）→ 旧行保留、表头计数仍为 1（`src/change/history.rs:68`）。
-  - 同一次往返两个 gap → 往返序号出现两次（`src/change/history.rs:79`）。
+  - 同一次往返两个 gap → 往返序号出现两次（`src/change/history_tests.rs`）。
 
 ## 测试覆盖（`#[cfg(test)]`，3 例）
 
@@ -110,7 +110,7 @@ description: 往返历史——每次 coding→plan 回退把越界文件逐行�
 |---|---|---|
 | `first_roundtrip_creates_history_with_header` | 首次建文件带表头 + 数据行 | `src/change/history.rs:57` |
 | `later_roundtrips_append_without_losing_history` | 追加不丢旧行；表头只出现一次 | `src/change/history.rs:68` |
-| `multiple_gaps_in_one_roundtrip_all_recorded` | 同一往返多 gap → 每 gap 一行 | `src/change/history.rs:79` |
+| `multiple_gaps_in_one_roundtrip_all_recorded` | 同一往返多 gap → 每 gap 一行 | `src/change/history_tests.rs` |
 
 测试模块在 `src/change/history.rs:44` 起；夹具 `gap`（`src/change/history.rs:48` 至 `src/change/history.rs:54`）直接构造 `ImpactGap`：文件名作 file、固定理由「接口在这」、证据为「文件名加冒号 9」。断言全部基于写出的 markdown 文本子串，不依赖格式细节。
 
@@ -127,7 +127,7 @@ description: 往返历史——每次 coding→plan 回退把越界文件逐行�
   CARGO_TARGET_DIR=$(mktemp -d)/target cargo test --lib change::history
   ```
   结果：3 passed、0 failed、595 filtered out，退出码 0；构建产物写在仓外临时目录，仓内 target 目录未被写入。
-- **端到端落点**：`src/change/orchestrator/orchestrator_tests.rs:288` 在真实编排流程里读回历史文件校验内容。
+- **端到端落点**：`src/change/orchestrator_tests.rs:288` 在真实编排流程里读回历史文件校验内容。
 - **不适用声明**：无服务、无端口、无健康检查（N/A —— 纯函数模块）；无配置项（N/A —— 不读环境变量、不读配置文件，路径全部由参数传入）；无种子数据（N/A —— 历史文件按需新建，测试自建临时目录）；公开接口清单即本文「公开成员」表（N/A —— 无 HTTP/CLI 端点）。
 
 ## 相关文档

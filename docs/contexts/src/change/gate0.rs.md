@@ -111,7 +111,7 @@ description: 门 0 的确定性部分——基线锚点（Baseline / ensure_base
 - **行为语义**（🟢 CONFIRMED `src/change/gate0.rs:34` 至 `src/change/gate0.rs:43`）：先 trim 再转小写，然后精确匹配：空串与 none → `None`，essential → `Essential`，complete → `Complete`，其余一律 `Err`（`Config` 变体）。幂等、无副作用、不读环境、不读文件。
 - **参数**：`s: &str` — 档位原文；允许空串（等价 none），允许前后空白与大小写混写（如 Essential）。
 - **返回**：`Result<DocLevel>`。
-- **异常**：`DevforgeError` 的 `Config` 变体 — 值不在三档之内（如 full、detailed）；文案形如「未知 doc_level `full`（只认 none/essential/complete）」（`src/change/gate0.rs:39` 至 `src/change/gate0.rs:41`）。调用方应把这类输入当非法配置拒收，而不是回落默认（`src/change/prepare.rs:236` 的用例 `bad_doc_level_is_rejected` 断言的正是这条）。
+- **异常**：`DevforgeError` 的 `Config` 变体 — 值不在三档之内（如 full、detailed）；文案形如「未知 doc_level `full`（只认 none/essential/complete）」（`src/change/gate0.rs:39` 至 `src/change/gate0.rs:41`）。调用方应把这类输入当非法配置拒收，而不是回落默认（`src/change/prepare_tests.rs` 的用例 `bad_doc_level_is_rejected` 断言的正是这条）。
 - **示例**（🟢 CONFIRMED `src/change/gate0.rs:314` 至 `src/change/gate0.rs:322`）：空串 → None；none → None；Essential → Essential；complete → Complete；full → Err。
 
 ### DocLevel 的 as_str

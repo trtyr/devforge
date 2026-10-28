@@ -104,7 +104,7 @@ description: change-id 生成 / 幂等分配 / 黑板目录 / 合法性校验
 - 参数：`plans_root: &Path`、`project: &str`、`task: &str`、`slug: &str`、`date: &str`（形如 `20261020`，仅首次分配使用）。
 - 返回：`Result<(String, PathBuf)>` — `(id, 目录)`。
 - 异常：IO 错误用 `Context` 包装成 `Result`（来自 `src/error.rs`），文案含「重建黑板目录」「建黑板目录」「写当前 change-id」；marker 的父目录用 `expect` 断言（文案「marker 必有父目录」）。
-- 示例：同任务重复触发返回同一 id/目录（`src/change/change_id.rs:157`）；目录被清后复用 id 并重建（`src/change/change_id.rs:197`）。调用点 `src/change/prepare.rs:49`。
+- 示例：同任务重复触发返回同一 id/目录（`src/change/change_id.rs:157`）；目录被清后复用 id 并重建（`src/change/change_id_tests.rs`）。调用点 `src/change/prepare.rs:49`。
 
 ### date_segment
 
@@ -113,7 +113,7 @@ description: change-id 生成 / 幂等分配 / 黑板目录 / 合法性校验
 - 参数：`year: i32`、`month: u32`、`day: u32`。
 - 返回：`String`（8 字符）。
 - 异常：N/A。
-- 示例：`date_segment(2026, 10, 5)` → `"20261005"`（`src/change/change_id.rs:207`）。
+- 示例：`date_segment(2026, 10, 5)` → `"20261005"`（`src/change/change_id_tests.rs`）。
 
 ### date_segment_now
 
@@ -133,7 +133,7 @@ description: change-id 生成 / 幂等分配 / 黑板目录 / 合法性校验
 - 默认值：未设置时用本地时钟（`date_segment_now` 回退）。
 - 是否必填：可选。
 - 取值范围：`YYYY-MM-DD`，三段均需可解析为整数；格式不满足时整段被忽略并回退本地时钟。
-- 影响：覆盖「今天」的日期段，用于 CI / 固定口径（让同一天运行产出确定性的 change-id）；测试无法并行改全局 env，仅验 `date_segment` 本身（`src/change/change_id.rs:219`）。
+- 影响：覆盖「今天」的日期段，用于 CI / 固定口径（让同一天运行产出确定性的 change-id）；测试无法并行改全局 env，仅验 `date_segment` 本身（`src/change/change_id_tests.rs`）。
 - 示例：设 `DEVFORGE_TODAY=2026-10-20` 后，`date_segment_now()` 返回 `"20261020"`（🟢 CONFIRMED `src/change/change_id.rs:95`, `src/server/change_engine.rs:258`）。
 
 ### validate_change_id
@@ -143,7 +143,7 @@ description: change-id 生成 / 幂等分配 / 黑板目录 / 合法性校验
 - 参数：`id: &str`。
 - 返回：`Result<()>`；合法 → `Ok(())`，否则 `Err`。
 - 异常：`Config` 变体（`DevforgeError`）— 触发条件：非 `change-` 前缀、含大写/非 ASCII/`/`/`.` 等。客户端应把 id 视为非法并拒收（如手工黑板路径）。
-- 示例：合法 id `change-20261020-x` 通过（`Ok`）；`Change-20261020-x` 与路径穿越串（如 ../evil，含斜杠）被拒（`Err`）。（🟢 CONFIRMED `src/change/change_id.rs:225`）
+- 示例：合法 id `change-20261020-x` 通过（`Ok`）；`Change-20261020-x` 与路径穿越串（如 ../evil，含斜杠）被拒（`Err`）。（🟢 CONFIRMED `src/change/change_id_tests.rs`）
 
 ### civil_from_days（内部）
 
@@ -152,7 +152,7 @@ description: change-id 生成 / 幂等分配 / 黑板目录 / 合法性校验
 - 参数：`z: i64` — 距 epoch 的天数。
 - 返回：`(i32, u32, u32)` = (年, 月, 日)。
 - 异常：N/A（纯算术）。
-- 示例：`civil_from_days(0)` → `(1970,1,1)`；`civil_from_days(18262)` → `(2020,1,1)`；`civil_from_days(-1)` → `(1969,12,31)`（`src/change/change_id.rs:212`）。
+- 示例：`civil_from_days(0)` → `(1970,1,1)`；`civil_from_days(18262)` → `(2020,1,1)`；`civil_from_days(-1)` → `(1969,12,31)`（`src/change/change_id_tests.rs`）。
 
 ## 测试覆盖（`#[cfg(test)]`）
 
@@ -161,9 +161,9 @@ description: change-id 生成 / 幂等分配 / 黑板目录 / 合法性校验
 | `slugify_normalizes_and_bounds` | 归一化 + 兜底 + 截断 40 | `src/change/change_id.rs:149` |
 | `same_task_reuses_change_id` | 幂等复用 id/目录 | `src/change/change_id.rs:157` |
 | `different_tasks_get_different_ids_and_dirs` | id 可同、目录隔离 | `src/change/change_id.rs:171` |
-| `path_shape_is_plans_project_task_change_id` | 目录形状 | `src/change/change_id.rs:184` |
-| `marker_survives_deleted_dir_without_renumbering` | 目录被清不换号 | `src/change/change_id.rs:197` |
-| `date_segment_is_zero_padded` | 零填充 | `src/change/change_id.rs:207` |
-| `civil_date_conversion_matches_known_dates` | civil 换算已知日期 | `src/change/change_id.rs:212` |
-| `env_override_wins_for_today` | env 口径（只验拼接） | `src/change/change_id.rs:219` |
-| `validate_rejects_weird_ids` | 合法/非法 id | `src/change/change_id.rs:225` |
+| `path_shape_is_plans_project_task_change_id` | 目录形状 | `src/change/change_id_tests.rs` |
+| `marker_survives_deleted_dir_without_renumbering` | 目录被清不换号 | `src/change/change_id_tests.rs` |
+| `date_segment_is_zero_padded` | 零填充 | `src/change/change_id_tests.rs` |
+| `civil_date_conversion_matches_known_dates` | civil 换算已知日期 | `src/change/change_id_tests.rs` |
+| `env_override_wins_for_today` | env 口径（只验拼接） | `src/change/change_id_tests.rs` |
+| `validate_rejects_weird_ids` | 合法/非法 id | `src/change/change_id_tests.rs` |

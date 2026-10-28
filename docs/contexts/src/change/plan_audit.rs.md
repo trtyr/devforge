@@ -62,7 +62,7 @@ description: 变更计划的机械审计与裁决门——只算确定性（路�
 | `src/change/session.rs` | plan 轮先跑裁决门（不干净直接 `PlanTurn` 的 `Fail`，不进审查轮），再跑 `audit_plan_file`，再拼 `review_instruction` 给审查实例 | `src/change/session.rs:304`、`src/change/session.rs:310`、`src/change/session.rs:319` |
 | `src/change/session.rs` | 验收对账表逐行校验 `path_refs` 非空；`plan_facts` 包装成会话方法 | `src/change/session.rs:540`、`src/change/session.rs:569` |
 | `src/change/orchestrator.rs` | trait 默认 `plan_facts` 返回两个空 vec（脚本化 session 不读计划）；编排层在两处调用 | `src/change/orchestrator.rs:119`、`src/change/orchestrator.rs:197`、`src/change/orchestrator.rs:272` |
-| `src/config/manifest.rs` | 双向钉住提示词：change-plan 提示词必须含全部 `PLAN_BLOCKS`；提示词必须含三个字面量与 `ask-user-question` | `src/config/manifest/manifest_tests.rs:8`、`src/config/manifest/manifest_tests.rs:29` |
+| `src/config/manifest.rs` | 双向钉住提示词：change-plan 提示词必须含全部 `PLAN_BLOCKS`；提示词必须含三个字面量与 `ask-user-question` | `src/config/manifest_tests.rs:8`、`src/config/manifest_tests.rs:29` |
 | `tests/change_ask_ring.rs` | 黑盒走公开 API：字面量逐字断言、裁决门四种形态、审查指令锚点 | `tests/change_ask_ring.rs:17`、`tests/change_ask_ring.rs:296`、`tests/change_ask_ring.rs:335`、`tests/change_ask_ring.rs:394` |
 | `tests/f6_observability/guards.rs` | 直接调 `audit` | `tests/f6_observability/guards.rs:438` |
 | `tests/change_failure_context/guards.rs` | 用 `normalize_path` 归一化步提交里的历史路径 | `tests/change_failure_context/guards.rs:116` |
@@ -103,7 +103,7 @@ description: 变更计划的机械审计与裁决门——只算确定性（路�
 | 顶层散文含「必须」+「裁决」 | 通过（不判） | `facts`（散文声明） |
 | 每次调用 | 必追加 | `facts`（统计「必须裁决 X / 自决 Y / 未分类 Z」） |
 
-**防漂移双写**（🟢 CONFIRMED `src/config/manifest/manifest_tests.rs:8`、`src/config/manifest/manifest_tests.rs:29`）
+**防漂移双写**（🟢 CONFIRMED `src/config/manifest_tests.rs:8`、`src/config/manifest_tests.rs:29`）
 
 - 六块名与三个字面量同时出现在提示词与本模块：`src/config/manifest.rs` 的单测反向断言提示词含这些常量，改一边不改另一边会变红。
 
@@ -122,7 +122,7 @@ description: 变更计划的机械审计与裁决门——只算确定性（路�
   ```
 - **行为语义**：`pub const [&str; 6]`；`audit` 逐项做子串包含判断，缺项进 `missing_blocks` 与一条 issue。只判「文里出现过这六个词」，不判标题层级、不判顺序（🟡 INFERRED：判据是 `contains`，`src/change/plan_audit.rs:265`）。
 - **参数 / 返回 / 异常**：N/A —— 常量，无调用面。
-- **示例**：`src/config/manifest/manifest_tests.rs:8` 遍历它断言提示词覆盖六块。
+- **示例**：`src/config/manifest_tests.rs:8` 遍历它断言提示词覆盖六块。
 
 ### PATH_MIGRATIONS
 
@@ -173,7 +173,7 @@ description: 变更计划的机械审计与裁决门——只算确定性（路�
 - 取值：`[自决]`
 - 类型：`pub const &str`
 - 影响：标它的条目**不触发**留痕要求（只计数），分类是否恰当由审查官判（`src/change/plan_audit.rs:122`）。
-- 示例：`tests/change_ask_ring.rs:297` 断言字面量；用例 `src/change/plan_audit.rs:655` 断言「全是自决项不该有问题」。
+- 示例：`tests/change_ask_ring.rs:297` 断言字面量；用例 `src/change/plan_audit_tests.rs` 断言「全是自决项不该有问题」。
 
 **`VERDICT_ANSWER_FIELD`**
 
@@ -181,7 +181,7 @@ description: 变更计划的机械审计与裁决门——只算确定性（路�
 - 取值：`用户裁决：`（**全角冒号**）
 - 类型：`pub const &str`
 - 影响：`answer_of` 先按它切分取非空文本；为容忍笔误还额外认半角「用户裁决:」（`src/change/plan_audit.rs:213` 至 `:223`）。
-- 示例：`tests/change_ask_ring.rs:298`、用例 `src/change/plan_audit.rs:626`（续行与同行两种写法都通过）。
+- 示例：`tests/change_ask_ring.rs:298`、用例 `src/change/plan_audit_tests.rs`（续行与同行两种写法都通过）。
 
 ### VerdictAudit
 
@@ -200,7 +200,7 @@ description: 变更计划的机械审计与裁决门——只算确定性（路�
 - **参数**：N/A —— 只作用于 `&self`。
 - **返回**：`bool`。
 - **异常**：N/A。
-- **示例**：全是自决项时为 true（`src/change/plan_audit.rs:655`）。
+- **示例**：全是自决项时为 true（`src/change/plan_audit_tests.rs`）。
 
 ### VerdictAudit 的 render_facts
 
@@ -224,7 +224,7 @@ description: 变更计划的机械审计与裁决门——只算确定性（路�
 - **参数**：`plan: &str` — 计划全文。
 - **返回**：`VerdictAudit`。
 - **异常**：N/A —— 返回结构体表达结论，无 `Result`、无 panic 路径（`expect` 不在本函数内）。
-- **示例**（5 种形态各有用例）：缺留痕硬失败（`src/change/plan_audit.rs:608`）、有留痕通过（`src/change/plan_audit.rs:626`）、字段空 = 没问过（`src/change/plan_audit.rs:643`）、全自决通过（`src/change/plan_audit.rs:655`）、未分类只进事实（`src/change/plan_audit.rs:663`）。
+- **示例**（5 种形态各有用例）：缺留痕硬失败（`src/change/plan_audit_tests.rs`）、有留痕通过（`src/change/plan_audit_tests.rs`）、字段空 = 没问过（`src/change/plan_audit_tests.rs`）、全自决通过（`src/change/plan_audit_tests.rs`）、未分类只进事实（`src/change/plan_audit_tests.rs`）。
 
 ### PlanAudit
 
@@ -311,7 +311,7 @@ description: 变更计划的机械审计与裁决门——只算确定性（路�
   - `audit: &PlanAudit` — 前一步的体检结果。
 - **返回**：`String` —— 完整指令文本。
 - **异常**：N/A —— 无失败路径。
-- **示例**：用例断言指令含「不看 diff」「不跑验收命令」「勿质疑、勿重算」「影响面完整性」「验收标准可观测」与输出协议锚点，并含计划路径与全文（`src/change/plan_audit.rs:562`）；另一例断言含「裁决门事实」与三个新审点（`src/change/plan_audit.rs:715`）。
+- **示例**：用例断言指令含「不看 diff」「不跑验收命令」「勿质疑、勿重算」「影响面完整性」「验收标准可观测」与输出协议锚点，并含计划路径与全文（`src/change/plan_audit.rs:562`）；另一例断言含「裁决门事实」与三个新审点（`src/change/plan_audit_tests.rs`）。
 
 ### audit_plan_file
 
@@ -350,19 +350,19 @@ description: 变更计划的机械审计与裁决门——只算确定性（路�
 | `vague_acceptance_is_flagged` | 「功能正常」无箭头 → 不可观测 | `src/change/plan_audit.rs:542` |
 | `empty_whitelist_is_flagged` | 白名单空 → issue | `src/change/plan_audit.rs:554` |
 | `review_instruction_carries_audit_plan_text_and_forbids_rerun` | 指令含禁令锚点、计划路径、计划全文 | `src/change/plan_audit.rs:562` |
-| `must_ask_entry_without_answer_field_is_a_hard_issue` | 缺留痕 = 硬失败，且文案指路 `ask-user-question` | `src/change/plan_audit.rs:608` |
-| `must_ask_entry_with_answer_field_passes` | 续行/同行两种留痕都通过 | `src/change/plan_audit.rs:626` |
-| `must_ask_entry_with_empty_answer_field_is_a_hard_issue` | 字段在但答复空 = 没问过 | `src/change/plan_audit.rs:643` |
-| `all_self_decided_entries_pass` | 全 `[自决]` 不触发留痕要求 | `src/change/plan_audit.rs:655` |
-| `unclassified_entry_is_a_fact_not_a_failure` | 未分类只进 fact | `src/change/plan_audit.rs:663` |
-| `prose_declaration_is_a_fact_not_a_failure` | 散文声明只进 fact | `src/change/plan_audit.rs:676` |
-| `missing_ambiguity_block_is_a_fact_not_a_failure` | 歧义块缺失只进 fact | `src/change/plan_audit.rs:689` |
-| `last_ambiguity_heading_wins` | 同名标题取最后一个 | `src/change/plan_audit.rs:702` |
-| `review_instruction_carries_verdict_facts_and_new_criteria` | 指令含裁决门事实与三个新审点 | `src/change/plan_audit.rs:715` |
-| `decision_ledger_registers_d024_and_annotates_d009` | 决策台账 D024 只登记一次且 D009 带旁注 | `src/change/plan_audit.rs:735` |
-| `agents_change_doc_matches_the_implemented_contract` | 文档口径守卫：载体三字面量 + 禁默认放行 + ask 包 + 两审点 | `src/change/plan_audit.rs:759` |
+| `must_ask_entry_without_answer_field_is_a_hard_issue` | 缺留痕 = 硬失败，且文案指路 `ask-user-question` | `src/change/plan_audit_tests.rs` |
+| `must_ask_entry_with_answer_field_passes` | 续行/同行两种留痕都通过 | `src/change/plan_audit_tests.rs` |
+| `must_ask_entry_with_empty_answer_field_is_a_hard_issue` | 字段在但答复空 = 没问过 | `src/change/plan_audit_tests.rs` |
+| `all_self_decided_entries_pass` | 全 `[自决]` 不触发留痕要求 | `src/change/plan_audit_tests.rs` |
+| `unclassified_entry_is_a_fact_not_a_failure` | 未分类只进 fact | `src/change/plan_audit_tests.rs` |
+| `prose_declaration_is_a_fact_not_a_failure` | 散文声明只进 fact | `src/change/plan_audit_tests.rs` |
+| `missing_ambiguity_block_is_a_fact_not_a_failure` | 歧义块缺失只进 fact | `src/change/plan_audit_tests.rs` |
+| `last_ambiguity_heading_wins` | 同名标题取最后一个 | `src/change/plan_audit_tests.rs` |
+| `review_instruction_carries_verdict_facts_and_new_criteria` | 指令含裁决门事实与三个新审点 | `src/change/plan_audit_tests.rs` |
+| `decision_ledger_registers_d024_and_annotates_d009` | 决策台账 D024 只登记一次且 D009 带旁注 | `src/change/plan_audit_tests.rs` |
+| `agents_change_doc_matches_the_implemented_contract` | 文档口径守卫：载体三字面量 + 禁默认放行 + ask 包 + 两审点 | `src/change/plan_audit_tests.rs` |
 
-测试夹具：`repo()` 建临时仓并写两个源文件（`src/change/plan_audit.rs:453`）；`good_plan()` 六块齐全的计划文本（`src/change/plan_audit.rs:461`）；`plan_with_ambiguity(items)` 带「歧义」小节的计划（`src/change/plan_audit.rs:593`）。后两个用例读仓内文档做守卫（决策台账、agents-change 文档），依赖工作目录由 `CARGO_MANIFEST_DIR` 定位——**在仓库外跑测试也能读到**，但要求这两份文档存在。
+测试夹具：`repo()` 建临时仓并写两个源文件（`src/change/plan_audit.rs:453`）；`good_plan()` 六块齐全的计划文本（`src/change/plan_audit.rs:461`）；`plan_with_ambiguity(items)` 带「歧义」小节的计划（`src/change/plan_audit_tests.rs`）。后两个用例读仓内文档做守卫（决策台账、agents-change 文档），依赖工作目录由 `CARGO_MANIFEST_DIR` 定位——**在仓库外跑测试也能读到**，但要求这两份文档存在。
 
 ## 测试运行与环境
 
@@ -377,7 +377,7 @@ description: 变更计划的机械审计与裁决门——只算确定性（路�
   CARGO_TARGET_DIR=$(mktemp -d)/target cargo test --lib change::plan_audit
   ```
   结果：19 passed、0 failed，退出码 0；构建产物写在仓外临时目录，仓内 target 目录未被写入。
-- **不得绕过**：19 个用例里有 11 个是「错实现形态」守卫（`src/change/plan_audit.rs:609` 起的注释都写明「本用例必须变红」）；把 `audit` 或 `audit_verdicts` 的对应检查注释掉，这些用例立刻转红。
+- **不得绕过**：19 个用例里有 11 个是「错实现形态」守卫（`src/change/plan_audit_tests.rs` 起的注释都写明「本用例必须变红」）；把 `audit` 或 `audit_verdicts` 的对应检查注释掉，这些用例立刻转红。
 - **不适用声明**：无服务、无端口、无健康检查（N/A —— 库内纯函数模块）；无运行时配置项（N/A —— 不读环境变量与配置文件）；无种子数据（N/A —— 输入是计划文本，测试自造）；公开接口清单即本文「公开成员」表（N/A —— 无 HTTP/CLI 端点，CLI 侧由 `devforge` 子命令间接使用）。
 
 ## 相关文档

@@ -94,7 +94,7 @@ description: 变更报告（引擎写）——diff 统计、审查轮次、往�
 - 参数：`repo: &Path` — git 仓库根；`baseline: &str` — 基线 commit 引用。
 - 返回：`Result<DiffStats>`。
 - 异常：`System`（git 不可执行 / `git diff` 非零退出）。
-- 示例：改一个文件 + 新增一个已入索引的文件 → `files=2`、`insertions=3`、`deletions=0`（`src/change/report.rs:234`）。
+- 示例：改一个文件 + 新增一个已入索引的文件 → `files=2`、`insertions=3`、`deletions=0`（`src/change/report_tests.rs`）。
 
 ### summarize_acceptance
 
@@ -103,7 +103,7 @@ description: 变更报告（引擎写）——diff 统计、审查轮次、往�
 - 参数：`criteria: &[String]` — 计划验收标准；`done: &[String]` — 已对账通过项。
 - 返回：`AcceptanceSummary`。
 - 异常：N/A（纯计算）。
-- 示例：criteria `["a","b"]`、done `["a"]` → `total=2`、`done=1`、`missing=["b"]`、`passed()` 为假（`src/change/report.rs:223`）。
+- 示例：criteria `["a","b"]`、done `["a"]` → `total=2`、`done=1`、`missing=["b"]`、`passed()` 为假（`src/change/report_tests.rs`）。
 
 ### write_report
 
@@ -112,18 +112,18 @@ description: 变更报告（引擎写）——diff 统计、审查轮次、往�
 - 参数：`repo: &Path` — 目标仓；`change_id: &str` — 变更 id（目录名）；`report: &ChangeReport`。
 - 返回：`Result<PathBuf>` — 写出的 report.md 绝对/相对路径。
 - 异常：`System`（建目录或写文件失败）。
-- 示例：`write_report(tmp, "change-20261020-x", &report)` → 文件存在且内容含「变更报告」（`src/change/report.rs:282`）。
+- 示例：`write_report(tmp, "change-20261020-x", &report)` → 文件存在且内容含「变更报告」（`src/change/report_tests.rs`）。
 
 ## 测试覆盖（`#[cfg(test)]`）
 
 | 测试 | 覆盖口径 | 位置 |
 |---|---|---|
 | `render_carries_every_required_field` | 报告字段齐全 | `src/change/report.rs:180` |
-| `failed_reconciliation_is_visible_in_report` | 未通过可见 + 缺失清单小节 | `src/change/report.rs:198` |
-| `empty_criteria_is_reported_as_anomaly` | 空验收标准标「异常」 | `src/change/report.rs:212` |
-| `summarize_counts_missing` | total/done/missing 计数 | `src/change/report.rs:223` |
-| `diff_stats_reads_numstat` | numstat 解析（改+新增、二进制跳过） | `src/change/report.rs:234` |
-| `write_report_creates_directory_and_file` | 建目录 + 写 report.md | `src/change/report.rs:282` |
+| `failed_reconciliation_is_visible_in_report` | 未通过可见 + 缺失清单小节 | `src/change/report_tests.rs` |
+| `empty_criteria_is_reported_as_anomaly` | 空验收标准标「异常」 | `src/change/report_tests.rs` |
+| `summarize_counts_missing` | total/done/missing 计数 | `src/change/report_tests.rs` |
+| `diff_stats_reads_numstat` | numstat 解析（改+新增、二进制跳过） | `src/change/report_tests.rs` |
+| `write_report_creates_directory_and_file` | 建目录 + 写 report.md | `src/change/report_tests.rs` |
 
 ## 测试运行与环境
 

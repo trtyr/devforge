@@ -160,10 +160,10 @@ assets/templates/tests/test_smoke.py
 |---|---|---|
 | `plan_tree_skill_has_frontmatter_and_body` | SKILL.md 存在、frontmatter、标题与「目录约定」 | `src/config/skill_assets.rs:125` |
 | `doc_contract_skill_carries_frontmatter_templates_and_rules` | 契约六要素（frontmatter/name/必填/N/A/反模式/path:line/Runbook） | `src/config/skill_assets.rs:135` |
-| `unknown_skill_returns_none` | 未知 skill → `None`（走语言子表后仍 `None`） | `src/config/skill_assets.rs:149` |
-| `coding_discipline_skill_is_registered_with_pi_loadable_frontmatter` | pi 可加载性：frontmatter、`description` 非空、禁用开关 | `src/config/skill_assets.rs:154` |
-| `coding_discipline_skill_carries_twelve_entries_with_counterexamples_and_evidence` | 12 条目 + 反例/证据形态计数 + 来源许可 | `src/config/skill_assets.rs:176` |
-| `language_skills_vendor_coverage` | 四语言条数与关键串 + python 子目录覆盖 | `src/config/skill_assets.rs:213` |
+| `unknown_skill_returns_none` | 未知 skill → `None`（走语言子表后仍 `None`） | `src/config/skill_assets_tests.rs` |
+| `coding_discipline_skill_is_registered_with_pi_loadable_frontmatter` | pi 可加载性：frontmatter、`description` 非空、禁用开关 | `src/config/skill_assets_tests.rs` |
+| `coding_discipline_skill_carries_twelve_entries_with_counterexamples_and_evidence` | 12 条目 + 反例/证据形态计数 + 来源许可 | `src/config/skill_assets_tests.rs` |
+| `language_skills_vendor_coverage` | 四语言条数与关键串 + python 子目录覆盖 | `src/config/skill_assets_tests.rs` |
 
 ## 测试运行与环境（Runbook 分片）
 

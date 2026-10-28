@@ -120,7 +120,7 @@ doc-from-zero 的**机械审计层**（P008 D013/阶段 4）：结构 / 实体 /
 - **参数**：`raw: &str`。
 - **返回**：`DocLevel`（不是 `Result`——没有失败路径）。
 - **异常**：`N/A`（不返回 `Result`）。
-- **示例**：`DocLevel::parse("whatever") == DocLevel::Complete`；`DocLevel::parse("essential") == DocLevel::Essential`（用例 `src/docgen/audit.rs:601`）。
+- **示例**：`DocLevel::parse("whatever") == DocLevel::Complete`；`DocLevel::parse("essential") == DocLevel::Essential`（用例 `src/docgen/audit_tests.rs`）。
 
 ### CoverageMiss
 
@@ -220,12 +220,12 @@ doc-from-zero 的**机械审计层**（P008 D013/阶段 4）：结构 / 实体 /
 | `unit_scope_only_counts_own_entries` | 单元级分母只含本单元 | `src/docgen/audit.rs:480` |
 | `uncovered_units_groups_misses` | 缺失单元号去重汇总 | `src/docgen/audit.rs:498` |
 | `runbook_commands_extracted_from_bash_blocks` | 只抽 bash 围栏、不抽 text | `src/docgen/audit.rs:508` |
-| `duplicate_mentions_flags_repeated_symbol` | 两篇同符号 → 命中 | `src/docgen/audit.rs:522` |
-| `duplicate_mentions_ignores_meta_dir` | `_meta` 不参与 | `src/docgen/audit.rs:532` |
-| `duplicated_content_flags_same_paragraph` | 同段两篇 → 1 条 | `src/docgen/audit.rs:542` |
-| `duplicated_content_ignores_short_lines_and_meta` | 短行与 `_meta` 豁免 | `src/docgen/audit.rs:553` |
-| `module_mentioned_only_in_prose_is_not_covered` | 正文提及不算 / 标题算 / 链接算 | `src/docgen/audit.rs:565` |
-| `level_parse_defaults_to_complete` | 未知档位回落 Complete | `src/docgen/audit.rs:601` |
+| `duplicate_mentions_flags_repeated_symbol` | 两篇同符号 → 命中 | `src/docgen/audit_tests.rs` |
+| `duplicate_mentions_ignores_meta_dir` | `_meta` 不参与 | `src/docgen/audit_tests.rs` |
+| `duplicated_content_flags_same_paragraph` | 同段两篇 → 1 条 | `src/docgen/audit_tests.rs` |
+| `duplicated_content_ignores_short_lines_and_meta` | 短行与 `_meta` 豁免 | `src/docgen/audit_tests.rs` |
+| `module_mentioned_only_in_prose_is_not_covered` | 正文提及不算 / 标题算 / 链接算 | `src/docgen/audit_tests.rs` |
+| `level_parse_defaults_to_complete` | 未知档位回落 Complete | `src/docgen/audit_tests.rs` |
 
 测试夹具：`fixture`（`:420`）在临时目录建两个 Python 源文件（一个调 `create_note`、一个定义 `create_note` 与无人调用的 `orphan_fn`），`write_doc`（`:436`）在 `docs/contexts/` 下写文档并自动建父目录——所有用例都跑在临时目录里，不碰真实仓。
 

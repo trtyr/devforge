@@ -199,5 +199,5 @@ parse_route("没有路由块")                       // None
 | `replan_instruction_lists_gaps_and_asks_only_for_boundary` | 指令内容 | `src/change/boundary.rs:283` |
 | `route_parse_is_tolerant_of_whitespace` | 容忍空白 / 无块 None | `src/change/boundary.rs:296` |
 | `route_is_only_recognized_at_the_tail` | 仅尾部协议位 | `src/change/boundary.rs:304` |
-| `prose_after_the_protocol_block_is_not_a_tail_position` | 块后散文不算尾位 | `src/change/boundary.rs:332` |
-| `route_block_must_stand_alone_on_its_line` | 独立行 + 非空值 | `src/change/boundary.rs:343` |
+| `prose_after_the_protocol_block_is_not_a_tail_position` | 块后散文不算尾位 | `src/change/boundary_tests.rs` |
+| `route_block_must_stand_alone_on_its_line` | 独立行 + 非空值 | `src/change/boundary_tests.rs` |

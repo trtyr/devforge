@@ -35,7 +35,7 @@ profile 渲染的最后一步：把清单算出的包列表交给 `pi install` �
   - `src/config/mod.rs:6` `pub mod installer;`；`:11` `pub use installer::{build_install_command, PackageInstaller, PiInstallBridge};`（`FakeInstaller` 不在转发面，测试直连本模块的 `FakeInstaller`）。
   - `src/config/render.rs:8`/`:31` `Renderer.installer: &'a dyn PackageInstaller`；唯一生产调用点 `:222` `self.installer.install(&dir, &packages)?`；并发渲染 `render_all`（`:239`）用 `MAX_RENDER_CONCURRENCY = 4`（`:27`）与 std::thread::scope（`:248`）共享同一 `&dyn` → trait 上 `Send + Sync` 是硬要求。
   - `src/server/mod.rs:131` `pub installer: Arc<dyn PackageInstaller + Send + Sync>`；`src/main.rs:201` 生产注入 `Arc::new(PiInstallBridge)`；`src/server/handlers.rs:675`-680 把它交给 `Renderer` 并在 `put_manifest`（`:618`）的后台线程里渲染。
-  - 测试注入：`src/server/handlers.rs:699`/`:731`、`src/server/tests/mod.rs:134`、`tests/f6_observability/fixture.rs:31` 用 `FakeInstaller`；`src/config/render/render_tests.rs:115`/`:438` 另有 `CountingInstaller` / `FailingInstaller` 两个测试包装。
+  - 测试注入：`src/server/handlers.rs:699`/`:731`、`src/server/tests/mod.rs:134`、`tests/f6_observability/fixture.rs:31` 用 `FakeInstaller`；`src/config/render_tests.rs:115`/`:438` 另有 `CountingInstaller` / `FailingInstaller` 两个测试包装。
   - `build_install_command` 的唯一生产调用点是本文件 `PiInstallBridge` 的 `install`（`src/config/installer.rs:57`）；外部只在 `src/config/mod.rs:11` 被 re-export（公开面，仓内无第二个调用点）。
 - 向下依赖：标准库 `Path`（`:6`）、`Command`（`:7`）、crate 错误 `Context` trait 与 `DevforgeError`（`:9`）；`FakeInstaller` 另用 `serde_json`（`:78`、`:99`、`:112`）。
 - 外部依赖：`pi` 可执行文件（运行期从 PATH 解析）；无网络访问（网络在 `pi install` 内部发生，仓内单测不触发）。
@@ -86,7 +86,7 @@ profile 渲染的最后一步：把清单算出的包列表交给 `pi install` �
 - 构造 / 初始化：trait，无构造；实现者必须是单元结构体或可 `Arc` 的状态。约束 `Send + Sync`（`src/config/installer.rs:47`）——四个渲染 worker 共享同一个 `&dyn PackageInstaller`（`src/config/render.rs:244`、`:248`）。
 - 公开成员：唯一方法 `install(&self, profile_dir: &Path, packages: &[String]) -> Result<()>`——`Ok(())` 表示这组包都装成功（跳过幂等判定后才会被调用，`src/config/render.rs:222`）。
 - 生命周期：随 `Renderer` 借用（`&'a dyn`）或随 `ServerState` 以 `Arc<dyn PackageInstaller + Send + Sync>` 存续（`src/server/mod.rs:131`）；无内部可变状态，可跨线程共享。
-- 典型用法：生产 `Arc::new(PiInstallBridge)`（`src/main.rs:201`）→ `ServerState` 的 installer 字段 → `Renderer { installer: st.installer.as_ref(), .. }`（`src/server/handlers.rs:675`-680）→ `render_all`；测试传 `&FakeInstaller` 或自实现的计数/失败包装（`src/config/render/render_tests.rs:117`/`:440`）。
+- 典型用法：生产 `Arc::new(PiInstallBridge)`（`src/main.rs:201`）→ `ServerState` 的 installer 字段 → `Renderer { installer: st.installer.as_ref(), .. }`（`src/server/handlers.rs:675`-680）→ `render_all`；测试传 `&FakeInstaller` 或自实现的计数/失败包装（`src/config/render_tests.rs:117`/`:440`）。
 - 错误语义：`Err` 时整次渲染失败——`render_all` 按清单顺序 `rendered.push(res?)` 取首个错误上抛（`src/config/render.rs:263`）；`put_manifest` 的后台线程把它转成 SSE 事件 config.render_failed（`src/server/handlers.rs:687`）。
 
 ### PiInstallBridge
@@ -112,8 +112,8 @@ profile 渲染的最后一步：把清单算出的包列表交给 `pi install` �
 - 职责：测试实现——模拟 pi install 的**双记录**，不碰网络、不依赖全局 `pi`。
 - 构造 / 初始化：`#[derive(Default)] pub struct FakeInstaller;`（`src/config/installer.rs:70`-71），无字段；用 `FakeInstaller`（派生 Default，可写 FakeInstaller::default()）。
 - 公开成员：仅 `install`（trait 实现，`:74`-117）。
-- 生命周期：无状态；测试里按值借用即可（`src/config/render/render_tests.rs:11` 等）。
-- 典型用法：`Renderer { installer: &FakeInstaller, .. }`（`src/config/render/render_tests.rs:9`-326）；或包一层做断言（`CountingInstaller` 记录调用次数、`FailingInstaller` 注入失败，`src/config/render/render_tests.rs:115`-446）。
+- 生命周期：无状态；测试里按值借用即可（`src/config/render_tests.rs:11` 等）。
+- 典型用法：`Renderer { installer: &FakeInstaller, .. }`（`src/config/render_tests.rs:9`-326）；或包一层做断言（`CountingInstaller` 记录调用次数、`FailingInstaller` 注入失败，`src/config/render_tests.rs:115`-446）。
 - 行为语义（🟢 CONFIRMED `src/config/installer.rs:74`-117）：
   1. 记录 1 —— 读 `<profile>/settings.json`（缺失/不可解析 → `{}`），取 `packages` 键（缺失则插 `[]`），逐包 `push`，pretty 写回（`:76`-92）。
   2. 记录 2 —— `create_dir_all(<profile>/npm)`，读 `<profile>/npm/package.json`，**三种起始态**（口径以代码为准，逐行可核）：

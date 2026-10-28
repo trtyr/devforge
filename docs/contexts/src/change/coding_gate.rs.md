@@ -50,7 +50,7 @@ description: 变更 coding 阶段的两道机械质量门（回归前置 + 实�
 - 上游 / 消费方：
   - `src/change/mod.rs:12` `pub mod coding_gate;`；`src/change/mod.rs:29` `pub use` 转发 `SELF_CHECK_LOG`、`check_baseline_log`、`check_self_check`、`check_step_commits`、`read_steps`。
   - `src/change/session.rs`：`:12-15` 的 `use` 块引入 `changed_files`、`check_baseline_log`、`check_self_check`、`check_step_commits`、`parse_baseline_log`、`read_steps`、`BASELINE_LOG`；`:98` `BASELINE_LOG`；`:120` 与 `:160` `SELF_CHECK_LOG`；`:206` 复用 `parse_baseline_log`（解析逻辑只有一份）；`:389` `check_baseline_log`；`:416` 与 `:474` `changed_files`；`:428` `check_self_check`；`:447` `read_steps`；`:449` `check_step_commits`；`:585` `BASELINE_LOG`（`baseline_log_path`）。
-  - `src/change/testing_gate.rs:13` 引入 `parse_baseline_log`，`:29` 用它包裹回归日志；其「回归日志不可解析」文案与本门缺退出码文案同源（回归路径依赖本门文案，见 `src/change/coding_gate.rs:555`）。
+  - `src/change/testing_gate.rs:13` 引入 `parse_baseline_log`，`:29` 用它包裹回归日志；其「回归日志不可解析」文案与本门缺退出码文案同源（回归路径依赖本门文案，见 `src/change/coding_gate_tests.rs`）。
 - 向下依赖：`src/error.rs`（错误面 `DevforgeError` / `Result`，`src/change/coding_gate.rs:8`）；标准库（路径 `Path`/`PathBuf`、子进程 `Command`、git）。
 - 外部 crate：生产无；测试用 `tempfile`（tempdir）。
 
@@ -165,7 +165,7 @@ impl-steps.md
 - 参数：`md: &str` — 实施步骤 markdown。
 - 返回：`Vec<Step>`（空向量表示没有步骤 heading）。
 - 异常：N/A（不失败，靠 `read_steps` 判空）。
-- 示例：`parse_steps` 从 `## 步骤 1` 与 `## 步骤 2` 与 `### Step 3` 解析出 `[1,2,3]`，对应 title 分别为「改接口」「补测试」「收尾」（`src/change/coding_gate.rs:599`）。
+- 示例：`parse_steps` 从 `## 步骤 1` 与 `## 步骤 2` 与 `### Step 3` 解析出 `[1,2,3]`，对应 title 分别为「改接口」「补测试」「收尾」（`src/change/coding_gate_tests.rs`）。
 
 ### read_steps
 
@@ -173,7 +173,7 @@ impl-steps.md
 - 行为语义（🟢 CONFIRMED `src/change/coding_gate.rs:191`）：读黑板下 `IMPL_STEPS` 指向的文件；文件缺失 → `Quality`（`缺少实施步骤 …（先写步骤再动代码）`）；`parse_steps` 结果为空 → `Quality`（文案 `…没有任何 ## 步骤 N 条目`）；否则返回步骤。
 - 参数：`blackboard: &Path`。
 - 返回：`Result<Vec<Step>>`。
-- 异常：`Quality`（`DevforgeError` 变体）（缺失 / 空）。空内容（仅标题无步骤条目）→ `Err` 且 `is_quality_failure()`（`src/change/coding_gate.rs:660`）。
+- 异常：`Quality`（`DevforgeError` 变体）（缺失 / 空）。空内容（仅标题无步骤条目）→ `Err` 且 `is_quality_failure()`（`src/change/coding_gate_tests.rs`）。
 - 示例：`read_steps` 被 `src/change/session.rs:447` 在按步提交校验前调用。
 
 ### changed_files
@@ -201,7 +201,7 @@ impl-steps.md
 - 参数：`subject: &str` — 提交信息。
 - 返回：`Vec<u32>` — 出现的步骤号（去重，顺序按出现）。
 - 异常：N/A（纯字符串解析，无失败面；找不到标记时返回空向量）。
-- 示例（🟢 CONFIRMED `src/change/coding_gate.rs:669` 与 `:676`）：`step 3` → `[3]`；`步骤 2` → `[2]`；`step 2 step 2` → `[2]`（重复去重）；`step 8` 后正文含「…心跳的步骤字段…撞 409」→ `[8]`（正文 409 不中）；仅「步骤字段里提到 409」→ 空。
+- 示例（🟢 CONFIRMED `src/change/coding_gate_tests.rs` 与 `:676`）：`step 3` → `[3]`；`步骤 2` → `[2]`；`step 2 step 2` → `[2]`（重复去重）；`step 8` 后正文含「…心跳的步骤字段…撞 409」→ `[8]`（正文 409 不中）；仅「步骤字段里提到 409」→ 空。
 
 ### check_step_commits
 
@@ -215,7 +215,7 @@ impl-steps.md
 - 参数：`repo: &Path`（git 仓库）、`baseline: &str`、`change_id: &str`、`steps: &[Step]`。
 - 返回：`Result<usize>` — 对应上的声明步号个数。
 - 异常：`Quality`（前缀缺失 / 无步号 / 步号重复 / 序列对不上）；转发 `commits_since` 的 `System`/`Quality`。
-- 示例（🟢 CONFIRMED `src/change/coding_gate.rs:610` / `:626` / `:640` / `:650`）：两提交 `step 1`、`step 2` 对步骤 `{1,2}` → `Ok(2)`；只提交 `step 1` 却对步骤 `{1,2}` → `Err`（对不上）；提交「随手改一下」（无 change 前缀）→ `Err`（无法机械归属）；提交有前缀但无步号（如「顺手改」）→ `Err`（没写步骤号）。
+- 示例（🟢 CONFIRMED `src/change/coding_gate_tests.rs` / `:626` / `:640` / `:650`）：两提交 `step 1`、`step 2` 对步骤 `{1,2}` → `Ok(2)`；只提交 `step 1` 却对步骤 `{1,2}` → `Err`（对不上）；提交「随手改一下」（无 change 前缀）→ `Err`（无法机械归属）；提交有前缀但无步号（如「顺手改」）→ `Err`（没写步骤号）。
 
 ### impl_steps_path
 
@@ -233,7 +233,7 @@ impl-steps.md
 - 参数：`text: &str`、`file: &str`（证据文件名）、`label: &str`（「基线」/「自证」）。
 - 返回：`Result<BaselineEvidence>`。
 - 异常：`Quality`（`DevforgeError` 变体）（缺退出码）。
-- 示例：`- exit_code: **0**（44 passed / 0 failed）`（列表项 + 粗体 + 散文）→ 退出码 0（`src/change/coding_gate.rs:537`）；后续反向 `- exit_code: **101**` 不覆盖首行 0（`src/change/coding_gate.rs:544`）。
+- 示例：`- exit_code: **0**（44 passed / 0 failed）`（列表项 + 粗体 + 散文）→ 退出码 0（`src/change/coding_gate_tests.rs`）；后续反向 `- exit_code: **101**` 不覆盖首行 0（`src/change/coding_gate_tests.rs`）。
 
 ## 测试覆盖（`#[cfg(test)]`）
 
@@ -252,20 +252,20 @@ impl-steps.md
 | `parse_accepts_markdown_list_item_evidence` | 列表项容差 | `src/change/coding_gate.rs:507` |
 | `parse_still_rejects_list_item_without_exit_code` | 列表项缺退出码仍拒 | `src/change/coding_gate.rs:516` |
 | `parse_accepts_bold_list_item_exit_code` | 粗体容差 | `src/change/coding_gate.rs:526` |
-| `parse_bold_exit_code_with_prose_tail_takes_leading_int` | 粗体后散文取前导整数 | `src/change/coding_gate.rs:537` |
-| `parse_first_exit_code_wins_over_later_reverse_validation` | 首中即停 | `src/change/coding_gate.rs:544` |
-| `regression_claim_text_is_unchanged` | 回归文案不变（testing_gate 同源） | `src/change/coding_gate.rs:555` |
-| `decision_ledger_registers_d023` | 决策台账登记 D023 | `src/change/coding_gate.rs:566` |
-| `self_check_and_baseline_logs_are_independent_files` | 两门独立各读各文件 | `src/change/coding_gate.rs:580` |
-| `steps_are_parsed_from_headings` | heading 解析 | `src/change/coding_gate.rs:599` |
-| `step_count_matches_commits` | 步数=提交数过 | `src/change/coding_gate.rs:610` |
-| `missing_step_commit_fails` | 缺一步拒 | `src/change/coding_gate.rs:626` |
-| `duplicate_step_or_missing_prefix_fails` | 缺 `change` 前缀的提交拒（「无法机械归属」；重复步号分支在函数内但该例未单独触发） | `src/change/coding_gate.rs:640` |
-| `extra_commit_without_step_number_fails` | 多余提交无步号拒 | `src/change/coding_gate.rs:650` |
-| `empty_impl_steps_is_quality_failure` | 空实施步骤 Quality | `src/change/coding_gate.rs:660` |
-| `step_numbers_in_subject_handles_chinese_and_repeats` | 中文 + 重复去重 | `src/change/coding_gate.rs:669` |
-| `step_numbers_ignore_digits_in_prose_after_a_marker` | 正文数字不算 | `src/change/coding_gate.rs:676` |
-| `eleven_steps_with_prose_digits_reconcile_cleanly` | 11 步散文数字对账 | `src/change/coding_gate.rs:689` |
+| `parse_bold_exit_code_with_prose_tail_takes_leading_int` | 粗体后散文取前导整数 | `src/change/coding_gate_tests.rs` |
+| `parse_first_exit_code_wins_over_later_reverse_validation` | 首中即停 | `src/change/coding_gate_tests.rs` |
+| `regression_claim_text_is_unchanged` | 回归文案不变（testing_gate 同源） | `src/change/coding_gate_tests.rs` |
+| `decision_ledger_registers_d023` | 决策台账登记 D023 | `src/change/coding_gate_tests.rs` |
+| `self_check_and_baseline_logs_are_independent_files` | 两门独立各读各文件 | `src/change/coding_gate_tests.rs` |
+| `steps_are_parsed_from_headings` | heading 解析 | `src/change/coding_gate_tests.rs` |
+| `step_count_matches_commits` | 步数=提交数过 | `src/change/coding_gate_tests.rs` |
+| `missing_step_commit_fails` | 缺一步拒 | `src/change/coding_gate_tests.rs` |
+| `duplicate_step_or_missing_prefix_fails` | 缺 `change` 前缀的提交拒（「无法机械归属」；重复步号分支在函数内但该例未单独触发） | `src/change/coding_gate_tests.rs` |
+| `extra_commit_without_step_number_fails` | 多余提交无步号拒 | `src/change/coding_gate_tests.rs` |
+| `empty_impl_steps_is_quality_failure` | 空实施步骤 Quality | `src/change/coding_gate_tests.rs` |
+| `step_numbers_in_subject_handles_chinese_and_repeats` | 中文 + 重复去重 | `src/change/coding_gate_tests.rs` |
+| `step_numbers_ignore_digits_in_prose_after_a_marker` | 正文数字不算 | `src/change/coding_gate_tests.rs` |
+| `eleven_steps_with_prose_digits_reconcile_cleanly` | 11 步散文数字对账 | `src/change/coding_gate_tests.rs` |
 
 ## 测试运行与环境
 

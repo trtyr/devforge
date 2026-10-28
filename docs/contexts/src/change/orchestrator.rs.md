@@ -57,9 +57,9 @@ change 编排器（P009 T013）：阶段推进 + coding→plan 反向回退 + �
 ## 核心口径
 
 - **阶段词汇**：阶段名用 `ChangePhase` 的变体名（plan/coding/testing/done）——与心跳的阶段字段同一套词汇。
-- **断点**：`state` 模块的 `save` 落 `<plans>/<proj>/<task>/change/state.json`（`StateStore` 路径规则 `src/runstate/mod.rs:48`，生产构造见 `src/server/change_engine.rs:190`-193，SOP 段为 `change`；单测断言 `src/change/orchestrator/orchestrator_tests.rs:712`），跨会话保留往返计数 roundtrips、回注计数 test_reroutes、失败上下文 last_test_failure。
+- **断点**：`state` 模块的 `save` 落 `<plans>/<proj>/<task>/change/state.json`（`StateStore` 路径规则 `src/runstate/mod.rs:48`，生产构造见 `src/server/change_engine.rs:190`-193，SOP 段为 `change`；单测断言 `src/change/orchestrator_tests.rs:712`），跨会话保留往返计数 roundtrips、回注计数 test_reroutes、失败上下文 last_test_failure。
 - **往返历史**：`append_roundtrip` 把每次补边界写进**目标仓**的 `docs/plantree/changes/<change_id>/history.md`（路径规则 `src/change/history.rs:10`-16，调用点 `src/change/orchestrator.rs:246`）——与断点（落 plans 根）不是同一棵树。
-- **边界回路**：coding 改动经 `classify`（`src/change/boundary.rs:133`）归入 InBoundary（进 testing）/ OutOfBoundary（范围膨胀 Quality）/ RoutePlan（补边界重进 coding，有界 `MAX_ROUNDTRIPS`=3，`src/change/boundary.rs:13`）。⚠️ 超限时 `check_roundtrip` 的文案是「停下来问人」，但编排层实际不再问人：`run` 全程不调用 `ask`（🟢 CONFIRMED：`src/change` 内两处 `ask` 定义都在测试桩里——`src/change/orchestrator/orchestrator_tests.rs:20` 与 `src/change/session/session_tests/mod.rs:13`；`run` 全程不调用 `ask`），超限一律以 `Quality` 错误结束、交上层处理。
+- **边界回路**：coding 改动经 `classify`（`src/change/boundary.rs:133`）归入 InBoundary（进 testing）/ OutOfBoundary（范围膨胀 Quality）/ RoutePlan（补边界重进 coding，有界 `MAX_ROUNDTRIPS`=3，`src/change/boundary.rs:13`）。⚠️ 超限时 `check_roundtrip` 的文案是「停下来问人」，但编排层实际不再问人：`run` 全程不调用 `ask`（🟢 CONFIRMED：`src/change` 内两处 `ask` 定义都在测试桩里——`src/change/orchestrator_tests.rs:20` 与 `src/change/session/session_tests/mod.rs:13`；`run` 全程不调用 `ask`），超限一律以 `Quality` 错误结束、交上层处理。
 - **失败上下文**：测试回注把 `TestFailureContext`（round + issues 明细原文）写进断点，下一轮 coding 的 `run_coding(last_failure)` 收到；coding 过门/测试终态消费即清；超限分支不写不清。
 - **错误**：plan 连修超限 / 越界未申报 / 补边界仍未过 / 验收缺项 / 回注超限 → `Quality`（`DevforgeError` 变体，质量门，不自动重启）。
 
@@ -153,7 +153,7 @@ change 编排器（P009 T013）：阶段推进 + coding→plan 反向回退 + �
 - 参数：N/A（常量）。
 - 返回：N/A。
 - 异常：N/A。
-- 示例：`testing` 阶段已累计 3 次回注后再次 `RouteCoding` → 文案含「上限 3」（`src/change/orchestrator/orchestrator_tests.rs:625`）。
+- 示例：`testing` 阶段已累计 3 次回注后再次 `RouteCoding` → 文案含「上限 3」（`src/change/orchestrator_tests.rs:625`）。
 
 ### MAX_PLAN_FIXES
 
@@ -163,7 +163,7 @@ change 编排器（P009 T013）：阶段推进 + coding→plan 反向回退 + �
 - 参数：N/A（常量）。
 - 返回：N/A。
 - 异常：N/A。
-- 示例：初始 FAIL + 连续 3 轮 fix 仍 FAIL → 文案「连续 4 轮未通过」且 `is_quality_failure()`（`src/change/orchestrator/orchestrator_tests.rs:731`）。
+- 示例：初始 FAIL + 连续 3 轮 fix 仍 FAIL → 文案「连续 4 轮未通过」且 `is_quality_failure()`（`src/change/orchestrator_tests.rs:731`）。
 
 ### run
 
@@ -195,7 +195,7 @@ change 编排器（P009 T013）：阶段推进 + coding→plan 反向回退 + �
 - 参数：`run: ChangeRun<'_>` — 编排输入；`session: &mut S`（`S: ChangeSession`）— 阶段执行器；`ui: &mut dyn UserLink` — 用户连接（真实执行用）。
 - 返回：`Result<ChangeOutcome>`。
 - 异常：`Quality`（`DevforgeError` 变体）— 触发条件：plan 连修超限 / 越界未申报 / 补边界仍未过 / 验收缺项 / 测试回注超限（每次失败都是质量门）。也透传 `ChangeSession` 实现返回的 `Result` 错误（如红基线的 `Quality`，session 在 kickoff 前拦截）。
-- 示例（全部见测试覆盖表，`src/change/orchestrator/orchestrator_tests.rs:146`+）：happy 链 plan→coding→testing→report（`:146`）；coding 往返补边界重进（`:252`）；越界未申报 Quality 且停在 coding（`:297`）；第 4 次往返拒（`:319`）；从断点续跑跳 plan 保往返（`:345`）；红基线停 coding 不回 plan（`:694`）；验收缺一条失败（`:653`）。
+- 示例（全部见测试覆盖表，`src/change/orchestrator_tests.rs:146`+）：happy 链 plan→coding→testing→report（`:146`）；coding 往返补边界重进（`:252`）；越界未申报 Quality 且停在 coding（`:297`）；第 4 次往返拒（`:319`）；从断点续跑跳 plan 保往返（`:345`）；红基线停 coding 不回 plan（`:694`）；验收缺一条失败（`:653`）。
 
 ### phase_change（内部）
 
@@ -217,33 +217,33 @@ change 编排器（P009 T013）：阶段推进 + coding→plan 反向回退 + �
 
 | 测试 | 覆盖口径 | 位置 |
 |---|---|---|
-| `happy_path_plan_coding_testing_report` | plan→coding→testing→report、审查轮计入 | `src/change/orchestrator/orchestrator_tests.rs:146` |
-| `phase_changes_and_fix_rounds_are_logged_as_milestones` | 阶段转换落 phase.change、修复轮落 fix 对 | `src/change/orchestrator/orchestrator_tests.rs:169` |
-| `the_test_to_coding_reinjection_is_logged_as_a_fix_pair` | 测试回注落 fix 对 + 推 coding | `src/change/orchestrator/orchestrator_tests.rs:223` |
-| `coding_routes_back_to_plan_then_reenters_coding` | coding→plan→补边界→重进 coding、往返记断点 | `src/change/orchestrator/orchestrator_tests.rs:252` |
-| `out_of_boundary_without_declaration_fails_and_stays_coding` | 越界未申报 Quality 且停在 coding | `src/change/orchestrator/orchestrator_tests.rs:297` |
-| `fourth_roundtrip_is_refused` | 第 4 次往返拒、停在 3 次 | `src/change/orchestrator/orchestrator_tests.rs:319` |
-| `resume_from_checkpoint_skips_plan_and_keeps_roundtrips` | 断点续跑跳 plan 保往返计数 | `src/change/orchestrator/orchestrator_tests.rs:345` |
-| `the_failure_context_reaches_the_coding_session` | 失败上下文送达 coding 会话 | `src/change/orchestrator/orchestrator_tests.rs:372` |
-| `testing_failure_routes_back_and_is_bounded` | 测试失败回注带明细原文 | `src/change/orchestrator/orchestrator_tests.rs:399` |
-| `reroute_writes_the_failure_context_into_the_checkpoint` | 回注写失败上下文进断点 | `src/change/orchestrator/orchestrator_tests.rs:423` |
-| `failure_context_survives_across_sessions` | 失败上下文跨会话保留 | `src/change/orchestrator/orchestrator_tests.rs:461` |
-| `coding_success_clears_the_failure_context` | coding 过门消费即清 | `src/change/orchestrator/orchestrator_tests.rs:493` |
-| `second_reroute_overwrites_the_failure_context` | 二次回注覆盖旧 issues 不追加 | `src/change/orchestrator/orchestrator_tests.rs:520` |
-| `testing_pass_clears_the_failure_context` | 终态清上下文 | `src/change/orchestrator/orchestrator_tests.rs:545` |
-| `reroute_over_the_limit_keeps_the_failure_context_untouched` | 超限分支不写不清 | `src/change/orchestrator/orchestrator_tests.rs:564` |
-| `mock_chain_produces_report_and_done_state` | 接口级全链 report+done、断点落盘 | `src/change/orchestrator/orchestrator_tests.rs:595` |
-| `test_reroutes_are_bounded_across_sessions` | 回注次数跳会话累计不重启清零 | `src/change/orchestrator/orchestrator_tests.rs:625` |
-| `acceptance_missing_one_item_fails_run` | 验收缺一项失败 | `src/change/orchestrator/orchestrator_tests.rs:653` |
-| `plan_reviews_are_counted_in_report` | plan 审查轮计入报告 | `src/change/orchestrator/orchestrator_tests.rs:676` |
-| `red_baseline_stops_before_coding_agent_work` | 红基线停 coding 不回 plan 不重试 | `src/change/orchestrator/orchestrator_tests.rs:694` |
-| `checkpoint_path_is_change_state_on_blackboard` | 断点隔离落黑板 state.json | `src/change/orchestrator/orchestrator_tests.rs:712` |
-| `plan_rejection_is_quality_failure` | plan 连拒 Quality、修复恰好 3 轮 | `src/change/orchestrator/orchestrator_tests.rs:731` |
-| `plan_fix_loop_recovers_after_one_rejection` | 打回一次重写重审过 → 正常进 coding | `src/change/orchestrator/orchestrator_tests.rs:763` |
+| `happy_path_plan_coding_testing_report` | plan→coding→testing→report、审查轮计入 | `src/change/orchestrator_tests.rs:146` |
+| `phase_changes_and_fix_rounds_are_logged_as_milestones` | 阶段转换落 phase.change、修复轮落 fix 对 | `src/change/orchestrator_tests.rs:169` |
+| `the_test_to_coding_reinjection_is_logged_as_a_fix_pair` | 测试回注落 fix 对 + 推 coding | `src/change/orchestrator_tests.rs:223` |
+| `coding_routes_back_to_plan_then_reenters_coding` | coding→plan→补边界→重进 coding、往返记断点 | `src/change/orchestrator_tests.rs:252` |
+| `out_of_boundary_without_declaration_fails_and_stays_coding` | 越界未申报 Quality 且停在 coding | `src/change/orchestrator_tests.rs:297` |
+| `fourth_roundtrip_is_refused` | 第 4 次往返拒、停在 3 次 | `src/change/orchestrator_tests.rs:319` |
+| `resume_from_checkpoint_skips_plan_and_keeps_roundtrips` | 断点续跑跳 plan 保往返计数 | `src/change/orchestrator_tests.rs:345` |
+| `the_failure_context_reaches_the_coding_session` | 失败上下文送达 coding 会话 | `src/change/orchestrator_tests.rs:372` |
+| `testing_failure_routes_back_and_is_bounded` | 测试失败回注带明细原文 | `src/change/orchestrator_tests.rs:399` |
+| `reroute_writes_the_failure_context_into_the_checkpoint` | 回注写失败上下文进断点 | `src/change/orchestrator_tests.rs:423` |
+| `failure_context_survives_across_sessions` | 失败上下文跨会话保留 | `src/change/orchestrator_tests.rs:461` |
+| `coding_success_clears_the_failure_context` | coding 过门消费即清 | `src/change/orchestrator_tests.rs:493` |
+| `second_reroute_overwrites_the_failure_context` | 二次回注覆盖旧 issues 不追加 | `src/change/orchestrator_tests.rs:520` |
+| `testing_pass_clears_the_failure_context` | 终态清上下文 | `src/change/orchestrator_tests.rs:545` |
+| `reroute_over_the_limit_keeps_the_failure_context_untouched` | 超限分支不写不清 | `src/change/orchestrator_tests.rs:564` |
+| `mock_chain_produces_report_and_done_state` | 接口级全链 report+done、断点落盘 | `src/change/orchestrator_tests.rs:595` |
+| `test_reroutes_are_bounded_across_sessions` | 回注次数跳会话累计不重启清零 | `src/change/orchestrator_tests.rs:625` |
+| `acceptance_missing_one_item_fails_run` | 验收缺一项失败 | `src/change/orchestrator_tests.rs:653` |
+| `plan_reviews_are_counted_in_report` | plan 审查轮计入报告 | `src/change/orchestrator_tests.rs:676` |
+| `red_baseline_stops_before_coding_agent_work` | 红基线停 coding 不回 plan 不重试 | `src/change/orchestrator_tests.rs:694` |
+| `checkpoint_path_is_change_state_on_blackboard` | 断点隔离落黑板 state.json | `src/change/orchestrator_tests.rs:712` |
+| `plan_rejection_is_quality_failure` | plan 连拒 Quality、修复恰好 3 轮 | `src/change/orchestrator_tests.rs:731` |
+| `plan_fix_loop_recovers_after_one_rejection` | 打回一次重写重审过 → 正常进 coding | `src/change/orchestrator_tests.rs:763` |
 
 ## 测试运行与环境
 
-- 单测位置（ARC-R6 已拆分）：`src/change/orchestrator.rs:394` 只有 `#[cfg(test)] mod orchestrator_tests;` 一行声明，用例本体在 `src/change/orchestrator/orchestrator_tests.rs`（23 例），上表逐例给出位置。
+- 单测位置（ARC-R6 已拆分）：`src/change/orchestrator.rs:394` 只有 `#[cfg(test)] mod orchestrator_tests;` 一行声明，用例本体在 `src/change/orchestrator_tests.rs`（23 例），上表逐例给出位置。
 - **环境前提**：edition 2024（`Cargo.toml:5`）⇒ 需 Rust **1.85+** 且 toolchain 已安装（rustup 无默认 toolchain 时必须显式指定，如 `RUSTUP_TOOLCHAIN=stable`）。本次实测：`rustc 1.99.0` / `cargo 1.99.0`。
 - **依赖获取**：`cargo fetch`（首次需网络；本模块自身只用到 `tempfile` 作为 dev-dependency，见 `Cargo.toml:27`）。
 - **运行单模块单测**（🟢 CONFIRMED，本轮实跑：`cargo test --lib change::orchestrator` → `23 passed; 0 failed; 577 filtered out`，EXIT=0）：
@@ -253,7 +253,7 @@ change 编排器（P009 T013）：阶段推进 + coding→plan 反向回退 + �
   ```
 
   实测环境 `rustc 1.99.0` / `cargo 1.99.0`（2026-10 于本仓）；编译产物放仓外目录以免污染仓内 `target/`。
-- 隔离：`StateStore` 以 `tempfile` 的临时目录作黑板根（测试辅助 `store`，`src/change/orchestrator/orchestrator_tests.rs:7`）；往返历史文件也落在同一临时目录（`repo` 参数即该 tempdir，路径规则 `src/change/history.rs:10`）——用例不碰真实 plans 根、不需要网络/端口/外部服务，可并行跑。
+- 隔离：`StateStore` 以 `tempfile` 的临时目录作黑板根（测试辅助 `store`，`src/change/orchestrator_tests.rs:7`）；往返历史文件也落在同一临时目录（`repo` 参数即该 tempdir，路径规则 `src/change/history.rs:10`）——用例不碰真实 plans 根、不需要网络/端口/外部服务，可并行跑。
 - 用例不要求 `git` 仓库：收尾 `diff_stats` 对非 git 临时目录返回 `System` 错误，被 `unwrap_or_default()` 吞掉（统计为空，`src/change/orchestrator.rs:371`；`diff_stats` 只产出 `System` 错误，`src/change/report.rs:95`-106）。
-- 测试基建：`Scripted`（`src/change/orchestrator/orchestrator_tests.rs:26` 起，脚本化 `ChangeSession` + 调用序列 `log` + 每轮 `seen_failures`）、`NoUser`（`UserLink` 拒绝问用户，`:19`）、观测断言用 `capture_jsonl`（`:181`、`:234`）。集成面另见 `tests/change_failure_context/main.rs`（仓外黑盒，只经 change 子模块公开面观测；用例分散在 `tests/change_failure_context/context.rs` / `tests/change_failure_context/guards.rs` / `tests/change_failure_context/support.rs`）。
-- **本单元的 Runbook 边界**：本节承担环境 / 依赖获取 / 测试运行与隔离三件；**N/A** 项及理由——启停与健康检查：本单元是库内模块，无独立进程（进程级启停属汇编层的服务 Runbook）；配置项：本模块无可配键，输入全经 `ChangeRun` 传入；种子数据：无持久化种子数据，断点由用例自行预置（如 `src/change/orchestrator/orchestrator_tests.rs:345` 起）；公开接口清单：上文「公开成员」表即全部（无 HTTP/CLI 端点）。
+- 测试基建：`Scripted`（`src/change/orchestrator_tests.rs:26` 起，脚本化 `ChangeSession` + 调用序列 `log` + 每轮 `seen_failures`）、`NoUser`（`UserLink` 拒绝问用户，`:19`）、观测断言用 `capture_jsonl`（`:181`、`:234`）。集成面另见 `tests/change_failure_context/main.rs`（仓外黑盒，只经 change 子模块公开面观测；用例分散在 `tests/change_failure_context/context.rs` / `tests/change_failure_context/guards.rs` / `tests/change_failure_context/support.rs`）。
+- **本单元的 Runbook 边界**：本节承担环境 / 依赖获取 / 测试运行与隔离三件；**N/A** 项及理由——启停与健康检查：本单元是库内模块，无独立进程（进程级启停属汇编层的服务 Runbook）；配置项：本模块无可配键，输入全经 `ChangeRun` 传入；种子数据：无持久化种子数据，断点由用例自行预置（如 `src/change/orchestrator_tests.rs:345` 起）；公开接口清单：上文「公开成员」表即全部（无 HTTP/CLI 端点）。

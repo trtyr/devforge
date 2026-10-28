@@ -53,6 +53,6 @@
 
 ## 下游依赖
 
-- `src/change/coding_gate.rs:104` `parse_baseline_log` → 内部 `parse_evidence_log`（`:37`-`:99`；用 `BASELINE_LOG` + 标签「基线」拼错误文案）；`src/change/coding_gate.rs:554`-`:563` 的 `regression_claim_text_is_unchanged` 钉住「回归路径文案以『回归日志不可解析』开头」。
+- `src/change/coding_gate.rs:104` `parse_baseline_log` → 内部 `parse_evidence_log`（`:37`-`:99`；用 `BASELINE_LOG` + 标签「基线」拼错误文案）；`src/change/coding_gate_tests.rs`-`:563` 的 `regression_claim_text_is_unchanged` 钉住「回归路径文案以『回归日志不可解析』开头」。
 - `src/change/state.rs:44` `TestFailureContext`（`round: usize` + `issues: Vec<String>`）；本模块只用 `issues`。
 - `src/error.rs` 的 `DevforgeError::Quality` / `Result`；测试用 `is_quality_failure`（`src/error.rs:74`）。

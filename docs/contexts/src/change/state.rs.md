@@ -58,7 +58,7 @@ change run 的检查点（P009 T011b；落点按 plan 010 D001/D022a：**引擎�
 - 上游 / 消费方：
   - `src/change/mod.rs:21` `pub mod state;`；`:42` `pub use state::{CHANGE_SOP, ChangePhase, ChangeState, TestFailureContext};`（`load` / `save` 走模块路径）。
   - `src/change/orchestrator.rs:15` 引入 `ChangePhase` / `ChangeState` / `TestFailureContext` / `load` / `save`。调用频次：`run` 在**入口 `load` 一次**（`src/change/orchestrator.rs:160`），之后只在阶段迁移/计数需要落盘的分支 `save`（如 `:205`、`:232`、`:279`、`:320`、`:325`（超限分支先存后返错）、`:347`、`:362`）；没有「每次进阶段前重新 load」。
-  - `src/change/orchestrator.rs:150` `ChangeOutcome` 的 `state` 字段；`src/change/orchestrator/orchestrator_tests.rs:10`/`:478`（测试）用 `CHANGE_SOP` 建 `StateKey`。
+  - `src/change/orchestrator.rs:150` `ChangeOutcome` 的 `state` 字段；`src/change/orchestrator_tests.rs:10`/`:478`（测试）用 `CHANGE_SOP` 建 `StateKey`。
   - `src/change/session.rs:19` 引入 `TestFailureContext`（`coding_kickoff` 的入参/送达面）。
   - `src/change/testing_gate.rs:14` 引入 `TestFailureContext`（`coding_failure_block`）。
   - `tests/change_failure_context/main.rs:24` 至 `:26` 用 `CHANGE_SOP` / `ChangePhase` / `ChangeState` / `TestFailureContext` / `load` / `save` 做仓外黑盒验证。
@@ -100,7 +100,7 @@ change run 的检查点（P009 T011b；落点按 plan 010 D001/D022a：**引擎�
 - 参数：`&self`（阶段变体本身）；无其它参数。
 - 返回：`&'static str`——固定四个字面量之一（`plan` / `coding` / `testing` / `done`，与 `#[serde(rename_all = "lowercase")]` 的落盘值同形）。
 - 异常：N/A（穷举 match，无失败路径）。
-- 示例：`ChangePhase::Testing.as_str() == "testing"`；编排层 `src/change/orchestrator.rs:33` 用 `as_str()` 写观测阶段。与落盘字符串一致性的证据在反序列化侧：旧断点里写成 `"phase": "coding"`（`src/change/state.rs:304`），载入后断言为 `Coding` 变体（`src/change/state.rs:320`）。
+- 示例：`ChangePhase::Testing.as_str() == "testing"`；编排层 `src/change/orchestrator.rs:33` 用 `as_str()` 写观测阶段。与落盘字符串一致性的证据在反序列化侧：旧断点里写成 `"phase": "coding"`（`src/change/state_tests.rs`），载入后断言为 `Coding` 变体（`src/change/state_tests.rs`）。
 
 ### TestFailureContext
 
@@ -147,7 +147,7 @@ change run 的检查点（P009 T011b；落点按 plan 010 D001/D022a：**引擎�
 - 参数：`state: &RunState`、`change_id: &str`、`baseline: &str`。
 - 返回：`ChangeState`。
 - 异常：N/A（不失败）。
-- 示例：旧断点缺 `last_test_failure` 键仍能恢复其余字段（`src/change/state.rs:296`）。
+- 示例：旧断点缺 `last_test_failure` 键仍能恢复其余字段（`src/change/state_tests.rs`）。
 
 ### write_into
 
@@ -201,7 +201,7 @@ change run 的检查点（P009 T011b；落点按 plan 010 D001/D022a：**引擎�
 - 参数：N/A（`&mut self`）。
 - 返回：N/A。
 - 异常：N/A。
-- 示例：旧断点恢复后 `test_reroutes=2` 不丢（`src/change/state.rs:296`）。
+- 示例：旧断点恢复后 `test_reroutes=2` 不丢（`src/change/state_tests.rs`）。
 
 ### set_test_failure
 
@@ -210,7 +210,7 @@ change run 的检查点（P009 T011b；落点按 plan 010 D001/D022a：**引擎�
 - 参数：`round: usize`（第几轮回注）、`issues: Vec<String>`（明细原文）。
 - 返回：N/A。
 - 异常：N/A。
-- 示例：先 `(1, ["旧失败"])` 再 `(2, ["新失败"])` → round=2、issues 只有「新失败」（`src/change/state.rs:328`）。
+- 示例：先 `(1, ["旧失败"])` 再 `(2, ["新失败"])` → round=2、issues 只有「新失败」（`src/change/state_tests.rs`）。
 
 ### clear_test_failure
 
@@ -219,7 +219,7 @@ change run 的检查点（P009 T011b；落点按 plan 010 D001/D022a：**引擎�
 - 参数：N/A（`&mut self`）。
 - 返回：N/A。
 - 异常：N/A。
-- 示例：清除后 `last_test_failure == None`（`src/change/state.rs:339`）。
+- 示例：清除后 `last_test_failure == None`（`src/change/state_tests.rs`）。
 
 ### load
 
@@ -250,11 +250,11 @@ change run 的检查点（P009 T011b；落点按 plan 010 D001/D022a：**引擎�
 | `missing_checkpoint_means_cold_start` | 无断点 → 冷启动 | `src/change/state.rs:224` |
 | `resume_keeps_roundtrips_across_sessions` | 往返计数跨会话保留 | `src/change/state.rs:234` |
 | `counters_are_idempotent` | 步骤/验收去重 | `src/change/state.rs:255` |
-| `failure_context_persists_across_sessions` | 上下文跨会话逐字保留 | `src/change/state.rs:266` |
-| `old_checkpoint_without_failure_key_still_loads` | 旧断点缺键仍加载、计数不丢 | `src/change/state.rs:296` |
-| `failure_context_is_overwritten_not_appended` | 覆盖写不追加 | `src/change/state.rs:328` |
-| `clearing_failure_context_empties_it` | 清除后为 None | `src/change/state.rs:339` |
-| `foreign_state_is_ignored` | 其它 SOP 断点不污染 | `src/change/state.rs:347` |
+| `failure_context_persists_across_sessions` | 上下文跨会话逐字保留 | `src/change/state_tests.rs` |
+| `old_checkpoint_without_failure_key_still_loads` | 旧断点缺键仍加载、计数不丢 | `src/change/state_tests.rs` |
+| `failure_context_is_overwritten_not_appended` | 覆盖写不追加 | `src/change/state_tests.rs` |
+| `clearing_failure_context_empties_it` | 清除后为 None | `src/change/state_tests.rs` |
+| `foreign_state_is_ignored` | 其它 SOP 断点不污染 | `src/change/state_tests.rs` |
 
 ## 测试运行与环境
 
@@ -268,6 +268,6 @@ change run 的检查点（P009 T011b；落点按 plan 010 D001/D022a：**引擎�
   ```
 
   预期输出：`test result: ok. 10 passed; 0 failed; 0 ignored; 588 filtered out`（`filtered out` 的数随仓内测试总数变化，不是本模块的断言），用例名与上表十例一一对应。⚠️ `/tmp` 容量小时把 `TMPDIR` 指到宽裕目录（否则大量临时目录创建可能写失败）。
-- 运行依赖：`tempfile`（dev-dependency，`Cargo.toml:27`）作 `StateStore` 根；`serde_json`（测试直接拼旧断点 `data`，如 `src/change/state.rs:303`-312，属 crate 已有依赖）；不需要 git、外部服务、端口或网络。
+- 运行依赖：`tempfile`（dev-dependency，`Cargo.toml:27`）作 `StateStore` 根；`serde_json`（测试直接拼旧断点 `data`，如 `src/change/state_tests.rs`-312，属 crate 已有依赖）；不需要 git、外部服务、端口或网络。
 - 每个用例独立 `tempdir`，`StateKey` 用 `("proj","task",CHANGE_SOP)`，可并行跑。
 - **本单元的 Runbook 边界**：本节承担环境 / 依赖获取 / 测试运行与隔离三件；**N/A** 项与理由——启停与健康检查：库内模块，无独立进程；配置项：无运行时可配项（路径由 `StateKey` 入参决定，常量 `CHANGE_SOP` 不外部可调）；种子数据：无预置种子（用例自行构造断点或空目录）；公开接口清单：上文「公开成员」表即全部（无 HTTP/CLI 端点）。

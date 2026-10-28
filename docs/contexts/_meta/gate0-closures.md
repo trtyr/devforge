@@ -1,11 +1,11 @@
 # 门 0 闭包校验（引擎侧）
 
-- src/change/orchestrator/orchestrator_tests.rs:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）
+- src/change/orchestrator_tests.rs:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）
 - src/change/session/session_tests/mod.rs:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）
 - src/change/session/session_tests/plan.rs:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）
 - src/change/session/session_tests/runtime.rs:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）
-- src/config/manifest/manifest_tests.rs:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）
-- src/config/render/render_tests.rs:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）
+- src/config/manifest_tests.rs:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）
+- src/config/render_tests.rs:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）
 - src/engine/client/client_tests.rs:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）
 - tests/change_ask_ring.rs:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）
 - tests/e2e/common.py:1 [entry-reachability] 从任何入口点都不可达（可能是死代码或漏登入口）

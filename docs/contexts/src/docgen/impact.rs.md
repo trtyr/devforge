@@ -197,9 +197,9 @@ doc-from-zero 增量模式的**影响面计算**（008 T023 / D015 / D021）：�
 | `parses_name_status_and_renames` | diff 四类 + 重命名新旧路径 | `src/docgen/impact.rs:395` |
 | `parses_porcelain_including_untracked_and_renames` | 修改/未跟踪/重命名 | `src/docgen/impact.rs:405` |
 | `changed_file_maps_only_to_its_own_unit` | 路径 → 单元，且不含无关单元 | `src/docgen/impact.rs:413` |
-| `deleted_symbol_pulls_in_referrers` | 删符号 → notes + 引用方单元入集合 | `src/docgen/impact.rs:438` |
-| `assembly_page_mentioning_changed_unit_is_flagged` | 汇编页命中单元 → 进复核清单 | `src/docgen/impact.rs:475` |
-| `plan_impact_without_old_inventory_errors` | 缺旧清单 → 明确报错 | `src/docgen/impact.rs:500` |
+| `deleted_symbol_pulls_in_referrers` | 删符号 → notes + 引用方单元入集合 | `src/docgen/impact_tests.rs` |
+| `assembly_page_mentioning_changed_unit_is_flagged` | 汇编页命中单元 → 进复核清单 | `src/docgen/impact_tests.rs` |
+| `plan_impact_without_old_inventory_errors` | 缺旧清单 → 明确报错 | `src/docgen/impact_tests.rs` |
 
 测试夹具：`touch`（`:380`，写文件并建父目录）与 `repo`（`:386`，三文件两目录：core/a.py 定义 alpha、core/b.py 引用 alpha、other/c.py 定义 gamma）——全部跑在 `tempfile` 临时目录。
 

@@ -17,7 +17,7 @@
 
 ## GAP
 
-- 🟡 `doc_contract_skill_is_shared_by_four_profiles`（`src/config/manifest.rs:705`）的断言集只含 4 个 Agent（`coding-agent` / `coding-review` / `doc-fix` / `doc-review`），但 `builtin()` 实际有 **5** 个持有 `doc-contract`——`doc-agent`（`src/config/manifest.rs:341`）在断言之外。影响面：把 `doc-agent` 的 `doc-contract` 摘掉不会让任何测试变红，而 doc-agent 的提示词正依赖该 skill 的契约文本 → 该 Agent 的文档产出会静默失去契约约束；文档只能标注「实际 5 个持有 / 断言 4 个」这一差距，无法判断哪个是目标口径。
+- 🟡 `doc_contract_skill_is_shared_by_four_profiles`（`src/config/manifest_tests.rs`）的断言集只含 4 个 Agent（`coding-agent` / `coding-review` / `doc-fix` / `doc-review`），但 `builtin()` 实际有 **5** 个持有 `doc-contract`——`doc-agent`（`src/config/manifest.rs:341`）在断言之外。影响面：把 `doc-agent` 的 `doc-contract` 摘掉不会让任何测试变红，而 doc-agent 的提示词正依赖该 skill 的契约文本 → 该 Agent 的文档产出会静默失去契约约束；文档只能标注「实际 5 个持有 / 断言 4 个」这一差距，无法判断哪个是目标口径。
 - 🔴 清单**没有 schema 版本字段**，也没有迁移代码：`ConfigManifest` 的字段集合（`src/config/manifest.rs:145`-156）一旦变化，旧 `<root>/manifest.json` 只能靠 serde 的 `#[serde(default)]` 兜（仅 `mcp` / `thinking_level` / `env` 三个字段带 default，见 `:49`/`:134`/`:139`），其余缺失即 `load`（`:476`-479）报错、运行起不来。影响面：升级后首次启动的兼容性无法从代码判断「能不能续用旧清单」，文档只能提示「删掉旧清单让它重生成」——这条不在代码里，属部署侧约定。
 - 🟡 13 份提示词与机械门常量的**字面量耦合**（`PLAN_BLOCKS` / `VERDICT_MUST_ASK` / `VERDICT_SELF` / `VERDICT_ANSWER_FIELD`）只由单测保证（`src/config/manifest.rs:487`-541，标记引用 `:510`-512 与 `:528`-529）；提示词里还有大量未被锚点覆盖的散文约束（如 change-coding 的 `<impact-gap>` 字段格式），改提示词时没有机械检查兜底。影响面：文档只能引用「哪些锚点被钉住」，无法保证「没被钉住的约束仍生效」。
 - 🟡 `doc-agent` 的模型与 plan tree 不一致：代码是 `minimax-m3.1-flash`（`src/config/manifest.rs:339`，断言消息称「自 2026-10-20 起」，`:693`-695`），而 P008 D018 写的是 `deepseek-flash`，仓内未见对应变更决策或回写记录（selfhost 记录称 10-21 起因渠道不可用改用 minimax，不在本仓）。影响面：文档只能以代码为准并标出落差；下次按 plan tree 复核会被当成回归，也无法判断「是决策未回写还是实现偏离决策」。
@@ -31,7 +31,7 @@
 - 🟡 `reconcile_acceptance`（`src/change/testing_gate.rs:77`）**无生产调用点**：本文件外只出现在 `src/change/mod.rs:43` 的转发与单测。运行时对账实际是两步——`session` 用 `parse_acceptance_table` 读表、逐条 `path_refs` 判引用可解析（`src/change/session.rs:536`-546），覆盖率由 `summarize_acceptance` 精确相等汇总（`src/change/report.rs:125`-136，调用点 `src/change/orchestrator.rs:309`、`:372`）。两套判据**宽严不同**：`reconcile_acceptance` 用双向 `contains`（`src/change/testing_gate.rs:85`-87），运行时用 `d == *c`（`src/change/report.rs:128`）。影响面：改 `reconcile_acceptance` 的宽松匹配不会改变任何运行时行为；反之运行时收紧/放宽也不会被它的 3 个单测（`src/change/testing_gate.rs:194` / `:204` / `:211`）发现——文档无法断言「运行时用的是哪一套」，只能并列陈述两处。
 - 🟡 `reconcile_acceptance` 的「空 `test_ref`」分支（`src/change/testing_gate.rs:99`-110）**不可达且无测试**：`parse_acceptance_table`（`:66`-71）会先丢弃右半为空的行，因此该分支只能靠手工构造 `AcceptanceMatch` 才走到，12 个用例无一覆盖。影响面：该错误文案（「验收项没有指到测试 path:line」）若被改坏或删除，全套测试仍绿；文档只能照现状陈述，无法给出可重放证据证明该路径仍生效。
 - 🟡 「回归优先」是**单向**判定：仅拦「日志红 + 自称通过」（`src/change/testing_gate.rs:34`-40）。反向「日志绿 + 自称不绿」不判矛盾、直接 `Ok(code)`，此时 agent 会白走一次回注轮次（`src/change/orchestrator.rs:333` 起）。影响面：文档只能说明「本门不覆盖该方向」，无法判断这是刻意口径还是遗漏（代码与文件头注释均未提及该方向）。
-- 🟡 **回归日志的解析错误文案串到基线口径**：`check_regression_claim` 复用的 `parse_baseline_log` 内部固定传 `BASELINE_LOG` 与标签「基线」（`src/change/coding_gate.rs:104`-106），因此回归日志格式坏时，外层是「回归日志不可解析（要写 `exit_code: N`）」，内层仍是「基线证据缺退出码（evidence/baseline-test.log 里要写 `exit_code: N`）」。影响面：运维照错误文本去找基线证据，而真正坏的是回归日志；`src/change/coding_gate.rs:554`-563 的用例只断言外层前缀，掩盖不了这层错指。
+- 🟡 **回归日志的解析错误文案串到基线口径**：`check_regression_claim` 复用的 `parse_baseline_log` 内部固定传 `BASELINE_LOG` 与标签「基线」（`src/change/coding_gate.rs:104`-106），因此回归日志格式坏时，外层是「回归日志不可解析（要写 `exit_code: N`）」，内层仍是「基线证据缺退出码（evidence/baseline-test.log 里要写 `exit_code: N`）」。影响面：运维照错误文本去找基线证据，而真正坏的是回归日志；`src/change/coding_gate_tests.rs`-563 的用例只断言外层前缀，掩盖不了这层错指。
 
 # 缺口记录 — unit-src-27（src/config/render.rs）
 
@@ -53,8 +53,8 @@
 ## GAP
 
 - 🟡 **资产目录与 `include_str!` 登记没有机械对账**：`assets/skills/` 下新增文件若忘了在 `src/config/skill_assets.rs:29`-71` 加常量与清单项，该文件**静默不分发**（渲染器只遍历登记过的路径），6 个用例（`:125`/`:135`/`:149`/`:154`/`:176`/`:213`）只抽查若干文件名与关键串，不会变红；反向（改路径/删文件）由编译器兜住。影响面：文档无法断言「assets 目录内容 = 分发给 profile 的内容」，第三方按目录清单核对会多出未分发文件。
-- 🟡 **python 资产目录带 21 个缓存产物**：`assets/skills/python-best-practices/` 下现存 `.mypy_cache/`（18 个文件，含 `.gitignore`、`CACHEDIR.TAG`、`cache.0`-`cache.15`）与 `.ruff_cache/`（3 个），均未被 `include_str!` 引用。影响面：不进入二进制，但随仓库分发、会污染「vendor 原样嵌入」的口径，且任何「目录文件数 = 分发文件数」的直觉核对都会差 21；`language_skills_vendor_coverage`（`src/config/skill_assets.rs:213`）只验 3 个路径，发现不了。
-- 🟡 **pi 的 skill 加载契约不可重放**：`coding_discipline_skill_is_registered_with_pi_loadable_frontmatter`（`src/config/skill_assets.rs:154`）断言 frontmatter 以 `---` 开头、`description` 值非空、且不得含 `disable-model-invocation: true`，依据只是用例注释（「缺 description → skill 根本不加载」「该开关会排除出系统提示清单」）。`pi` 本体不在仓内，文档只能把这些当契约声明转述，无法给可重放命令证明加载行为。
+- 🟡 **python 资产目录带 21 个缓存产物**：`assets/skills/python-best-practices/` 下现存 `.mypy_cache/`（18 个文件，含 `.gitignore`、`CACHEDIR.TAG`、`cache.0`-`cache.15`）与 `.ruff_cache/`（3 个），均未被 `include_str!` 引用。影响面：不进入二进制，但随仓库分发、会污染「vendor 原样嵌入」的口径，且任何「目录文件数 = 分发文件数」的直觉核对都会差 21；`language_skills_vendor_coverage`（`src/config/skill_assets_tests.rs`）只验 3 个路径，发现不了。
+- 🟡 **pi 的 skill 加载契约不可重放**：`coding_discipline_skill_is_registered_with_pi_loadable_frontmatter`（`src/config/skill_assets_tests.rs`）断言 frontmatter 以 `---` 开头、`description` 值非空、且不得含 `disable-model-invocation: true`，依据只是用例注释（「缺 description → skill 根本不加载」「该开关会排除出系统提示清单」）。`pi` 本体不在仓内，文档只能把这些当契约声明转述，无法给可重放命令证明加载行为。
 - 🟡 **「vendor 原样嵌入」无法逐字验证**：注释 `src/config/skill_assets.rs:27`-28` 声明四语言 skill 是外部 vendor 原样入库、来源与许可登记在 `docs/plantree/plans/005-coding-stage/evidence/skills-sources.md`；仓内测试只验 `Rust Strict Standard` / `Go Strict Standard` 等关键串（`:213`-228`）。影响面：文档无法判断当前资产与上游版本是否一致，也无法在升级时判定「哪些改动是 vendor 带来的、哪些是本地改写」。
 
 # 缺口记录 — unit-src-31（src/docgen/audit.rs）
@@ -106,7 +106,7 @@
 
 ## GAP
 
-- 🟡 **`path:line` 只校验路径存在，不校验行号是否在文件范围内**：`audit` 对每条引用只做 `repo.join(&path).exists()`（`src/change/plan_audit.rs:276` 至 `:282`），行号 `u32` 解析后不再使用；而 doc-lint 侧的同类检查会做 `path_line_in_range`。影响面：计划可以写 `src/change/gate0.rs:9999` 通过机械体检，审查官只看「路径存在」就会被误导；文档不能承诺「体检通过 = 引用可信」。
+- 🟡 **`path:line` 只校验路径存在，不校验行号是否在文件范围内**：`audit` 对每条引用只做 `repo.join(&path).exists()`（`src/change/plan_audit.rs:276` 至 `:282`），行号 `u32` 解析后不再使用；而 doc-lint 侧的同类检查会做 `path_line_in_range`。影响面：计划可以写 `src/change/gate0_tests.rs` 通过机械体检，审查官只看「路径存在」就会被误导；文档不能承诺「体检通过 = 引用可信」。
 - 🟡 **「像文件路径」的扩展名白名单偏窄（12 种）**：`looks_like_file` 只认 rs/py/ts/tsx/js/go/java/kt/md/toml/json/yaml（`src/change/plan_audit.rs:373` 至 `:384`）。影响面：白名单里写 `scripts/build.sh`、`config/app.yml`、`migrations/001.sql`、`src/lib.h` 时**抽不到** → 该文件不计入白名单（不判存在）也不参与「要改的 ⊆ 白名单」，一次真实的越界改动可能被判干净；反之「白名单为空」也可能因为只写了非白名单扩展名而误报。
 - 🟡 **六块齐全用子串包含判断**：`plan.contains(block)`（`src/change/plan_audit.rs:265` 至 `:268`）。影响面：正文任何位置出现「风险」「白名单」等词（例如「本次无风险」写在需求复述里）就算该块齐；不判标题层级、不判顺序、不判块内容为空 → 结构缺失只能靠审查官那条「结构缺失」判据兜。
 - 🟡 **`section_lines` 用标题「含子串」切块，且不区分标题层级**：判据是 `line.contains(title)`（`src/change/plan_audit.rs:346` 至 `:356`）。影响面：①「白名单」出现在「风险」小节的标题里会把块提前切走；②小标题（`###`）与一级块（`##`）同等对待，一个 `### 验收标准补充` 会覆盖前面真正的验收块（后出现者胜）→ 抽取到的条款可能不是主表。

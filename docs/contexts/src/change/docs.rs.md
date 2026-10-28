@@ -69,7 +69,7 @@ description: doc_level 档位在引擎侧的落点（none/essential/complete 三
 - 参数：`repo: &Path` — 目标仓库根；`level: DocLevel` — 档位（`gate0` 解析）。见 `src/change/gate0.rs:24`。
 - 返回：`Result<DocAction>`。
 - 异常：`Result` — 触发条件：`build_inventory` 失败、建目录失败、`save`/写词表失败（`Context` 包装，文案含「建元数据目录」「写词表」）。`complete`/`none` 不返回错误。
-- 示例：`apply(tmp, DocLevel::None)` → `Skipped` 且不建 `docs`（`src/change/docs.rs:72`）；`apply(tmp, DocLevel::Essential)` → `EssentialDone` 且真产出清单、`essential_ready()` 为真、不产正文（`src/change/docs.rs:83`）；`apply(tmp, DocLevel::Complete)` → `FullChainRequired` 且不建 `docs`（`src/change/docs.rs:107`）。
+- 示例：`apply(tmp, DocLevel::None)` → `Skipped` 且不建 `docs`（`src/change/docs.rs:72`）；`apply(tmp, DocLevel::Essential)` → `EssentialDone` 且真产出清单、`essential_ready()` 为真、不产正文（`src/change/docs.rs:83`）；`apply(tmp, DocLevel::Complete)` → `FullChainRequired` 且不建 `docs`（`src/change/docs_tests.rs`）。
 
 ### essential_ready
 
@@ -95,4 +95,4 @@ description: doc_level 档位在引擎侧的落点（none/essential/complete 三
 |---|---|---|
 | `none_level_touches_no_docs` | none 零动作、不建 docs | `src/change/docs.rs:72` |
 | `essential_level_emits_inventory_then_lets_plan_proceed` | essential 产清单+词表、放行、幂等、不产正文 | `src/change/docs.rs:83` |
-| `complete_level_defers_to_doc_sop_and_writes_nothing` | complete 交 doc-from-zero、不写任何东西 | `src/change/docs.rs:107` |
+| `complete_level_defers_to_doc_sop_and_writes_nothing` | complete 交 doc-from-zero、不写任何东西 | `src/change/docs_tests.rs` |

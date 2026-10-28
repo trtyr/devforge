@@ -90,7 +90,7 @@ description: Profile 渲染器——清单真源 → profile 目录（AGENTS.md/
 - **构造 / 初始化**：三字段全 `pub`，结构体字面量直构（`src/config/render.rs:29`）：`manifest: &'a ConfigManifest`（`:30`）、`installer: &'a dyn PackageInstaller`（`:31`）、`skills_source: Option<&'a Path>`（`:33`，`None` = 只用内置资产/占位）。无构造器、无 `Default`。
 - **公开成员**：`render_agent`（[render_agent](#render_agent)）、`render_all`（[render_all](#render_all)）。字段语义见上；字段可变性：`&self` 方法不改字段，字段本身是共享引用。
 - **生命周期**：借用式（`Renderer<'a>`），活在调用方的栈上或闭包里；`render_all` 通过 标准库的 scope 线程 API 让 worker 线程借用同一 `&self`（`:248`），因此 `'a` 必须覆盖 scope，且 `PackageInstaller` 必须 `Send + Sync`。
-- **典型用法**：生产侧由 `render_body` 构造（`src/server/handlers.rs:675`-680），`skills_source` 由服务配置给或不给；测试侧用 `FakeInstaller`（`src/config/render/render_tests.rs:8` 的 `renderer()` 辅助）。
+- **典型用法**：生产侧由 `render_body` 构造（`src/server/handlers.rs:675`-680），`skills_source` 由服务配置给或不给；测试侧用 `FakeInstaller`（`src/config/render_tests.rs:8` 的 `renderer()` 辅助）。
 
 ### render_agent
 
@@ -115,7 +115,7 @@ description: Profile 渲染器——清单真源 → profile 目录（AGENTS.md/
   assert!(dir.join("settings.json").exists());
   ```
 
-  对应用例 `src/config/render/render_tests.rs:24`（结构完整）、`:400`（双记录 5+5）、`:815`（未知 Agent 被拒）。
+  对应用例 `src/config/render_tests.rs:24`（结构完整）、`:400`（双记录 5+5）、`:815`（未知 Agent 被拒）。
 
 ### render_all
 
@@ -136,14 +136,14 @@ description: Profile 渲染器——清单真源 → profile 目录（AGENTS.md/
   assert_eq!(dirs.len(), m.agents.len());
   ```
 
-  对应用例 `src/config/render/render_tests.rs:136`（顺序 + 每 Agent 恰好装一次）、`:481`（安装失败上抛）、`:705`（15 个全覆盖）。
+  对应用例 `src/config/render_tests.rs:136`（顺序 + 每 Agent 恰好装一次）、`:481`（安装失败上抛）、`:705`（15 个全覆盖）。
 
 ### runtime_settings
 
 - **摘要**：运行时生存配置的固定基底（模板层写死）。🟢 CONFIRMED `src/config/render.rs:15`
 - **行为语义**：每次返回**新建**的 JSON 对象，键值固定——`retry{maxRetries:3, baseDelayMs:5000}`、`httpIdleTimeoutMs:60000`、`defaultThinkingLevel:"high"`、hideThinkingBlock 为 true、`compaction{enabled:false, reserveTokens:16384, keepRecentTokens:20000}`（`:17`-23）。调用方（`render_agent`）再覆盖 `defaultProvider`/`defaultModel`/可选 `defaultThinkingLevel`。无 IO、无副作用。
 - **参数 / 返回**：无参数；返回 `serde_json` 的 `Value`。异常 `N/A`。
-- **示例**：见用例 `src/config/render/render_tests.rs:341`（逐键断言）。
+- **示例**：见用例 `src/config/render_tests.rs:341`（逐键断言）。
 
 ### MAX_RENDER_CONCURRENCY
 
@@ -169,30 +169,30 @@ description: Profile 渲染器——清单真源 → profile 目录（AGENTS.md/
 
 | 测试 | 覆盖口径 | 位置 |
 |---|---|---|
-| `render_creates_directory_structure` | 路径、AGENTS.md、settings 模型键、内置 skill 落盘 | `src/config/render/render_tests.rs:24` |
-| `render_empty_mcp_removes_stale_mcp_json` | 空 mcp 删旧文件 | `src/config/render/render_tests.rs:47` |
-| `doc_contract_skill_renders_into_coding_profile` | 契约 skill 真落盘 | `src/config/render/render_tests.rs:70` |
-| `dual_records_carry_base_plus_extra` | 四件套+差异化 → 双记录各 5 条 | `src/config/render/render_tests.rs:86` |
-| `render_all_parallel_preserves_manifest_order` | 顺序一致 + 每 Agent 恰好装一次 | `src/config/render/render_tests.rs:136` |
-| `render_all_propagates_install_failure` | 安装失败上抛 | `src/config/render/render_tests.rs:167` |
-| `second_render_skips_install_when_packages_already_present` | 二次渲染不重装 + 回写 packages | `src/config/render/render_tests.rs:183` |
-| `manifest_package_change_forces_reinstall` | 清单加包 → 重装 | `src/config/render/render_tests.rs:211` |
-| `missing_npm_record_forces_reinstall` | 双记录缺失 → 重装 | `src/config/render/render_tests.rs:245` |
-| `review_agent_gets_no_extra_packages` | 审查 profile 只有四件套 | `src/config/render/render_tests.rs:266` |
-| `review_profiles_render_reduced_thinking_level` | 四个 review = medium，两个干活方 = high | `src/config/render/render_tests.rs:278` |
-| `api_key_written_provider_keyed` | auth.json 形状 | `src/config/render/render_tests.rs:302` |
-| `models_json_carries_provider_and_budget` | provider/baseUrl/三模型/窗口预算 | `src/config/render/render_tests.rs:316` |
-| `settings_carry_runtime_keys` | 运行时键 + 模型层键共存 | `src/config/render/render_tests.rs:341` |
-| `prompts_carry_protocol_and_workflow` | 两份 MVP 提示词的关键短语 | `src/config/render/render_tests.rs:360` |
-| `skills_copied_from_source_when_given` | 源目录优先于内置资产 | `src/config/render/render_tests.rs:371` |
-| `render_all_covers_every_agent` | 15 个 profile | `src/config/render/render_tests.rs:391` |
-| `coding_agent_profile_has_mcp_json` | codegraph/context7 形状 + 规划无 mcp.json | `src/config/render/render_tests.rs:416` |
-| 待办工具包用例（名见源码） | coding 7 条、coding-review 5 条且不含待办包 | `src/config/render/render_tests.rs:441` |
-| `coding_prompts_carry_protocol_and_discipline` | coding 协议与纪律锚点 | `src/config/render/render_tests.rs:481` |
-| `unknown_agent_rejected` | 未知 Agent → `Config` | `src/config/render/render_tests.rs:501` |
-| `base_packages_exactly_four_verbatim` | 四件套 4 条 | `src/config/render/render_tests.rs:511` |
+| `render_creates_directory_structure` | 路径、AGENTS.md、settings 模型键、内置 skill 落盘 | `src/config/render_tests.rs:24` |
+| `render_empty_mcp_removes_stale_mcp_json` | 空 mcp 删旧文件 | `src/config/render_tests.rs:47` |
+| `doc_contract_skill_renders_into_coding_profile` | 契约 skill 真落盘 | `src/config/render_tests.rs:70` |
+| `dual_records_carry_base_plus_extra` | 四件套+差异化 → 双记录各 5 条 | `src/config/render_tests.rs:86` |
+| `render_all_parallel_preserves_manifest_order` | 顺序一致 + 每 Agent 恰好装一次 | `src/config/render_tests.rs:136` |
+| `render_all_propagates_install_failure` | 安装失败上抛 | `src/config/render_tests.rs:167` |
+| `second_render_skips_install_when_packages_already_present` | 二次渲染不重装 + 回写 packages | `src/config/render_tests.rs:183` |
+| `manifest_package_change_forces_reinstall` | 清单加包 → 重装 | `src/config/render_tests.rs:211` |
+| `missing_npm_record_forces_reinstall` | 双记录缺失 → 重装 | `src/config/render_tests.rs:245` |
+| `review_agent_gets_no_extra_packages` | 审查 profile 只有四件套 | `src/config/render_tests.rs:266` |
+| `review_profiles_render_reduced_thinking_level` | 四个 review = medium，两个干活方 = high | `src/config/render_tests.rs:278` |
+| `api_key_written_provider_keyed` | auth.json 形状 | `src/config/render_tests.rs:302` |
+| `models_json_carries_provider_and_budget` | provider/baseUrl/三模型/窗口预算 | `src/config/render_tests.rs:316` |
+| `settings_carry_runtime_keys` | 运行时键 + 模型层键共存 | `src/config/render_tests.rs:341` |
+| `prompts_carry_protocol_and_workflow` | 两份 MVP 提示词的关键短语 | `src/config/render_tests.rs:360` |
+| `skills_copied_from_source_when_given` | 源目录优先于内置资产 | `src/config/render_tests.rs:371` |
+| `render_all_covers_every_agent` | 15 个 profile | `src/config/render_tests.rs:391` |
+| `coding_agent_profile_has_mcp_json` | codegraph/context7 形状 + 规划无 mcp.json | `src/config/render_tests.rs:416` |
+| 待办工具包用例（名见源码） | coding 7 条、coding-review 5 条且不含待办包 | `src/config/render_tests.rs:441` |
+| `coding_prompts_carry_protocol_and_discipline` | coding 协议与纪律锚点 | `src/config/render_tests.rs:481` |
+| `unknown_agent_rejected` | 未知 Agent → `Config` | `src/config/render_tests.rs:501` |
+| `base_packages_exactly_four_verbatim` | 四件套 4 条 | `src/config/render_tests.rs:511` |
 
-> **注（用例命名与门禁）**：该用例名的英文词形与「未完成标记」同拼写（小写四字母），语义是「编码 Agent 拿到待办工具包、审查 Agent 不拿」。文档门禁的禁止项扫描大小写不敏感，正文直接照写会触发 2 条**提示**（不判失败，退出码仍 0）；故本表以「待办工具包用例」指代，名称以 `src/config/render/render_tests.rs:441` 为准。
+> **注（用例命名与门禁）**：该用例名的英文词形与「未完成标记」同拼写（小写四字母），语义是「编码 Agent 拿到待办工具包、审查 Agent 不拿」。文档门禁的禁止项扫描大小写不敏感，正文直接照写会触发 2 条**提示**（不判失败，退出码仍 0）；故本表以「待办工具包用例」指代，名称以 `src/config/render_tests.rs:441` 为准。
 
 ## 测试运行与环境（Runbook 分片）
 

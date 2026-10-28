@@ -82,7 +82,7 @@ change run 的门 0 预检（P009 接线）：一次把「基线 / 文档档位 
 - 黑板 = plans 根下 `<plans_root>/<project>/<task>/change`（状态、证据、实施步骤）。
 - 用例显式断言 `change_dir` **不以** `blackboard` 为前缀（`src/change/prepare.rs:114` 至 `:117`）。
 
-**幂等**（🟢 CONFIRMED `src/change/prepare.rs:204` 至 `:217`）
+**幂等**（🟢 CONFIRMED `src/change/prepare_tests.rs` 至 `:217`）
 
 - 同一（plans_root, project, task）重复调用：`change_id` 与 `change_dir` 不变（marker 记录复用，见 `src/change/change_id.rs:62` 至 `:73`），**需求文本与日期不同也不换号**。
 - 基线不重建：第二次 `created_repo=false`、sha 不变（baseline.txt 已存在即复用，见 `src/change/gate0.rs:73` 至 `:82`）。
@@ -143,24 +143,24 @@ change run 的门 0 预检（P009 接线）：一次把「基线 / 文档档位 
   - `DevforgeError` 的 `System`：建计划目录 / 黑板子目录失败、`assign_change_id` 写盘失败、`ensure_baseline` 的 git 或 IO 失败。
 - **示例**（每条对应一个用例，均可在临时目录重放）：
   - 干净目录 + `none` + `(2026,10,20)` + 需求 `add book api` → `change_id` 为 `change-20261020-add-book-api`、`baseline.created_repo=true`、三个黑板子目录就位（`src/change/prepare.rs:96`）。
-  - `none` → 目标仓不会出现 `docs/contexts`（`src/change/prepare.rs:152`）。
-  - `essential` → `doc_action` 为 `EssentialDone` 且目标仓出现 `docs/contexts/_meta/inventory.json`（`src/change/prepare.rs:169`）。
-  - `complete` → `Err`，文案含 `doc-from-zero`（`src/change/prepare.rs:187`）。
-  - 同任务第二次（需求与日期都变）→ `change_id`、`change_dir` 不变，`created_repo=false`、sha 不变（`src/change/prepare.rs:204`）。
-  - 目标仓路径不存在 → `Err` 含「不存在」（`src/change/prepare.rs:220`）。
-  - 档位 `full` → `Err` 含 `doc_level`（`src/change/prepare.rs:236`）。
+  - `none` → 目标仓不会出现 `docs/contexts`（`src/change/prepare_tests.rs`）。
+  - `essential` → `doc_action` 为 `EssentialDone` 且目标仓出现 `docs/contexts/_meta/inventory.json`（`src/change/prepare_tests.rs`）。
+  - `complete` → `Err`，文案含 `doc-from-zero`（`src/change/prepare_tests.rs`）。
+  - 同任务第二次（需求与日期都变）→ `change_id`、`change_dir` 不变，`created_repo=false`、sha 不变（`src/change/prepare_tests.rs`）。
+  - 目标仓路径不存在 → `Err` 含「不存在」（`src/change/prepare_tests.rs`）。
+  - 档位 `full` → `Err` 含 `doc_level`（`src/change/prepare_tests.rs`）。
 
 ## 测试覆盖（`#[cfg(test)]`，7 例）
 
 | 测试 | 覆盖口径 | 位置 |
 |---|---|---|
 | `bare_repo_gets_baseline_and_blackboard_skeleton` | 无 git 仓 → change-id 成形、计划目录与黑板两处分离、baseline.txt 落计划目录且等于 sha、`created_repo=true`、三个子目录 | `src/change/prepare.rs:96` |
-| `none_level_does_not_touch_docs` | `none` 档不建 `docs/contexts` | `src/change/prepare.rs:152` |
-| `essential_level_emits_inventory_then_proceeds` | `essential` → `EssentialDone` + 清单文件存在 | `src/change/prepare.rs:169` |
-| `complete_level_is_refused_with_reason` | `complete` → 拒绝且文案指路 doc-from-zero | `src/change/prepare.rs:187` |
-| `repeated_prepare_reuses_change_id` | 同任务两次（需求/日期都变）不换号、基线复用 | `src/change/prepare.rs:204` |
-| `missing_repo_is_rejected` | 目标仓缺失 → `Config` | `src/change/prepare.rs:220` |
-| `bad_doc_level_is_rejected` | 非法档位 → `Config` 且文案含 `doc_level` | `src/change/prepare.rs:236` |
+| `none_level_does_not_touch_docs` | `none` 档不建 `docs/contexts` | `src/change/prepare_tests.rs` |
+| `essential_level_emits_inventory_then_proceeds` | `essential` → `EssentialDone` + 清单文件存在 | `src/change/prepare_tests.rs` |
+| `complete_level_is_refused_with_reason` | `complete` → 拒绝且文案指路 doc-from-zero | `src/change/prepare_tests.rs` |
+| `repeated_prepare_reuses_change_id` | 同任务两次（需求/日期都变）不换号、基线复用 | `src/change/prepare_tests.rs` |
+| `missing_repo_is_rejected` | 目标仓缺失 → `Config` | `src/change/prepare_tests.rs` |
+| `bad_doc_level_is_rejected` | 非法档位 → `Config` 且文案含 `doc_level` | `src/change/prepare_tests.rs` |
 
 测试模块在 `src/change/prepare.rs:84` 起；夹具 `repo_with_code`（临时目录 + src/a.rs，`src/change/prepare.rs:88`）提供「有代码但无 git」的最小仓。
 

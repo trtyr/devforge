@@ -52,7 +52,7 @@ description: 测试阶段机械门——回归证据判定、验收对账、失�
 
 **下游（它依赖谁）**：
 
-- `src/change/coding_gate.rs:104` 的 `parse_baseline_log`（内部 `parse_evidence_log` 在 `src/change/coding_gate.rs:37` 至 `:99`；本模块 `:13` 引入）。`src/change/coding_gate.rs:554` 至 `:563` 的用例钉住「回归路径文案以『回归日志不可解析』开头」。
+- `src/change/coding_gate.rs:104` 的 `parse_baseline_log`（内部 `parse_evidence_log` 在 `src/change/coding_gate.rs:37` 至 `:99`；本模块 `:13` 引入）。`src/change/coding_gate_tests.rs` 至 `:563` 的用例钉住「回归路径文案以『回归日志不可解析』开头」。
 - `src/change/state.rs:44` 的 `TestFailureContext`（本模块 `:14` 引入，只用 `issues` 字段）。
 - `src/error.rs` 的错误类型 DevforgeError（其 Quality 变体）与 `Result`（本模块 `:15` 引入）；测试里用 `is_quality_failure`（`src/error.rs:74`）。
 - 标准库的 Path（`:11`）。生产零外部 crate；测试用 `tempfile`。

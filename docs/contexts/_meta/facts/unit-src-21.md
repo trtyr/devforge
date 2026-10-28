@@ -74,5 +74,5 @@
 - `roundtrips` 上限归属：常量与判定在 `src/change/boundary.rs:13`（`MAX_ROUNDTRIPS = 3`）与 `:160`；本模块的 `bump_roundtrip`（`src/change/state.rs:137`）只自增。
 - `baseline_sha`：字段与注释在 `src/change/state.rs:55`-56；本模块无 setter；`src/change/orchestrator.rs:161`-163 仅在载入值为空时回填一次。
 - `runstate` 侧行号复核：`src/runstate/mod.rs:48`-54 `StateKey::path`、`:136`-158 `save`（`:138`-142 强制重写身份四元组与 `updated_at_ms`）、`:214` `fresh_state`、`:89`-94 `matches`。
-- `ChangePhase` 小写落盘证据：旧断点手写 `"phase": "coding"`（`src/change/state.rs:304`）→ 载入断言 `Coding` 变体（`:320`）。
+- `ChangePhase` 小写落盘证据：旧断点手写 `"phase": "coding"`（`src/change/state_tests.rs`）→ 载入断言 `Coding` 变体（`:320`）。
 - 测试实跑（本轮）：`TMPDIR=/var/tmp/dfz-src21/tmp RUSTUP_HOME=/home/trtyr/.rustup RUSTUP_TOOLCHAIN=stable CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=/var/tmp/dfz-src21/target cargo test --lib change::state` → `10 passed; 0 failed; 0 ignored; 588 filtered out`，EXIT=0，编译 39.00s（`filtered out` 随仓内测试总数变化，上轮为 590）。

@@ -46,7 +46,7 @@
 - `src/change/session.rs:1006` / `:1033` / `:1060`（`#[cfg(test)]`）用 `FAILURE_BLOCK_TITLE` / `coding_failure_block` 做正反断言。
 - `src/change/orchestrator.rs:333` `route_back_message("coding", &failures)` → 同一 `msg` 进 `:334` `tracing::warn!` 与 `:356` `Quality` 文本；`:345` `state.set_test_failure(round, failures.clone())`。
 - `src/change/orchestrator.rs:360` `route_back_message("plan", &failures)` → `:364` `Quality` 文本。
-- `src/change/coding_gate.rs:557`（`#[cfg(test)]`）调 `check_regression_claim` 钉「回归日志不可解析」文案；`:427` / `:502` 注释声明 testing_gate 是 `parse_baseline_log` 的第二调用方。
+- `src/change/coding_gate_tests.rs`（`#[cfg(test)]`）调 `check_regression_claim` 钉「回归日志不可解析」文案；`:427` / `:502` 注释声明 testing_gate 是 `parse_baseline_log` 的第二调用方。
 - `tests/change_failure_context/main.rs:27` 引入 `FAILURE_BLOCK_TITLE` / `route_back_message`；`tests/change_failure_context/context.rs:39` 无上下文时不得出现标题；`:59` `coding_failure_block`；`:240` / `:254` 两个集成用例调 `route_back_message`。
 - `reconcile_acceptance`：本文件外只出现在 `src/change/mod.rs:45` 的 re-export，**无生产调用点**；运行时覆盖率汇总是 `summarize_acceptance`（`src/change/report.rs:125`，精确 `d == *c`，`src/change/report.rs:128`），由 `src/change/orchestrator.rs:309` / `:372` 调用。
 
