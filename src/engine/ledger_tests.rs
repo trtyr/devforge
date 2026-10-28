@@ -326,8 +326,13 @@ fn startup_reconcile_kills_our_orphans() {
     ledger.record(entry(pid));
     ledger.save(&path).unwrap();
 
-    let (killed, _, _) = reconcile_all(plans.path());
-    assert_eq!(killed, 1, "自家孤儿必须被杀");
+    let (killed, cleared, foreign) = reconcile_all(plans.path());
+    // 诊断属性：这条曾多次在并行全量里碎（flake），失败时必须带出三分类计数，
+    // 否则只看到 left: 0 无法区分「判成 Foreign」与「杀不动」。
+    assert_eq!(
+        killed, 1,
+        "自家孤儿必须被杀（killed={killed} cleared={cleared} foreign={foreign}）"
+    );
     let _ = child.wait(); // SIGTERM 后退出，回收防 zombie
     assert!(!process_alive(pid));
     assert!(

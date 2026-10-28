@@ -2,6 +2,7 @@
 //! （ARC-R2 自 server/mod.rs 迁入 observability——活性监测本质是观测面职责）。
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::domain::runner::RunControl;
 
@@ -88,6 +89,152 @@ fn session_fingerprint(dirs: &[PathBuf]) -> Option<u64> {
 /// 终态释放串行槽。由引擎调用方注入（传 UiRelay::abort_run 的闭包）。
 pub type UnblockHook = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 
+/// 一轮监测的四个职责（自审 minor 85）。
+///
+/// 旧口径四路监测（心跳 / 停滞告警 / 取消·超时清场 / 失活收割）挤在同一个
+/// 300ms 循环体里，共享 `last_fp` / `last_progress` / `idle_active` / 两个
+/// Once 标记——想改任何一路都得通读整段，而四路的**失败语义完全不同**：
+/// 心跳失败只降可观测、停滞只告警、清场要杀、收割杀完还得继续守。
+/// 抽成四个方法后 `tick` 只剩「谁在前谁在后」（顺序是有语义的：先判取消再判失活）。
+struct WatchdogTick<'a> {
+    run_id: &'a str,
+    control: &'a RunControl,
+    idle_ms: Option<u64>,
+    watch_dirs: &'a [PathBuf],
+    ledger_path: Option<&'a Path>,
+    on_intervention: Option<&'a UnblockHook>,
+    stall_warned: std::sync::Arc<AtomicBool>,
+    /// 失明告警只发一次（目录恢复可读后自然恢复判定）
+    blind_warned: std::sync::Arc<AtomicBool>,
+    last_fp: Option<u64>,
+    last_progress: u64,
+    /// 失活收割只判一次：收割后停失活判定，但心跳/取消/超时监测继续
+    idle_active: bool,
+}
+
+impl WatchdogTick<'_> {
+    /// 跑一轮：返回 `true` = 看门狗该退出了（被取消/超时并被清场）。
+    fn tick(&mut self) -> bool {
+        self.heartbeat();
+        self.warn_if_stalled();
+        if self.intervene_if_cancelled() {
+            return true;
+        }
+        self.reap_if_idle();
+        false
+    }
+
+    /// 心跳低频兜底刷新（节流在 observability 内）：run 停在同一阶段、长时间无事件时，
+    /// 时间戳仍向前走 → 能区分「卡死」与「已死」（六个 SOP 全经过本线程）。
+    ///
+    /// 刷失败不打断 run：节流到 debug（收尾终态才 WARN）。
+    fn heartbeat(&self) {
+        if let Err(e) = crate::observability::touch_run(self.run_id) {
+            tracing::debug!(component = "watchdog", run_id = %self.run_id, error = %e, "周期心跳落盘失败");
+        }
+    }
+
+    /// DR-3：agent 停滞告警——心跳只证本线程活，agent 活性看最近 agent 事件。
+    /// 从未有 agent 事件（DR-1 型「根本没开轮」）按开跑时刻起算。每回合只发一次。
+    fn warn_if_stalled(&self) {
+        if let Some(age) = crate::observability::stall_check(self.run_id)
+            && age > crate::observability::stall_warn_ms()
+        {
+            if !self.stall_warned.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    component = "watchdog",
+                    event = "agent.stall",
+                    run_id = %self.run_id,
+                    age_ms = age,
+                    threshold_ms = crate::observability::stall_warn_ms(),
+                    "agent 停滞告警：超阈值无任何 agent 事件（turn_start/turn_end/失败）——run 可能假活"
+                );
+            }
+        } else {
+            self.stall_warned.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// 取消/墙钟超时 → 杀自家进程 + 解阻待答 → 看门狗退出。
+    fn intervene_if_cancelled(&self) -> bool {
+        let now = crate::domain::now_ms();
+        if !(self.control.is_cancelled() || self.control.timed_out(now)) {
+            return false;
+        }
+        // 引擎审计修复 #9：统一杀进程入口；自审 minor（175）起带台账路径——
+        // 精确命中优先，扫盘只在台账缺失时降级（标记校验仍生效）。
+        let killed = crate::engine::ledger::kill_run(self.ledger_path, self.run_id);
+        // 2026-10-27 自审 major：killed==0 是常态（进程已退出/从未 spawn），
+        // 但「看门狗观测到取消」这件事必须无条件留痕——旧口径只在杀到人时记日志。
+        tracing::warn!(
+            component = "watchdog",
+            event = "watchdog.cancel",
+            run_id = %self.run_id,
+            killed,
+            "watchdog 清场（取消或超时）；killed=0 = 无存活进程可杀"
+        );
+        // 自审 critical：杀进程不解阻 recv() 中的 ask_blocking——丢待答，run 线程才能收场
+        if let Some(hook) = self.on_intervention {
+            hook(self.run_id);
+        }
+        true
+    }
+
+    /// 失活收割（006 decisions/002）：会话文件指纹平线超过阈值 → 杀自家 pi。
+    fn reap_if_idle(&mut self) {
+        let Some(idle) = self.idle_ms else { return };
+        if !self.idle_active {
+            return;
+        }
+        let now = crate::domain::now_ms();
+        match session_fingerprint(self.watch_dirs) {
+            None => {
+                // 失明保护：任一监视目录不可读 = 不可观测 → 不判定失活。
+                // 旧口径指纹停在基准值 → 平线误判 → 活 run 被误杀。
+                if !self.blind_warned.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        component = "watchdog",
+                        event = "watchdog.blind",
+                        run_id = %self.run_id,
+                        "会话目录不可读，失活收割暂停（不可观测即不判定，宁可漏杀不可误杀）"
+                    );
+                }
+            }
+            Some(fp) if Some(fp) != self.last_fp => {
+                self.last_fp = Some(fp);
+                self.last_progress = now;
+            }
+            Some(_) if now.saturating_sub(self.last_progress) > idle => {
+                self.control.mark_stalled();
+                tracing::warn!(
+                    component = "watchdog",
+                    event = "watchdog.reap",
+                    run_id = %self.run_id,
+                    idle_ms = idle,
+                    "会话无进展超过闲置阈值，失活收割"
+                );
+                // 引擎审计修复 #9：统一杀进程入口（同上：台账精确路径优先）
+                let killed = crate::engine::ledger::kill_run(self.ledger_path, self.run_id);
+                tracing::warn!(
+                    component = "watchdog",
+                    event = "watchdog.reap.kill",
+                    run_id = %self.run_id,
+                    killed,
+                    "失活收割完成（killed=0 = 无存活进程可杀）"
+                );
+                // 自审 critical：同取消路径——收割也要解阻待答
+                if let Some(hook) = self.on_intervention {
+                    hook(self.run_id);
+                }
+                // 2026-10-27 自审 major：收割后不退出——心跳/取消/超时监测
+                // 继续守护到 run 收场，只停失活判定（不重复杀）。
+                self.idle_active = false;
+            }
+            Some(_) => {}
+        }
+    }
+}
+
 pub(crate) fn run_with_watchdog<T>(
     control: &RunControl,
     run_id: String,
@@ -99,7 +246,6 @@ pub(crate) fn run_with_watchdog<T>(
     on_intervention: Option<UnblockHook>,
     f: impl FnOnce() -> T,
 ) -> T {
-    use std::sync::atomic::{AtomicBool, Ordering};
     let done = std::sync::Arc::new(AtomicBool::new(false));
     let done_wd = done.clone();
     let done_main = done.clone();
@@ -114,110 +260,25 @@ pub(crate) fn run_with_watchdog<T>(
         let run_id_ref: &str = &run_id;
         scope.spawn(move || {
             let run_id: &str = run_id_ref;
-            let mut last_fp = session_fingerprint(&watch_dirs);
-            let mut last_progress = crate::domain::now_ms();
-            // 失活收割只判一次：收割后停失活判定，但心跳/取消/超时监测继续
-            // 守护到 run 收场（旧实现 return 后这些全掉线，cancel 变 no-op）。
-            let mut idle_active = true;
-            // 失明告警只发一次（目录恢复可读后自然恢复判定）
-            let blind_warned = std::sync::Arc::new(AtomicBool::new(false));
-            let blind_wd = blind_warned.clone();
+            let mut tick = WatchdogTick {
+                run_id,
+                control,
+                idle_ms,
+                watch_dirs: &watch_dirs,
+                ledger_path: ledger_path.as_deref(),
+                on_intervention: on_intervention.as_ref(),
+                stall_warned: stall_wd,
+                blind_warned: std::sync::Arc::new(AtomicBool::new(false)),
+                last_fp: session_fingerprint(&watch_dirs),
+                last_progress: crate::domain::now_ms(),
+                idle_active: true,
+            };
             loop {
                 if done_wd.load(Ordering::SeqCst) {
                     return;
                 }
-                // 心跳低频兜底刷新（节流在 observability 内）：run 停在同一阶段、长时间无事件时，
-                // 时间戳仍向前走 → 能区分「卡死」与「已死」（六个 SOP 全经过本线程）。
-                if let Err(e) = crate::observability::touch_run(&run_id) {
-                    // 周期刷失败不打断 run：节流到 debug（收尾终态才 WARN）
-                    tracing::debug!(component = "watchdog", run_id = %run_id, error = %e, "周期心跳落盘失败");
-                }
-                // DR-3：agent 停滞告警——心跳只证本线程活，agent 活性看最近 agent 事件。
-                // 从未有 agent 事件（DR-1 型「根本没开轮」）按开跑时刻起算。
-                if let Some(age) = crate::observability::stall_check(&run_id)
-                    && age > crate::observability::stall_warn_ms()
-                {
-                    if !stall_wd.swap(true, Ordering::Relaxed) {
-                        tracing::warn!(
-                            component = "watchdog",
-                            event = "agent.stall",
-                            run_id = %run_id,
-                            age_ms = age,
-                            threshold_ms = crate::observability::stall_warn_ms(),
-                            "agent 停滞告警：超阈值无任何 agent 事件（turn_start/turn_end/失败）——run 可能假活"
-                        );
-                    }
-                } else {
-                    stall_wd.store(false, Ordering::Relaxed);
-                }
-                let now = crate::domain::now_ms();
-                if control.is_cancelled() || control.timed_out(now) {
-                    // 引擎审计修复 #9：统一杀进程入口；自审 minor（175）起带台账路径——
-                    // 精确命中优先，扫盘只在台账缺失时降级（标记校验仍生效）。
-                    let killed = crate::engine::ledger::kill_run(ledger_path.as_deref(), run_id);
-                    // 2026-10-27 自审 major：killed==0 是常态（进程已退出/从未 spawn），
-                    // 但「看门狗观测到取消」这件事必须无条件留痕——旧口径只在杀到人时记日志。
-                    tracing::warn!(
-                        component = "watchdog",
-                        event = "watchdog.cancel",
-                        run_id = %run_id,
-                        killed,
-                        "watchdog 清场（取消或超时）；killed=0 = 无存活进程可杀"
-                    );
-                    // 自审 critical：杀进程不解阻 recv() 中的 ask_blocking——丢待答，run 线程才能收场
-                    if let Some(hook) = &on_intervention {
-                        hook(&run_id);
-                    }
+                if tick.tick() {
                     return;
-                }
-                if idle_active
-                    && let Some(idle) = idle_ms
-                {
-                    match session_fingerprint(&watch_dirs) {
-                        None => {
-                            // 失明保护：任一监视目录不可读 = 不可观测 → 不判定失活。
-                            // 旧口径指纹停在基准值 → 平线误判 → 活 run 被误杀。
-                            if !blind_wd.swap(true, Ordering::Relaxed) {
-                                tracing::warn!(
-                                    component = "watchdog",
-                                    event = "watchdog.blind",
-                                    run_id = %run_id,
-                                    "会话目录不可读，失活收割暂停（不可观测即不判定，宁可漏杀不可误杀）"
-                                );
-                            }
-                        }
-                        Some(fp) if Some(fp) != last_fp => {
-                            last_fp = Some(fp);
-                            last_progress = now;
-                        }
-                        Some(_) if now.saturating_sub(last_progress) > idle => {
-                            control.mark_stalled();
-                            tracing::warn!(
-                                component = "watchdog",
-                                event = "watchdog.reap",
-                                run_id = %run_id,
-                                idle_ms = idle,
-                                "会话无进展超过闲置阈值，失活收割"
-                            );
-                            // 引擎审计修复 #9：统一杀进程入口（同上：台账精确路径优先）
-                            let killed = crate::engine::ledger::kill_run(ledger_path.as_deref(), run_id);
-                            tracing::warn!(
-                                component = "watchdog",
-                                event = "watchdog.reap.kill",
-                                run_id = %run_id,
-                                killed,
-                                "失活收割完成（killed=0 = 无存活进程可杀）"
-                            );
-                            // 自审 critical：同取消路径——收割也要解阻待答
-                            if let Some(hook) = &on_intervention {
-                                hook(&run_id);
-                            }
-                            // 2026-10-27 自审 major：收割后不退出——心跳/取消/超时监测
-                            // 继续守护到 run 收场，只停失活判定（不重复杀）。
-                            idle_active = false;
-                        }
-                        Some(_) => {}
-                    }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(300));
             }

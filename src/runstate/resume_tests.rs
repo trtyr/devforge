@@ -67,7 +67,6 @@ fn no_checkpoint_means_cold_start() {
     assert!(p.skip.is_empty() && p.redo.is_empty() && p.note.is_none());
 }
 
-#[test]
 /// 自审 minor 185：`plan()` 不再有 fresh 参数——「清断点再冷启动」的唯一入口是
 /// [`start_gate`]。本用例原来断言的是那个已删除的分支，现在改为钉住新口径：
 /// start_gate(fresh) 清完断点之后，plan() 看到的必须是冷启动。
