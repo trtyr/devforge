@@ -22,6 +22,7 @@ type UnitSnapshots = std::collections::HashMap<String, (FileSnapshot, FileSnapsh
 
 use crate::error::{DevforgeError, Result};
 use crate::runstate::StateStore;
+use crate::sop::marker::{MarkerNudge, MarkerStep};
 use crate::sop::doc::evidence::snapshot_files;
 use crate::sop::doc::prompts::{
     DOC_REMEDIATION_PREFIX, doc_kickoff, doc_review_instruction,
@@ -176,7 +177,7 @@ where
     let mut unit_snapshots: UnitSnapshots = Default::default();
     let mut resume_note = resume_note;
     let mut first_kickoff_sent = false;
-    let mut nudges = 0usize;
+    let mut marker = MarkerNudge::bounded(MAX_DOC_CONTINUE_NUDGES);
     let mut nudged_for = String::new();
     // TODO(DR-10③)：流水线路径的 glue 计时（stage）尚未接线；协议违例计数已下沉到 spawn_review_worker
     let mut _stage: Option<(&'static str, std::time::Instant)> = None;
@@ -545,38 +546,47 @@ where
                 );
                 continue;
             }
-            // 标记守卫（nudge 同串行，按 active 单元计；原地重试）
+            // 标记守卫（nudge 同串行，按 active 单元计；原地重试）：
+            // 计数纪律走全仓单点（自审 minor 78），换单元即清零。
             if nudged_for != active {
-                nudges = 0;
+                marker.reset();
                 nudged_for = active.clone();
             }
             let Some(done_unit) = parse_doc_complete(&t) else {
-                nudges += 1;
-                if nudges > MAX_DOC_CONTINUE_NUDGES {
-                    return Err(DevforgeError::Quality(format!(
-                        "单元 `{active}` 连续 {nudges} 次未输出 <doc-complete>，判定为质量失败（agent 不配合，重启也无意义）"
-                    )));
-                }
+                let n = match marker.bump() {
+                    MarkerStep::Exhausted(n) => {
+                        return Err(DevforgeError::Quality(format!(
+                            "单元 `{active}` 连续 {n} 次未输出 <doc-complete>（已追补 {} 次），判定为质量失败（agent 不配合，重启也无意义）",
+                            marker.limit()
+                        )));
+                    }
+                    MarkerStep::Nudge(n) => n,
+                    MarkerStep::Done => unreachable!("bump 不产生 Done"),
+                };
                 message = format!(
-                    "连续 {nudges} 次未输出完成标记。请补交：<doc-complete>{active}</doc-complete>（单独一行）。"
+                    "连续 {n} 次未输出完成标记。请补交：<doc-complete>{active}</doc-complete>（单独一行）。"
                 );
                 continue;
             };
             if done_unit != active {
                 // 自审 critical：错号重问也必须计入上限——旧实现不计 nudges，
                 // agent 持续错号 = 无界死循环（每圈真调一次 LLM）。
-                nudges += 1;
-                if nudges > MAX_DOC_CONTINUE_NUDGES {
-                    return Err(DevforgeError::Quality(format!(
-                        "单元 `{active}` 连续 {nudges} 次未确认当前单元号（错号/缺标记），判定为质量失败（agent 不配合，重启也无意义）"
-                    )));
-                }
+                let n = match marker.bump() {
+                    MarkerStep::Exhausted(n) => {
+                        return Err(DevforgeError::Quality(format!(
+                            "单元 `{active}` 连续 {n} 次未确认当前单元号（错号/缺标记，已追补 {} 次），判定为质量失败（agent 不配合，重启也无意义）",
+                            marker.limit()
+                        )));
+                    }
+                    MarkerStep::Nudge(n) => n,
+                    MarkerStep::Done => unreachable!("bump 不产生 Done"),
+                };
                 message = format!(
-                    "你输出的是 `{done_unit}`，但当前单元是 `{active}`（第 {nudges} 次错号）。请确认编号（不得自行改号）并重新输出 <doc-complete>{active}</doc-complete>。"
+                    "你输出的是 `{done_unit}`，但当前单元是 `{active}`（第 {n} 次错号）。请确认编号（不得自行改号）并重新输出 <doc-complete>{active}</doc-complete>。"
                 );
                 continue;
             }
-            nudges = 0;
+            marker.reset();
             break t;
         };
         // fix 回注已随本回合交卷 → 修复轮收尾（串行口径：fix.end 落在交卷回合）

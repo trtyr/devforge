@@ -11,7 +11,8 @@
 //!
 //! Review 永不碰用户（P004 边界）；用户交互只在 Plan 环节内（ask-user-question）。
 
-use crate::error::Result;
+use crate::error::{DevforgeError, Result};
+use crate::sop::marker::{MarkerNudge, MarkerStep};
 use crate::sop::output::{is_complete, parse_verdict, Verdict};
 use crate::sop::review_gate::{review_with_gate, ReviewBudget, ReviewOutcome};
 
@@ -105,13 +106,24 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> PlanningLoop<P, F> {
     /// Plan Agent 修复后直接自动重查，不验修复质量、不再问用户。
     pub fn run(&mut self, ui: &mut dyn UserLink) -> Result<StageReport> {
         // ---- PLAN 阶段：循环直至完成标记（完成判定在 Agent 环节内）----
+        // 追补计数走全仓单点（自审 minor 78）：这里用零上限入口，decisions/003 不设硬限制。
+        let mut gate = MarkerNudge::unlimited();
         let mut message = PLAN_KICKOFF.to_string();
         loop {
             let text = self.plan.converse(&message, ui)?;
-            if is_complete(&text) {
-                break;
+            match gate.observe(is_complete(&text)) {
+                MarkerStep::Done => break,
+                MarkerStep::Nudge(_) => {
+                    message = "继续。完成前记得 ask-user-question 向用户确认，并在最终回复输出完成标记。".into();
+                }
+                MarkerStep::Exhausted(n) => {
+                    // unlimited() 的 limit = usize::MAX，计数不可能到达——到了说明计数本身坏了，
+                    // 属基础设施异常（System，可重启），不是内容不合格。
+                    return Err(DevforgeError::System(format!(
+                        "规划阶段标记追补计数溢出（nudges={n}），计数纪律失效"
+                    )));
+                }
             }
-            message = "继续。完成前记得 ask-user-question 向用户确认，并在最终回复输出完成标记。".into();
         }
         // 阶段推进：规划阶段交卷 → 进入审查阶段（里程碑：阶段怎么变的）
         tracing::info!(

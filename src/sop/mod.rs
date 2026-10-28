@@ -8,10 +8,12 @@
 //! - [`testing`]：TestingSopLoop 状态机（阶段推进/reroute 路由/doc-fix 移交，P007）
 //! - [`doc`]：doc 域垂直同居（ARC-R3：runner/协议/断点/增量/修补/接线同居 sop/doc/）
 //! - [`review_gate`]：审查输出的三通道机制（判负 / 协议违例 / 实例失败，D026）
+//! - [`marker`]：完成标记追补的计数纪律单点（bounded/unlimited/reset/bump）
 
 pub mod coding;
 pub mod coding_protocol;
 pub mod doc;
+pub mod marker;
 pub mod output;
 pub mod planning;
 pub mod review_gate;
@@ -29,6 +31,7 @@ pub use coding_protocol::{
     CODING_DIR, DOCS_DIR, REPORTS_DIR, STAGES_FILE, STAGE_COMPLETE_TAG, TODO_FILE,
 };
 
+pub use marker::{MarkerNudge, MarkerStep, MAX_MARKER_NUDGES};
 pub use output::{is_complete, parse_verdict, Verdict, COMPLETION_TAG};
 pub use planning::{
     PlanningLoop, PlanAgentSession, ReviewSession, ReviewSessionFactory, StageReport, UserLink,

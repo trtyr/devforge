@@ -19,6 +19,7 @@ use std::path::Path;
 
 use crate::error::Result;
 use crate::sop::coding_protocol::{parse_stage_complete, NextAction};
+use crate::sop::marker::{MarkerNudge, MarkerStep};
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
 use crate::sop::review_gate::{review_with_gate, ReviewBudget, ReviewOutcome};
 use crate::sop::testing_protocol::{parse_test_review_report, Reroute};
@@ -163,7 +164,8 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
     ) -> Result<TestingOutcome> {
         // 审查预算的生命周期 = 一次 drive（与既有违例计数同口径）
         let mut budget = ReviewBudget::default();
-        let mut nudges = 0usize;
+        // 完成标记追补计数：全仓单点（自审 minor 78）
+        let mut marker = MarkerNudge::bounded(MAX_TEST_CONTINUE_NUDGES);
         // 全仓审计 #7：FAIL 但 issues 为空的追补计数（与 change 测试回注同口径）
         let mut empty_issue_nudges = 0usize;
         // 阶段推进记录：上一个阶段号（首个阶段的前驱 = "start"）
@@ -187,17 +189,24 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                     }
                     let Some(stage) = parse_stage_complete(&text) else {
                         // 无有效标记 → 有界重推（007 D013）
-                        nudges += 1;
-                        if nudges > MAX_TEST_CONTINUE_NUDGES {
-                            return Err(crate::error::DevforgeError::Quality(format!(
-                                "测试 Agent 连续 {nudges} 次未输出 <stage-complete>，判定为质量失败（不自动重启）；最近一次回复尾巴：{}",
-                                crate::sop::coding::tail(&text)
-                            )));
+                        match marker.bump() {
+                            MarkerStep::Exhausted(n) => {
+                                return Err(crate::error::DevforgeError::Quality(format!(
+                                    "测试 Agent 连续 {n} 次未输出 <stage-complete>（已追补 {} 次），判定为质量失败（不自动重启）；最近一次回复尾巴：{}",
+                                    marker.limit(),
+                                    crate::sop::coding::tail(&text)
+                                )));
+                            }
+                            MarkerStep::Nudge(_) => {
+                                step = Step::Agent(TESTING_CONTINUE_NUDGE.to_string());
+                                continue;
+                            }
+                            // bump() 恒为 Nudge 或 Exhausted，不可能是 Done
+                            MarkerStep::Done => unreachable!("bump 不产生 Done"),
                         }
-                        step = Step::Agent(TESTING_CONTINUE_NUDGE.to_string());
-                        continue;
                     };
-                    nudges = 0;
+                    // 交了标记 → 清零（下一阶段又从 1 开始数）
+                    marker.reset();
                     // 阶段推进：agent 报出的新阶段号（前一个阶段 → 当前阶段）。
                     // 重发同一阶段号（打回后重交）**不是**推进 → 不落里程碑（from/to 同值 = 噪声）。
                     if last_stage != Some(stage) {

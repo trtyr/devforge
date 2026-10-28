@@ -22,6 +22,7 @@ use crate::change::testing_gate::{
 };
 use crate::error::{Context as _, DevforgeError, Result};
 use crate::sop::coding_protocol::{parse_review_report, parse_stage_complete, StageVerdict};
+use crate::sop::marker::{MarkerNudge, MarkerStep, MAX_MARKER_NUDGES};
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
 use crate::sop::review_gate::{outcome_of_review_report, review_with_gate, ReviewBudget};
 
@@ -218,33 +219,34 @@ fn evidence_exit_code(path: &Path) -> Option<i32> {
     parse_baseline_log(&text).ok().map(|ev| ev.exit_code)
 }
 
-/// 标记追补上限：拒收 + 追补 ×3，与 c6 空箱拒收/重审裁决同口径。
-const MAX_MARKER_NUDGES: usize = 3;
-
 /// 标记追补话术：不重复已完成的工作，只补收尾标记。
 const MARKER_NUDGE: &str = "你的上一条回复没有输出阶段完成标记。请补完当前阶段收尾，然后在回复末尾单独一行输出 <stage-complete>N（N 为阶段号）；不要重复已完成的工作。";
 
-/// 阶段完成标记验收：无标记先追补（同会话再问一轮），连续 MAX_MARKER_NUDGES 次
+/// 阶段完成标记验收：无标记先追补（同会话再问一轮），连续 [`MAX_MARKER_NUDGES`] 次
 /// 仍无标记才 Quality。标记由模型生成，长回合忘交是闪模型的结构性失误（F17：
 /// resume6b coding 轮 / resume6c test 轮连续两死），不能一枪毙命。
+///
+/// 计数纪律与另三条链路共用 [`crate::sop::marker::MarkerNudge`]（自审 minor 78）。
 fn require_marker_nudged(
     stage: &str,
     first_reply: String,
     mut redeliver: impl FnMut(&str) -> Result<String>,
 ) -> Result<String> {
+    let mut gate = MarkerNudge::bounded(MAX_MARKER_NUDGES);
     let mut reply = first_reply;
-    let mut nudges = 0usize;
-    while parse_stage_complete(&reply).is_none() {
-        nudges += 1;
-        if nudges > MAX_MARKER_NUDGES {
-            return Err(DevforgeError::Quality(format!(
-                "{stage} 连续 {nudges} 次未输出 <stage-complete>N（已追补 {MAX_MARKER_NUDGES} 次），判定为质量失败（不自动重启）；最近一次回复尾巴：{}",
-                crate::sop::coding::tail(&reply)
-            )));
+    loop {
+        match gate.observe(parse_stage_complete(&reply).is_some()) {
+            MarkerStep::Done => return Ok(reply),
+            MarkerStep::Nudge(_) => reply = redeliver(MARKER_NUDGE)?,
+            MarkerStep::Exhausted(n) => {
+                return Err(DevforgeError::Quality(format!(
+                    "{stage} 连续 {n} 次未输出 <stage-complete>N（已追补 {} 次），判定为质量失败（不自动重启）；最近一次回复尾巴：{}",
+                    gate.limit(),
+                    crate::sop::coding::tail(&reply)
+                )));
+            }
         }
-        reply = redeliver(MARKER_NUDGE)?;
     }
-    Ok(reply)
 }
 
 fn issues_of(reply: &str) -> Vec<String> {
