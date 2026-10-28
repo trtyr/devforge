@@ -3,6 +3,30 @@
 use anyhow::Context as _;
 use std::sync::Arc;
 
+/// 解析运行根（纯函数；`home` 惰性求值——DEVFORGE_HOME 已设时完全不读 HOME）。
+///
+/// 口径：`DEVFORGE_HOME` 已设（trim 后非空）→ 它就是运行根；否则才读 `HOME` 回落
+/// `$HOME/.devforge`；两者皆未设（或只有空白）→ fail fast，错误文案同时点名
+/// `DEVFORGE_HOME` 与 `HOME` 给出双出路。
+/// 与 `observability::resolve_root` 同源（DEVFORGE_HOME 优先、空串视作未设），
+/// 保证运行根与观测根（心跳/墓碑落点）同根。
+fn resolve_runtime_root(
+    devforge_home: Option<&str>,
+    home: impl FnOnce() -> Option<String>,
+) -> anyhow::Result<std::path::PathBuf> {
+    if let Some(d) = devforge_home.map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(std::path::PathBuf::from(d));
+    }
+    let home = home();
+    if let Some(h) = home.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(std::path::PathBuf::from(h).join(".devforge"));
+    }
+    anyhow::bail!(
+        "无法确定运行根：DEVFORGE_HOME 与 HOME 均未设置（或只有空白）——\
+         请设置 DEVFORGE_HOME=<运行根路径>，或设置 HOME 后使用 $HOME/.devforge"
+    )
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -140,17 +164,20 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    let home = std::env::var("HOME").context("读取 HOME 环境变量")?;
-    // 自审 major：root 推导与 default_plantree_root 同源（DEVFORGE_HOME 优先，
-    // 否则 HOME/.devforge）——旧口径只认 HOME，设了 DEVFORGE_HOME 时 plans 与
-    // plantree 两套推导指向不同根，台账与运行状态分家。
-    let root = std::env::var_os("DEVFORGE_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::Path::new(&home).join(".devforge"));
+    // 运行根推导口径：DEVFORGE_HOME 优先 → HOME/.devforge → 双未设 fail fast；
+    // 与 default_plantree_root 同源（台账根与运行根必须同根，否则台账与运行状态分家）。
+    // 自审 major：旧口径先无条件读 HOME 且 `?` 直接退进程——即便显式设了 DEVFORGE_HOME
+    // 也强依赖 HOME（无 HOME 的最小环境里起不来），与本段宣称的优先级正好相反。
+    // 现在 DEVFORGE_HOME 已设时完全不碰 HOME，HOME 只在兜底分支被读。
+    let root = resolve_runtime_root(
+        std::env::var("DEVFORGE_HOME").ok().as_deref(),
+        || std::env::var("HOME").ok(),
+    )?;
 
     devforge::logging::init(&root.join("logs"), "devforge")
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    // 观测根（心跳/墓碑的落点）：与日志目录同根，`DEVFORGE_HOME` 可覆盖（Q4）
+    // 观测根（心跳/墓碑的落点）：与运行根同源（DEVFORGE_HOME 优先 → HOME/.devforge，
+    // 双未设时回落 CWD/.devforge，Q4）——心跳/墓碑与清单/台账落在同一目录树
     let obs_root = devforge::observability::root();
     devforge::observability::set_root(obs_root.clone());
     // 死亡取证：进程启动即装 panic hook（panic 原文 + 位置 + 当时阶段写进墓碑文件）
