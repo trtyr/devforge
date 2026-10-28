@@ -51,11 +51,11 @@ description: 往返历史——每次 coding→plan 回退把越界文件逐行�
 
 ## 核心口径
 
-- **文件布局**（相对仓库根，🟢 CONFIRMED `src/change/history.rs:11` 至 `src/change/history.rs:13`）：
+- **文件布局**（🟢 CONFIRMED `src/change/history.rs:10` 至 `:13`）：history 落在台账根（plantree 根，2026-10-25 起**不进仓**）下：
   ```text
-  <repo>/docs/plantree/changes/<change-id>/history.md
+  <台账根>/changes/<change-id>/history.md
   ```
-  目录形态在仓内真实存在：`docs/plantree/changes` 下有按 change-id 命名的子目录。
+  台账根由 `prepare::default_plantree_root(project)` 给出：DEVFORGE_HOME（缺省用户主目录下 .devforge）/plantree/&lt;project&gt;（`src/change/prepare.rs:39` 至 `:45`）；旧的仓内 docs/plantree 路径已废弃（history.rs 头注释记了这次反转）。
 - **表头（仅首次建文件时写）**（🟢 CONFIRMED `src/change/history.rs:31`）：
   ```text
   # 变更往返历史 · <change-id>
@@ -121,7 +121,7 @@ description: 往返历史——每次 coding→plan 回退把越界文件逐行�
   RUSTUP_HOME=$HOME/.rustup RUSTUP_TOOLCHAIN=stable cargo --version
   ```
 - **依赖安装**：仅 `tempfile`（dev-dependency，`Cargo.toml:27`），跑测试时自动获取；不需要 git、端口、外部服务或网络。
-- **隔离**：每个用例建独立临时目录（用 `tempfile` 的 `tempdir`），所有写入落在临时目录，不碰真实 `docs/plantree/changes`；可并行。
+- **隔离**：每个用例建独立临时目录（用 `tempfile` 的 `tempdir`），所有写入落在临时目录，不碰真实台账（changes 目录现已在仓库外）；可并行。
 - **命令**（🟢 CONFIRMED，本单元实跑：`cargo test --lib change::history`）：
   ```bash
   CARGO_TARGET_DIR=$(mktemp -d)/target cargo test --lib change::history

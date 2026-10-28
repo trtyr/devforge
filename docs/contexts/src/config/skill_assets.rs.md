@@ -41,7 +41,7 @@ description: 内置 skill 资产——7 个 skill 的正文在编译期用 inclu
 - **上游（谁调用）**：只有 `src/config/render.rs`——`:10` `use crate::config::skill_assets::builtin_skill_files;`，`:112` 在 `skills_source = None` 分支调用。全仓无其它引用（`grep -rn builtin_skill_files` 只命中这两处）。
 - **下游**：本文件不 `use` crate 内任何模块，只用标准库类型（`Option`、`Vec`、`&'static str`）；`include_str!` 是编译器内建宏。
 - **外部（编译期）**：`assets/skills/` 下 7 个目录共 43 处 `include_str!`——文件缺失或路径写错即**编译失败**，不会运行时降级。
-- **来源 / 许可登记**：`docs/plantree/plans/005-coding-stage/evidence/skills-sources.md`（版本说明见 `src/config/skill_assets.rs:27`-28` 注释；文件存在）。
+- **来源 / 许可登记**：005-coding-stage 计划的 evidence/skills-sources.md（台账在仓库外 plantree 根下；版本说明见 `src/config/skill_assets.rs` 27-28 行注释，源码注释仍指迁移前的仓内路径）。
 
 ## 核心口径（解释层，逐条带置信度）
 
@@ -181,7 +181,7 @@ assets/templates/tests/test_smoke.py
   CARGO_NET_OFFLINE=true cargo test --lib config::skill_assets
   ```
 
-  预期：`6 passed; 0 failed; 0 ignored`。本轮实测（在 `git archive HEAD` 导出的干净树 `/var/tmp/u30-head` 上跑，因为写作时主工作区有在途 `src/integration/` 改动、整包编译不过）：`6 passed; 0 failed; 0 ignored; 606 filtered out`，EXIT=0。
+  预期：`6 passed; 0 failed; 0 ignored`。本轮实测（在 `git archive HEAD` 导出的干净树上跑，因为写作时主工作区有在途 `src/integration/` 改动、整包编译不过）：`6 passed; 0 failed; 0 ignored; 606 filtered out`，EXIT=0。
 
   > 若主工作区编译不过，先 `git archive HEAD | tar -x -C <临时目录>` 再在该树跑——本模块的断言只依赖仓内资产与常量，干净树同样成立（`filtered out` 随仓内测试总数变化，passed 数不受影响）。整棵 config 树的用例见 [mod.rs.md](./mod.rs.md)：本轮实测 `cargo test --lib config` → `54 passed; 0 failed; 1 ignored`（`mod.rs.md` 里的 47/48 是更早快照，随 config 各模块增删而变）。
 - **公开接口清单**：`N/A` — 无 HTTP/CLI 端点；Rust 面即上表 5 个名字，且不经 `config` 模块面转发（`src/config/mod.rs:11`-13`），调用方必须写 `crate::config::skill_assets::…`。
@@ -190,6 +190,6 @@ assets/templates/tests/test_smoke.py
 
 - 结构事实逐行复核：3 个 `pub` 常量（`:7`/`:10`/`:13`）、40 个私有元组（`:29`-71`）、2 个公开函数（`:18`/`:74`）、测试模块（`:120`-229）、6 个用例首行（`:125`/`:135`/`:149`/`:154`/`:176`/`:213`）。
 - 唯一消费者：`src/config/render.rs:10`、`:112`。
-- 本轮实跑（干净树 `/var/tmp/u30-head`，由 HEAD 提交的 git archive 导出）：`cargo test --lib config::skill_assets` → 6 passed / 0 failed / 606 filtered out / EXIT=0；`cargo test --lib config` → 54 passed / 0 failed / 1 ignored / EXIT=0。
+- 本轮实跑（干净树，由 HEAD 提交的 git archive 导出）：`cargo test --lib config::skill_assets` → 6 passed / 0 failed / 606 filtered out / EXIT=0；`cargo test --lib config` → 54 passed / 0 failed / 1 ignored / EXIT=0。
 - 资产对账（本轮脚本）：`include_str!` 引用 43 个文件、`assets/skills/` 实有 64 个——差值 21 全在 python-best-practices 目录下的 .mypy_cache（18 个）与 .ruff_cache（3 个），引用侧无一个缺失。
 - 开放问题记在 `_meta/gaps.md`（本单元：资产目录与登记无机械对账、python 资产目录含 21 个缓存产物、pi 加载契约不可重放、vendor 保真无法验证）。

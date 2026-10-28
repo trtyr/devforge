@@ -265,7 +265,7 @@ impl-steps.md
 | `empty_impl_steps_is_quality_failure` | 空实施步骤 Quality | `src/change/coding_gate_tests.rs` |
 | `step_numbers_in_subject_handles_chinese_and_repeats` | 中文 + 重复去重 | `src/change/coding_gate_tests.rs` |
 | `step_numbers_ignore_digits_in_prose_after_a_marker` | 正文数字不算 | `src/change/coding_gate_tests.rs` |
-| `eleven_steps_with_prose_digits_reconcile_cleanly` | 11 步散文数字对账 | `src/change/coding_gate_tests.rs` |
+| `eleven_steps_with_prose_digits_reconcile_via_check_step_commits` | 11 步散文数字对账（真仓 + 直调 `check_step_commits`） | `src/change/coding_gate_tests.rs:585` |
 
 ## 测试运行与环境
 

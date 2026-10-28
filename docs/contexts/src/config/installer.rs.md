@@ -7,7 +7,7 @@ description: 包安装桥接——把清单里的 npm 包经 pi install 装进 p
 
 # src/config/installer.rs
 
-profile 渲染的最后一步：把清单算出的包列表交给 `pi install` 装进 profile 目录（P002 T003；双记录口径见 `docs/plantree/plans/002-config-management/README.md:11`「`pi install` → settings.json `packages` + npm/package.json 双记录」）。
+profile 渲染的最后一步：把清单算出的包列表交给 `pi install` 装进 profile 目录（P002 T003；双记录口径的出处是 002-config-management 计划 README 第 11 行「pi install → settings.json packages + npm/package.json 双记录」，台账在仓库外 plantree 根下）。
 
 ## 职责
 
@@ -50,7 +50,7 @@ profile 渲染的最后一步：把清单算出的包列表交给 `pi install` �
 | `<profile>/npm/package.json` 的 `dependencies` | JSON 对象 | `FakeInstaller` 起始态三档：缺文件 → 骨架 `{"name":"pi-extensions","private":true,"dependencies":{}}`（`:101`-103`）；可解析 → 用文件内容；存在但不可解析 → `{}`（`:98`-100`，**无** name/private） | 同上 | 键 = 包标识符，值 = `"*"`（假桥口径） | 双记录是否「完整」的判据（`src/config/render.rs:203` 判文件存在） | `{"dependencies": {"npm:pi-blackhole": "*"}}` |
 | `MAX_STDERR_BYTES` | `usize` 常量（私有） | `500` | N/A（编译期常量，不可配） | 无（写死） | 失败时错误信息里 stderr 的保留长度（保尾） | `src/config/installer.rs:24` |
 
-双记录语义的出处是 pi 侧行为，仓内只以注释与 `FakeInstaller` 模拟（🟡 **INFERRED**：`src/config/installer.rs:3`-4 的模块注释 + `:68`-69 的假桥注释 + `docs/plantree/plans/002-config-management/README.md:11` 的清单口径；pi 本体不在本仓，无法在此重放验证——见 `_meta/gaps.md`）。
+双记录语义的出处是 pi 侧行为，仓内只以注释与 `FakeInstaller` 模拟（🟡 **INFERRED**：`src/config/installer.rs:3`-4 的模块注释 + `:68`-69 的假桥注释 + 002-config-management 计划 README 第 11 行的清单口径，台账在仓库外 plantree 根下；pi 本体不在本仓，无法在此重放验证）。
 
 ### 落盘记录（数据模型）
 
@@ -133,7 +133,7 @@ profile 渲染的最后一步：把清单算出的包列表交给 `pi install` �
 - 摘要：把 `pi install` 的失败转成 `DevforgeError` 的 `Config` 变体，并附 stderr 尾部。（🟢 CONFIRMED `src/config/installer.rs:23`）
 - 行为语义：`String::from_utf8_lossy(stderr).trim()`；长度 > 500 → 从 `len-500` 起做 `is_char_boundary` 前移（不切在 UTF-8 中间）→ 前缀 `…`；空 → `（stderr 为空）`；否则原文。错误模板：`pi install {pkg} 失败（exit: {status}）\nstderr 尾部: {tail}`。
 - 参数：`pkg: &str`、`output: &std::process::Output`；返回 `DevforgeError`（`Config` 变体）。
-- 依据（为什么是这个形状）：F2 教训——上游 postinstall 吞掉真实 errno，只有 stderr 里留线索；产品侧硬化记录见 `docs/plantree/plans/006-coding-hardening/roadmap.md:23`（「失败错误附带 stderr 尾部（500B 保尾截断），单测 ×3」）。
+- 依据（为什么是这个形状）：F2 教训——上游 postinstall 吞掉真实 errno，只有 stderr 里留线索；产品侧硬化记录见 006-coding-hardening 路线图第 23 行「失败错误附带 stderr 尾部（500B 保尾截断），单测 ×3」（台账在仓库外 plantree 根下）。
 
 ## 测试覆盖（`#[cfg(test)]`，5 例）
 
@@ -160,6 +160,6 @@ profile 渲染的最后一步：把清单算出的包列表交给 `pi install` �
   cargo test --lib config::installer
   ```
 
-  预期输出：`test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 593 filtered out`（`filtered out` 随仓内测试总数变化，不是本模块断言）。⚠️ 临时目录要宽裕（本模块编译 + `tempfile` 都要写），容器里 `/tmp` 可能不够。
+  预期输出：`test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 593 filtered out`（`filtered out` 随仓内测试总数变化，不是本模块断言）。注意：临时目录要宽裕（本模块编译 + `tempfile` 都要写），容器里系统临时目录可能不够。
 - 隔离性：5 例全部不 spawn 子进程、不联网、不读真实 profile——`FakeInstaller` 用 `tempfile` 的 tempdir（`:136`-138），失败诊断用内存 `Output`（`:161`-171）。**不要在单测里直接用 `PiInstallBridge`**：它会真调 `pi`（需 PATH、网络、写真实 profile）。
 - **本单元的 Runbook 边界**：本节承担环境 / 依赖获取 / 测试运行与隔离三件；**N/A** 项与理由——启停与健康检查：库内模块，无独立进程（服务级启停归 `src/server`）；配置项：本模块无可配键，唯一环境变量 `PI_CODING_AGENT_DIR` 是**写给子进程**的（见「外部契约与配置」），不接受外部配置；种子数据：无（假桥自建 `<profile>/settings.json` / `<profile>/npm/package.json` 骨架）；公开接口清单：上文「公开成员」表即全部（无 HTTP/CLI 端点；HTTP 入口是 `PUT /config/manifest`，见 `src/server/handlers.rs:618`，属 `src/server` 单元）。

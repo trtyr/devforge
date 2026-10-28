@@ -33,11 +33,11 @@ N/A —— 模块内没有 `pub` 项：19 个用例都是私有 `#[test] fn`，�
 
 ## 核心口径
 
-- 🟢 **门序是「叫几次 agent」的事**：基线轮与 coding 轮各一次 `converse`，所以「红基线后 agent 只被叫 1 次」就等价于「没进 coding 轮」（`src/change/session/session_tests/runtime.rs:187` 的 `assert_eq!(seen.borrow().len(), 1)`）；反过来 `coding_runs_gates_and_returns_changed_files` 断言恰好 2 条 seen 消息，且第 1 条必须含目标仓路径（否则 agent 会在黑板目录里跑测试）（`src/change/session/session_tests/runtime.rs:7`）。
+- 🟢 **门序是「叫几次 agent」的事**：基线轮与 coding 轮各一次 `converse`，所以「红基线后 agent 只被叫 1 次」就等价于「没进 coding 轮」（`src/change/session/session_tests/runtime.rs:194` 的 `assert_eq!(seen.borrow().len(), 1)`）；反过来 `coding_runs_gates_and_returns_changed_files` 断言恰好 2 条 seen 消息，且第 1 条必须含目标仓路径（否则 agent 会在黑板目录里跑测试）（`src/change/session/session_tests/runtime.rs:7`）。
 - 🟢 **里程碑断言是「按字段字面形态做子串匹配」，不解析 JSON**：`capture_jsonl` 拿到整段 tracing 文本后，用 `text.lines().filter(|l| l.contains(event))` 逐行筛事件，再用 `contains("\"passed\":true")`、`contains("\"steps\":1")`、`contains("\"role\":\"change-coding-review\"")`、`contains("\"round\":1")`、`contains("\"target\":\"devforge::change::session\"")` 断言字段与值（`src/change/session/session_tests/runtime.rs:44` 至 `:104`）；最后每个含 `"event":` 的行都过 `assert_milestone_shape`（级别与 `component` 字段）。因此字段改名、字段顺序改、或把 `tracing::info!` 挑到另一个模块（target 变）都会让用例变红，即使对外语义没变。
-- 🟢 **三通道从外部如何区分**：违例 → 换新实例重审且**轮次增加**（`src/change/session/session_tests/runtime.rs:445`、`:575`、`:603`）；超限且 `is_quality_failure()` 为真 = 违例超限（`src/change/session/session_tests/runtime.rs:469`）；超限且该谓词为假 = 实例失败超限（`src/change/session/session_tests/runtime.rs:521`）。两个上限都来自 `src/sop/review_gate.rs:16` 与 `src/sop/review_gate.rs:19`（各 3，即「第 4 次超限」）。
-- 🟢 **审查轮次口径**：`reviews` 与 `plan_reviews()` 返回的是**实际开过的实例数**，不是「判负次数」——违例重审如实计入（`src/change/session/session_tests/runtime.rs:436` 的 `plan_reviews() == 2` 是最直接的钉子）。
-- 🟢 **测试阶段的证据是手写的，但路由早退分支不写**：`testing_review_is_invoked_and_can_fail`（`:255` 至 `:266`）、`testing_pass_reads_acceptance_table`（`:285` 至 `:296`）、`acceptance_table_without_test_ref_is_rejected`（`:341` 至 `:352`）与 `test_review_violation_retries_with_a_new_instance`（`:606` 至 `:617`）都不跑真测试，而是手写两份证据文件——回归日志（路径常量 `REGRESSION_LOG`，`src/change/testing_gate.rs:18`；内容 `command: cargo test` + `exit_code: 0`）与验收对账表（路径由 `acceptance_path()` 拼出，`src/change/session.rs:49`；一行一条「验收标准 → 测试文件:行」）——再断言引擎对这两份文件的读法。`testing_route_coding_returns_failures`（`:316`）是例外：它只给一条 `<route>coding</route>` + `<issues>`，**不写**回归日志也不写对账表——因为 `run_testing` 命中路由就在读证据之前返回（`src/change/session.rs:520` 至 `:525`），该路径根本不校验证据链。
+- 🟢 **三通道从外部如何区分**：违例 → 换新实例重审且**轮次增加**（`src/change/session/session_tests/runtime.rs:544`、`:674`、`:702`）；超限且 `is_quality_failure()` 为真 = 违例超限（`src/change/session/session_tests/runtime.rs:568`）；超限且该谓词为假 = 实例失败超限（`src/change/session/session_tests/runtime.rs:620`）。两个上限都来自 `src/sop/review_gate.rs:16` 与 `src/sop/review_gate.rs:19`（各 3，即「第 4 次超限」）。
+- 🟢 **审查轮次口径**：`reviews` 与 `plan_reviews()` 返回的是**实际开过的实例数**，不是「判负次数」——违例重审如实计入（`src/change/session/session_tests/runtime.rs:536` 的 `plan_reviews() == 2` 是最直接的钉子）。
+- 🟢 **测试阶段的证据是手写的，但路由早退分支不写**：`testing_review_fail_reroutes_to_coding_instead_of_failing_the_run`（`:279` 至 `:308`）、`testing_pass_reads_acceptance_table`（`:311` 至 `:343`）、`acceptance_table_without_test_ref_is_rejected`（`:443` 至 `:475`）与 `test_review_violation_retries_with_a_new_instance`（`:702` 起）都不跑真测试，而是手写两份证据文件——回归日志（路径常量 `REGRESSION_LOG`，`src/change/testing_gate.rs:18`；内容 `command: cargo test` + `exit_code: 0`）与验收对账表（路径由 `acceptance_path()` 拼出，`src/change/session.rs:52`；一行一条「验收标准 → 测试文件:行」）——再断言引擎对这两份文件的读法。`testing_route_coding_returns_failures`（`:378`）是例外：它只给一条 `<route>coding</route>` + `<issues>`，**不写**回归日志也不写对账表——因为 `run_testing` 命中路由就在读证据之前返回（`src/change/session.rs:700` 至 `:702`），该路径根本不校验证据链。
 
 ## 私有助手
 
@@ -57,20 +57,22 @@ N/A —— 模块内没有 `pub` 项：19 个用例都是私有 `#[test] fn`，�
 | `coding_without_self_check_evidence_fails_before_review` | `src/change/session/session_tests/runtime.rs:108` | 删掉自证证据 → 错误文本点名证据文件，审查工厂 `seen` 为空（没开庭） |
 | `coding_with_self_check_evidence_enters_review` | `src/change/session/session_tests/runtime.rs:139` | 证据齐备 → `reviews == 1` |
 | `red_baseline_blocks_before_coding_turn` | `src/change/session/session_tests/runtime.rs:162` | 基线 `exit_code: 1` → 错误含「基线不是绿的」；agent 只被叫 1 次；gate.baseline 1 条带 `"passed":false` 与 `"exit_code":1`（红时退出码按字段落） |
-| `route_plan_without_marker_is_accepted` | `src/change/session/session_tests/runtime.rs:205` | 只发 `<route>plan</route>` + `<impact-gap>`、不带标记 → 正常返回且 `reviews == 0`（证明先看路由再看标记） |
-| `coding_review_failure_fails_the_stage` | `src/change/session/session_tests/runtime.rs:230` | 审查 FAIL → 错误含「变更编码审查未通过」与被指问题的文件名 |
-| `testing_review_is_invoked_and_can_fail` | `src/change/session/session_tests/runtime.rs:253` | 回归日志绿 + 对账表齐 → 审查 FAIL → 错误含「变更测试审查未通过」 |
-| `testing_pass_reads_acceptance_table` | `src/change/session/session_tests/runtime.rs:283` | 通过时 TestingTurn 的 Pass 变体里 `acceptance_done` 恰为对账表里的验收标准原文 |
-| `testing_route_coding_returns_failures` | `src/change/session/session_tests/runtime.rs:316` | `<route>coding</route>` + 1 条 issues → TestingTurn 的 RouteCoding 变体带回该明细（此路径不校验回归日志与对账表） |
-| `acceptance_table_without_test_ref_is_rejected` | `src/change/session/session_tests/runtime.rs:339` | 对账行不指测试 → 错误含「没有指到测试」 |
-| `plan_review_instances_count_the_retry` | `src/change/session/session_tests/runtime.rs:419` | 违例后重审通过 → `plan_reviews() == 2`（轮次不是恒 1） |
-| `plan_review_violation_retries_with_a_new_instance` | `src/change/session/session_tests/runtime.rs:445` | 违例后 PASS → PlanTurn 判 Pass 且 `opened == 2` |
-| `four_plan_review_violations_are_a_quality_failure` | `src/change/session/session_tests/runtime.rs:469` | 4 次违例 → 错误含「协议违例」且 `is_quality_failure()` 为真（不自动重启） |
-| `empty_review_reply_retries_with_a_new_instance` | `src/change/session/session_tests/runtime.rs:499` | 空回复后 PASS → `Pass` 且 `opened == 2`（空回复不算判负） |
-| `four_empty_review_replies_are_an_infrastructure_failure` | `src/change/session/session_tests/runtime.rs:521` | 4 次空回复 → 错误含「基础设施故障」且 `is_quality_failure()` 为假（可重启） |
-| `review_error_retries_with_a_new_instance` | `src/change/session/session_tests/runtime.rs:551` | 通道错误（`System("模型通道 500")`）后 PASS → `opened == 2` |
-| `coding_review_violation_retries_with_a_new_instance` | `src/change/session/session_tests/runtime.rs:575` | FAIL 缺 issues（违例）后 PASS → `reviews == 2` 且 `opened == 2` |
-| `test_review_violation_retries_with_a_new_instance` | `src/change/session/session_tests/runtime.rs:603` | 同上，作用于测试审查 → `TestingTurn::Pass{reviews: 2}` 且 `opened == 2` |
+| `route_plan_without_marker_is_accepted` | `src/change/session/session_tests/runtime.rs:212` | 只发 `<route>plan</route>` + `<impact-gap>`、不带标记 → 正常返回且 `reviews == 0`（证明先看路由再看标记） |
+| `coding_review_failure_returns_issues_instead_of_failing_the_stage` | `src/change/session/session_tests/runtime.rs:237` | 审查 FAIL 不再直接判死：明细随 CodingTurn 交回（`reviews == 1`，`review_issues` 含被指文件），回注循环在编排层 |
+| `testing_review_fail_reroutes_to_coding_instead_of_failing_the_run` | `src/change/session/session_tests/runtime.rs:279` | 回归日志绿 + 对账表齐 + 审查 FAIL → RouteCoding 形态的 turn，审查明细成为回注失败清单 |
+| `testing_pass_reads_acceptance_table` | `src/change/session/session_tests/runtime.rs:311` | 通过时 TestingTurn 的 Pass 变体里 `acceptance_done` 恰为对账表里的验收标准原文 |
+| `reroute_still_runs_the_product_code_gate` | `src/change/session/session_tests/runtime.rs:345` | 回注（路由）路径同样过产品码门——测试轮中改产品码 → `Err` 点名文件 |
+| `testing_route_coding_returns_failures` | `src/change/session/session_tests/runtime.rs:378` | `<route>coding</route>` + 1 条 issues → TestingTurn 的 RouteCoding 变体带回该明细（此路径不校验回归日志与对账表） |
+| `red_regression_without_route_block_is_nudged_not_judged_a_liar` | `src/change/session/session_tests/runtime.rs:401` | 红回归但没带路由块 → 追补重问而非判「说谎」 |
+| `acceptance_table_without_test_ref_is_rejected` | `src/change/session/session_tests/runtime.rs:443` | 对账行不指测试 → 错误含「没有指到测试」 |
+| `plan_review_instances_count_the_retry` | `src/change/session/session_tests/runtime.rs:518` | 违例后重审通过 → `plan_reviews() == 2`（轮次不是恒 1） |
+| `plan_review_violation_retries_with_a_new_instance` | `src/change/session/session_tests/runtime.rs:544` | 违例后 PASS → PlanTurn 判 Pass 且 `opened == 2` |
+| `four_plan_review_violations_are_a_quality_failure` | `src/change/session/session_tests/runtime.rs:568` | 4 次违例 → 错误含「协议违例」且 `is_quality_failure()` 为真（不自动重启） |
+| `empty_review_reply_retries_with_a_new_instance` | `src/change/session/session_tests/runtime.rs:598` | 空回复后 PASS → `Pass` 且 `opened == 2`（空回复不算判负） |
+| `four_empty_review_replies_are_an_infrastructure_failure` | `src/change/session/session_tests/runtime.rs:620` | 4 次空回复 → 错误含「基础设施故障」且 `is_quality_failure()` 为假（可重启） |
+| `review_error_retries_with_a_new_instance` | `src/change/session/session_tests/runtime.rs:650` | 通道错误（`System("模型通道 500")`）后 PASS → `opened == 2` |
+| `coding_review_violation_retries_with_a_new_instance` | `src/change/session/session_tests/runtime.rs:674` | FAIL 缺 issues（违例）后 PASS → `reviews == 2` 且 `opened == 2` |
+| `test_review_violation_retries_with_a_new_instance` | `src/change/session/session_tests/runtime.rs:702` | 同上，作用于测试审查 → `TestingTurn::Pass{reviews: 2}` 且 `opened == 2` |
 
 ## 测试运行与环境
 
@@ -79,14 +81,12 @@ N/A —— 模块内没有 `pub` 项：19 个用例都是私有 `#[test] fn`，�
 - 配置项：N/A（本文件不读环境变量；`DEVFORGE_TODAY` 等由其他模块消费）。
 - 启停与健康检查：N/A（无长期进程）；失败模式本身就是「健康信号」——门缺失会让里程碑用例变红，通道分错会让超限用例变红。
 - 种子数据：由 `fixture(true)` + `coding_ready` 生成临时仓与证据；四个 testing 类用例另手写回归日志与对账表（见 [核心口径](#核心口径)），路由早退用例不写。
-- 测试运行：`cargo test --lib change::session::session_tests::runtime` 跑本文件 19 例（全模块 34 例用 `cargo test --lib change::session`）。本轮实测（`RUSTUP_HOME=$HOME/.rustup RUSTUP_TOOLCHAIN=stable TMPDIR=/var/tmp/u19-tmp CARGO_NET_OFFLINE=true`，快照 2026-10-24，源码 `src/change/session/session_tests/runtime.rs` 18:39 版）：
+- 测试运行：`cargo test --lib change::session::session_tests::runtime` 跑本文件 21 例（全模块用 `cargo test --lib change::session`）。本轮实测（2026-10-28，当前 HEAD 源码）：
 
   ```
   cargo test --lib change::session::session_tests::runtime
-  → 19 passed; 0 failed; 0 ignored; 594 filtered out; EXIT=0
-  cargo test --lib change::session
-  → 34 passed; 0 failed; 0 ignored; 579 filtered out; EXIT=0
+  → 21 passed; 0 failed; 0 ignored; EXIT=0
   ```
 
-  `filtered out` 随全库用例数变动，`19` / `34` 两个 passed 数由本模块用例数决定。`tempdir()` 按 `TMPDIR` 建目录（`src/change/session/session_tests/mod.rs:90`）——覆盖 `TMPDIR` 前先 `mkdir -p`，否则依赖夹具的用例会 `PathError { kind: NotFound }`。
+  `filtered out` 随全库用例数变动，`21` 这个 passed 数由本模块用例数决定。`tempdir()` 按 `TMPDIR` 建目录（`src/change/session/session_tests/mod.rs`）——覆盖 `TMPDIR` 前先 `mkdir -p`，否则依赖夹具的用例会 `PathError { kind: NotFound }`。
 - 公开接口清单：N/A（无 `pub` 项）——被测接口清单见 `docs/contexts/src/change/session.rs.md` 的「公开成员」。

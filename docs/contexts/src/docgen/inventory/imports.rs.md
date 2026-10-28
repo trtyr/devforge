@@ -33,7 +33,7 @@ description: 四语言 import/use/mod 解析——把一个文件的依赖边解
 | 条目 | 行 | 说明 |
 |---|---|---|
 | `candidate` | `src/docgen/inventory/imports.rs:13` | 闭包：`base` 是文件即返回；否则依次试 .py/.ts/.tsx/.js/.jsx/.mjs/.go/.rs、index.ts/index.js/index.tsx/mod.rs、__init__.py |
-| `add_relative` | `src/docgen/inventory/imports.rs:130` | 只接受以 `./` 或 `../` 开头的模块串（TS/JS 分支用） |
+| `add_relative` | `src/docgen/inventory/imports.rs:130` | 只接受以点斜杠或点点斜杠开头的模块串（TS/JS 分支用） |
 | `cargo_crate_name` | `src/docgen/inventory/imports.rs:142` | 读 `Cargo.toml` 的 `name = "…"`，`-` 换成 `_`；读不到返回 `None` |
 | `resolve_by_suffix` | `src/docgen/inventory/imports.rs:159` | 按 spec 最后一段找同名文件（Go 用），跳过点目录 / `node_modules` / `target` |
 | `norm` | `src/docgen/inventory/imports.rs:183` | `pub(super)`：路径转字符串并把 `\` 换成 `/` |
@@ -49,7 +49,7 @@ description: 四语言 import/use/mod 解析——把一个文件的依赖边解
 - 🟢 **返回的是「仓库内真实存在的文件」**：所有分支最终都经 `candidate`（`:13`）或 `resolve_by_suffix`（`:159`）确认 `is_file()` 后才插入结果集合（`:24`-`:26`、`:169`-`:172`）；解析不出文件的 import 一律不返回，因此闭包 BFS 不会因为「外部依赖」而多出节点。🟢 CONFIRMED `src/docgen/inventory/imports.rs:13`、`:24`、`:159`
 - 🟢 **候选消歧顺序固定**：先原样文件 → 再补 8 种扩展名 → 再 index.ts / index.js / index.tsx / mod.rs → 最后 __init__.py（`:13`-`:35`）；先命中先返回，不做多候选收集。🟢 CONFIRMED `src/docgen/inventory/imports.rs:13`、`:20`、`:27`、`:33`
 - 🟢 **Python 相对导入按点号深度上跳**：`.` 的个数 = `depth`，从文件所在目录向上走 `depth - 1` 层，再把模块名里的 `.` 换成 `/` 拼上去（`:52`-`:62`）；绝对导入则从仓库根按模块名拼（`:63`-`:66`）。🟢 CONFIRMED `src/docgen/inventory/imports.rs:52`、`:56`、`:63`
-- 🟢 **TS/JS 只认相对路径**：`from '…'` 与 `require(…)` 两条正则式查找（`:69`-`:85`），但最终只有 `./` / `../` 开头的 spec 会被 `add_relative` 接受（`:131`-`:139`）——裸包名（react）不算仓库内依赖。🟢 CONFIRMED `src/docgen/inventory/imports.rs:69`、`:80`、`:131`
+- 🟢 **TS/JS 只认相对路径**：`from '…'` 与 `require(…)` 两条正则式查找（`:69`-`:85`），但最终只有以点斜杠或点点斜杠开头的 spec 会被 `add_relative` 接受（`:131`-`:139`）——裸包名（react）不算仓库内依赖。🟢 CONFIRMED `src/docgen/inventory/imports.rs:69`、`:80`、`:131`
 - 🟢 **Rust 只认 `crate` 前缀 与仓名开头的 `use`**：`use` 行先剥可选 `pub `（`:100`），目标再剥 `crate` 前缀 或 `<crate 名>::`（`:102`-`:104`），剩余部分替换 `::`→`/` 后拼在 `src/` 下找（`:110`-`:112`）；因此 `use std::…` / `use serde::…` 不产生边。`mod x;` 按「当前文件目录 + x」找（`:116`-`:121`）。🟢 CONFIRMED `src/docgen/inventory/imports.rs:102`、`:110`、`:116`
 - 🟢 **Go 靠「文件名后缀」而不是包路径**：import 串取最后一段（`:160`），深度优先遍历仓库找同名文件（`:161`-`:178`），跳过点目录 / `node_modules` / `target`（`:166`-`:169`）。import 块内的裸字符串行也吃（`:91`-`:97`）。🟢 CONFIRMED `src/docgen/inventory/imports.rs:159`、`:160`、`:166`
 - 🟡 **同名文件命中顺序取决于文件系统遍历序**：`resolve_by_suffix` 用 `Vec` 当栈（LIFO）+ `read_dir` 原序，命中第一个就返回（`:161`-`:173`）；同名文件存在于多个目录时，返回哪一个不稳定（跨机器/跨文件系统可能不同）。🟡 INFERRED（依据：`read_dir` 无 `sort`，与 `scanner` 的 `scan_source_files` / `walk` 里显式排序的做法不一致）
@@ -62,7 +62,7 @@ description: 四语言 import/use/mod 解析——把一个文件的依赖边解
 | 语言 | 输入形态 | 定位方式 | 落点 |
 |---|---|---|---|
 | `Python` | `from pkg.mod import x` / `import pkg.mod` / `from . import x` / `from ..a.b import x` | 点号深度上跳 + `.`→`/`，再走候选消歧 | `:40`-`:67` |
-| `TsJs` | `… from 'pkg'` / `… from "pkg"` / `require('pkg')` | 只接受 `./`、`../` 开头，拼到当前目录 | `:68`-`:85`（+`add_relative` `:130`） |
+| `TsJs` | `… from 'pkg'` / `… from "pkg"` / `require('pkg')` | 只接受点斜杠、点点斜杠开头，拼到当前目录 | `:68`-`:85`（+`add_relative` `:130`） |
 | `Go` | `import "a/b/c"` / import 块内的 "a/b/c" | 取最后一段当文件名，全仓找同名文件 | `:86`-`:98`（+`resolve_by_suffix` `:159`） |
 | `Rust` | `use crate::a::b;` / `use <crate>::a::b;` / `mod b;` | `src/` + `::`→`/`；`mod` 用当前目录 | `:99`-`:123` |
 | `Other` | 任意 | 不解析 | `:124` |

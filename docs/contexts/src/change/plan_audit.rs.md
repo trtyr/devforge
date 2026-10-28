@@ -71,7 +71,7 @@ description: 变更计划的机械审计与裁决门——只算确定性（路�
 
 - `Result`（`src/change/plan_audit.rs:11`）与 `DevforgeError`（在 `audit_plan_file` 内联构造 `System` 变体）。
 - 标准库：`Path`（`src/change/plan_audit.rs:9`）、标准库文件读取 读文件、`String` 拼装。无外部 crate、无 git、无网络。
-- 测试：`tempfile`（dev-dependency，`Cargo.toml:27`）。两个用例读仓内文档做守卫（`docs/plantree/plans/009-change-sop/decisions/README.md` 与 `docs/plantree/plans/009-change-sop/topics/agents-change.md`，见测试表）。
+- 测试：`tempfile`（dev-dependency，`Cargo.toml:27`）。两个用例读**台账**做守卫（决策台账 README 与 topics 下的 agents-change 文档，路径经 `prepare::default_plantree_root("devforge")` 解析——台账在仓库外 plantree 根下，机器上必须有这两份文件，见测试表）。
 
 ## 核心口径
 

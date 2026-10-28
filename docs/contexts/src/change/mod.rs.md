@@ -63,7 +63,7 @@ description: 变更 SOP（P009）引擎侧实现的模块根——子模块声�
 | `report` | `src/change/mod.rs:38`-40 | `AcceptanceSummary`、`ChangeReport`、`DiffStats`、`diff_stats`、`summarize_acceptance`、`write_report` |
 | `session` | `src/change/mod.rs:41` | `ChangeCtx`、`ProdChangeSession` |
 | `state` | `src/change/mod.rs:42` | `CHANGE_SOP`、`ChangePhase`、`ChangeState`、`TestFailureContext` |
-| `testing_gate` | `src/change/mod.rs:43`-46 | `AcceptanceMatch`、`FAILURE_BLOCK_TITLE`、`check_regression_claim`、`check_regression_log`、`coding_failure_block`、`failure_details`、`reconcile_acceptance`、`route_back_message` |
+| `testing_gate` | `src/change/mod.rs:44`-46 | `AcceptanceMatch`、`FAILURE_BLOCK_TITLE`、`check_regression_claim`、`check_regression_log`（其余成员走模块路径消费；原模块级宽松对账函数已删除） |
 
 **未转发、须走子模块路径的典型公开符号**（🟢 CONFIRMED：对照 `src/change/mod.rs:24` 起的 13 个转发行与各子模块的 `pub` 声明逐个核对）：
 

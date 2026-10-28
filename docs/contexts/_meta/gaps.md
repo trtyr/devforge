@@ -1,4 +1,8 @@
-# 缺口记录 — unit-src-01（src/change/boundary.rs）
+# 缺口登记总则
+
+本文件（_meta/gaps.md）是 docs/contexts 全部缺口登记的唯一真源：模块文档正文里每一条 🔴 标记都必须能在本文件找到对应小节；登记存在 ≠ 已修，已修的条目保留原文并追加「✅ 闭环」注记（登记史也是证据，不删）。历史审查轮的完整意见归档在 _meta/reviews/ 下（review-21.md、review-22.md、review-23.md、review-23-unit-src-24.md、review-26.md、review-32.md、review-35.md 等），均为写作当时的存档快照，不随代码更新；其结论若仍成立已提炼进上面对应单元的小节。
+
+# 缺口记录 — unit-src-01（src/change/boundary.rs，文档 boundary.rs.md）
 
 ## GAP
 
@@ -13,7 +17,7 @@
 - 🟡 `FakeInstaller::install` 在 profile 里已有**形状不符**的 JSON 时走 `expect` panic（`"settings 应为对象"` `src/config/installer.rs:85`、`"packages 应为数组"` `:89`、`"package.json 应为对象"` `:106`、`"dependencies 应为对象"` `:111`），不是 `Err`。影响面：真实 bridge 不会触发该路径，但任何把 `FakeInstaller` 用作注入桥的场景（服务测试 `src/server/tests/mod.rs:134`、e2e `tests/f6_observability/fixture.rs:31`）遇到畸形 profile 会以 panic 终止后台线程，用户侧只看到「渲染线程异常终止」（`src/server/handlers.rs:689`）——错误信息里没有原始 JSON 形状线索。
 - 🔴 `PI_CODING_AGENT_DIR` 与包标识符的 `npm:` 前缀语义同样属于 pi 侧契约（本仓只负责透传），仓内无任何模块校验其有效性。影响面：pi 若改环境变量名/前缀规则，`PiInstallBridge` 会静默装到错误 profile 或执行失败，文档无法先行判定。
 
-# 缺口记录 — unit-src-25（src/config/manifest.rs）
+# 缺口记录 — unit-src-25（src/config/manifest.rs，文档 manifest.rs.md）
 
 ## GAP
 
@@ -28,9 +32,12 @@
 
 ## GAP
 
+- ✅ 闭环（2026-10-28）：原登记的「reconcile_acceptance 无生产调用点、与运行时对账宽严不一」随该函数整体删除而消解——「引用必须真实」由 session 侧 path_refs + ref_resolves 承担，覆盖率语义由 report::summarize_acceptance 精确相等承担。原登记保留如下：
 - 🟡 `reconcile_acceptance`（`src/change/testing_gate.rs:77`）**无生产调用点**：本文件外只出现在 `src/change/mod.rs:43` 的转发与单测。运行时对账实际是两步——`session` 用 `parse_acceptance_table` 读表、逐条 `path_refs` 判引用可解析（`src/change/session.rs:536`-546），覆盖率由 `summarize_acceptance` 精确相等汇总（`src/change/report.rs:125`-136，调用点 `src/change/orchestrator.rs:309`、`:372`）。两套判据**宽严不同**：`reconcile_acceptance` 用双向 `contains`（`src/change/testing_gate.rs:85`-87），运行时用 `d == *c`（`src/change/report.rs:128`）。影响面：改 `reconcile_acceptance` 的宽松匹配不会改变任何运行时行为；反之运行时收紧/放宽也不会被它的 3 个单测（`src/change/testing_gate.rs:194` / `:204` / `:211`）发现——文档无法断言「运行时用的是哪一套」，只能并列陈述两处。
+- ✅ 闭环（2026-10-28）：原登记的「空引用分支不可达且无测试」随该函数删除而消解；运行时侧「验收项没有指到测试 path:line」文案由 session.rs:747-751 的机械门承担，且有 acceptance_table_without_test_ref_is_rejected 用例钉住。原登记保留如下：
 - 🟡 `reconcile_acceptance` 的「空 `test_ref`」分支（`src/change/testing_gate.rs:99`-110）**不可达且无测试**：`parse_acceptance_table`（`:66`-71）会先丢弃右半为空的行，因此该分支只能靠手工构造 `AcceptanceMatch` 才走到，12 个用例无一覆盖。影响面：该错误文案（「验收项没有指到测试 path:line」）若被改坏或删除，全套测试仍绿；文档只能照现状陈述，无法给出可重放证据证明该路径仍生效。
 - 🟡 「回归优先」是**单向**判定：仅拦「日志红 + 自称通过」（`src/change/testing_gate.rs:34`-40）。反向「日志绿 + 自称不绿」不判矛盾、直接 `Ok(code)`，此时 agent 会白走一次回注轮次（`src/change/orchestrator.rs:333` 起）。影响面：文档只能说明「本门不覆盖该方向」，无法判断这是刻意口径还是遗漏（代码与文件头注释均未提及该方向）。
+- ✅ 闭环（2026-10-28）：check_regression_claim 已改走带标签的 parse_evidence_log（回归语境传 REGRESSION_LOG 与「回归」标签，minor 88），内层文案不再指基线文件；regression_parse_error_points_at_the_regression_log 用例钉住。原登记保留如下：
 - 🟡 **回归日志的解析错误文案串到基线口径**：`check_regression_claim` 复用的 `parse_baseline_log` 内部固定传 `BASELINE_LOG` 与标签「基线」（`src/change/coding_gate.rs:104`-106），因此回归日志格式坏时，外层是「回归日志不可解析（要写 `exit_code: N`）」，内层仍是「基线证据缺退出码（evidence/baseline-test.log 里要写 `exit_code: N`）」。影响面：运维照错误文本去找基线证据，而真正坏的是回归日志；`src/change/coding_gate_tests.rs`-563 的用例只断言外层前缀，掩盖不了这层错指。
 
 # 缺口记录 — unit-src-27（src/config/render.rs）
@@ -48,7 +55,7 @@
 
 - 🟡 **config 门面的转发面取舍没有仓内书面依据**：`src/config/mod.rs:11`-13 只转发 8 个名字（`build_install_command` / `PackageInstaller` / `PiInstallBridge` / 清单四类型 / `Renderer`），而 `FakeInstaller`（`src/config/installer.rs:71`）、`skill_assets` 全部符号、manifest 的常量与方法都不转发。P002 的 decisions 目录（`docs/plantree/plans/002-config-management/decisions/`）里没有关于该取舍的记录，代码里也没有注释说明。影响面：文档只能陈述「事实上的转发面 + 单向依赖使它们没被转发」，无法判断「刻意收窄」还是「顺手写成」；后续往里加/减名字时，没有任何机械检查会变红（`config::` 的 47 个测试没有一条断言导入面）。
 
-# 缺口记录 — unit-src-30（src/config/skill_assets.rs）
+# 缺口记录 — unit-src-30（src/config/skill_assets.rs，文档 skill_assets.rs.md）
 
 ## GAP
 
@@ -131,6 +138,7 @@
 - 🟡 **空箱追补会丢掉原始开工语**：空箱被拒收后把下一条消息整体换成 `ISSUES_NUDGE`（`src/change/session.rs:515`），不再携带 `testing_kickoff` 的正文。影响面：模型在第二轮失去「跑回归 → 写测试 → 对账表」的原始顺序提示，只能凭上一轮记忆补明细；测试只断言消息条数与话术里含「请补齐失败明细后重发」（`src/change/session/session_tests/plan.rs:293`），覆盖不到「上下文丢失导致补错明细」。
 - 🟡 **`issues_of` 的解析口径很宽**：只取第一个 `<issues>` 到 `</issues>` 之间（无闭合则到串尾），不识别代码围栏，且任何非空行都算一条明细（只剥行首 `-`/`*` 前缀）——`src/change/session.rs:238` 至 `:252`。影响面：回复里若在围栏代码块中举例 `<issues>`，或把说明性散文写进块内，都会被当作失败明细回注给 coding 轮；引擎侧不校验每条是否带 `path:line`。
 - 🟡 **「自证证据覆盖本轮 diff」只是提示词要求，机械门不验**：`coding_kickoff` 要求「覆盖写、不许沿用上一轮残留」（`src/change/session.rs:153`），但门只验文件存在、可解析、退出码为 0（`src/change/coding_gate.rs:135` 至 `:156`）。影响面：沿用上一轮残留的绿色证据只要「覆盖写」过就能过门；文档不能承诺「过自证门 = 证据与本轮 diff 相关」。
+- ✅ 闭环（2026-10-28，change #4）：coding / testing 审查判负已改为与 plan 同形状——run_coding 把明细随 CodingTurn.review_issues 交回、run_testing 命中审查 FAIL 时返回 TestingTurn::RouteCoding 携带回注失败清单，回注循环与上限（MAX_CODING_FIXES / MAX_TEST_REROUTES）在编排层；用例 coding_review_failure_returns_issues_instead_of_failing_the_stage 与 testing_review_fail_reroutes_to_coding_instead_of_failing_the_run 钉住。原登记保留如下：
 - 🟡 **coding / testing 审查判负与 plan 判负的形状不一致**：plan 侧返回 `PlanTurn::Fail{issues}` 交编排层走修复回路（`src/change/session.rs:322` 至 `:327`），coding 与 testing 侧直接抛 `DevforgeError::Quality`，明细只以「；」拼进错误文本（`:488` 至 `:491`、`:558` 至 `:561`）。影响面：上层若想拿结构化 issues 做回注，只能解析字符串；两条路径的错误处理无法共用一套。
 - 🟡 **审查轮次只有 plan 段落成字段**：`plan_review_instances` 由 plan 审查写回（`src/change/session.rs:321`），coding / testing 的实例数只随 turn 返回值带出（`:486`、`:556`）。影响面：调用方若只读 `plan_reviews()` 会得到「只有 plan 轮次」的偏口径；报告侧必须从 turn 里取另外两段轮次。
 - 🟡 **计划文件「必须落盘」是隐含前提**：`run_plan_with` 在标记齐了之后立刻按路径读计划文件，读不到就判 `Quality`（`src/change/session.rs:298` 至 `:300`），而「agent 是否真把计划写进目标仓该路径」只由提示词约束，仓内无第二处校验。影响面：模型若只把计划贴在回复里，本轮直接判质量失败且没有修复回路（不是 `PlanTurn::Fail`），用户侧看到的是引擎错误而非「计划不合格」。
@@ -142,10 +150,10 @@
 
 ## GAP
 
-- 🟡 **路由分支完全跳过证据链**：`testing_route_coding_returns_failures`（`src/change/session/session_tests/runtime.rs:316`）用 `fixture(true)` 却**不写**回归日志与验收对账表，仍能拿到 `TestingTurn::RouteCoding`——因为 `run_testing` 一旦命中 `<route>coding|plan</route>` 就提前返回（`src/change/session.rs:520` 至 `:525`），`check_regression_log` 与对账表解析都在其后。影响面：测试阶段「先声称回归跑了」的纪律对回注路径不成立；agent 可以完全不给回归证据、只发一条路由 + 一条 issues 就触发回注，文档不能承诺「回注必然带证据」。
-- 🟡 **超限边界只有「第 4 次」一侧**：两个通道的用例都喂 4 条脚本（`src/change/session/session_tests/runtime.rs:469`、`:521`），断言超限成立；但**没有**「恰好 3 次不超限」的对照用例。影响面：若把上限常量从 3 改成 2（或把 `>` 改成 `>=`），现有用例里只有「4 条必超限」仍会通过——边界语义（3 次仍重试 / 第 4 次才终止）在测试层面没有被钉死，只能靠读 `src/sop/review_gate.rs:16` 与 `:19` 的常量与 `>` 比较。
+- 🟡 **路由分支完全跳过证据链**：`testing_route_coding_returns_failures`（`src/change/session/session_tests/runtime.rs:378`）用 `fixture(true)` 却**不写**回归日志与验收对账表，仍能拿到 RouteCoding 形态的 turn——因为 `run_testing` 一旦命中 `<route>coding|plan</route>` 就提前返回（`src/change/session.rs:700` 至 `:702`），`check_regression_log` 与对账表解析都在其后。影响面：测试阶段「先声称回归跑了」的纪律对回注路径不成立；agent 可以完全不给回归证据、只发一条路由 + 一条 issues 就触发回注，文档不能承诺「回注必然带证据」。
+- 🟡 **超限边界只有「第 4 次」一侧**：两个通道的用例都喂 4 条脚本（`src/change/session/session_tests/runtime.rs:568`、`:620`），断言超限成立；但**没有**「恰好 3 次不超限」的对照用例。影响面：若把上限常量从 3 改成 2（或把 `>` 改成 `>=`），现有用例里只有「4 条必超限」仍会通过——边界语义（3 次仍重试 / 第 4 次才终止）在测试层面没有被钉死，只能靠读 `src/sop/review_gate.rs:16` 与 `:19` 的常量与 `>` 比较。
 - 🟡 **里程碑断言绑定 tracing 字段的字面形态**：`coding_gates_and_review_open_are_logged_as_milestones`（`src/change/session/session_tests/runtime.rs:44`）按 `"passed":true`、`"steps":1`、`"role":"change-coding-review"`、`"round":1`、`"target":"devforge::change::session"` 做子串断言，且要求 `"event":` 行过 `assert_milestone_shape`。影响面：字段改名、改序或把 `tracing::info!` 挪到别的模块文件（target 变化）都会让用例变红，即使对外语义没变——读者看到红不能直接推「门坏了」。
 - 🟡 **断言工具的跨模块行号随 `src/observability/mod.rs` 在途改动漂移**：`test_support` 模块声明与两个断言函数在本单元文档首稿（2026-10-24 19:37）时是 `:381` / `:423` / `:437`，同文件 19:43 改动后现树为 `:422` / `:464` / `:478`（本轮已按现树改正）。影响面：`doc-lint` 只验行号「存在」，旧行号当时也都合法 → 这类漂移抓不到；读者应按符号名（`pub mod test_support` / `capture_jsonl` / `assert_milestone_shape`）定位，不依赖行号。
 - 🟡 **`PLAN_PASS` 常量被三个角色共用**：通过样例常量定义在夹具里叫 `PLAN_PASS`（`src/change/session/session_tests/mod.rs:68`），却同时用于 coding 审查与 test 审查的通过回复（`src/change/session/session_tests/runtime.rs:19`、`:151`、`:303` 等）。影响面：命名暗示「只用于 plan」，实际是通用审查通过样例；文档若照名字解释会误导，且将来若三种角色的通过协议分化，这个常量会被拆开而文档的「同一份协议」说法需要跟着改。
-- 🟡 **清单与本文件用例数差一**：`inventory.json` 里本单元登记 18 条 behavior，文件实有 19 个 `#[test]`——首个用例 `coding_runs_gates_and_returns_changed_files`（`src/change/session/session_tests/runtime.rs:7`）未进清单。影响面：按清单审计覆盖会把它当「不存在」，按清单统计「本单元测试数」会少 1；本文档已按文件实况列 19 行，清单未改（无标记工具）。
+- 🟡 **清单与本文件用例数差一**：`inventory.json` 里本单元登记 18 条 behavior，文件实有 21 个 `#[test]`（2026-10-28 重数）——早期用例与后续新增的回注/门禁用例都不在旧清单里。影响面：按清单审计覆盖会漏计，按清单统计「本单元测试数」会偏少；本文档已按文件实况列表，清单未改（无标记工具）。
 - 🔴 **空回复与「早退」的区分只在文案里**：`review_gate` 把「空回复」归入实例失败（`src/sop/review_gate.rs:118` 至 `:127`），本文件只断言超限后的错误文案含「基础设施故障」（`src/change/session/session_tests/runtime.rs:521`）。至于「进程早退但输出了一半协议块」算哪条通道，仓内既无用例也无注释可查——无法从测试与代码判断该情形的归属。

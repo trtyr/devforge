@@ -16,9 +16,9 @@ change run 的检查点（P009 T011b；落点按 plan 010 D001/D022a：**引擎�
 | 引擎（`src/runstate/mod.rs`） | 落点路径、身份四元组校验、schema 版本、原子写（临时文件 + rename） | `src/runstate/mod.rs:12`（「本模块只认状态怎么存」）、`:136`-158 `save`、`:89` `matches` |
 | 本模块（SOP 侧） | 扩展段 `data["change"]` 的结构与内容（本文件）、何时读写的调用点（`src/change/orchestrator.rs`） | `src/runstate/mod.rs:70`（「SOP 自己的扩展段：引擎不解释其中任何字段」） |
 
-同一分工在 plan tree 里的出处：`docs/plantree/plans/009-change-sop/decisions/README.md:148`（D022「检查点由引擎写，agent 不碰」）与 `docs/plantree/plans/010-run-resume/decisions/README.md:43`（D005：引擎管状态文件位置/原子写/公共壳，SOP 管扩展段结构）。即：**落盘这件事归引擎，`data["change"]` 里写什么归本模块**——两者是分层，不是同一件事的两个写者。
+同一分工在决策台账里的出处（台账在仓库外 plantree 根下）：009-change-sop 决策台账 D022「检查点由引擎写，agent 不碰」与 010-run-resume 决策台账 D005「引擎管状态文件位置/原子写/公共壳，SOP 管扩展段结构」。即：**落盘这件事归引擎，`data["change"]` 里写什么归本模块**——两者是分层，不是同一件事的两个写者。
 
-续跑语义（`010 D002`：`start` 默认续跑，`fresh` 才重来）：`start` 默认从断点继续；`roundtrips` 跨会话保留，不因重启清零（`docs/plantree/plans/009-change-sop/roadmap.md:70` 的 T011b 把「往返」列为检查点内容）。
+续跑语义（010-run-resume 决策台账 D002：`start` 默认续跑，`fresh` 才重来）：`start` 默认从断点继续；`roundtrips` 跨会话保留，不因重启清零（009-change-sop 路线图 T011b 把「往返」列为检查点内容）。
 
 ## 职责
 
@@ -267,7 +267,7 @@ change run 的检查点（P009 T011b；落点按 plan 010 D001/D022a：**引擎�
   CARGO_TARGET_DIR=<仓外独立空目录> cargo test --lib change::state
   ```
 
-  预期输出：`test result: ok. 10 passed; 0 failed; 0 ignored; 588 filtered out`（`filtered out` 的数随仓内测试总数变化，不是本模块的断言），用例名与上表十例一一对应。⚠️ `/tmp` 容量小时把 `TMPDIR` 指到宽裕目录（否则大量临时目录创建可能写失败）。
+  预期输出：`test result: ok. 10 passed; 0 failed; 0 ignored; 588 filtered out`（`filtered out` 的数随仓内测试总数变化，不是本模块的断言），用例名与上表十例一一对应。注意：系统临时目录（TMPDIR）容量小时把它指到宽裕目录（否则大量临时目录创建可能写失败）。
 - 运行依赖：`tempfile`（dev-dependency，`Cargo.toml:27`）作 `StateStore` 根；`serde_json`（测试直接拼旧断点 `data`，如 `src/change/state_tests.rs`-312，属 crate 已有依赖）；不需要 git、外部服务、端口或网络。
 - 每个用例独立 `tempdir`，`StateKey` 用 `("proj","task",CHANGE_SOP)`，可并行跑。
 - **本单元的 Runbook 边界**：本节承担环境 / 依赖获取 / 测试运行与隔离三件；**N/A** 项与理由——启停与健康检查：库内模块，无独立进程；配置项：无运行时可配项（路径由 `StateKey` 入参决定，常量 `CHANGE_SOP` 不外部可调）；种子数据：无预置种子（用例自行构造断点或空目录）；公开接口清单：上文「公开成员」表即全部（无 HTTP/CLI 端点）。

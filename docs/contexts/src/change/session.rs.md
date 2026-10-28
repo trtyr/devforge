@@ -227,14 +227,16 @@ change SOP 的生产 `ChangeSession` 实现（P009 接线）：把子进程会�
 | `coding_without_self_check_evidence_fails_before_review` | 缺自证证据不进审查 | `src/change/session/session_tests/runtime.rs:108` |
 | `coding_with_self_check_evidence_enters_review` | 有自证证据进审查（1 轮） | `src/change/session/session_tests/runtime.rs:139` |
 | `red_baseline_blocks_before_coding_turn` | 红基线拦住 + 里程碑带退出码 | `src/change/session/session_tests/runtime.rs:162` |
-| `route_plan_without_marker_is_accepted` | 路由优先、不要求标记、零轮次 | `src/change/session/session_tests/runtime.rs:205` |
-| `coding_review_failure_fails_the_stage` | coding 审查 Fail → Quality | `src/change/session/session_tests/runtime.rs:230` |
-| `testing_review_is_invoked_and_can_fail` | 测试审查被调用且可判负 | `src/change/session/session_tests/runtime.rs:253` |
-| `testing_pass_reads_acceptance_table` | 通过时读对账表 | `src/change/session/session_tests/runtime.rs:283` |
-| `testing_route_coding_returns_failures` | 路由 coding 带失败明细 | `src/change/session/session_tests/runtime.rs:316` |
-| `acceptance_table_without_test_ref_is_rejected` | 对账项无 path:line 被拒 | `src/change/session/session_tests/runtime.rs:339` |
-| `plan_review_instances_count_the_retry` | 轮次计入违例重审 | `src/change/session/session_tests/runtime.rs:419` |
-| `plan_review_violation_retries_with_a_new_instance` | 违例换新实例重审 | `src/change/session/session_tests/runtime.rs:445` |
+| `route_plan_without_marker_is_accepted` | 路由优先、不要求标记、零轮次 | `src/change/session/session_tests/runtime.rs:212` |
+| `coding_review_failure_returns_issues_instead_of_failing_the_stage` | coding 审查 Fail → 明细随 turn 交回（回注循环在编排层） | `src/change/session/session_tests/runtime.rs:237` |
+| `testing_review_fail_reroutes_to_coding_instead_of_failing_the_run` | 测试审查 Fail → RouteCoding 回注 coding | `src/change/session/session_tests/runtime.rs:279` |
+| `testing_pass_reads_acceptance_table` | 通过时读对账表 | `src/change/session/session_tests/runtime.rs:311` |
+| `reroute_still_runs_the_product_code_gate` | 回注路径仍过产品码门（测试轮中改码被拒） | `src/change/session/session_tests/runtime.rs:345` |
+| `testing_route_coding_returns_failures` | 路由 coding 带失败明细 | `src/change/session/session_tests/runtime.rs:378` |
+| `red_regression_without_route_block_is_nudged_not_judged_a_liar` | 红回归无路由块 → 追补而非说谎 | `src/change/session/session_tests/runtime.rs:401` |
+| `acceptance_table_without_test_ref_is_rejected` | 对账项无 path:line 被拒 | `src/change/session/session_tests/runtime.rs:443` |
+| `plan_review_instances_count_the_retry` | 轮次计入违例重审 | `src/change/session/session_tests/runtime.rs:518` |
+| `plan_review_violation_retries_with_a_new_instance` | 违例换新实例重审 | `src/change/session/session_tests/runtime.rs:544` |
 | `four_plan_review_violations_are_a_quality_failure` | 违例超限 Quality（不重启） | `src/change/session/session_tests/runtime.rs:469` |
 | `empty_review_reply_retries_with_a_new_instance` | 空回复换新实例 | `src/change/session/session_tests/runtime.rs:499` |
 | `four_empty_review_replies_are_an_infrastructure_failure` | 实例失败超限 System（可重启） | `src/change/session/session_tests/runtime.rs:521` |
