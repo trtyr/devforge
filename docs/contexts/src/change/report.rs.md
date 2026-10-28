@@ -15,7 +15,7 @@ description: 变更报告（引擎写）——diff 统计、审查轮次、往�
 - diff 统计：`diff_stats` 跑 `git diff --numstat` 汇总文件数/增删行数。
 - 验收对账汇总：`summarize_acceptance` 按验收标准与已完成项算 `total`/`done`/`missing`，`AcceptanceSummary` 的 `passed` 给出结论。
 - 报告数据结构与渲染：`ChangeReport` + `render` 产 markdown（含未对账清单小节）。
-- 报告落盘：`write_report` 写 `<repo>/docs/plantree/changes/<change-id>/report.md`。
+- 报告落盘：`write_report` 写台账根 change_dir 下的 report.md（外部审计 #2 余半，2026-10-28：不再写目标仓——台账不进仓；也不写 worktree——会被 WsCleanup 删）。
 
 **不负责**：不采集用量（由 `src/server/change_engine.rs:54` 的 `finalize` 从会话账汇总后回填）、不计墙钟（`finalize` 填 `wall_secs`）、不判阶段推进（见 `src/change/orchestrator.rs`）。
 
@@ -107,12 +107,12 @@ description: 变更报告（引擎写）——diff 统计、审查轮次、往�
 
 ### write_report
 
-- 摘要：把报告写到目标仓（目录不存在先建）。
-- 行为语义（🟢 CONFIRMED `src/change/report.rs:139`）：`dir = <repo>/docs/plantree/changes/<change_id>`；建目录失败 → `System("建目录 … 失败")`；写 report.md（内容为 `report` 的 `render()` 输出）失败 → `System("写报告 … 失败")`；成功返回报告路径。覆盖写（同路径重复调用直接重写）。
-- 参数：`repo: &Path` — 目标仓；`change_id: &str` — 变更 id（目录名）；`report: &ChangeReport`。
-- 返回：`Result<PathBuf>` — 写出的 report.md 绝对/相对路径。
+- 摘要：把报告写到台账根的 change_dir（目录不存在先建）。
+- 行为语义：`path = change_dir/report.md`；建目录失败 → `System("建目录 … 失败")`；写 report.md（内容为 `report` 的 `render()` 输出）失败 → `System("写报告 … 失败")`；成功返回报告路径。覆盖写（同路径重复调用直接重写）。落点口径：报告是台账产物，不进目标仓（2026-10-25 反转 D003）、不进 worktree（会被 remove --force 连目录删，外部审计 #2）；生产调用点 `finalize`（`src/server/change_engine.rs`）传 `ChangePrep` 的 change_dir 字段。
+- 参数：`change_dir: &Path` — 台账根下的 change 目录（与 history 同源）；`report: &ChangeReport`。
+- 返回：`Result<PathBuf>` — 写出的 report.md 路径。
 - 异常：`System`（建目录或写文件失败）。
-- 示例：`write_report(tmp, "change-20261020-x", &report)` → 文件存在且内容含「变更报告」（`src/change/report_tests.rs`）。
+- 示例：`write_report(&change_dir, &report)` → 文件存在且内容含「变更报告」（`src/change/report_tests.rs`）。
 
 ## 测试覆盖（`#[cfg(test)]`）
 

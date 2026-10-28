@@ -75,13 +75,32 @@ impl EventBus {
 
     /// 回放 `last_id` 之后（不含）的全部留档事件。
     pub fn replay_after(&self, last_id: u64) -> Vec<(u64, String)> {
-        self.log
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        self.replay_after_with_gap(last_id).0
+    }
+
+    /// 回放 + 缺口检测（外部审计 #8，2026-10-28）：带 `last_id` 重连的客户端，
+    /// 若缓冲内最早保留序号 > last_id + 1，说明 (last_id, oldest) 之间的事件
+    /// 已被挤出 1024 条窗口，回放永远无法覆盖这段——必须把缺口告诉客户端，
+    /// 否则它分不清「这之后没事件」与「事件已被挤掉」。
+    /// 返回 (幸存回放, 缺口区间 Some((missing_from, missing_to)))。
+    /// `last_id = 0`（新客户端）视为无缺口：没有基线，全量回放即完整。
+    /// 序号分配与留档在同一临界区（minor 77/78），本方法单次加锁，两结果不会错位。
+    pub fn replay_after_with_gap(&self, last_id: u64) -> (Vec<(u64, String)>, Option<(u64, u64)>) {
+        let log = self.log.lock().unwrap_or_else(|e| e.into_inner());
+        let events: Vec<(u64, String)> = log
             .iter()
             .filter(|(id, _)| *id > last_id)
             .cloned()
-            .collect()
+            .collect();
+        let gap = if last_id > 0
+            && let Some(&oldest) = log.front().map(|(id, _)| id)
+            && oldest > last_id + 1
+        {
+            Some((last_id + 1, oldest - 1))
+        } else {
+            None
+        };
+        (events, gap)
     }
 
     /// 已分配的最大序号（含仍留在窗口内的与已被挤出的）。

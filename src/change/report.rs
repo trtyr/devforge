@@ -170,11 +170,10 @@ pub fn summarize_acceptance(criteria: &[String], done: &[String]) -> AcceptanceS
 }
 
 /// 写报告到目标仓（目录不存在先建）。
-pub fn write_report(repo: &Path, change_id: &str, report: &ChangeReport) -> Result<std::path::PathBuf> {
-    let dir = repo.join("docs/plantree/changes").join(change_id);
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| DevforgeError::System(format!("建目录 {} 失败：{e}", dir.display())))?;
-    let path = dir.join("report.md");
+pub fn write_report(change_dir: &Path, report: &ChangeReport) -> Result<std::path::PathBuf> {
+    std::fs::create_dir_all(change_dir)
+        .map_err(|e| DevforgeError::System(format!("建目录 {} 失败：{e}", change_dir.display())))?;
+    let path = change_dir.join("report.md");
     std::fs::write(&path, report.render())
         .map_err(|e| DevforgeError::System(format!("写报告 {} 失败：{e}", path.display())))?;
     Ok(path)

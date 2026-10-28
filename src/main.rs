@@ -275,20 +275,24 @@ async fn main() -> anyhow::Result<()> {
     // P3-ISSUE-03 修复：token 配置入口（CLI --token > DEVFORGE_TOKEN 环境变量；
     // 未设即放行，Q003）+ run 超时（P8-ISSUE-01）：默认不限时（零硬限制），
     // DEVFORGE_RUN_TIMEOUT_MS 显式开启（两者在 Arc 分享前经 get_mut 注入）
-    if let Some(s) = std::sync::Arc::get_mut(&mut state) {
-        // 自审 minor（46）：env 名与解析都在 server::http 里（单一契约来源）
-        if let Some(t) = devforge::server::resolve_startup_token(
-            devforge::server::parse_token_flag(&args),
-            devforge::server::http::token_from_env(),
-        ) {
-            s.token = Some(t);
-        }
-        if let Ok(ms) = std::env::var("DEVFORGE_RUN_TIMEOUT_MS")
-            && let Ok(n) = ms.parse::<u64>()
-            && n > 0
-        {
-            s.run_timeout_ms = Some(n);
-        }
+    // 外部审计 #9（2026-10-28）：此处 Arc 尚未分享（下面才交给 server），get_mut
+    // 恒成功；若未来有人把注入点挪到分享之后，必须炸出来而不是静默丢掉已配置的
+    // token/超时——回环地址下 DR-9 闸不覆盖，静默丢失 = 鉴权无声关闭。
+    let Some(s) = std::sync::Arc::get_mut(&mut state) else {
+        panic!("启动注入 token/超时时 Arc 已被分享——注入点必须保持在服务启动之前");
+    };
+    // 自审 minor（46）：env 名与解析都在 server::http 里（单一契约来源）
+    if let Some(t) = devforge::server::resolve_startup_token(
+        devforge::server::parse_token_flag(&args),
+        devforge::server::http::token_from_env(),
+    ) {
+        s.token = Some(t);
+    }
+    if let Ok(ms) = std::env::var("DEVFORGE_RUN_TIMEOUT_MS")
+        && let Ok(n) = ms.parse::<u64>()
+        && n > 0
+    {
+        s.run_timeout_ms = Some(n);
     }
 
     let addr: std::net::SocketAddr = std::env::var("DEVFORGE_ADDR")

@@ -132,9 +132,10 @@ fn diff_stats_reads_numstat() {
 #[test]
 fn write_report_creates_directory_and_file() {
     let tmp = tempfile::tempdir().unwrap();
-    let path = write_report(tmp.path(), "change-20261020-x", &sample(all_ok())).unwrap();
+    let change_dir = tmp.path().join("ledger").join("change-20261020-x");
+    let path = write_report(&change_dir, &sample(all_ok())).unwrap();
     assert!(path.is_file());
-    assert!(path.ends_with("docs/plantree/changes/change-20261020-x/report.md"));
+    assert!(path.ends_with("change-20261020-x/report.md"));
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("变更报告"));
 }

@@ -48,13 +48,16 @@ pub fn finalize(
     outcome: &mut crate::change::orchestrator::ChangeOutcome,
     session_root: &std::path::Path,
     run_id: &str,
-    workspace: &std::path::Path,
+    change_dir: &std::path::Path,
     started: std::time::Instant,
 ) -> Result<Finalized> {
     let usage = crate::docgen::usage::from_session_dirs(&session_dirs(session_root, run_id));
     outcome.report.usage = usage.render();
     outcome.report.wall_secs = started.elapsed().as_secs();
-    let report_path = write_report(workspace, &outcome.report.change_id, &outcome.report)?;
+    // 外部审计 #2 余半（2026-10-28）：报告落在台账根的 change_dir（与 history 同源），
+    // 不写目标主仓——「台账不进仓」（2026-10-25 反转 D003）。也不写 worktree：
+    // ws_guard 的 Drop 会 git worktree remove --force 连未跟踪文件一起删（102 前案）。
+    let report_path = write_report(change_dir, &outcome.report)?;
     Ok(Finalized {
         report_path,
         usage: outcome.report.usage.clone(),
@@ -339,12 +342,12 @@ impl BuiltinRpcEngine {
 
         match sop_result {
             Ok(mut outcome) => {
-                // 自审 critical：报告必须落在目标主仓，不是 worktree——worktree 隔离下
-                // 旧实现把 report.md 写进 worktree，随后 ws_guard 的 Drop 连目录一起删
-                // （git worktree remove --force），run 报 Completed 但 report_path 指向
-                // 不存在的文件。非 worktree 模式两者同路径，行为不变。
+                // 报告落点演进：①旧口径写 worktree → ws_guard 的 Drop 连目录删（自审
+                //   critical 102 前案，run 报 Completed 但 report_path 指向不存在的文件）；
+                // ②改写目标主仓 → 违反「台账不进仓」（2026-10-25 反转 D003，外部审计
+                //   #2 余半指出）；③现口径：写台账根的 change_dir，与 history 同源。
                 let finalized =
-                    finalize(&mut outcome, &session_root, &run_id, &task.workspace, started)?;
+                    finalize(&mut outcome, &session_root, &run_id, &prep.change_dir, started)?;
                 // P012 M1 · T1.1：候选冻结 commit 落黑板（diff 归因锚点）；随后 guard 清 worktree（分支保留）
                 if let Some(ws) = &ws_guard.ws {
                     let frozen = ws.freeze()?;

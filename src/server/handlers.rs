@@ -1075,16 +1075,33 @@ pub async fn events(
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
     let rx = st.bus.subscribe();
-    let replay = st.bus.replay_after(last_id);
+    let (replay, replay_gap) = st.bus.replay_after_with_gap(last_id);
     // 2026-10-27 自审 major：去重阈值 = **实际回放过的最大序号**；回放为空时必须归零。
     // 旧口径回退成客户端的 Last-Event-ID——服务重启后序号重置，客户端带着旧大序号重连，
     // 全部新序号实时事件 ≤ 旧大序号 → 被永久丢弃。空回放 = 无重叠可能 → 不该过滤任何实时事件。
     let replay_max = replay.last().map(|(id, _)| *id).unwrap_or(0);
-    let replayed = tokio_stream::iter(replay.into_iter().map(|(id, data)| {
+    // 外部审计 #8（2026-10-28）：缺口必须作为元事件先行，客户端才能区分「没有新事件」
+    // 与「事件已被挤出留档窗口」。合成事件 id = 缺口上界：客户端再断线时以它做
+    // Last-Event-ID，回放仍返回同一批幸存事件且不再报缺口（收敛，不循环）。
+    let gap_head = replay_gap.map(|(from, to)| {
+        let data = serde_json::json!({
+            "type": "events.dropped",
+            "missing_from": from,
+            "missing_to": to,
+            "hint": "留档窗口已滚动，这段事件无法回放",
+        })
+        .to_string();
+        Ok(
+            axum::response::sse::Event::default()
+                .id(to.to_string())
+                .data(data),
+        )
+    });
+    let replayed = tokio_stream::iter(gap_head.into_iter().chain(replay.into_iter().map(|(id, data)| {
         Ok(axum::response::sse::Event::default()
             .id(id.to_string())
             .data(data))
-    }));
+    })));
     let live = BroadcastStream::new(rx).filter_map(move |item| match item {
         Ok((id, data)) => {
             if id <= replay_max {

@@ -848,7 +848,7 @@ fn mock_chain_produces_report_and_done_state() {
         &mut out,
         &tmp.path().join("sessions"),
         "run-t",
-        tmp.path(),
+        &tmp.path().join("ledger").join("change-20261020-x"),
         std::time::Instant::now(),
     )
     .unwrap();

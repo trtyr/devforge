@@ -16,6 +16,13 @@ devforge 是**服务器**（非 CLI）：axum 常驻，REST + SSE 五能力域�
 | 可观测 | `GET /api/v1/events`（SSE，全事件序号化，支持 `Last-Event-ID` 断线续传） |
 | 配置管理 | `GET/PUT /api/v1/config/manifest`（整份替换，异步渲染 profile，202 + SSE 通知） |
 
+## 平台
+
+**目标平台是 Linux**（服务器形态）：进程台账、孤儿清场、启停对账都依赖 `/proc` 与
+POSIX 进程接口（`libc::kill` 等）。非 Linux 平台不做支持声明——在非 Linux 上构建会
+在 crate 根直接报出一条可读的 `compile_error!`（外部审计 #1，2026-10-28），而不是
+一堆 libc 符号缺失的编译错误。
+
 ## 架构一览
 
 ```
@@ -30,7 +37,7 @@ src/
 
 编排模型（decisions/003/004/007/008）：
 
-- **零硬限制**：无内建轮次/时长上限；run 超时默认不限时，`DEVFORGE_RUN_TIMEOUT_MS` 显式开启
+- **限制口径**（2026-10-28 对齐外部审计附带疑点，不再称「零硬限制」）：SOP 层无内建轮次上限；run 超时默认不限时（`DEVFORGE_RUN_TIMEOUT_MS` 显式开启），但调度器对每个 work item 有墙钟预算熔断（默认 240 分钟，`SchedulerConfig` 可调）；`plans_root` 落在系统临时目录时启动即拒（临时目录会被系统回收，台账不能放那）
 - **零校验自动流转**：Review 打回后问题连同失败明细回注（plan→`fix_plan`、coding→`fix_coding`、
 testing→回注 coding），有界（各 3 轮后判质量失败），不验修复质量
 - **精确清场**：取消/超时按 `DEVFORGE_MANAGED=run-id` 精确 SIGKILL 自家 pi，不碰用户进程
@@ -54,4 +61,5 @@ python3 tests/e2e/run_all.py        # 端到端全量（真 pi + 真模型，--q
 
 端到端用隔离 HOME 起真服务器 + 真 pi 子进程 + 真模型（规划 Agent deepseek-flash /
 审查 Agent grok-4.7，经自建中转）；AI 自动应答全部交互（`dialog_responder.py` 探测制回填）。
-现状与历史结论见 `tests/e2e/TEST_REPORT.md`，项目过程见 `docs/plantree/`。
+现状与历史结论见 `tests/e2e/TEST_REPORT.md`，项目过程台账在仓库外
+`~/.devforge/plantree/devforge/`（2026-10-25 起「台账不进仓」，仓内 docs/plantree 仅作迁移源）。

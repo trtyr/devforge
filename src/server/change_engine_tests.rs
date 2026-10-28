@@ -73,7 +73,7 @@ fn finalize_writes_report_with_usage_and_wall_clock() {
         &mut out,
         &tmp.path().join("sessions"),
         "run-t",
-        tmp.path(),
+        &tmp.path().join("ledger").join("change-20261020-x"),
         std::time::Instant::now(),
     )
     .unwrap();
@@ -195,34 +195,45 @@ fn freeze_equals_baseline_until_the_agent_commits() {
     ws.remove(&repo).unwrap();
 }
 
-/// 自审 critical 回归（102）：报告必须落在**主仓**而不是 worktree——
-/// worktree 收尾会被 remove --force 连目录删掉，旧实现写进去 → run 报 Completed
-/// 但 report_path 指向不存在的文件。
+/// 外部审计 #2（2026-10-28）+ 自审 critical（102 前案）：报告必须落在**台账根的
+/// change_dir**——写 worktree 会被 remove --force 连目录删（102 前案：run 报
+/// Completed 但 report_path 指向不存在的文件）；写主仓则把台账产物塞进目标仓，
+/// 违反「台账不进仓」（2026-10-25 反转 D003）。
 #[test]
-fn finalize_writes_report_outside_the_worktree() {
+fn finalize_writes_report_into_the_ledger_change_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     let worktree = tmp.path().join("repo-worktrees").join("t1");
     std::fs::create_dir_all(&worktree).unwrap();
+    let change_dir = tmp
+        .path()
+        .join("ledger")
+        .join("proj")
+        .join("change-20261020-x");
     let sessions = worktree.join("sessions"); // 会话目录在 worktree 侧
     let mut out = outcome();
     let f = finalize(
         &mut out,
         &sessions,
         "run-w",
-        &repo,
+        &change_dir,
         std::time::Instant::now(),
     )
     .unwrap();
     assert!(
-        f.report_path.starts_with(&repo),
-        "报告必须落在主仓：{}",
+        f.report_path.starts_with(&change_dir),
+        "报告必须落在台账 change_dir：{}",
         f.report_path.display()
     );
     assert!(
         !f.report_path.starts_with(&worktree),
         "报告不得落在会被 remove --force 删掉的 worktree 里"
+    );
+    assert!(
+        !f.report_path.starts_with(&repo),
+        "报告也不得写进目标主仓（台账不进仓）：{}",
+        f.report_path.display()
     );
     assert!(f.report_path.is_file());
 }
