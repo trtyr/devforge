@@ -248,7 +248,7 @@ fn merge_conflict_produces_artifact_and_needs_repair() {
     ));
     // 目标停在第一个候选的集成点（冲突者不推进）
     let after_first = git_out(dir.path(), &["rev-parse", "refs/heads/main"]).unwrap();
-    assert_eq!(after_first.trim().is_empty(), false);
+    assert!(!after_first.trim().is_empty());
 }
 
 /// 候选失联（frozen_sha 不存在）不再被硬编码成「合并冲突」——

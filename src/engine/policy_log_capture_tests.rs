@@ -48,7 +48,7 @@ fn infra_failures_are_logged_as_error_with_the_full_error_text() {
 /// 子进程死亡（EOF 与 try_wait 退出）同归 System 同重启；协议违例/质量/配置不重启。
 #[test]
 fn infra_failure_classification_matrix() {
-    let io_err = std::io::Error::new(std::io::ErrorKind::Other, "临时资源耗尽");
+    let io_err = std::io::Error::other("临时资源耗尽");
     let cases: Vec<(crate::error::DevforgeError, bool)> = vec![
         (DevforgeError::System("子进程已退出".into()), true),
         (DevforgeError::Io(io_err), true),
@@ -57,7 +57,7 @@ fn infra_failure_classification_matrix() {
             DevforgeError::WithContext {
                 context: "spawn pi (role=plan-agent)".into(),
                 source: Box::new(DevforgeError::Io(
-                    std::io::Error::new(std::io::ErrorKind::Other, "boom"),
+                    std::io::Error::other("boom"),
                 )),
             },
             true,

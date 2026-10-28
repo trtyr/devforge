@@ -181,7 +181,7 @@ fn stage1_retries_once_on_protocol_violation_then_gives_up() {
     // FIFO：压入序即消费序——第一次真正拿到「违例」，重试循环才被真实走到
     // （审计修复 #3：LIFO 时代本用例是空洞绿，删掉重试循环仍过）。
     let mut factory = ScriptFactory {
-        replies: std::collections::VecDeque::from([["违例".into()].into(), [FINDINGS_REPLY].into()]),
+        replies: std::collections::VecDeque::from([["违例"].into(), [FINDINGS_REPLY].into()]),
         opens: 0,
     };
     let u = unit("unit-001");
@@ -190,7 +190,7 @@ fn stage1_retries_once_on_protocol_violation_then_gives_up() {
     assert_eq!(factory.opens, 2, "违例→成功必须恰好开两次会话（换实例）");
     // 两次全违例 → 放弃
     let mut factory = ScriptFactory {
-        replies: std::collections::VecDeque::from([["违例2".into()].into(), ["违例3".into()].into()]),
+        replies: std::collections::VecDeque::from([["违例2"].into(), ["违例3"].into()]),
         opens: 0,
     };
     assert!(stage1_review_batch(&mut factory, Path::new("/ws"), &u, &[], "无").is_err());

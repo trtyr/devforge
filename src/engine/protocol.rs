@@ -171,7 +171,6 @@ pub fn decode_line(line: &str) -> Result<Inbound> {
 
 /// 编码一行 JSONL（自审 minor 36：旧口径的 `encode_line` 包装已删——它是
 /// `CommandRecord::encode` 的重复公开面，全仓零调用方）。
-
 #[cfg(test)]
 #[path = "protocol_tests.rs"]
 mod tests;

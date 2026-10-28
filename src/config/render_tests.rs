@@ -283,8 +283,7 @@ fn package_removal_reconciles_both_records() {
 
     // 撤包：从清单移除，重渲染（期望集回落到 base_packages）
     let desired = manifest.base_packages.clone();
-    // r 借着 &manifest，先还了才能改清单
-    drop(r);
+    // r 的不可变借用已随最后一次使用（render_agent）结束（NLL），可以直接改清单
     manifest
         .agents
         .iter_mut()

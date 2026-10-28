@@ -511,7 +511,7 @@ fn parallel_panic_is_contained_and_successful_batch_persisted() {
     let ws = tempfile::tempdir().unwrap();
     std::fs::write(ws.path().join("a.rs"), "fn a() {}\n").unwrap();
     let findings_dir = tempfile::tempdir().unwrap();
-    let units = vec![
+    let units = [
         AuditUnit {
             id: "unit-001".into(),
             files: vec!["a.rs".into()],
@@ -548,7 +548,7 @@ fn parallel_panic_is_contained_and_successful_batch_persisted() {
         .expect("unit-002 必须在结果里");
     let msg = format!(
         "{:?}",
-        panic_res.2.as_ref().err().expect("panic 批必须是 Err")
+        panic_res.2.as_ref().expect_err("panic 批必须是 Err")
     );
     assert!(msg.contains("panic"), "panic 要收成带说明的 System：{msg}");
     assert!(

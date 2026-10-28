@@ -89,9 +89,9 @@ fn watchdog_intervention_unblocks_pending_ask() {
         })
     };
     let start = std::time::Instant::now();
-    let _out = crate::observability::watchdog::run_with_watchdog(
+    crate::observability::watchdog::run_with_watchdog(
         &control,
-        run_id.into(),
+        run_id,
         None,
         vec![],
         None,

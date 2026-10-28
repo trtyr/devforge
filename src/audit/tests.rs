@@ -147,7 +147,7 @@ fn oversized_pieces_never_exceed_the_line_budget() {
     for u in &pieces {
         let (s, e) = u.focus_range.expect("每片必须带行区间");
         assert!(
-            e - s + 1 <= MAX_UNIT_LINES,
+            e - s < MAX_UNIT_LINES,
             "单片 {s}..{e} 共 {} 行，超预算 {MAX_UNIT_LINES}",
             e - s + 1
         );

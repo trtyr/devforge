@@ -162,9 +162,9 @@ fn ensure_reuses_existing_worktree_and_rejects_base_drift() {
     assert_eq!(ws.path, ws2.path);
     // 真漂移：主仓前进后 HEAD 指向新 commit → 拒绝
     std::fs::write(dir.path().join("new.rs"), "fn new() {}\n").unwrap();
-    git(&dir.path(), &["add", "-A"]).unwrap();
+    git(dir.path(), &["add", "-A"]).unwrap();
     git(
-        &dir.path(),
+        dir.path(),
         &[
             "-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "advance",
         ],
@@ -260,9 +260,9 @@ fn moving_ref_base_rev_detects_drift_after_repo_advances() {
     assert!(ws.base_rev.starts_with(|c: char| c.is_ascii_hexdigit()), "记录应已是 sha：{}", ws.base_rev);
     // 主仓前进
     std::fs::write(dir.path().join("n.rs"), "fn n() {}\n").unwrap();
-    git(&dir.path(), &["add", "-A"]).unwrap();
+    git(dir.path(), &["add", "-A"]).unwrap();
     git(
-        &dir.path(),
+        dir.path(),
         &[
             "-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "advance",
         ],

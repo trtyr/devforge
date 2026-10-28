@@ -334,7 +334,7 @@ fn review_prompt_carries_the_two_new_review_points() {
 fn must_ask_entry_without_answer_is_reported() {
     // 错实现形态：把留痕检查短路（只数条目不看字段）→ 本用例必须变红
     let a = audit_verdicts(&plan_with_ambiguity("- [必须裁决] 复合词算一个词还是两个词\n"));
-    assert!(a.issues.len() >= 1, "缺留痕必须判失败：{:?}", a.facts);
+    assert!(!a.issues.is_empty(), "缺留痕必须判失败：{:?}", a.facts);
     assert!(
         a.issues[0].contains("必须裁决"),
         "问题要点名标记：{}",
@@ -363,7 +363,7 @@ fn must_ask_entry_with_empty_answer_is_reported() {
     // 错实现形态：把「字段在但答复为空」当已留痕 → 本用例必须变红
     let a = audit_verdicts(&plan_with_ambiguity("- [必须裁决] 口径未定\n  用户裁决：\n"));
     assert!(
-        a.issues.len() >= 1,
+        !a.issues.is_empty(),
         "空答复 = 没问过，必须判失败：{:?}",
         a.facts
     );

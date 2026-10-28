@@ -67,7 +67,7 @@ fn markdown_groups_by_severity_with_summary() {
     assert!(md.contains("critical 1"), "{md}");
     assert!(md.contains("## critical（1 条）"));
     assert!(md.contains("`src/a.rs:1`"));
-    assert!(md.contains("未发现") == false);
+    assert!(!md.contains("未发现"));
 }
 
 #[test]

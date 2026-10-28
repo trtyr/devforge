@@ -143,21 +143,20 @@ fn context_wrapped_errors_are_classified_by_root_cause() {
     use crate::error::Context as _;
 
     let control = RunControl::new();
-    let wrapped_quality = (|| -> crate::error::Result<()> {
-        Err(crate::error::DevforgeError::Quality(
-            "审查连续 4 轮输出协议违例".into(),
-        ))
-        .ctx("doc-from-zero 终审")
-        .ctx("run 收尾")
-    })()
+    let wrapped_quality = crate::error::Result::<()>::Err(crate::error::DevforgeError::Quality(
+        "审查连续 4 轮输出协议违例".into(),
+    ))
+    .ctx("doc-from-zero 终审")
+    .ctx("run 收尾")
     .unwrap_err();
     let outcome = crate::engine::policy::map_intervention(&control, "doc-engine", wrapped_quality)
         .expect("包装后的质量失败仍不得上抛");
     assert!(matches!(outcome, RunOutcome::Failed { .. }), "{outcome:?}");
 
-    let wrapped_system = (|| -> crate::error::Result<()> {
-        Err(crate::error::DevforgeError::System("上游 500".into())).ctx("RPC 调用")
-    })()
+    let wrapped_system = crate::error::Result::<()>::Err(crate::error::DevforgeError::System(
+        "上游 500".into(),
+    ))
+    .ctx("RPC 调用")
     .unwrap_err();
     let infra = crate::engine::policy::map_intervention(&control, "doc-engine", wrapped_system);
     assert!(

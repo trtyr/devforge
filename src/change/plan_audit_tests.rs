@@ -211,7 +211,7 @@ fn must_ask_entry_without_answer_field_is_a_hard_issue() {
     let plan = plan_with_ambiguity("- [必须裁决] 复合词算一个词还是两个词\n");
     let a = audit_verdicts(&plan);
     assert!(
-        a.issues.len() >= 1,
+        !a.issues.is_empty(),
         "标了必须裁决却没留痕必须判失败：{:?}",
         a.facts
     );
@@ -246,7 +246,7 @@ fn must_ask_entry_with_empty_answer_field_is_a_hard_issue() {
     let plan = plan_with_ambiguity("- [必须裁决] 口径未定\n  用户裁决：\n");
     let a = audit_verdicts(&plan);
     assert!(
-        a.issues.len() >= 1,
+        !a.issues.is_empty(),
         "字段在但答复为空 = 没问过：{:?}",
         a.facts
     );
@@ -290,7 +290,7 @@ fn prose_declaration_is_a_fact_not_a_failure() {
 fn missing_ambiguity_block_is_a_fact_not_a_failure() {
     // 错实现形态：把「歧义块缺失」当硬失败 → 本用例必须变红（结构缺失归审查官）
     let plan = "# 变更计划\n\n## 1 需求复述\n改 a。\n";
-    let a = audit_verdicts(&plan);
+    let a = audit_verdicts(plan);
     assert!(a.is_clean(), "歧义块缺失不判硬失败：{:?}", a.issues);
     assert!(
         a.facts.iter().any(|f| f.contains("歧义块缺失")),
