@@ -353,3 +353,82 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_runtime_root;
+    use std::path::PathBuf;
+
+    /// 需求：DEVFORGE_HOME 已设时**不要求 HOME 存在**。
+    /// 断言钉的是对外行为（解析结果 + HOME 根本没被读）——
+    /// 换成「先无条件读 HOME」的旧实现：HOME 闭包被调用 → 这条红。
+    #[test]
+    fn devforge_home_alone_resolves_without_reading_home() {
+        let mut home_read = false;
+        let root = resolve_runtime_root(Some("/x/devforge"), || {
+            home_read = true;
+            Some("/home/u".to_string())
+        })
+        .expect("DEVFORGE_HOME 已设时必须解析成功，不依赖 HOME");
+        assert_eq!(root, PathBuf::from("/x/devforge"));
+        assert!(!home_read, "DEVFORGE_HOME 已设时不得读取 HOME");
+    }
+
+    /// 需求点 2：DEVFORGE_HOME 与 HOME 同时存在时，root 仍是 DEVFORGE_HOME。
+    /// 换成「优先 HOME」的错实现：root 变成 $HOME/.devforge → 这条红。
+    #[test]
+    fn devforge_home_wins_over_home() {
+        let root = resolve_runtime_root(Some("/x/devforge"), || Some("/home/u".to_string()))
+            .expect("DEVFORGE_HOME 与 HOME 同时存在时必须解析成功");
+        assert_eq!(
+            root,
+            PathBuf::from("/x/devforge"),
+            "DEVFORGE_HOME 优先于 HOME"
+        );
+    }
+
+    /// 只设 HOME 时回落 $HOME/.devforge。
+    /// 换成「只认 DEVFORGE_HOME、忽略 HOME」的错实现：解析失败 → 这条红。
+    #[test]
+    fn home_is_the_fallback_root() {
+        let root = resolve_runtime_root(None, || Some("/home/u".to_string()))
+            .expect("仅设 HOME 时必须解析成功");
+        assert_eq!(root, PathBuf::from("/home/u").join(".devforge"));
+    }
+
+    /// 空串/纯空白视作未设（与 observability::resolve_root 同口径）。
+    /// 换成旧 var_os 口径（空串 = 已设）：root 变成空路径 → 这条红。
+    #[test]
+    fn blank_devforge_home_falls_back_to_home() {
+        for blank in ["", "   "] {
+            let root = resolve_runtime_root(Some(blank), || Some("/home/u".to_string()))
+                .expect("DEVFORGE_HOME 只有空白时回落 HOME 必须成功");
+            assert_eq!(
+                root,
+                PathBuf::from("/home/u").join(".devforge"),
+                "DEVFORGE_HOME={blank:?} 视作未设，应回落 $HOME/.devforge"
+            );
+        }
+    }
+
+    /// 双未设 fail fast，错误文案同时点名两个变量名（给出双出路）。
+    /// 换成只点 HOME 的旧文案（"读取 HOME 环境变量"）：缺 DEVFORGE_HOME → 这条红。
+    #[test]
+    fn missing_both_fails_fast_naming_both_vars() {
+        let cases: [(Option<&str>, Option<String>); 3] = [
+            (None, None),
+            (Some("   "), None),
+            (None, Some("  ".to_string())),
+        ];
+        for (devforge_home, home) in cases {
+            let err = resolve_runtime_root(devforge_home, || home.clone())
+                .expect_err("DEVFORGE_HOME 与 HOME 都没有时必须 fail fast");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("DEVFORGE_HOME"),
+                "错误文案须点名 DEVFORGE_HOME：{msg}"
+            );
+            assert!(msg.contains("HOME"), "错误文案须点名 HOME：{msg}");
+        }
+    }
+}
