@@ -189,7 +189,7 @@ kill $(cat $D/server.pid)
 ### Runbook 边界（N/A 与理由）
 
 - **本文件自身**：不读任何配置键、无端点、无后台线程 → 配置项 / 公开接口两项在本文件层面为 `N/A`；上面的 boot 流程给的是「本文件参与的进程级」证据。
-- **进程级配置项**（由 `main` 读，不在本文件）：`HOME` → 运行根 `<root>` = `$HOME/.devforge`（`src/main.rs:143`-144）；`DEVFORGE_HOME` → 只改观测/日志根（`src/observability/mod.rs:334`；回退 `<home>/.devforge` 在 `:344`-`347`），**不改清单根**；`DEVFORGE_ADDR` → 监听地址，默认 `127.0.0.1:7888`（`src/main.rs:229`-230）；`DEVFORGE_TOKEN` / `--token` → 鉴权（`src/main.rs:215`-218、`src/server/http.rs:25`）。非回环地址不配 token 会拒绝启动（`src/main.rs:235`-241）。
+- **进程级配置项**（由 `main` 读，不在本文件）：`DEVFORGE_HOME` → 运行根 `<root>`（`src/main.rs:147`-149），manifest/plans/sessions/日志/观测全部从该根派生（未设时才回落 `$HOME/.devforge`，2026-10-28 外部审计 #11 勘误：旧口径「只改观测/日志根」已废弃）；`HOME` → 仅作未设 `DEVFORGE_HOME` 时的兜底；`DEVFORGE_ADDR` → 监听地址，默认 `127.0.0.1:7888`（`src/main.rs:295`）；`DEVFORGE_TOKEN` / `--token` → 鉴权（`src/main.rs:281`-287、`src/server/http.rs:25`）。非回环地址不配 token 会拒绝启动（`src/main.rs:235`-241）。
 - **健康检查**：没有专用健康端点（`src/server/http.rs:32`-72 的路由表里只有业务/可观测/配置三类路由）；就绪判据用 `GET /api/v1/config/manifest`（`src/server/http.rs:66`-69）返回 200，或看日志行 `devforge API 就绪`（`src/server/http.rs:80`）。
 - **种子数据**：首次 boot 生成 `<root>/manifest.json`（`src/main.rs:157`-161，内容 = `manifest` 单元的 `builtin()`：15 Agent / 3 模型 / 1 provider / 四件套）；`<profiles_root>/` 目录由渲染产生，属 [render.rs](./render.rs.md) 的 Runbook。
 - **测试运行与隔离**：见上一节；测试不依赖 boot，两者互不干扰。
