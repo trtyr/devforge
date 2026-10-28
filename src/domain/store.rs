@@ -3,7 +3,9 @@
 //! 生命周期守卫集中在此：
 //! - 系统级串行（decisions/003 实现口径）：任一时刻最多一个 Running run
 //! - 任务状态机：Pending/Completed/Failed 可发起 run；Running/Archived 不可
-//! - 重跑留档（Q004）：runs 只增不减，current_run 指向最新
+//! - 重跑留档（Q004）：runs 按任务保留最新 N 条终态（[`DEFAULT_MAX_RUNS_PER_TASK`]），
+//!   current_run 指向最新——自审 minor 114：旧口径「只增不减」使每次变更都要重写越来越大的
+//!   整份 store JSON（写放大随 run 数线性增长）。
 
 use std::path::Path;
 
@@ -23,6 +25,10 @@ pub struct Store {
     /// 并发 run 上限（P012 M4）：默认 1 = decisions/003 串行兼容；调度器/worktree 模式下调高。
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_runs: usize,
+    /// 单任务保留的**终态** run 条数（自审 minor 114）：run 历史是有界遥测，
+    /// 权威记录是事件流（logs/devforge.log.jsonl）；Running 的 run 永不被裁。
+    #[serde(default = "default_max_runs_per_task")]
+    pub max_runs_per_task: usize,
     /// 持久化路径（复验 backlog：store 纯内存是设计错误——重启即蒸发）。
     /// None = 内存态（单测）；Some = 每个 &mut 变更方法尾调 persist()。
     #[serde(skip)]
@@ -33,6 +39,17 @@ fn default_max_concurrent() -> usize {
     1
 }
 
+/// 单任务默认保留的终态 run 条数（自审 minor 114）。
+///
+/// 取 100 的理由：一次任务的正常重跑量级是个位数，100 条足够事后回看一整段迭代；
+/// 再多的价值在事件流里（每条 run 的 gate/审查里程碑都在），而整份 store 每次变更
+/// 全量重写的代价是 O(run 总数)——无界增长最终把每次状态迁移拖成写放大事故。
+pub const DEFAULT_MAX_RUNS_PER_TASK: usize = 100;
+
+fn default_max_runs_per_task() -> usize {
+    DEFAULT_MAX_RUNS_PER_TASK
+}
+
 impl Default for Store {
     fn default() -> Self {
         Self {
@@ -40,6 +57,7 @@ impl Default for Store {
             tasks: Vec::new(),
             runs: Vec::new(),
             max_concurrent_runs: default_max_concurrent(),
+            max_runs_per_task: default_max_runs_per_task(),
             persist_path: None,
         }
     }
@@ -402,6 +420,9 @@ impl Store {
         task.status = TaskStatus::Running;
         task.current_run = Some(run_id.clone());
         task.runs.push(run_id.clone());
+        // 自审 minor（114）：run 历史有界——超出保留额度的**终态** run 在这里剪掉，
+        // 否则每次变更都要重写越来越大的整份 store JSON。
+        self.prune_runs(project, task_id);
         // 自审 minor（117）：域层状态迁移此前零可观测（只有 persist 失败一条 WARN）
         tracing::info!(
             component = "store",
@@ -416,6 +437,71 @@ impl Store {
             .last()
             .cloned()
             .ok_or_else(|| DevforgeError::Store("run 登记失败（内部不变量）".into()))
+    }
+
+    /// 单任务最终状态 run 裁剪（自审 minor 114）：只留最新 `max_runs_per_task` 条。
+    ///
+    /// 三条不变量：
+    /// - **Running 永不裁**（裁了会让并发槽计算与 cancel 找不到 run）；
+    /// - 刚发起的 run 必在保留集（它是本任务 `current_run`）；
+    /// - `task.runs`（id 清单）与 `self.runs`（全集）同步裁，不得一边有一边没。
+    fn prune_runs(&mut self, project: &str, task_id: &str) {
+        let keep = self.max_runs_per_task.max(1);
+        // 本任务的 run 按发生顺序（self.runs 是 push 顺序）取出 id
+        let ids: Vec<RunId> = self
+            .runs
+            .iter()
+            .filter(|r| r.task_project == project && r.task_id == task_id)
+            .map(|r| r.id.clone())
+            .collect();
+        // 额度只算**终态**条目（Running 不算额度）——先数清再裁，否则会一边减一边
+        // 把仍在跑的 run 当额度用（旧写法就踩了这个坑）。
+        let is_running = |store: &Self, id: &RunId| {
+            store
+                .runs
+                .iter()
+                .find(|r| &r.id == id)
+                .map(|r| r.status == RunStatus::Running)
+                .unwrap_or(false)
+        };
+        let mut remaining_terminal = ids.iter().filter(|id| !is_running(self, id)).count();
+        if remaining_terminal <= keep {
+            return;
+        }
+        // 从最旧的终态开始裁，留最新 keep 条
+        let mut doomed: Vec<RunId> = Vec::new();
+        for id in &ids {
+            if remaining_terminal <= keep {
+                break;
+            }
+            if is_running(self, id) {
+                continue;
+            }
+            doomed.push(id.clone());
+            remaining_terminal -= 1;
+        }
+        if doomed.is_empty() {
+            return;
+        }
+        let doomed_set: std::collections::BTreeSet<String> =
+            doomed.iter().map(|id| id.0.clone()).collect();
+        self.runs.retain(|r| !doomed_set.contains(&r.id.0));
+        if let Some(task) = self
+            .tasks
+            .iter_mut()
+            .find(|t| t.project == project && t.id == task_id)
+        {
+            task.runs.retain(|id| !doomed_set.contains(&id.0));
+        }
+        tracing::info!(
+            component = "store",
+            event = "store.runs_pruned",
+            project = %project,
+            task = %task_id,
+            pruned = doomed.len(),
+            keep,
+            "run 历史超出保留额度，已裁剪最早的终态 run（事件流不受影响）"
+        );
     }
 
     /// 收尾 run：更新 run 终态与任务状态。
@@ -473,6 +559,9 @@ impl Store {
             completed = matches!(outcome, FinishOutcome::Completed),
             "run 已收尾"
         );
+        // 自审 minor（114）：收尾当场裁一次——否则本任务的终态 run 会多留一条到下次
+        // begin_run 才被剪，而这期间每次变更都在重写多出来的那份体积。
+        self.prune_runs(&task_project, &task_id);
         self.persist();
         Ok(())
     }

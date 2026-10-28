@@ -685,6 +685,10 @@ impl ChangeSession for ProdChangeSession {
             // 自审 major：回注路径同样过产品代码门——否则测试 agent 自选回注
             // 即可绕门，且本轮的产品改动会被下一轮入口快照吸收成既成事实。
             // （回归证据门仍是 Pass 路径专属：回注 = 承认没跑绿，无证据可验。）
+            // 这个豁免的**前提**由 reroute_still_runs_the_product_code_gate 钉住
+            // （自审 minor 31）：删掉下面两行，那条用例必变红。
+            // 快照口径：对比基准是本轮**入口**快照，所以进测试段之前的改动（coding 合法
+            // 产物）不在范围内——本门只管「测试期间动产品代码」。
             let tracked_after = crate::change::testing_gate::snapshot_tracked_changes(
                 &self.ctx.repo,
                 &self.ctx.baseline,

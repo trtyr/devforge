@@ -18,17 +18,29 @@ impl UserLink for NoUser {
 struct Agent {
     replies: VecDeque<String>,
     seen: Rc<RefCell<Vec<String>>>,
+    /// 每次回话前先执行的副作用——模拟「agent 真在阶段里做了事」（如测试阶段偷改产品代码），
+    /// 否则只能靠「先改文件再进阶段」，那种改法会被入口快照吸收，测不到出口对比。
+    before_reply: Option<Rc<dyn Fn()>>,
 }
 impl Agent {
     fn new(replies: &[&str]) -> Self {
         Self {
             replies: replies.iter().map(|s| s.to_string()).collect(),
             seen: Rc::new(RefCell::new(Vec::new())),
+            before_reply: None,
         }
+    }
+
+    fn with_before_reply(mut self, f: Rc<dyn Fn()>) -> Self {
+        self.before_reply = Some(f);
+        self
     }
 }
 impl PlanAgentSession for Agent {
     fn converse(&mut self, message: &str, _ui: &mut dyn UserLink) -> Result<String> {
+        if let Some(f) = &self.before_reply {
+            f();
+        }
         self.seen.borrow_mut().push(message.to_string());
         Ok(self.replies.pop_front().expect("Agent 脚本耗尽"))
     }

@@ -406,6 +406,35 @@ fn zero_max_concurrent_behaves_as_one() {
     assert!(s.begin_run("p", "t").is_ok(), "上限 0 应按 1 处理");
 }
 
+/// 自审 minor（114）：run 历史有界——旧口径「runs 只增不减」使每次变更都要重写越来越大的
+/// 整份 store JSON（写放大随 run 数线性增长）。本用例钉三条不变量：
+/// 只裁终态、Running 永不裁、`task.runs` 与 `runs` 同步裁。
+#[test]
+fn run_history_is_bounded_but_running_is_never_pruned() {
+    let mut s = Store::new();
+    s.max_concurrent_runs = 1;
+    s.max_runs_per_task = 3;
+    s.create_project(Project::new("p", std::path::PathBuf::from("/home/me/p"), 1))
+        .unwrap();
+    let reg = SopRegistry::builtin();
+    s.create_task(&reg, "p", "t", PLANNING_SOP.id, None, TaskDeps::default())
+        .unwrap();
+    for _ in 0..6 {
+        let r = s.begin_run("p", "t").unwrap();
+        s.finish_run(&r.id, FinishOutcome::Completed).unwrap();
+    }
+    assert_eq!(s.runs.len(), 3, "终态 run 只留最新 3 条：{:?}", s.runs.len());
+    let task = s.get_task("p", "t").unwrap();
+    assert_eq!(task.runs.len(), 3, "task.runs 必须与 runs 同步裁");
+    // 最新的那条必须还在（current_run 指着它）
+    assert_eq!(task.current_run.as_ref(), task.runs.last());
+
+    // Running 的 run 不占保留额度、也不会被裁
+    let live = s.begin_run("p", "t").unwrap();
+    assert_eq!(s.runs.len(), 4, "Running 的 run 不算在额度里");
+    assert!(s.get_run(&live.id).is_some());
+}
+
 /// 自审 minor（115）：删项目必须级联任务与 run（否则孤儿任务仍占并发槽、仍在列表里）。
 #[test]
 fn remove_project_cascades_tasks_and_runs() {

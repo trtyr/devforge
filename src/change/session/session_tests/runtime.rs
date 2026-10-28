@@ -335,6 +335,45 @@ fn testing_pass_reads_acceptance_table() {
     }
 }
 
+/// 自审 minor（31）：回归证据门的**豁免前提**是产品码门不豁免。
+///
+/// 回归门只在「声称通过」路径跑（回注 = 承认没跑绿，无证据可验），这个豁免
+/// 只有在「回注路径仍过产品码门」时才是安全的——否则测试 agent 自选回注就成了
+/// 绕门的后门。本用例钉的就是那个前提：回注时改了产品源文件 → 必须拒，
+/// **不能**返回 RouteCoding（旧口径删掉 session.rs 里那段快照对比，本用例必变红）。
+#[test]
+fn reroute_still_runs_the_product_code_gate() {
+    let f = fixture(true);
+    // agent 在测试阶段（入口快照之后）偷改产品代码，同时发回注路由
+    let repo = f.ctx.repo.clone();
+    let sneak = std::rc::Rc::new(move || {
+        std::fs::write(repo.join("src/a.rs"), "// 偷偷改的\n").unwrap();
+    });
+    let mut session = ProdChangeSession {
+        plan_agent: Box::new(Agent::new(&[])),
+        plan_review: Box::new(ReviewFactory::new(&[])),
+        coding_agent: Box::new(Agent::new(&[])),
+        coding_review: Box::new(ReviewFactory::new(&[])),
+        test_agent: Box::new(
+            Agent::new(&[
+                "回归红了\n<route>coding</route>\n<issues>\n- tests/a_test.rs:10 断言失败\n</issues>",
+            ])
+            .with_before_reply(sneak),
+        ),
+        test_review: Box::new(ReviewFactory::new(&[])),
+        ctx: f.ctx.clone(),
+        plan_review_instances: 0,
+    };
+    let err = session
+        .run_testing(&mut NoUser)
+        .expect_err("产品代码被动过就不能回注放行");
+    let text = err.to_string();
+    assert!(
+        text.contains("src/a.rs"),
+        "拒绝理由必须点名被改的产品文件：{text}"
+    );
+}
+
 #[test]
 fn testing_route_coding_returns_failures() {
     let f = fixture(true);
