@@ -675,3 +675,116 @@ mod acceptance_tests {
     }
 }
 
+
+// ---------------- 验收测试·测试阶段补强（change-20261028-2026-10-28-4） ----------------
+// 本模块只含测试代码（`#[cfg(test)]`），不触碰任何生产逻辑。
+// 追加在文件末尾：既有用例与计划/对账表里引用的行号不受影响。
+#[cfg(test)]
+mod acceptance_tests_extra {
+    /// src/main.rs 的**生产段**（首个 `#[cfg(test)]` 之前）——测试模块自身的文本不参与断言，
+    /// 免得断言字符串把自己匹配上。
+    fn production_source() -> &'static str {
+        let src = include_str!("main.rs");
+        src.split("#[cfg(test)]").next().unwrap_or(src)
+    }
+
+    /// 验收 9（加严）：口径注释必须**两处都在**表述契约——运行根注释块与观测根注释块
+    /// 各自点名 `DEVFORGE_HOME` 与 `HOME`，且都不带旧口径措辞。
+    /// 既有 ac09 只要求「整份文件里有任意一行注释同时点名两个变量」：把观测根注释改回
+    /// 旧的「与日志目录同根，`DEVFORGE_HOME` 可覆盖（Q4）」，ac09 仍绿 → 这条红。
+    #[test]
+    fn ac09b_both_root_and_observability_comments_state_the_contract() {
+        let prod = production_source();
+        let lines: Vec<&str> = prod.lines().collect();
+
+        // 取某行之前紧邻的连续注释块（自下而上收拢 `//` 开头的行）
+        let comment_block_before = |needle: &str| -> String {
+            let idx = lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("生产段里找不到 `{needle}` 这一行"));
+            let mut block: Vec<&str> = Vec::new();
+            for l in lines[..idx].iter().rev() {
+                if l.trim_start().starts_with("//") {
+                    block.push(l);
+                } else {
+                    break;
+                }
+            }
+            block.reverse();
+            block.join("\n")
+        };
+
+        let root_block = comment_block_before("let root = resolve_runtime_root(");
+        let obs_block = comment_block_before("let obs_root = devforge::observability::root()");
+
+        for (label, block) in [
+            ("运行根注释", root_block.as_str()),
+            ("观测根注释", obs_block.as_str()),
+        ] {
+            assert!(!block.trim().is_empty(), "{label} 缺失（注释被删？）");
+            assert!(
+                block.contains("DEVFORGE_HOME") && block.contains("HOME"),
+                "{label} 必须同时点名 DEVFORGE_HOME 与 HOME（口径：DEVFORGE_HOME 优先、HOME 仅在未设时兜底）：\n{block}"
+            );
+        }
+        assert!(
+            root_block.contains("fail fast") || root_block.contains("兜底"),
+            "运行根注释须写明双未设 fail fast / HOME 兜底：\n{root_block}"
+        );
+        for stale in [
+            "HOME 必需",
+            "只改观测根",
+            "只改观测/日志根",
+            "与日志目录同根",
+            "可覆盖",
+        ] {
+            assert!(
+                !root_block.contains(stale) && !obs_block.contains(stale),
+                "注释块仍带旧口径表述 `{stale}`：\n{root_block}\n---\n{obs_block}"
+            );
+        }
+    }
+
+    /// 验收 10：`cargo test` 汇总里出现新增根解析单测的用例名
+    /// （= 新单测真的被编译进被执行的测试二进制，不会「写了不跑」）。
+    /// 错实现形态：新单测落在未参与编译的模块里 / 用例名被改掉 / 只写了断言没注册
+    /// → 这条红。
+    #[test]
+    fn ac10_new_root_resolution_tests_are_registered_in_the_test_binary() {
+        let exe = std::env::current_exe().expect("当前测试二进制路径");
+        let out = std::process::Command::new(&exe)
+            .arg("--list")
+            .output()
+            .expect("列举测试二进制内的用例（--list）");
+        assert!(
+            out.status.success(),
+            "--list 退出码 {:?}（stderr: {}）",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let listing = String::from_utf8_lossy(&out.stdout).to_string();
+        for name in [
+            "tests::devforge_home_alone_resolves_without_reading_home",
+            "tests::devforge_home_wins_over_home",
+            "tests::home_is_the_fallback_root",
+            "tests::blank_devforge_home_falls_back_to_home",
+            "tests::missing_both_fails_fast_naming_both_vars",
+            "acceptance_tests::ac01_devforge_home_alone_resolves_without_home",
+            "acceptance_tests::ac02_devforge_home_wins_over_home",
+            "acceptance_tests::ac03_home_only_resolves_to_home_dot_devforge",
+            "acceptance_tests::ac04_blank_devforge_home_falls_back_to_home",
+            "acceptance_tests::ac05_blank_devforge_home_without_home_fails_naming_both_vars",
+            "acceptance_tests::ac06_both_missing_fails_naming_both_vars",
+            "acceptance_tests::ac07_all_landing_points_derive_from_one_root",
+            "acceptance_tests::ac08_no_unconditional_home_read_in_root_resolution",
+            "acceptance_tests::ac09_root_resolution_comments_match_the_contract",
+            "acceptance_tests::ac11_diff_scope_is_only_main_rs",
+        ] {
+            assert!(
+                listing.contains(name),
+                "测试清单里必须出现用例 `{name}`：新增根解析单测必须全部被编译执行（cargo test 汇总里出现其用例名）"
+            );
+        }
+    }
+}
