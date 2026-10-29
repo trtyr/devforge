@@ -1087,6 +1087,11 @@ mod acceptance {
             "server::change_engine::tests::acceptance::ac14_frozen_file_is_passed_through_verbatim",
             "server::change_engine::tests::acceptance::ac15_dirty_frozen_content_is_read_but_never_adopted",
             "server::change_engine::tests::acceptance::ac16_unreadable_frozen_file_degrades_to_none_with_a_warn",
+            "server::change_engine::tests::acceptance::ac17_first_attempt_still_rejects_the_unfrozen_branch",
+            "server::change_engine::tests::acceptance::ac18_retry_attempt_rebuilds_the_unfrozen_branch",
+            "server::change_engine::tests::acceptance::ac19_retry_attempt_with_a_valid_candidate_adopts_instead_of_rebuilding",
+            "server::change_engine::tests::acceptance::ac20_retry_context_without_a_branch_or_at_base_does_not_rebuild",
+            "server::change_engine::tests::acceptance::ac21_run_with_retry_reaches_the_retry_entry_on_the_second_attempt",
         ] {
             assert!(
                 listing.contains(name),
