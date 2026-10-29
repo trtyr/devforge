@@ -13,3 +13,6 @@ spawn-ledger.json.bak
 
 # 规划台账（2026-10-25 拍板：台账不进仓，真源在 ~/.devforge/plantree/<project>/）
 docs/plantree/
+# 本地运行时产物（engine 测试与 pi 状态目录）——不入库
+spawn-ledger.json*
+.pi/
