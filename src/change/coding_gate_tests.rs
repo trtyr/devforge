@@ -167,6 +167,108 @@ fn essential_doc_artifacts_are_excluded_from_changed_files() {
     );
 }
 
+// ── F12 通道 1 · 忽略面缺口：`.pi/` 与台账家族不得出现在 git status 里 ──
+
+/// 隔离宿主 git 配置的 git 调用——**只有本仓 `.gitignore` 能当忽略源**：
+/// 宿主的全局 gitignore（core.excludesFile）不得参与，否则「status 为空」
+/// 可能是因为宿主配置而不是本仓的忽略面（本用例必须钉住后者）。
+fn git_isolated(repo: &Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .expect("git 可执行")
+}
+
+/// 临时 git 仓：唯一忽略源是**本仓 `.gitignore` 的内容**（复制文件，不依赖任何
+/// 基线提交的 diff 形状）；`.gitignore` 自身入库——否则它自己会以 `?? .gitignore`
+/// 出现在 status 里，「status 为空」就无从断言。
+fn repo_with_this_gitignore() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    let out = git_isolated(repo, &["init", "-q"]);
+    assert!(out.status.success(), "git init 失败");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(".gitignore"),
+        repo.join(".gitignore"),
+    )
+    .unwrap();
+    let out = git_isolated(repo, &["add", "-A"]);
+    assert!(out.status.success(), "git add 失败");
+    let out = git_isolated(
+        repo,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "base: .gitignore",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "git commit 失败：{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    tmp
+}
+
+/// 未跟踪条目清单（porcelain + `-uall`）：空 = 工作区干净。
+fn porcelain_status(repo: &Path) -> String {
+    let out = git_isolated(repo, &["status", "--porcelain", "--untracked-files=all"]);
+    assert!(out.status.success(), "git status 失败");
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// 回归（F12 通道 1）：忽略面缺口——`.pi/` 归档与台账 `.lock` 没被忽略时，它们就挂在
+/// `git status` 里，所有扫 status 的环节（终校验 / 改动集 / 报告 diff）全部被动吃到
+/// 它们（真症状：四阶段全过、死在 done 门一个 0 字节锁文件）。
+///
+/// 错实现形态：`.gitignore` 只留旧的两行（`spawn-ledger.json` / `spawn-ledger.json.bak`）
+/// → `spawn-ledger.json.lock` 与 `.pi/goals/x.md` 出现在 status 里 → 本用例必红。
+#[test]
+fn gitignore_hides_the_tool_metadata_from_git_status() {
+    let tmp = repo_with_this_gitignore();
+    let repo = tmp.path();
+    std::fs::create_dir_all(repo.join(".pi/goals")).unwrap();
+    std::fs::write(repo.join(".pi/goals/x.md"), "# goal\n").unwrap();
+    std::fs::write(repo.join("spawn-ledger.json"), "{}\n").unwrap();
+    std::fs::write(repo.join("spawn-ledger.json.lock"), "\n").unwrap();
+
+    let status = porcelain_status(repo);
+    assert!(
+        status.is_empty(),
+        "工具元数据不得出现在 git status 里（会被所有扫 status 的环节吃到）：{status:?}"
+    );
+}
+
+/// 回归（F12 通道 1 · glob 同族）：台账的备份名与临时名由 `with_extension` 派生
+/// （`spawn-ledger.json.bak.<stamp>` / `spawn-ledger.json.<pid>.tmp`），精确名条目挡不住
+/// 它们——必须由 `spawn-ledger.json*` 这一条 glob 覆盖同族。
+///
+/// 错实现形态：`.gitignore` 写成 `spawn-ledger.json`（精确名）→ 两个同族文件出现在
+/// status 里 → 本用例必红。
+#[test]
+fn gitignore_glob_covers_the_ledger_backup_and_temp_family() {
+    let tmp = repo_with_this_gitignore();
+    let repo = tmp.path();
+    std::fs::write(repo.join("spawn-ledger.json.bak.1730000000000"), "{}\n").unwrap();
+    std::fs::write(repo.join("spawn-ledger.json.4242.tmp"), "{}\n").unwrap();
+
+    let status = porcelain_status(repo);
+    assert!(
+        status.is_empty(),
+        "台账同族文件（.bak.<stamp> / .<pid>.tmp）不得出现在 git status 里：{status:?}"
+    );
+}
+
 /// 复验 N4 回归：非 ASCII 文件名不被 quotePath 转义，白名单能精确匹配。
 #[test]
 fn non_ascii_paths_are_not_escaped() {
