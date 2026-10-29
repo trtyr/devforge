@@ -6,19 +6,36 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::config::installer::PackageInstaller;
-use crate::config::manifest::ConfigManifest;
+use crate::config::manifest::{ConfigManifest, RuntimeSettings};
 use crate::config::skill_assets::builtin_skill_files;
 use crate::error::{Context as _, DevforgeError, Result};
 
-/// 运行时生存配置（P002 模板层写死；P2-ISSUE-04 修复：中转抖动的重试生存配置、
-/// 流挂死快判、reasoning 预算等此前缺失，导致同一中转上真实环境存活而 profile 一次即死）。
-fn runtime_settings() -> serde_json::Value {
+/// 运行时生存配置：把清单 `runtime` 段展平为 pi 的真实键。
+///
+/// 键名口径（pi 自身 settings 的 Network and retries 表）：`retry.maxRetries` /
+/// `retry.baseDelayMs` / `retry.provider.timeoutMs`（请求绝对超时）/ `httpIdleTimeoutMs` /
+/// `defaultThinkingLevel` / `hideThinkingBlock` / `compaction.*`。
+///
+/// 值一律来自清单 `runtime` 段（缺省由清单层兜底）——渲染层不再写死任何业务值，
+/// 操作员改清单即可调参，不必改代码重发版。
+///
+/// 幂等前提：首渲与复用回写两条写盘路径共用本函数产出的同一基底对象 ⇒ 键集、键序、值同源
+/// （本仓未启用 serde_json 的 preserve_order ⇒ 对象键按字典序输出，形状确定）。
+fn runtime_settings(runtime: &RuntimeSettings) -> serde_json::Value {
     serde_json::json!({
-        "retry": { "maxRetries": 3, "baseDelayMs": 5000 },
-        "httpIdleTimeoutMs": 60000,
-        "defaultThinkingLevel": "high",
-        "hideThinkingBlock": true,
-        "compaction": { "enabled": false, "reserveTokens": 16384, "keepRecentTokens": 20000 },
+        "retry": {
+            "maxRetries": runtime.max_retries,
+            "baseDelayMs": runtime.base_delay_ms,
+            "provider": { "timeoutMs": runtime.provider_timeout_ms },
+        },
+        "httpIdleTimeoutMs": runtime.http_idle_timeout_ms,
+        "defaultThinkingLevel": runtime.default_thinking_level,
+        "hideThinkingBlock": runtime.hide_thinking_block,
+        "compaction": {
+            "enabled": runtime.compaction.enabled,
+            "reserveTokens": runtime.compaction.reserve_tokens,
+            "keepRecentTokens": runtime.compaction.keep_recent_tokens,
+        },
     })
 }
 
@@ -80,11 +97,17 @@ impl<'a> Renderer<'a> {
             .ctx(format!("写 {} 的 AGENTS.md", agent.name))?;
 
         // settings.json（模型层解析 + 运行时生存配置；packages 由 installer 双记录追加）
-        let mut settings = runtime_settings();
+        //
+        // 渲染器独占：settings.json 每次按清单**全量重建**——本层以外的键（手工注入、退役键）
+        // 一律丢弃，只从旧文件读回 `packages` 记录（recorded_packages）。
+        // 不这样做，重渲染后留下的是无人负责的混合配置（上一版的残键 + 本版的新键）。
+        let mut settings = runtime_settings(&self.manifest.runtime);
         settings["defaultProvider"] = serde_json::Value::String(model.provider.clone());
         settings["defaultModel"] = serde_json::Value::String(model.model_id.clone());
-        // 思考档位覆盖（性能剖析 2026-10-19）：审查 Agent 降 medium——review 每轮 11-22s、
-        // turns 45-71，输出 token 占大头，高思考直接变成墙钟
+        // 思考档位优先级：Agent 自身 `thinking_level` > 清单 `runtime.default_thinking_level`
+        // > serde 缺省。Agent 覆盖是既有的每 Agent 档位机制（性能剖析 2026-10-19：
+        // 审查 Agent 降 medium——review 每轮 11-22s、turns 45-71，输出 token 占大头，
+        // 高思考直接变成墙钟）；优先级反过来会打破逐 Agent 档位断言。
         if let Some(level) = &agent.thinking_level {
             settings["defaultThinkingLevel"] = serde_json::Value::String(level.clone());
         }
@@ -269,6 +292,7 @@ impl<'a> Renderer<'a> {
         let installed = packages.iter().all(|p| previous.contains(p));
         let dual_record = dir.join("npm").join("package.json").exists();
         if installed && dual_record && !previous.is_empty() {
+            // 回写与首渲同一基底对象（只多一个 packages 记录）⇒ 两次渲染产物逐字节可比
             settings["packages"] = serde_json::Value::Array(
                 packages.iter().cloned().map(serde_json::Value::String).collect(),
             );
