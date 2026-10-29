@@ -643,34 +643,37 @@ mod acceptance_tests {
         );
     }
 
-    /// 验收 11：`git diff --name-only <baseline>..HEAD` → 输出仅 `src/main.rs` 一行
-    /// （契约 owned_paths 只有 src/main.rs）。
-    /// 错实现 H（顺手改了别的文件）→ 这条红。
+    /// 验收 11（2026-10-29 监工后验重划范围）：根解析特性不得泄漏到 main.rs 之外——
+    /// src/ 下除 main.rs 外的任何源文件出现 resolve_runtime_root 即为越界，这条红。
+    /// （原断言「相对基线 bb9c824 的改动只有 main.rs 一行」只在 SOP 工作区里有意义：
+    ///   合入 master 后任何后续提交都会使其永久变红，且会毒化后续每轮自修工作区。）
     #[test]
     fn ac11_diff_scope_is_only_main_rs() {
-        const BASELINE: &str = "bb9c82408968bcb350a653d64d42404e6851b49a";
-        let out = std::process::Command::new("git")
-            .args(["diff", "--name-only", &format!("{BASELINE}..HEAD")])
-            .output();
-        let Ok(out) = out else {
-            panic!("git 不可用，无法核对改动面");
-        };
-        if !out.status.success() {
-            // 本仓不在 git 仓里（打包发行等场景）→ 本条无从核对，不判失败。
-            eprintln!("ac11：当前目录不在 git 仓里（或基线不在本仓），本条跳过");
-            return;
+        let mut offenders = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from("src")];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs")
+                    && p.file_name().is_some_and(|n| n != "main.rs")
+                {
+                    let Ok(text) = std::fs::read_to_string(&p) else {
+                        continue;
+                    };
+                    if text.contains("resolve_runtime_root") {
+                        offenders.push(p.display().to_string());
+                    }
+                }
+            }
         }
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        let files: Vec<String> = stdout
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect();
-        assert_eq!(
-            files,
-            vec!["src/main.rs".to_string()],
-            "相对基线的改动面必须只有 src/main.rs 一行"
+        assert!(
+            offenders.is_empty(),
+            "根解析实现泄漏到 main.rs 之外：{offenders:?}"
         );
     }
 }

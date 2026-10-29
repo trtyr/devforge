@@ -2,6 +2,9 @@
 
 use std::sync::Mutex;
 
+/// 回放结果：幸存事件序列 + 可选缺口区间（外部审计 #8 的 SSE gap 信号）。
+pub type ReplayWithGap = (Vec<(u64, String)>, Option<(u64, u64)>);
+
 /// 单一事件源：序号、环形缓冲、广播三合一。
 /// 支撑 SSE 断线续传（Last-Event-ID）：emit 时分配单调序号并留档，
 /// 重连客户端带 `Last-Event-ID` 即可回放错过的事件（缓冲窗口内恰一次）。
@@ -85,7 +88,7 @@ impl EventBus {
     /// 返回 (幸存回放, 缺口区间 Some((missing_from, missing_to)))。
     /// `last_id = 0`（新客户端）视为无缺口：没有基线，全量回放即完整。
     /// 序号分配与留档在同一临界区（minor 77/78），本方法单次加锁，两结果不会错位。
-    pub fn replay_after_with_gap(&self, last_id: u64) -> (Vec<(u64, String)>, Option<(u64, u64)>) {
+    pub fn replay_after_with_gap(&self, last_id: u64) -> ReplayWithGap {
         let log = self.log.lock().unwrap_or_else(|e| e.into_inner());
         let events: Vec<(u64, String)> = log
             .iter()
