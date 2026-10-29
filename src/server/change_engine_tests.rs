@@ -237,3 +237,127 @@ fn finalize_writes_report_into_the_ledger_change_dir() {
     );
     assert!(f.report_path.is_file());
 }
+
+// ── 2026-10-29 冻结候选读盘（change-20261029-resume-workspace-sr1-run-7-8-10-bug-work）──
+
+/// 验收 9：任务目录没有冻结候选文件 → 传给 workspace 层的是 None
+/// （不收养；非 worktree / 未冻结任务的旧口径完全不变）。
+#[test]
+fn frozen_candidate_is_absent_for_a_task_without_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let task_root = tmp.path().join("plans").join("p").join("t");
+    std::fs::create_dir_all(&task_root).unwrap();
+    assert!(
+        read_frozen_candidate(&task_root).is_none(),
+        "没有冻结候选文件时必须传 None（不收养）"
+    );
+}
+
+/// 验收 10：文件存在 → **原文**下传（含尾随换行）——形状判定在 workspace 层做，
+/// 这里不做 trim（两处各判一次迟早判定漂移）。
+#[test]
+fn frozen_candidate_is_passed_through_verbatim() {
+    let tmp = tempfile::tempdir().unwrap();
+    let task_root = tmp.path().join("plans").join("p").join("t");
+    std::fs::create_dir_all(&task_root).unwrap();
+    let sha = "a".repeat(40);
+    std::fs::write(task_root.join(FROZEN_COMMIT_FILE), format!("{sha}\n")).unwrap();
+    let raw = read_frozen_candidate(&task_root).expect("冻结候选文件应被读到");
+    assert_eq!(
+        raw,
+        format!("{sha}\n"),
+        "原文下传（含尾随换行），不得在这里 trim"
+    );
+}
+
+/// 验收 12：文件读失败（路径被占成目录 → IO 错误，非 NotFound）→ 降级为 None
+/// 且不 panic；run 不能被一个读不出的文件中断。
+#[test]
+fn unreadable_frozen_candidate_degrades_to_none_without_panicking() {
+    let tmp = tempfile::tempdir().unwrap();
+    let task_root = tmp.path().join("plans").join("p").join("t");
+    std::fs::create_dir_all(task_root.join(FROZEN_COMMIT_FILE)).unwrap();
+    assert!(
+        read_frozen_candidate(&task_root).is_none(),
+        "读失败必须降级为 None（不得 panic、不得中断 run）"
+    );
+}
+
+/// 端到端行为（验收 9+10 的装配闭环）：台账里的冻结候选 → 真的收养上一轮的候选分支
+/// （worktree HEAD 落在候选 tip）。这条钉住「读盘 → 传参 → 收养」整条链，
+/// 任何一环断掉都会红。
+#[test]
+fn frozen_candidate_file_drives_worktree_adoption() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    test_git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.rs"), "fn a() {}\n").unwrap();
+    test_git(&repo, &["add", "-A"]);
+    test_git(
+        &repo,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ],
+    );
+    let base = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["-C", &repo.to_string_lossy(), "rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // 上一轮：建 worktree → 提交候选 → 清理 worktree（分支保留）
+    let spec = crate::workspace::WorkspaceSpec {
+        repo: repo.clone(),
+        task_id: "cand-probe".into(),
+        base_rev: base.clone(),
+    };
+    let ws = crate::workspace::Workspace::create(&spec).unwrap();
+    std::fs::write(ws.path.join("impl.rs"), "fn impl() {}\n").unwrap();
+    test_git(&ws.path, &["add", "-A"]);
+    test_git(
+        &ws.path,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "impl",
+        ],
+    );
+    let candidate = ws.freeze().unwrap();
+    ws.remove(&repo).unwrap();
+
+    // 台账里落冻结候选（change_engine 的写盘格式：<sha>\n）
+    let task_root = tmp.path().join("plans").join("p").join("t");
+    std::fs::create_dir_all(&task_root).unwrap();
+    std::fs::write(
+        task_root.join(FROZEN_COMMIT_FILE),
+        format!("{candidate}\n"),
+    )
+    .unwrap();
+
+    // 读出来交给 workspace 层 → 收养上一轮的候选分支
+    let raw = read_frozen_candidate(&task_root).expect("冻结候选应被读到");
+    let adopted = crate::workspace::Workspace::ensure_with_candidate(&spec, Some(&raw)).unwrap();
+    assert_eq!(
+        adopted.freeze().unwrap(),
+        candidate,
+        "冻结候选必须让 worktree 落到候选 tip（收养）"
+    );
+}

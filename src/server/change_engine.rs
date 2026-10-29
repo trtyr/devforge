@@ -33,6 +33,10 @@ pub const CHANGE_PROFILES: [&str; 6] = [
 /// 需求文件（调用方在 start 前写进黑板）。
 pub const REQUIREMENT_FILE: &str = "requirement.md";
 
+/// 冻结候选文件（任务黑板目录内）：内容为 `<40 位 sha>\n`，是 workspace 层
+/// 「收养候选分支」的判定依据。格式是跨消费者契约（调度器也读同一文件），不改。
+const FROZEN_COMMIT_FILE: &str = "frozen-commit.txt";
+
 /// 收尾结果（报告落盘 + 用量/墙钟）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finalized {
@@ -108,6 +112,9 @@ impl BuiltinRpcEngine {
         for p in CHANGE_PROFILES {
             self.require_profile(p)?;
         }
+        // 任务黑板目录（台账根 `plans/<project>/<task>`）：读冻结候选要用它，
+        // 必须与后面的写盘口径同源（不二次拼路径，否则两处路径会漂移）。
+        let task_root = self.plans_root.join(&task.project).join(&task.id);
         let ws_guard = {
             let want = task
                 .contract
@@ -120,11 +127,17 @@ impl BuiltinRpcEngine {
                     .as_ref()
                     .and_then(|c| c.base_rev.clone())
                     .unwrap_or_else(|| "HEAD".into());
-                let ws = crate::workspace::Workspace::ensure(&crate::workspace::WorkspaceSpec {
-                    repo: task.workspace.clone(),
-                    task_id: task.id.clone(),
-                    base_rev: base,
-                })?;
+                // 上一轮冻结的候选（断点续跑靠它收养候选分支）：读不到 → None，
+                // 沿用旧口径（分支停在基点才复用）；形状门在 workspace 层做，这里只交原文。
+                let frozen_candidate = read_frozen_candidate(&task_root);
+                let ws = crate::workspace::Workspace::ensure_with_candidate(
+                    &crate::workspace::WorkspaceSpec {
+                        repo: task.workspace.clone(),
+                        task_id: task.id.clone(),
+                        base_rev: base,
+                    },
+                    frozen_candidate.as_deref(),
+                )?;
                 tracing::info!(
                     component = "change-engine",
                     event = "workspace.created",
@@ -148,7 +161,6 @@ impl BuiltinRpcEngine {
         // change-plan-agent 被要求 codegraph-first：索引必须先建（与其他代码类 SOP 同口径）
         crate::engine::builtin::preflight_codegraph(&run_ws, &self.codegraph_bin);
 
-        let task_root = self.plans_root.join(&task.project).join(&task.id);
         std::fs::create_dir_all(&task_root).ctx("建任务黑板目录")?;
         // 需求原文：调用方开跑前写进任务黑板（不给需求就没法规划）
         let requirement_path = task_root.join(REQUIREMENT_FILE);
@@ -369,7 +381,7 @@ impl BuiltinRpcEngine {
                             "冻结锚点不是 commit sha 形状——不写盘（下游会把它当锚点）"
                         );
                     } else {
-                    let frozen_path = self.plans_root.join(&task.project).join(&task.id).join("frozen-commit.txt");
+                    let frozen_path = task_root.join(FROZEN_COMMIT_FILE);
                     std::fs::write(&frozen_path, format!("{frozen}\n"))
                         .ctx("写冻结 commit 记录")?;
                     tracing::info!(
@@ -393,6 +405,40 @@ impl BuiltinRpcEngine {
                 Ok(RunOutcome::Completed)
             }
             Err(e) => crate::engine::policy::map_intervention(control, "change-engine", e),
+        }
+    }
+}
+
+/// 读上一轮落盘的冻结候选（`{task_root}/frozen-commit.txt`）。
+///
+/// 口径（变更 20261029-resume-workspace-sr1-run-7-8-10-bug-work）：
+/// - 读不到（文件不存在）→ `None` + WARN：沿用旧口径（分支停在基点才复用），
+///   非 worktree 任务与首跑本来就没有这个文件，run 不因此报错；
+/// - 读失败（权限/IO 错误）→ `None` + WARN：同上，不能让一个读不出的文件中断整个 run；
+/// - 读到 → **原文**下传（内容形状的判定在 workspace 层做——那里是任何调用方的最后一道门，
+///   两处各判一次迟早判定漂移）。
+fn read_frozen_candidate(task_root: &Path) -> Option<String> {
+    let path = task_root.join(FROZEN_COMMIT_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::warn!(
+                component = "change-engine",
+                event = "change.frozen_candidate_absent",
+                path = %path.display(),
+                "任务目录没有冻结候选文件——不收养候选分支（沿用旧口径：分支停在基点才复用）"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                component = "change-engine",
+                event = "change.frozen_candidate_unreadable",
+                path = %path.display(),
+                error = %e,
+                "冻结候选文件读不出——不收养候选分支（沿用旧口径：分支停在基点才复用）"
+            );
+            None
         }
     }
 }
