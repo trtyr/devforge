@@ -399,7 +399,29 @@ pub fn changed_files(repo: &Path, baseline: &str) -> Result<Vec<String>> {
         let in_artifact_dir = f.starts_with("docs/plantree/")
             || f.starts_with("docs/contexts/")
             || f.starts_with("evidence/");
-        !(in_artifact_dir && !looks_like_code(f))
+        if in_artifact_dir && !looks_like_code(f) {
+            return false;
+        }
+        // 工具元数据（F12 通道 3 的姊妹面）：pi 的 `.pi/` 归档与预算熔断台账不是产品改动，
+        // 不进改动集——否则它们会被当「越界改动」判死整轮 run（F10 run 1 实证：14 个 `.pi`
+        // 归档被 step 提交扫进分支，事后专门清账）。`.gitignore` 生效时它们压根不进
+        // `ls-files --others`，这里是**第二道**保险（两者叠加而非互替）。
+        //
+        // `.pi/`：**只认仓根前缀**（`deep/.pi/x.md` 不滤）——与终校验豁免同窄口径，放宽等于
+        // 给「把产品源码藏进 `.pi/`」开口子。
+        // 沿用「非代码扩展名才滤」纪律（minor 54）：`.pi/goals/x.md` 滤出、`.pi/evil.rs` 保留
+        // 参与越界判定——黑名单不得成为**代码盲区**。
+        //
+        // 台账：**任意层级**按文件名精确匹配两个名字（`spawn-ledger.json` /
+        // `spawn-ledger.json.lock`）。只认这两个名字（计划裁决）：`.bak.<stamp>` /
+        // `.<pid>.tmp` 由 `with_extension` 派生（src/engine/ledger.rs），正常场景由
+        // `.gitignore` 的 `spawn-ledger.json*` glob 挡；强推/旧仓场景的残留风险登记在计划 §6。
+        let tool_metadata = (f.starts_with(".pi/") && !looks_like_code(f))
+            || matches!(
+                f.rsplit('/').next(),
+                Some("spawn-ledger.json") | Some("spawn-ledger.json.lock")
+            );
+        !tool_metadata
     });
     Ok(files)
 }

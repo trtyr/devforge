@@ -182,6 +182,24 @@ pub fn coding_kickoff(ctx: &ChangeCtx, failure: Option<&TestFailureContext>) -> 
     }
 }
 
+/// coding 开工消息尾部的**提交纪律段**（F12 通道 3 · F10 run 1 实证）。
+///
+/// 三条通道里唯一靠「指令」收口的那条：coding agent 用全局 add 提交 step 时把工具元数据
+/// （pi 的 `.pi/**` 归档 + 预算熔断台账 `spawn-ledger*`）一起扫进分支（F10 run 1：14 个
+/// `.pi` 归档被 step 提交扫进分支，随合并进 master，事后专门清账）。F5 已合的终校验豁免只
+/// 覆盖**未跟踪**条目，**已提交**的照样越界——提交前的纪律是那道闸门。
+///
+/// 纪律**不写进 `coding_kickoff()`**：它的输出被仓外逐字 pin 钉死
+/// （`tests/change_failure_context/context.rs:33`），改正文会让白名单外的用例必红。
+/// 纪律段在下游组装点（`run_coding` 的开工消息）与正文拼成**同一条**消息送达——新增第二条
+/// 消息会打破「coding 轮恰好 2 条消息」的仓外 pin
+/// （`tests/change_review_protocol/protocol.rs:58`）。
+///
+/// 三个可 grep 锚点：`git add -A`（禁止语义）、`.pi/`、`spawn-ledger`——锚点必须与需求口径
+/// 一致，否则 pin 与需求脱钩。
+pub const CODING_COMMIT_DISCIPLINE: &str = "\
+【提交纪律】只允许 add 契约 owned_paths 内的文件：禁止 `git add -A`、禁止 `git add .`；`.pi/`（工具元数据归档）与 `spawn-ledger*`（预算熔断台账）一律不得入库。";
+
 /// 空箱拒收的追补上限/话术：真源在 [`crate::sop::review_gate`]（全仓审计 #7——同一纪律
 /// 曾在 change 侧单点落地、MVP testing 侧缺失）。
 ///
@@ -585,9 +603,15 @@ impl ChangeSession for ProdChangeSession {
         baseline?;
 
         // ② coding 轮：真实改代码；越界申报按 D008 只发 <route>plan</route> + <impact-gap>，不打标记
-        let mut reply = self
-            .coding_agent
-            .converse(&coding_kickoff(&self.ctx, last_failure), ui)?;
+        // 开工消息 = kickoff 正文 + **提交纪律段**（F12 通道 3）：纪律不写进 coding_kickoff()
+        // （它的输出被仓外逐字 pin 钉死），也不新增第二条消息（仓外 pin 要求 coding 轮恰好
+        // 2 条消息）——正文与纪律拼成同一条送达。
+        let message = format!(
+            "{}\n\n{}",
+            coding_kickoff(&self.ctx, last_failure),
+            CODING_COMMIT_DISCIPLINE
+        );
+        let mut reply = self.coding_agent.converse(&message, ui)?;
         if parse_route(&reply).as_deref() == Some("plan") {
             // 复验 #1（高危）：git 失败必须 Err 上抛——unwrap_or_default 会把基线失效/仓库损坏
             // 伪装成「无改动」，boundary 因 extra 为空直接放行，门禁被静默绕过。

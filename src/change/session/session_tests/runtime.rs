@@ -40,6 +40,76 @@ fn coding_runs_gates_and_returns_changed_files() {
     assert!(seen[1].contains("impl-steps"), "第二轮才是真实 coding：{}", seen[1]);
 }
 
+/// 回归（F12 通道 3 · 提交纪律）：coding 轮实际发出的开工消息必须带提交纪律段
+/// （只 add owned_paths 内文件 / 禁止 `git add -A` 与 `git add .` / `.pi/` 与 `spawn-ledger*`
+/// 不得入库），且**仍是一条消息**（仓外 pin：coding 轮恰好 2 条消息）。
+///
+/// 同时钉住纪律落在函数之外：`coding_kickoff()` 的输出**不含**纪律锚点——仓外的逐字 pin
+/// （`tests/change_failure_context/context.rs:33`）正是靠这一点保持绿。
+///
+/// 错实现形态：①纪律没送达（消息里没有锚点）→ 本用例必红；②纪律写进 `coding_kickoff()`
+/// 正文 → 锚点进了函数输出 → 本用例必红（且仓外逐字 pin 也会红）。
+#[test]
+fn coding_kickoff_message_carries_the_commit_discipline() {
+    let f = fixture(true);
+    coding_ready(&f);
+    let agent = Agent::new(&[
+        "基线绿了\n<stage-complete>1</stage-complete>",
+        "改完了\n<stage-complete>1</stage-complete>",
+    ]);
+    let seen = agent.seen.clone();
+    let mut session = ProdChangeSession {
+        plan_agent: Box::new(Agent::new(&[])),
+        plan_review: Box::new(ReviewFactory::new(&[])),
+        coding_agent: Box::new(agent),
+        coding_review: Box::new(ReviewFactory::new(&[PLAN_PASS])),
+        test_agent: Box::new(Agent::new(&[])),
+        test_review: Box::new(ReviewFactory::new(&[])),
+        ctx: f.ctx.clone(),
+        plan_review_instances: 0,
+    };
+    session.run_coding(&mut NoUser, 0, None).unwrap();
+
+    let seen = seen.borrow();
+    assert_eq!(
+        seen.len(),
+        2,
+        "coding 轮仍只发两条消息（基线开工语 + coding 开工语）：{seen:?}"
+    );
+    let coding_msg = &seen[1];
+    assert!(
+        coding_msg.contains(CODING_COMMIT_DISCIPLINE),
+        "纪律段必须逐字送达：{coding_msg}"
+    );
+    for anchor in ["git add -A", ".pi/", "spawn-ledger"] {
+        assert!(
+            coding_msg.contains(anchor),
+            "coding 开工消息缺纪律锚点 {anchor}：{coding_msg}"
+        );
+    }
+    assert!(
+        coding_msg.contains("禁止"),
+        "纪律必须写明禁止语义：{coding_msg}"
+    );
+    assert!(
+        coding_msg.contains("owned_paths"),
+        "纪律必须写明只 add owned_paths 内的文件：{coding_msg}"
+    );
+    assert!(
+        coding_msg.contains("git add ."),
+        "纪律必须同时禁 `git add .`：{coding_msg}"
+    );
+
+    // 纪律**不得**进 coding_kickoff() 正文：仓外逐字 pin 靠这一点保持绿
+    let kick = coding_kickoff(&f.ctx, None);
+    for anchor in ["git add -A", ".pi/", "spawn-ledger"] {
+        assert!(
+            !kick.contains(anchor),
+            "纪律不得写进 kickoff 正文（仓外逐字 pin 会红）：{kick}"
+        );
+    }
+}
+
 #[test]
 fn coding_gates_and_review_open_are_logged_as_milestones() {
     // 错实现形态：①三道机械门不落 gate.*（或缺判定结论）

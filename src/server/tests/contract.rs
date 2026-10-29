@@ -667,3 +667,102 @@ async fn tracked_pi_tool_metadata_is_still_judged_by_the_contract() {
         "violation 清单必须指认被修改的已跟踪 .pi 文件：{violation2}"
     );
 }
+
+/// 回归（F12 通道 2）：终校验的未跟踪豁免只认仓根 `.pi/**`，没认预算熔断台账——
+/// `.gitignore` 没生效的旧仓/浅克隆里，台账挂在 `git status` 里 → 进改动面 → 越界判死
+/// （真症状：四阶段全过、死在 done 门一个 0 字节锁文件）。
+///
+/// 错实现形态：豁免条件不含台账名（只有 `path.starts_with(".pi/")`）→ run 判 failed +
+/// boundary.violation 指认 `spawn-ledger.json` → 本用例必红。
+#[tokio::test]
+async fn untracked_spawn_ledger_is_not_a_boundary_violation() {
+    let (g, base) = git_repo_with_base();
+    // 未跟踪形态的仓根台账（主名 + 锁文件）：工具元数据，不是产品输出
+    std::fs::write(g.path().join("spawn-ledger.json"), "{}\n").unwrap();
+    std::fs::write(g.path().join("spawn-ledger.json.lock"), "\n").unwrap();
+
+    let f = fixture();
+    let status = run_contract_task(&f, g.path(), &base, "none").await;
+    assert_eq!(
+        status, "settled",
+        "未跟踪的仓根台账不得判死（旧仓/浅克隆场景）：{status}"
+    );
+    assert!(
+        !has_event(&f, "boundary.violation"),
+        "不得有 boundary.violation 事件"
+    );
+    // 被豁免的工具元数据不计入改动面条数（boundary.ok.files 是对外可观测的改动面计数）
+    let ok = find_event(&f, "boundary.ok").expect("必须落 boundary.ok 事件");
+    assert_eq!(
+        ok["files"].as_u64(),
+        Some(0),
+        "只含台账的 run，改动面条数应为 0：{ok}"
+    );
+}
+
+/// 回归（F12 通道 2 · 按条目豁免）：台账豁免不得变成「有台账就整批放行」——
+/// 同一次 run 里既有未跟踪台账又有未跟踪 `evil.txt` 时，必须判 failed，且 violation
+/// 清单**只含** `evil.txt`。
+///
+/// 错实现形态：豁免写成「改动集里出现台账名就整批跳过」或「未跟踪条目一律不算改动」
+/// → `evil.txt` 一并被放过 → run 判 settled（假绿）→ 本用例必红。
+#[tokio::test]
+async fn untracked_spawn_ledger_does_not_mask_other_violations() {
+    let (g, base) = git_repo_with_base();
+    std::fs::write(g.path().join("spawn-ledger.json"), "{}\n").unwrap();
+    std::fs::write(g.path().join("spawn-ledger.json.lock"), "\n").unwrap();
+    std::fs::write(g.path().join("evil.txt"), "out of contract\n").unwrap();
+
+    let f = fixture();
+    let status = run_contract_task(&f, g.path(), &base, "none").await;
+    assert_eq!(
+        status, "failed",
+        "契约外的未跟踪文件仍必须判死（拦截语义不退化）：{status}"
+    );
+    let violation = find_event(&f, "boundary.violation").expect("必须有 boundary.violation 事件");
+    let listed: Vec<&str> = violation["violations"]
+        .as_array()
+        .expect("violations 必须是数组")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        vec!["evil.txt"],
+        "violation 清单必须只含 evil.txt（豁免按条目，不按批次）：{violation}"
+    );
+}
+
+/// 回归（F12 通道 2 · 语义边界）：已跟踪的台账是**显式提交行为**，仍照常受契约判定——
+/// 豁免只针对未跟踪形态（porcelain 状态码 `??`）。基线提交里已含 `spawn-ledger.json`，
+/// 工作区把它改成未提交的修改（` M` 形态）→ 仍判 failed。
+///
+/// 错实现形态：豁免只看路径不看状态码（`path == "spawn-ledger.json"` 就放过）→ 判 settled
+/// （假绿，语义边界被抹平）→ 本用例必红。
+#[tokio::test]
+async fn tracked_spawn_ledger_is_still_judged_by_the_contract() {
+    let (g, base) = git_repo_with_base_files(&[
+        ("a.rs", "fn a() {}\n"),
+        ("spawn-ledger.json", "{}\n"),
+    ]);
+    std::fs::write(g.path().join("spawn-ledger.json"), "{\"changed\":1}\n").unwrap();
+
+    let f = fixture();
+    let status = run_contract_task(&f, g.path(), &base, "none").await;
+    assert_eq!(
+        status, "failed",
+        "已跟踪台账的未提交修改必须判死：{status}"
+    );
+    let violation = find_event(&f, "boundary.violation").expect("必须有 boundary.violation 事件");
+    let listed: Vec<&str> = violation["violations"]
+        .as_array()
+        .expect("violations 必须是数组")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        vec!["spawn-ledger.json"],
+        "violation 清单必须指认被修改的已跟踪台账：{violation}"
+    );
+}
