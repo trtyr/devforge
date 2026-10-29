@@ -207,6 +207,14 @@ pub const CODING_COMMIT_DISCIPLINE: &str = "\
 /// 旧口径 `pub use` 把两个零外消费者的常量挂在了 change::session 的公开面上。
 use crate::sop::review_gate::{ISSUES_NUDGE, MAX_EMPTY_ISSUES_NUDGES};
 
+/// testing 轮开工消息（含**回归证据的格式契约**）。
+///
+/// F11：回归日志是 agent 手写的 markdown，把命令与退出码包进代码围栏是标准写法。
+/// 回归门现按两段式扫描（围栏外优先，围栏外取不到时回退进围栏块体、只认同块成对），
+/// 但契约必须写进教科书——否则下一个 agent 只能靠撞墙猜「围栏里到底算不算数」。
+/// 提示句取自需求原文：exit_code 行建议裸写；若包进围栏，必须与 command: 成对。
+///
+/// 追加而非替换：既有锚点（「至少做一次反向验证」、`evidence/regression.log`）逐字保留。
 pub fn testing_kickoff(ctx: &ChangeCtx) -> String {
     format!(
         "你是 change-test-agent。change-id：`{}`。\n\
@@ -214,6 +222,7 @@ pub fn testing_kickoff(ctx: &ChangeCtx) -> String {
 黑板（当前目录）：{}\n\n\
 顺序：先跑既有全套回归并把命令与退出码写进 `{}`；再为变更点写测试；\
 把对账表写到 `testing/acceptance.md`（每行 `- <验收标准原文> → <测试文件>:<行>`）；\
+证据格式：`exit_code` 行建议裸写；若包进围栏，必须与 `command:` 成对；\
 至少做一次反向验证。\n\
 失败时输出 `<route>coding</route>`（计划问题用 `<route>plan</route>`），并用 `<issues>` 块逐条列失败明细\
 （每条一行，`- ` 开头）；**路由块与 `<issues>` 块都放在回复末尾**，其后不要再写别的。\n\
