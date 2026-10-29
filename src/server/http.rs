@@ -106,6 +106,7 @@ pub fn build_router(state: SharedState) -> Router {
         )
         .route("/scheduler/status", get(handlers::scheduler_status))
         // ── 交互中继 ──
+        .route("/ui/pending", get(handlers::list_pending_ui))
         .route("/ui/{id}/answer", post(handlers::answer_ui))
         .route("/events", get(handlers::events))
         // ── 配置管理 ──
