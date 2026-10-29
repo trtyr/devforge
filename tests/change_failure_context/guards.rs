@@ -798,6 +798,7 @@ pub(super) fn f10acc13_a_migrated_path_is_normalized_before_the_whitelist_check(
 /// `src/` 下改动 0 个文件（生产行为零 diff）。
 ///
 /// 错实现形态：把白名单外的文件带进本场提交 → 本用例必须变红。
+#[ignore = "变化期断言：校验 F10 场内改动面只在 tests/；合入后基线 diff 含其它场合并与清账提交，必然越出（同 a16/a17 场外 ignore 口径）"]
 #[test]
 pub(super) fn f10acc10_the_change_touches_only_the_planned_test_files() {
     let root = repo_root();
@@ -876,6 +877,11 @@ pub(super) fn f10acc11_the_frozen_old_field_facts_survive() {
 /// `src/` 零改动（clippy 的目标面没变）。
 ///
 /// 错实现形态：顺手改了依赖面 / 把 `src/` 改了 → 本用例必须变红。
+///
+/// 2026-10-29 监工后验：本用例是**变化期断言**（校验的是 F10 场内 src/ 零改动），
+/// 合入 master 后其它场的 src 合并（F5/F7）必然使其为假——与 a16/a17 同理，
+/// 场外运行时以 #[ignore] 退出，场内由 change run 的验收对账执行。
+#[ignore = "变化期断言：校验 F10 场内 src/ 零改动；合入后其它场的 src 合并必然使其为假（同 a16/a17 场外 ignore 口径）"]
 #[test]
 pub(super) fn f10acc12_the_suite_shape_and_dependencies_are_unchanged() {
     let root = repo_root();
