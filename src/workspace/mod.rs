@@ -51,6 +51,17 @@ impl Workspace {
     /// 取得 worktree：不存在则创建（T1.1）；已存在则校验注册表记录后复用（T1.4 resume 对齐）。
     /// 复用时 base_rev 不一致 = 基点漂移 → 拒绝并提示清理重建。
     pub fn ensure(spec: &WorkspaceSpec) -> Result<Workspace> {
+        Self::ensure_with_candidate(spec, None)
+    }
+
+    /// [`Self::ensure`] 的冻结候选形态：额外带上一轮冻结下来的候选 sha。
+    ///
+    /// 候选只影响「分支已存在且 tip ≠ 基点」这一种情形（此时可收养而不是拒绝）；
+    /// 其余语义与旧入口完全一致。候选原文由调用方交下来，形状门在本层（最后一道门）做。
+    pub fn ensure_with_candidate(
+        spec: &WorkspaceSpec,
+        frozen_candidate: Option<&str>,
+    ) -> Result<Workspace> {
         Self::validate_task_id(spec)?;
         let path = Self::target_path(spec);
         // 基点先冻结成 sha：移动引用（HEAD/main）的漂移只有 sha 对 sha 才检得出。
@@ -77,7 +88,7 @@ impl Workspace {
                 base_rev: rec.base_rev,
             });
         }
-        Self::create(spec)
+        Self::create_with_candidate(spec, frozen_candidate)
     }
 
     /// worktree 目标路径（仓外兄弟目录约定）。
@@ -137,21 +148,41 @@ impl Workspace {
     ///
     /// worktree 审计（2026-10-25 自审 critical）：`remove()` **保留**任务分支（候选归因要它），
     /// 而旧实现无条件 `-b` 重建同名分支 → 同一 task 的第二次 run 必报
-    /// "branch already exists"。现在分两种情形：
+    /// "branch already exists"。现在分三种情形：
     /// - 分支不存在 → 照旧 `-b`；
     /// - 分支已存在且**仍停在基点**（上一轮没产生提交 / 崩溃回退）→ 直接挂载复用；
-    /// - 分支已存在但已有提交（上一轮候选）→ 明确拒绝并告诉怎么清理，
-    ///   不静默切换基点（否则本轮的 diff 归因会错位）。
+    /// - 分支已存在且**停在上一轮冻结的候选**（tip == 传入的冻结候选）→ **收养**：
+    ///   同样直接挂载，分支引用不动，worktree HEAD 即候选 tip（断点续跑靠它拿回上一轮成果）；
+    /// - 分支已存在但**既非基点也非冻结候选**（外来指针 / 上一轮失败退出留下的未冻结候选）
+    ///   → 明确拒绝，提示人工核验分支当前 sha 后自行决定清理方式，不静默切换基点
+    ///   （否则本轮的 diff 归因会错位），也不用任何「删分支」当建议——分支上可能留着
+    ///   唯一一份候选提交，删了它候选就变孤儿。
     pub fn create(spec: &WorkspaceSpec) -> Result<Workspace> {
+        Self::create_with_candidate(spec, None)
+    }
+
+    /// [`Self::create`] 的冻结候选形态：额外带上一轮冻结下来的候选 sha。
+    ///
+    /// 命中时走**收养**：不新建分支、不改写分支引用，直接把现有分支挂到目标路径，
+    /// worktree HEAD 即候选 tip。注册表记的仍是**解析后的基点**（不是候选 tip）——
+    /// 否则下一次 ensure 会把合法基点误判成漂移。
+    pub fn create_with_candidate(
+        spec: &WorkspaceSpec,
+        frozen_candidate: Option<&str>,
+    ) -> Result<Workspace> {
         // 2026-10-27 自审 majors（WA 域）：① base_rev 先冻结成 commit sha（移动 ref
         // 漂移要 sha 对 sha，字符串对字符串时 HEAD/main 永不漂移）；② 注册表写失败
         // 必须回滚——无记录残骸脱离孤儿扫描索引，同一 task 再 ensure 永久报错。
         Self::validate_task_id(spec)?;
         let base_sha = resolve_base(&spec.repo, &spec.base_rev)?;
-        Self::create_at_resolved(spec, base_sha)
+        Self::create_at_resolved(spec, base_sha, frozen_candidate)
     }
 
-    fn create_at_resolved(spec: &WorkspaceSpec, base_sha: String) -> Result<Workspace> {
+    fn create_at_resolved(
+        spec: &WorkspaceSpec,
+        base_sha: String,
+        frozen_candidate: Option<&str>,
+    ) -> Result<Workspace> {
         let path = Self::target_path(spec);
         if path.exists() {
             return Err(DevforgeError::Store(format!(
@@ -164,19 +195,39 @@ impl Workspace {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        // 形状门只在本层一处（调用方只交原文）：不合法就不参与匹配，也不升级成错误。
+        let candidate = normalize_candidate(frozen_candidate);
+        if frozen_candidate.is_some() && candidate.is_none() {
+            tracing::warn!(
+                component = "workspace",
+                event = "workspace.candidate_shape_invalid",
+                candidate = ?frozen_candidate,
+                "冻结候选不是 40 位十六进制 sha——不参与收养匹配（分支 tip 非基点即拒绝）"
+            );
+        }
         let path_str = path.to_string_lossy().to_string();
         let mut created_branch = false;
+        let mut adopted_tip: Option<String> = None;
         match existing_tip {
-            Some(tip) if tip != base_sha => {
-                return Err(DevforgeError::Store(format!(
-                    "任务分支 `{branch}` 已存在且指向 {tip}（上一轮候选保留，不等于本轮基点 {}）——
-                     同一 task 重建工作区请先 `git branch -D {branch}`，或换 task id",
-                    base_sha
-                )));
-            }
-            Some(_) => {
-                // 分支仍在基点上 = 可安全复用（不重建分支，避免丢引用）
-                git(&spec.repo, &["worktree", "add", &path_str, &branch])?;
+            Some(tip) => {
+                // 分支已存在：合法起点只有两个——契约基点，或上一轮冻结下来的候选。
+                // 顺序有意：基点优先（候选恰好等于基点时也走「复用」，语义不变）。
+                let at_base = tip == base_sha;
+                let at_candidate = !at_base
+                    && candidate
+                        .as_deref()
+                        .is_some_and(|c| tip.eq_ignore_ascii_case(c));
+                if at_base || at_candidate {
+                    // 两种情形都不新建分支、不改写引用：把现有分支直接挂到目标路径。
+                    git(&spec.repo, &["worktree", "add", &path_str, &branch])?;
+                    adopted_tip = at_candidate.then(|| tip.clone());
+                } else {
+                    return Err(DevforgeError::Store(format!(
+                        "任务分支 `{branch}` 已存在且指向 {tip}：非基点也非冻结候选（契约基点 {base_sha}）——
+                         同一 task 重建工作区前请先人工核验 `{branch}` 的当前 sha，再自行决定清理方式；
+                         分支上可能留着上一轮候选提交，删分支会让候选变孤儿",
+                    )));
+                }
             }
             None => {
                 git(
@@ -185,6 +236,16 @@ impl Workspace {
                 )?;
                 created_branch = true;
             }
+        }
+        if let Some(tip) = &adopted_tip {
+            tracing::info!(
+                component = "workspace",
+                event = "workspace.adopted",
+                branch = %branch,
+                path = %path_str,
+                frozen = %tip,
+                "worktree 收养冻结候选（分支未重建、引用未改写，HEAD = 候选 tip）"
+            );
         }
         let ws = Workspace {
             path,
@@ -229,6 +290,21 @@ impl Workspace {
 /// 从分支名反解任务 id（`task/xxx` → `xxx`）。
 fn self_branch_task_id(branch: &str) -> String {
     branch.strip_prefix("task/").unwrap_or(branch).to_string()
+}
+
+/// 冻结候选的形状门：trim 之后必须**恰好 40 位 ASCII 十六进制**（commit sha）。
+///
+/// 合法 → `Some(小写 sha)`；不合法（空串 / 纯空白 / `cafebabe` / 40 位 sha 后跟别的非空行）
+/// → `None`（不参与收养匹配，也不升级成错误——脏内容只是「不是候选」）。
+///
+/// 形状门只放这一处：调用方（change_engine）只负责把原文交下来，判定由本层做，
+/// 两处各判一次迟早判定漂移。大小写无关：git 吐出的 sha 是小写，冻结文件是人写的。
+fn normalize_candidate(raw: Option<&str>) -> Option<String> {
+    let text = raw?.trim();
+    if text.len() != 40 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(text.to_ascii_lowercase())
 }
 
 /// 孤儿 worktree：注册表里有记录、但目录已不存在（或 worktree 元数据失效）。
