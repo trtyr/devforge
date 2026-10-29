@@ -3,6 +3,11 @@
 //! 口径：
 //! - **回归优先**：test agent 先跑既有全套测试并把结果落 `evidence/regression.log`；
 //!   日志退出码非 0 却声称「回归没问题」= 说谎，FAIL。
+//! - **回归证据两段式扫描（F11）**：回归日志是 agent 手写的 markdown，把命令输出包进
+//!   代码围栏是标准写法——围栏外扫不到退出码时回退进围栏块体，但**只认「同块内
+//!   `command:` 与 `exit_code:` 成对」**的块（块内孤立的 `exit_code:` 不认，防示例误收）。
+//!   该回退**只服务回归门**：基线门 / 自证门与回归门共用同一个解析器，它们的围栏跳过
+//!   语义（CG-02「示例不误收」防御）一字不变。
 //! - **验收对账**：计划的每条验收标准都必须对到测试 `path:line`；缺一条即零覆盖（FAIL）。
 //! - **回注带失败明细原文**：bug 打回 coding/plan 时把失败明细**逐条原文**（含 `path:line`）
 //!   带给实现方——回注是 coding agent 的**输入面**，不给定位等于让它自己猜
@@ -10,7 +15,7 @@
 
 use std::path::Path;
 
-use crate::change::coding_gate::parse_evidence_log;
+use crate::change::coding_gate::{BaselineEvidence, parse_evidence_log};
 use crate::change::state::TestFailureContext;
 use crate::error::{DevforgeError, Result};
 
@@ -32,7 +37,10 @@ pub struct AcceptanceMatch {
 pub fn check_regression_claim(log_text: &str, claims_green: bool) -> Result<i32> {
     // 自审 minor（88）：走带标签的解析入口——旧口径复用基线门的单参解析，
     // 内层错误文本里出现 evidence/baseline-test.log，运维会找错文件。
-    let ev = parse_evidence_log(log_text, REGRESSION_LOG, "回归").map_err(|e| {
+    // 围栏失明修复（F11）：解析入口改为**两段式**——围栏外优先，围栏外取不到时回退进
+    // 围栏块体（只认同块成对）。两段都失败时原样上抛 stage a 的错误对象，故失败文案
+    // 与旧口径逐字一致（既有逐字 pin 不受影响）。
+    let ev = parse_regression_evidence(log_text).map_err(|e| {
         DevforgeError::Quality(format!(
             "回归日志 {REGRESSION_LOG} 不可解析（要写 `exit_code: N`）：{e}"
         ))
@@ -45,6 +53,64 @@ pub fn check_regression_claim(log_text: &str, claims_green: bool) -> Result<i32>
         )));
     }
     Ok(ev.exit_code)
+}
+
+/// 两段式回归证据解析：围栏外优先，围栏外取不到时回退进围栏块体。
+///
+/// stage a：原样跑 `parse_evidence_log`——围栏跳过 / 示例跳过 / 首中即停语义一字不变。
+/// 该解析器被基线门 / 自证门 / 回归门共用，回退**不得**下沉进去：围栏内示例里的数字
+/// 会把红的基线判绿（CG-02 的防御就是为此存在）。
+///
+/// stage b：stage a 落空时把文本按围栏切块，逐块重跑 `parse_evidence_log`，只认
+/// 「同块内 `command:` 与 `exit_code:` 成对」的块，按文件顺序取第一个合格块。
+///
+/// 两段都失败时原样上抛 stage a 的错误对象——错误文案被既有用例逐字钉住，不许重拼。
+fn parse_regression_evidence(text: &str) -> Result<BaselineEvidence> {
+    match parse_evidence_log(text, REGRESSION_LOG, "回归") {
+        Ok(ev) => Ok(ev),
+        Err(primary) => fenced_pair_evidence(text).ok_or(primary),
+    }
+}
+
+/// 围栏块体里的成对证据：同块内 `command:` 与 `exit_code:` 都在才算数。
+///
+/// 块体直接喂 `parse_evidence_log`——值容差（列表项 / 粗体 / 行内定位 / 无数字跳过）
+/// 与示例跳过只留一份事实源，抄第二份等于日后两处漂移；而「同块 `command` 非空」本身
+/// 就是「成对」的判据。
+fn fenced_pair_evidence(text: &str) -> Option<BaselineEvidence> {
+    fenced_blocks(text).into_iter().find_map(|block| {
+        parse_evidence_log(&block, REGRESSION_LOG, "回归")
+            .ok()
+            .filter(|ev| !ev.command.is_empty())
+    })
+}
+
+/// 按围栏切块（围栏判定与 `parse_evidence_log` 同款：``` 与 ~~~ 双支持）。
+///
+/// 未闭合的尾随围栏按「块体 = 余下全部行」处理——markdown 语义下未闭合围栏同样渲染成
+/// 代码块，排除它等于留一个形状完全相同的盲区；防误收由「同块成对」承担，不由
+/// 「围栏是否闭合」承担。
+fn fenced_blocks(text: &str) -> Vec<String> {
+    let mut blocks: Vec<Vec<&str>> = Vec::new();
+    let mut body: Vec<&str> = Vec::new();
+    let mut in_fence = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            if in_fence {
+                blocks.push(std::mem::take(&mut body));
+            }
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            body.push(line);
+        }
+    }
+    if in_fence {
+        blocks.push(body);
+    }
+    blocks.into_iter().map(|b| b.join("\n")).collect()
 }
 
 /// 读黑板上的回归日志并判定。
