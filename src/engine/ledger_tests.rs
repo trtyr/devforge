@@ -1,5 +1,6 @@
 //! （2026-10-26 测试分离：自 src/engine/ledger.rs 内联平移，纯移动零改动。）
 use super::*;
+use std::collections::BTreeSet;
 use std::process::{Command, Stdio};
 
 fn entry(pid: u32) -> LedgerEntry {
@@ -375,8 +376,12 @@ fn startup_reconcile_clears_dead_and_spares_foreign() {
     ledger.record(entry(u32::MAX - 100)); // 已死 → Dead
     ledger.save(&path).unwrap();
 
-    let (killed, cleared, foreign) = reconcile_all(plans.path());
-    assert_eq!((killed, cleared, foreign), (0, 1, 1), "Foreign 不死、Dead 清掉");
+    let report = reconcile_all(plans.path(), &BTreeSet::new(), true);
+    assert_eq!(
+        (report.killed, report.cleared, report.foreign),
+        (0, 1, 1),
+        "Foreign 不死、Dead 清掉"
+    );
     let after = SpawnLedger::load(&path).unwrap();
     assert_eq!(after.entries.len(), 1, "只留 Foreign：{:?}", after.entries);
     assert_eq!(after.entries[0].pid, pid);
@@ -404,12 +409,16 @@ fn startup_reconcile_kills_our_orphans() {
     ledger.record(entry(pid));
     ledger.save(&path).unwrap();
 
-    let (killed, cleared, foreign) = reconcile_all(plans.path());
+    let report = reconcile_all(plans.path(), &BTreeSet::new(), true);
     // 诊断属性：这条曾多次在并行全量里碎（flake），失败时必须带出三分类计数，
     // 否则只看到 left: 0 无法区分「判成 Foreign」与「杀不动」。
     assert_eq!(
-        killed, 1,
-        "自家孤儿必须被杀（killed={killed} cleared={cleared} foreign={foreign}）"
+        report.killed,
+        1,
+        "自家孤儿必须被杀（killed={} cleared={} foreign={}）",
+        report.killed,
+        report.cleared,
+        report.foreign
     );
     let _ = child.wait(); // SIGTERM 后退出，回收防 zombie
     assert!(!process_alive(pid));
@@ -604,9 +613,9 @@ fn a_zombie_entry_is_dead_not_foreign() {
     }
     assert!(zombied, "子进程应已退出待收尸");
 
-    let (killed, cleared, foreign) = reconcile_all(plans.path());
+    let report = reconcile_all(plans.path(), &BTreeSet::new(), true);
     assert_eq!(
-        (killed, cleared, foreign),
+        (report.killed, report.cleared, report.foreign),
         (0, 1, 0),
         "zombie 条目必须归 Dead 清账，不得当 Foreign 永久保留"
     );
@@ -632,5 +641,228 @@ fn a_process_that_ignores_term_is_not_reported_as_killed() {
     assert!(process_alive(pid), "它确实还活着");
     child.kill().unwrap();
     child.wait().unwrap();
+}
+
+// ── 启动对账的两道安全阀（计划 §3.1 第三条 + 裁决 2/3/4）──
+
+/// 安全阀 1：条目属于**疑似仍活**的 run → 绝不杀、条目保留、记独立事件。
+///
+/// 错实现形态（任一命中即红）：
+/// ① 把 `skipped_active` 分支删掉（直接落到杀分支）→ 子进程被 SIGTERM、`killed == 1` → 红；
+/// ② 跳过分支不 `kept.record` → 回写段按「处理前已知 pid 集」判重时把条目抹掉
+///    → 「条目仍在」红（这是「保留条目」唯一会静默失败的地方）；
+/// ③ 事件名复用 `ledger.orphan_killed` → 日志断言红（复用 = 骗观测）。
+#[test]
+fn active_run_child_is_never_killed_and_stays_in_ledger() {
+    let plans = tempfile::tempdir().unwrap();
+    let proj = plans.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let path = proj.join("spawn-ledger.json");
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .env(MANAGED_ENV, "run-active")
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    // 必须等 environ 就绪：exec 完成前 environ 读不到 → 条目被判 Foreign 而非 Ours，
+    // 阀门分支根本走不到 → 断言假绿（计划 §6「被测进程的就绪窗口」）。
+    assert_eq!(wait_for_marker(pid, 5000).as_deref(), Some("run-active"));
+    let mut ledger = SpawnLedger::default();
+    ledger.record(LedgerEntry {
+        pid,
+        role: "plan-agent".into(),
+        run_id: "run-active".into(),
+        started_at_ms: 1,
+    });
+    ledger.save(&path).unwrap();
+
+    let mut active = BTreeSet::new();
+    active.insert("run-active".to_string());
+    let mut report = ReconcileReport::default();
+    let log = crate::observability::test_support::capture_jsonl(|| {
+        report = reconcile_all(plans.path(), &active, true);
+    });
+
+    assert_eq!(
+        (
+            report.killed,
+            report.skipped_active,
+            report.cleared,
+            report.foreign
+        ),
+        (0, 1, 0, 0),
+        "活动 run 的自家子进程必须跳过不杀（killed={} skipped_active={} cleared={} foreign={}）",
+        report.killed,
+        report.skipped_active,
+        report.cleared,
+        report.foreign
+    );
+    assert!(
+        process_alive(pid),
+        "跳过的进程必须还活着（阀门生效 = 一次都不许打到杀路径）"
+    );
+    let after = SpawnLedger::load(&path).unwrap();
+    assert_eq!(
+        after.entries.iter().map(|e| e.pid).collect::<Vec<_>>(),
+        vec![pid],
+        "跳过的条目必须留在台账里（回写不得抹掉）"
+    );
+    assert!(
+        log.contains("ledger.orphan_skip_active"),
+        "必须有独立的跳过事件（不得复用 ledger.orphan_killed）：{log}"
+    );
+    assert!(
+        log.contains("run-active"),
+        "跳过事件必须带 run_id 值：{log}"
+    );
+    assert!(
+        !log.contains("ledger.orphan_killed"),
+        "跳过的条目不许出现「已杀」事件：{log}"
+    );
+
+    // 收尾：spawn 的长驻进程必须有终止边界。
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+/// 安全阀 2：store 不可信 → 零击杀（活条目一律保留，记独立事件）。
+///
+/// 这是 2026-10-29 事故形态：store 读不出来（旧二进制读不懂新词汇的 store）→
+/// 活动集为空（**空 store ≠ 没有活 run**）→ 若不挡住，对账会连杀自家活 agent。
+///
+/// 错实现形态：把 `!store_trusted` 分支删掉，或把两道阀的判定顺序倒过来
+/// （先判活动集）→ 空活动集落进杀分支 → 子进程被 SIGTERM、`killed == 1` → 红。
+#[test]
+fn untrusted_store_never_kills_even_without_active_ids() {
+    let plans = tempfile::tempdir().unwrap();
+    let proj = plans.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let path = proj.join("spawn-ledger.json");
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .env(MANAGED_ENV, "run-untrusted")
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    assert_eq!(wait_for_marker(pid, 5000).as_deref(), Some("run-untrusted"));
+    let mut ledger = SpawnLedger::default();
+    ledger.record(LedgerEntry {
+        pid,
+        role: "coding-agent".into(),
+        run_id: "run-untrusted".into(),
+        started_at_ms: 1,
+    });
+    ledger.save(&path).unwrap();
+
+    // 活动集**故意为空**：不可信时活动集本身没有意义（空集 ≠ 无活 run），
+    // 零击杀必须由「store 不可信」这一条独立成立。
+    let mut report = ReconcileReport::default();
+    let log = crate::observability::test_support::capture_jsonl(|| {
+        report = reconcile_all(plans.path(), &BTreeSet::new(), false);
+    });
+
+    assert_eq!(
+        (report.killed, report.skipped_no_store, report.cleared),
+        (0, 1, 0),
+        "store 不可信时必须零击杀（killed={} skipped_no_store={} cleared={}）",
+        report.killed,
+        report.skipped_no_store,
+        report.cleared
+    );
+    assert!(
+        process_alive(pid),
+        "store 不可信时活着的自家进程必须还活着"
+    );
+    let after = SpawnLedger::load(&path).unwrap();
+    assert_eq!(
+        after.entries.iter().map(|e| e.pid).collect::<Vec<_>>(),
+        vec![pid],
+        "store 不可信时活条目必须保留（不得清账）"
+    );
+    assert!(
+        log.contains("ledger.orphan_skip_no_store"),
+        "必须有独立的零击杀事件：{log}"
+    );
+    assert!(
+        log.contains("run-untrusted"),
+        "零击杀事件必须带 run_id 值：{log}"
+    );
+    assert!(
+        !log.contains("ledger.orphan_killed"),
+        "store 不可信时不许出现「已杀」事件：{log}"
+    );
+
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+/// 递归收集 `dir` 下所有 `.rs` 源文件（手写递归——不引 glob 依赖）。
+fn collect_rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for ent in rd.flatten() {
+        let path = ent.path();
+        if path.is_dir() {
+            out.extend(collect_rust_files(&path));
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// 结构锚（裁决 3）：`reconcile_all` 的**生产调用点全集**恰为 `src/main.rs` 一个。
+///
+/// 锚的是**结构性事实**（生产调用点全集），不是「相对某基线的 diff 形状」——
+/// 前者红了是真越界（第二个生产入口会真的把对账打到真台账），后者会随任何后续提交腐坏。
+///
+/// 为什么要扫 `tests/**`：`src/lib.rs:22` 的 `pub mod engine` 让集成测试能像外部 crate
+/// 一样直接导入这个函数——只扫 `src/` 会把「tests 零调用」留在**核查层**的事实，
+/// 而不是被**钉住**的事实。故本锚显式断言 `tests/` 根确实被扫到。
+///
+/// 命中若只是注释文本（跨场守卫文件里提到该函数名），应改注释措辞而不是放宽锚。
+///
+/// 错实现形态：把对账挪进第二个生产入口（例如未来的「运行中对账」API）→ 本锚变红。
+#[test]
+fn reconcile_all_has_exactly_one_production_caller() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut callers: Vec<String> = Vec::new();
+    let mut scanned_under_tests = 0usize;
+    for dir in ["src", "tests"] {
+        for file in collect_rust_files(&root.join(dir)) {
+            let rel = file
+                .strip_prefix(root)
+                .unwrap_or(file.as_path())
+                .to_string_lossy()
+                .replace('\\', "/");
+            if dir == "tests" {
+                scanned_under_tests += 1;
+            }
+            // 定义处与测试模块本身不算「生产调用点」
+            if rel == "src/engine/ledger.rs" || rel == "src/engine/ledger_tests.rs" {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            if text.contains("reconcile_all(") {
+                callers.push(rel);
+            }
+        }
+    }
+    assert!(
+        scanned_under_tests > 0,
+        "锚必须真扫到 tests/ 根（否则「tests 零调用」就退回了核查层的事实）"
+    );
+    callers.sort();
+    assert_eq!(
+        callers,
+        vec!["src/main.rs".to_string()],
+        "reconcile_all 的生产调用点必须恰为 src/main.rs（新增第二个生产入口 → 本锚变红）"
+    );
 }
 
