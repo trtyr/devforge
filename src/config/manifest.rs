@@ -164,6 +164,113 @@ pub struct PathPermissions {
     pub deny_write: Vec<String>,
 }
 
+/// 运行时生存配置（清单可配段）：渲染器**每次必分发**的存活层。
+///
+/// 缺省 = 现网已上线的 devforge 值（用户 2026-10-29 裁决：保持现有值，不对齐 pi 自身缺省），
+/// 外加请求绝对超时 `provider_timeout_ms`（pi 键 `retry.provider.timeoutMs`）。
+/// 缺省值的唯一事实源在本文件（每字段一个 `#[serde(default = "…")]` 函数 + `Default` 实现）——
+/// 缺省散落两处即漂移，故渲染层只做「清单值 → pi 键」的映射，不再写死业务值。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeSettings {
+    /// pi `retry.maxRetries`（Agent 级重试次数上限）。
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    /// pi `retry.baseDelayMs`（重试初始退避延迟，毫秒）。
+    #[serde(default = "default_base_delay_ms")]
+    pub base_delay_ms: u64,
+    /// pi `retry.provider.timeoutMs`（**请求绝对超时**，毫秒）——中转挂起时唯一的斩杀上界：
+    /// idle 超时被 keep-alive 喂着永不触发，挂起请求只能靠绝对上限斩（缺省回落
+    /// `httpIdleTimeoutMs`，显式写死才有独立上界）。
+    #[serde(default = "default_provider_timeout_ms")]
+    pub provider_timeout_ms: u64,
+    /// pi `httpIdleTimeoutMs`（流空闲超时，毫秒）——与绝对超时互补，两者都要在。
+    #[serde(default = "default_http_idle_timeout_ms")]
+    pub http_idle_timeout_ms: u64,
+    /// pi `defaultThinkingLevel`（全局默认档位；Agent 自身的 `thinking_level` 优先于它）。
+    #[serde(default = "default_thinking_level")]
+    pub default_thinking_level: String,
+    /// pi `hideThinkingBlock`。
+    #[serde(default = "default_hide_thinking_block")]
+    pub hide_thinking_block: bool,
+    /// pi `compaction`（上下文压缩）。
+    #[serde(default)]
+    pub compaction: CompactionSettings,
+}
+
+/// 上下文压缩配置（pi `compaction` 段）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompactionSettings {
+    /// pi `compaction.enabled`。
+    #[serde(default = "default_compaction_enabled")]
+    pub enabled: bool,
+    /// pi `compaction.reserveTokens`（压缩时预留的 token）。
+    #[serde(default = "default_compaction_reserve_tokens")]
+    pub reserve_tokens: u64,
+    /// pi `compaction.keepRecentTokens`（压缩时保留的最近 token）。
+    #[serde(default = "default_compaction_keep_recent_tokens")]
+    pub keep_recent_tokens: u64,
+}
+
+impl Default for RuntimeSettings {
+    fn default() -> Self {
+        Self {
+            max_retries: default_max_retries(),
+            base_delay_ms: default_base_delay_ms(),
+            provider_timeout_ms: default_provider_timeout_ms(),
+            http_idle_timeout_ms: default_http_idle_timeout_ms(),
+            default_thinking_level: default_thinking_level(),
+            hide_thinking_block: default_hide_thinking_block(),
+            compaction: CompactionSettings::default(),
+        }
+    }
+}
+
+impl Default for CompactionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_compaction_enabled(),
+            reserve_tokens: default_compaction_reserve_tokens(),
+            keep_recent_tokens: default_compaction_keep_recent_tokens(),
+        }
+    }
+}
+
+fn default_max_retries() -> u32 {
+    3
+}
+
+fn default_base_delay_ms() -> u64 {
+    5_000
+}
+
+fn default_provider_timeout_ms() -> u64 {
+    600_000
+}
+
+fn default_http_idle_timeout_ms() -> u64 {
+    60_000
+}
+
+fn default_thinking_level() -> String {
+    "high".into()
+}
+
+fn default_hide_thinking_block() -> bool {
+    true
+}
+
+fn default_compaction_enabled() -> bool {
+    false
+}
+
+fn default_compaction_reserve_tokens() -> u64 {
+    16_384
+}
+
+fn default_compaction_keep_recent_tokens() -> u64 {
+    20_000
+}
+
 /// 配置清单——真源。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConfigManifest {
@@ -177,6 +284,11 @@ pub struct ConfigManifest {
     pub agents: Vec<AgentManifest>,
     /// API Key——明文不设防（P002 decisions/001）。
     pub api_key: Option<String>,
+    /// 运行时生存配置（渲染器每次必分发的存活层）。
+    /// `#[serde(default)]`：旧真源没有这一段也能加载（旧清单升级不裸奔），
+    /// 且 GET→改→PUT 往返时请求体里的该段不被丢弃。
+    #[serde(default)]
+    pub runtime: RuntimeSettings,
 }
 
 /// GET /config/manifest 的 api_key 脱敏占位（自审 critical）：明文 Key 不再经 HTTP
@@ -509,6 +621,9 @@ impl ConfigManifest {
                 },
             ],
             api_key: None,
+            // 运行时生存层缺省：显式给出（首启落盘时缺段会让真源看起来「没配」，
+            // 且缺省来源会散落两处）——值域只有一个事实源：`RuntimeSettings::default()`。
+            runtime: RuntimeSettings::default(),
         }
     }
 

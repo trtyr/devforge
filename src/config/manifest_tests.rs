@@ -526,3 +526,103 @@ fn traversal_agent_names_are_rejected_on_load() {
         "穿越名应被拒：{err}"
     );
 }
+
+// ── 运行时生存层（runtime 段）：来源可配 · 旧清单升级不裸奔 ──
+
+/// 错实现形态：缺省被 derive 的零值覆盖（max_retries=0 / 档位空串）或散落两处漂移
+/// → 本用例的逐字段断言变红。
+#[test]
+fn builtin_runtime_matches_the_pinned_defaults() {
+    let m = ConfigManifest::builtin();
+    assert_eq!(m.runtime.max_retries, 3);
+    assert_eq!(m.runtime.base_delay_ms, 5_000);
+    assert_eq!(m.runtime.provider_timeout_ms, 600_000);
+    assert_eq!(m.runtime.http_idle_timeout_ms, 60_000);
+    assert_eq!(m.runtime.default_thinking_level, "high");
+    assert!(m.runtime.hide_thinking_block);
+    assert!(!m.runtime.compaction.enabled);
+    assert_eq!(m.runtime.compaction.reserve_tokens, 16_384);
+    assert_eq!(m.runtime.compaction.keep_recent_tokens, 20_000);
+    // 唯一事实源：builtin 与 Default 同值（缺省不散落两处）
+    assert_eq!(m.runtime, RuntimeSettings::default());
+}
+
+/// 错实现形态：旧真源（无 runtime 段）加载失败，或 runtime 段退化成零值
+/// → 本用例变红（旧清单升级后裸奔）。
+#[test]
+fn a_manifest_source_without_the_runtime_section_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("manifest.json");
+    let mut v = serde_json::to_value(ConfigManifest::builtin()).unwrap();
+    v.as_object_mut().unwrap().remove("runtime");
+    std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+
+    let loaded = ConfigManifest::load(&path).unwrap();
+    assert_eq!(loaded.runtime.max_retries, 3);
+    assert_eq!(loaded.runtime.base_delay_ms, 5_000);
+    assert_eq!(loaded.runtime.provider_timeout_ms, 600_000);
+    assert_eq!(loaded.runtime.http_idle_timeout_ms, 60_000);
+    assert_eq!(loaded.runtime.default_thinking_level, "high");
+    assert!(loaded.runtime.hide_thinking_block);
+    assert!(!loaded.runtime.compaction.enabled);
+    assert_eq!(loaded.runtime.compaction.reserve_tokens, 16_384);
+    assert_eq!(loaded.runtime.compaction.keep_recent_tokens, 20_000);
+}
+
+/// 错实现形态：runtime 段没进落盘真源（save 丢字段）→ load 回来是缺省值而非配置值。
+#[test]
+fn the_runtime_segment_survives_save_and_load() {
+    let mut m = ConfigManifest::builtin();
+    m.runtime.max_retries = 7;
+    m.runtime.base_delay_ms = 1_234;
+    m.runtime.provider_timeout_ms = 90_000;
+    m.runtime.http_idle_timeout_ms = 30_000;
+    m.runtime.default_thinking_level = "medium".into();
+    m.runtime.hide_thinking_block = false;
+    m.runtime.compaction.enabled = true;
+    m.runtime.compaction.reserve_tokens = 32_768;
+    m.runtime.compaction.keep_recent_tokens = 40_960;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("manifest.json");
+    m.save(&path).unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.contains("\"runtime\""),
+        "落盘真源必须含 runtime 段：{text}"
+    );
+    let loaded = ConfigManifest::load(&path).unwrap();
+    assert_eq!(loaded.runtime, m.runtime);
+    assert_eq!(loaded.runtime.compaction.reserve_tokens, 32_768);
+}
+
+/// 错实现形态：PUT 请求体里的 runtime 段被丢弃（serde 不认该段）→ 反序列化得到缺省值而非请求值。
+#[test]
+fn the_runtime_segment_is_restored_from_manifest_json() {
+    let mut v = serde_json::to_value(ConfigManifest::builtin()).unwrap();
+    v["runtime"] = serde_json::json!({
+        "max_retries": 7,
+        "base_delay_ms": 1234,
+        "provider_timeout_ms": 90000,
+        "http_idle_timeout_ms": 30000,
+        "default_thinking_level": "medium",
+        "hide_thinking_block": false,
+        "compaction": { "enabled": true, "reserve_tokens": 32768, "keep_recent_tokens": 40960 },
+    });
+    let m: ConfigManifest = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!(m.runtime.max_retries, 7);
+    assert_eq!(m.runtime.base_delay_ms, 1_234);
+    assert_eq!(m.runtime.provider_timeout_ms, 90_000);
+    assert_eq!(m.runtime.http_idle_timeout_ms, 30_000);
+    assert_eq!(m.runtime.default_thinking_level, "medium");
+    assert!(!m.runtime.hide_thinking_block);
+    assert!(m.runtime.compaction.enabled);
+    assert_eq!(m.runtime.compaction.reserve_tokens, 32_768);
+    assert_eq!(m.runtime.compaction.keep_recent_tokens, 40_960);
+
+    // 同一份 JSON 删掉 runtime 段 → 缺省值（不是零值）
+    v.as_object_mut().unwrap().remove("runtime");
+    let m2: ConfigManifest = serde_json::from_value(v).unwrap();
+    assert_eq!(m2.runtime, RuntimeSettings::default());
+}
