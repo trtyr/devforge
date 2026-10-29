@@ -867,12 +867,21 @@ mod acceptance {
                 "脏候选 {dirty:?} 不得创建 worktree"
             );
         }
-        // 合法 40 位 sha 后跟别的非空行 → 同样不是候选
+        // 合法 40 位 sha 后跟别的非空行 → 同样不是候选。
+        // 这里用「分支 tip + 垃圾行」：只取第一行的错实现会把它当候选收养 → 这条红。
         let fx = AdoptionRepo::with_candidate_branch("ac05-dirty-tail");
-        let dirty = format!("{}\ngarbage\n", fx.base);
+        let dirty = format!("{}\ngarbage\n", fx.tip);
         let err = Workspace::create_with_candidate(&fx.spec, Some(&dirty)).unwrap_err();
-        assert!(err.to_string().contains("非基点也非冻结候选"), "{err}");
-        assert!(!Workspace::target_path(&fx.spec).exists());
+        let msg = err.to_string();
+        assert!(
+            matches!(err, DevforgeError::Store(_)),
+            "sha 后跟垃圾行必须走拒绝路径：{msg}"
+        );
+        assert!(msg.contains("非基点也非冻结候选"), "{msg}");
+        assert!(
+            !Workspace::target_path(&fx.spec).exists(),
+            "sha 后跟垃圾行不得创建 worktree"
+        );
     }
 
     // ---------- 验收 6：带空白的合法候选 → 收养 ----------
