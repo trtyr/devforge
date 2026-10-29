@@ -34,6 +34,32 @@ pub enum Reconciliation {
     Dead(LedgerEntry),
 }
 
+/// 启动对账的结果（`reconcile_all` 的返回形状）。
+///
+/// 五个计数**互斥**，互不并入：
+/// - `killed`：SIGTERM 送达且已退出的自家子进程数（= 真杀了）。
+/// - `cleared`：已死（Dead）条目被清账的条数（清账只删条目，不杀进程）。
+/// - `foreign`：别人的进程（红线：绝不动），条目保留。
+/// - `skipped_active`：条目属于**疑似仍活**的 run → 跳过、**绝不尝试杀**、条目保留。
+/// - `skipped_no_store`：store 不可信（读不出来）→ 无法确认条目是否属于活 run →
+///   零击杀、条目保留。
+///
+/// `skipped_*` 既不是 `foreign`（那指「别人的进程」，会把排障指向错误方向），
+/// 也不是 `cleared`（那指「条目已被清掉」，而这里的条目被**保留**了）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReconcileReport {
+    /// 已杀（SIGTERM 送达且已退出）。
+    pub killed: usize,
+    /// 已清账（Dead 条目从台账移除）。
+    pub cleared: usize,
+    /// 别人的进程（绝不杀，条目保留）。
+    pub foreign: usize,
+    /// 命中活动 run 集而跳过（绝不尝试杀，条目保留）。
+    pub skipped_active: usize,
+    /// store 不可信而跳过（零击杀，条目保留）。
+    pub skipped_no_store: usize,
+}
+
 /// 环境标记变量名。
 pub const MANAGED_ENV: &str = "DEVFORGE_MANAGED";
 
@@ -359,13 +385,30 @@ pub fn kill_run_processes(ledger_path: &Path, run_id: &str) -> usize {
 /// 启动对账（引擎 #2）：进程重启后扫 `plans/<project>/spawn-ledger.json`，把上一轮遗留的
 /// **自家**子进程（Ours = 存活且带 DEVFORGE_MANAGED 标记）SIGTERM 清场，Dead 条目从台账
 /// 清掉，Foreign 绝不杀（红线）。此前 reconcile/kill_orphan 只在单测里被调，崩溃孤儿会继续
-/// 改目标仓。返回（killed, cleared, foreign）。
-pub fn reconcile_all(plans_root: &Path) -> (usize, usize, usize) {
-    let mut killed = 0usize;
-    let mut cleared = 0usize;
-    let mut foreign = 0usize;
+/// 改目标仓。
+///
+/// **三道出口**（两道安全阀插在 `Ours` 分支进入杀路径**之前**）：
+/// 1. **store 不可信**（`store_trusted == false`）→ 零击杀：只清 Dead，活条目一律保留并记
+///    `ledger.orphan_skip_no_store`。理由：**空 store ≠ 没有活 run**——store 读不出来时，
+///    「活动集为空」只说明我们不认识谁还活着，不说明没人活着（2026-10-29 事故形态：
+///    旧二进制读不懂新词汇的 store → 判坏 → 空仓冷启动 → 连杀三个活着的自家 agent）。
+/// 2. **条目 run_id 命中活动集**（`active_run_ids`）→ 跳过、绝不尝试杀、条目保留并记
+///    `ledger.orphan_skip_active`。理由：该 run 疑似仍在跑，进程是活着的自家 agent。
+/// 3. 其余按旧口径：Ours 杀（SIGTERM 后等退出；杀不掉则保留条目），Dead 清账，Foreign 绝不杀。
+///
+/// 判定顺序固定为「先 store 可信度、后活动集」：不可信时活动集本身没有意义
+/// （空集 ≠ 无活 run），先判可信度才能保证不可信时不会因空集落到杀分支。
+///
+/// `active_run_ids` 是「疑似仍活」的集合（调用方在僵尸清账**之前**取的 Running 快照）；
+/// 启动路径通常传空集（真冷启动 = 确实没有活 run）。
+pub fn reconcile_all(
+    plans_root: &Path,
+    active_run_ids: &std::collections::BTreeSet<String>,
+    store_trusted: bool,
+) -> ReconcileReport {
+    let mut report = ReconcileReport::default();
     let Ok(rd) = std::fs::read_dir(plans_root) else {
-        return (0, 0, 0);
+        return report;
     };
     for ent in rd.flatten() {
         let path = ent.path().join("spawn-ledger.json");
@@ -385,44 +428,74 @@ pub fn reconcile_all(plans_root: &Path) -> (usize, usize, usize) {
         let mut kept = SpawnLedger::default();
         for r in ledger.reconcile() {
             match r {
-                Reconciliation::Ours(e) => match kill_orphan_wait(e.pid) {
-                    Ok(true) => {
-                        killed += 1;
+                Reconciliation::Ours(e) => {
+                    // 安全阀 1：store 不可信 → 零击杀（先判可信度，后判活动集）
+                    if !store_trusted {
+                        report.skipped_no_store += 1;
+                        kept.record(e.clone());
                         tracing::warn!(
                             component = "engine-ledger",
-                            event = "ledger.orphan_killed",
+                            event = "ledger.orphan_skip_no_store",
                             pid = e.pid,
                             run_id = %e.run_id,
                             role = %e.role,
-                            "启动对账：上一轮遗留的自家子进程已 SIGTERM 且已退出"
+                            "启动对账：store 不可用，无法确认条目是否属于活 run → 零击杀，保留台账条目"
                         );
+                        continue;
                     }
-                    Ok(false) => {
-                        // 自审 major：SIGTERM 送达 ≠ 退出——忽略 TERM 的孤儿
-                        // 不得从台账删痕，否则永久失联。
+                    // 安全阀 2：条目属于疑似仍活的 run → 跳过不杀
+                    if active_run_ids.contains(&e.run_id) {
+                        report.skipped_active += 1;
                         kept.record(e.clone());
-                        tracing::error!(
+                        tracing::warn!(
                             component = "engine-ledger",
+                            event = "ledger.orphan_skip_active",
                             pid = e.pid,
                             run_id = %e.run_id,
-                            "启动对账：孤儿 SIGTERM 后仍存活，保留台账条目待下次处理"
+                            role = %e.role,
+                            "启动对账：条目属于疑似仍活的 run → 跳过不杀，保留台账条目"
                         );
+                        continue;
                     }
-                    Err(err) => {
-                        // 杀不掉就留着——下次启动再试，绝不从台账里删痕迹
-                        kept.record(e);
-                        tracing::error!(
-                            component = "engine-ledger",
-                            error = %err,
-                            "启动对账：孤儿进程 SIGTERM 失败，保留台账条目"
-                        );
+                    match kill_orphan_wait(e.pid) {
+                        Ok(true) => {
+                            report.killed += 1;
+                            tracing::warn!(
+                                component = "engine-ledger",
+                                event = "ledger.orphan_killed",
+                                pid = e.pid,
+                                run_id = %e.run_id,
+                                role = %e.role,
+                                "启动对账：上一轮遗留的自家子进程已 SIGTERM 且已退出"
+                            );
+                        }
+                        Ok(false) => {
+                            // 自审 major：SIGTERM 送达 ≠ 退出——忽略 TERM 的孤儿
+                            // 不得从台账删痕，否则永久失联。
+                            kept.record(e.clone());
+                            tracing::error!(
+                                component = "engine-ledger",
+                                pid = e.pid,
+                                run_id = %e.run_id,
+                                "启动对账：孤儿 SIGTERM 后仍存活，保留台账条目待下次处理"
+                            );
+                        }
+                        Err(err) => {
+                            // 杀不掉就留着——下次启动再试，绝不从台账里删痕迹
+                            kept.record(e);
+                            tracing::error!(
+                                component = "engine-ledger",
+                                error = %err,
+                                "启动对账：孤儿进程 SIGTERM 失败，保留台账条目"
+                            );
+                        }
                     }
-                },
+                }
                 Reconciliation::Foreign(e) => {
-                    foreign += 1;
+                    report.foreign += 1;
                     kept.record(e);
                 }
-                Reconciliation::Dead(_) => cleared += 1,
+                Reconciliation::Dead(_) => report.cleared += 1,
             }
         }
         // 自审 major：回写必须持台账锁，且按「处理前已知 pid 集」判重——
@@ -449,7 +522,7 @@ pub fn reconcile_all(plans_root: &Path) -> (usize, usize, usize) {
             );
         }
     }
-    (killed, cleared, foreign)
+    report
 }
 
 /// 杀掉自家孤儿（Q005：直接杀，不收养）。SIGTERM 后等退出。

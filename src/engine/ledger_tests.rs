@@ -1,5 +1,6 @@
 //! （2026-10-26 测试分离：自 src/engine/ledger.rs 内联平移，纯移动零改动。）
 use super::*;
+use std::collections::BTreeSet;
 use std::process::{Command, Stdio};
 
 fn entry(pid: u32) -> LedgerEntry {
@@ -375,8 +376,12 @@ fn startup_reconcile_clears_dead_and_spares_foreign() {
     ledger.record(entry(u32::MAX - 100)); // 已死 → Dead
     ledger.save(&path).unwrap();
 
-    let (killed, cleared, foreign) = reconcile_all(plans.path());
-    assert_eq!((killed, cleared, foreign), (0, 1, 1), "Foreign 不死、Dead 清掉");
+    let report = reconcile_all(plans.path(), &BTreeSet::new(), true);
+    assert_eq!(
+        (report.killed, report.cleared, report.foreign),
+        (0, 1, 1),
+        "Foreign 不死、Dead 清掉"
+    );
     let after = SpawnLedger::load(&path).unwrap();
     assert_eq!(after.entries.len(), 1, "只留 Foreign：{:?}", after.entries);
     assert_eq!(after.entries[0].pid, pid);
@@ -404,12 +409,16 @@ fn startup_reconcile_kills_our_orphans() {
     ledger.record(entry(pid));
     ledger.save(&path).unwrap();
 
-    let (killed, cleared, foreign) = reconcile_all(plans.path());
+    let report = reconcile_all(plans.path(), &BTreeSet::new(), true);
     // 诊断属性：这条曾多次在并行全量里碎（flake），失败时必须带出三分类计数，
     // 否则只看到 left: 0 无法区分「判成 Foreign」与「杀不动」。
     assert_eq!(
-        killed, 1,
-        "自家孤儿必须被杀（killed={killed} cleared={cleared} foreign={foreign}）"
+        report.killed,
+        1,
+        "自家孤儿必须被杀（killed={} cleared={} foreign={}）",
+        report.killed,
+        report.cleared,
+        report.foreign
     );
     let _ = child.wait(); // SIGTERM 后退出，回收防 zombie
     assert!(!process_alive(pid));
@@ -604,9 +613,9 @@ fn a_zombie_entry_is_dead_not_foreign() {
     }
     assert!(zombied, "子进程应已退出待收尸");
 
-    let (killed, cleared, foreign) = reconcile_all(plans.path());
+    let report = reconcile_all(plans.path(), &BTreeSet::new(), true);
     assert_eq!(
-        (killed, cleared, foreign),
+        (report.killed, report.cleared, report.foreign),
         (0, 1, 0),
         "zombie 条目必须归 Dead 清账，不得当 Foreign 永久保留"
     );
