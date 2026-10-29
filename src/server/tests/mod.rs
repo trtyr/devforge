@@ -239,6 +239,7 @@ mod http;
 mod integration_api;
 mod observe;
 mod panic_safety;
+mod pending;
 mod restart;
 mod retry;
 mod scheduler;
