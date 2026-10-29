@@ -174,6 +174,12 @@ pub(super) fn non_step_commits(commits: &[Commit]) -> Vec<Commit> {
         .collect()
 }
 
+/// 全部步提交（**不**按 change-id 过滤）——只用于反假绿对照：
+/// 放行必须来自「过滤」，不是「扫描扫空」。
+pub(super) fn all_step_commits(root: &Path) -> Vec<Commit> {
+    step_commits(&commit_history(root))
+}
+
 /// 某提交动过的文件（按迁移表归一化到现状路径）。
 ///
 /// 归一化不可省（ARC-R3 起仓库手术会迁移文件）：历史步提交是**事实**不可改，
@@ -182,9 +188,7 @@ pub(super) fn files_of_commit(root: &Path, sha: &str) -> Vec<String> {
     git(root, &["show", "--name-only", "--format=", sha])
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            devforge::change::plan_audit::normalize_path(l.trim()).to_string()
-        })
+        .map(|l| devforge::change::plan_audit::normalize_path(l.trim()).to_string())
         .collect()
 }
 
@@ -230,11 +234,7 @@ pub(super) fn non_test_violations(root: &Path, commits: &[Commit]) -> Vec<Findin
 
 /// 未跟踪产物一律不得被提交进本变更。
 pub(super) fn artifact_violations(root: &Path, commits: &[Commit]) -> Vec<Finding> {
-    const ARTIFACTS: [&str; 3] = [
-        ".pi/goals/",
-        "tests/e2e/results/",
-        "docs/plantree/changes/",
-    ];
+    const ARTIFACTS: [&str; 3] = [".pi/goals/", "tests/e2e/results/", "docs/plantree/changes/"];
     let mut out = Vec::new();
     for c in commits {
         for f in files_of_commit(root, &c.sha) {
@@ -251,6 +251,40 @@ pub(super) fn artifact_violations(root: &Path, commits: &[Commit]) -> Vec<Findin
 }
 
 // ---------------- 夹具 ----------------
+
+/// 造一个临时 git fixture 仓：按给定顺序，每个 (subject, 文件) 落一笔提交。
+///
+/// 用途：F10 的守卫回归要在**可控的提交集**上验证过滤与对账——真实仓的现状恒定不了
+/// 「外场步提交与本场步提交并存」这个形状（a16 在本基线上是绿的，靠的是历史运气：
+/// 那 30 笔外场步提交恰好都动了旧场白名单内的文件），靠它分不开「过滤生效」与
+/// 「扫描扫空」两种实现。
+pub(super) fn fixture_repo(dir: &Path, commits: &[(&str, &[&str])]) -> PathBuf {
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    // 空仓不能提交 → 先落一个种子文件（提交历史里不出现它，扫描面不受影响）
+    std::fs::write(root.join("seed.txt"), "seed\n").unwrap();
+    git(&root, &["init"]);
+    git(&root, &["add", "-A"]);
+    git(
+        &root,
+        &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"],
+    );
+    for (subject, files) in commits {
+        for f in *files {
+            let p = root.join(f);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, "x\n").unwrap();
+        }
+        git(&root, &["add", "-A"]);
+        git(
+            &root,
+            &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", subject],
+        );
+    }
+    root
+}
 
 pub(super) fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

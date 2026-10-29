@@ -189,3 +189,160 @@ pub(super) fn a17_the_change_commits_stay_inside_the_whitelist() {
     );
 }
 
+// ---------------- F10 回归：按 change-id 收敛扫描面（git fixture 造场） ----------------
+//
+// 真实仓的现状恒定不了「外场步提交与本场步提交并存」这个形状（a16 在本基线上是绿的，
+// 靠的是历史运气：那 30 笔外场步提交恰好都动了旧场白名单内的文件）——靠它分不开
+// 「过滤生效」与「扫描扫空」两种实现，回归必须在可控的 fixture 仓上造场。
+
+/// F10 回归 · 扫描面只取本场 change-id 的步提交；外场步提交不参与判定。
+///
+/// 错实现形态：过滤条件写错（漏了 change-id，或过滤成永空）→ 未过滤集合里外场文件
+/// 消失 / 本场步提交集里混进外场 → 本用例必须变红。
+#[test]
+pub(super) fn f10_the_scan_takes_only_this_changes_step_commits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let foreign = "change-20261029-some-other-change-id";
+    let mine_subject = format!("feat: 本场步提交 — {CHANGE_ID} step 1");
+    let foreign_subject = format!("feat: 外场步提交 — {foreign} step 1");
+    let root = fixture_repo(
+        tmp.path(),
+        &[
+            (
+                mine_subject.as_str(),
+                &["tests/change_failure_context/guards.rs"][..],
+            ),
+            (foreign_subject.as_str(), &["src/leak.rs"][..]),
+        ],
+    );
+    // 本场步提交集：恰好一条，且不含外场提交的文件
+    let mine = change_step_commits(&root, CHANGE_ID);
+    assert_eq!(mine.len(), 1, "本场步提交集应恰好一条：{mine:?}");
+    let mine_files = files_of_commit(&root, &mine[0].sha);
+    assert!(
+        !mine_files.iter().any(|f| f == "src/leak.rs"),
+        "本场步提交集混进了外场文件：{mine_files:?}"
+    );
+    // 反假绿：未过滤的步提交集合里外场文件确实在（放行必须来自过滤，不是扫描扫空）
+    let unfiltered = all_step_commits(&root);
+    assert_eq!(
+        unfiltered.len(),
+        2,
+        "未过滤步提交集应含内外场两条：{unfiltered:?}"
+    );
+    let unfiltered_files: Vec<String> = unfiltered
+        .iter()
+        .flat_map(|c| files_of_commit(&root, &c.sha))
+        .collect();
+    assert!(
+        unfiltered_files.iter().any(|f| f == "src/leak.rs"),
+        "未过滤集合里应含外场文件（否则过滤是假的）：{unfiltered_files:?}"
+    );
+    // 本场白名单逐字保留 → 本场步提交的对账结果为空
+    let findings = step_whitelist_violations(&root, &mine, CHANGE_WHITELIST);
+    assert!(findings.is_empty(), "本场步提交应无越界：{findings:?}");
+}
+
+/// F10 回归 · 只含外场步提交时：本场步提交集为空、对账结果为空、不 panic（空集放行）。
+///
+/// 错实现形态：空集仍走旧口径「一个都没找到就红」的断言 → 本用例必须变红
+/// （用户裁决：空集判绿放行）。
+#[test]
+pub(super) fn f10_the_empty_step_set_passes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let foreign = "change-20261029-some-other-change-id";
+    let foreign_subject = format!("feat: 外场步提交 — {foreign} step 1");
+    let root = fixture_repo(
+        tmp.path(),
+        &[(foreign_subject.as_str(), &["src/leak.rs"][..])],
+    );
+    let mine = change_step_commits(&root, CHANGE_ID);
+    assert!(
+        mine.is_empty(),
+        "只含外场步提交时本场步提交集应为空：{mine:?}"
+    );
+    let findings = step_whitelist_violations(&root, &mine, CHANGE_WHITELIST);
+    assert!(
+        findings.is_empty(),
+        "空集放行：对账结果应为空：{findings:?}"
+    );
+}
+
+/// F10 回归 · 白名单变异（本场真实步提交动过的文件被删一项）→ 对账恰好 1 条，
+/// 且文案点名该文件与所属提交 subject。
+///
+/// 错实现形态：对账不查白名单 / 命中了却不算数 → 本用例必须变红。
+#[test]
+pub(super) fn f10_the_whitelist_mutation_is_caught() {
+    let tmp = tempfile::tempdir().unwrap();
+    let foreign = "change-20261029-some-other-change-id";
+    let subject = format!("feat: 本场步提交 — {CHANGE_ID} step 1");
+    let foreign_subject = format!("feat: 外场步提交 — {foreign} step 1");
+    let root = fixture_repo(
+        tmp.path(),
+        &[
+            (
+                subject.as_str(),
+                &["tests/change_failure_context/guards.rs"][..],
+            ),
+            (foreign_subject.as_str(), &["src/leak.rs"][..]),
+        ],
+    );
+    // 变异：从本场白名单里删掉本场真实步提交动过的那个文件（不在运行时改源文件）
+    let mutated: Vec<&str> = CHANGE_WHITELIST
+        .iter()
+        .copied()
+        .filter(|f| *f != "tests/change_failure_context/guards.rs")
+        .collect();
+    let findings =
+        step_whitelist_violations(&root, &change_step_commits(&root, CHANGE_ID), &mutated);
+    // 恰好 1 条：外场步提交不参与判定（否则这里会是 2 条）
+    assert_eq!(findings.len(), 1, "变异后应恰好命中一条：{findings:?}");
+    assert_eq!(findings[0].file, "tests/change_failure_context/guards.rs");
+    assert!(
+        findings[0].subject.contains(" step 1"),
+        "命中明细要带出所属提交：{}",
+        findings[0].subject
+    );
+    let message = findings[0].message();
+    assert!(
+        message.contains("tests/change_failure_context/guards.rs"),
+        "文案要点名文件：{message}"
+    );
+    assert!(message.contains(" step 1"), "文案要点名所属提交：{message}");
+}
+
+/// F10 回归 · a17 口径：本场 change-id 但**不含** ` step ` 的提交动了非测试文件
+/// → 报「白名单外的非测试改动」并在文案里带出该文件。
+///
+/// 错实现形态：只按 ` step ` 过滤、漏掉非步提交的体检 → 本用例必须变红。
+#[test]
+pub(super) fn f10_a17_reports_non_test_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let subject = format!("test: 测试阶段提交 — {CHANGE_ID}");
+    let root = fixture_repo(tmp.path(), &[(subject.as_str(), &["src/leak.rs"][..])]);
+    let commits = change_commits(&root, CHANGE_ID);
+    assert_eq!(commits.len(), 1, "本场提交应恰好一条：{commits:?}");
+    let findings = non_test_violations(&root, &non_step_commits(&commits));
+    assert_eq!(findings.len(), 1, "应恰好命中一条：{findings:?}");
+    assert_eq!(findings[0].file, "src/leak.rs");
+    let message = findings[0].message();
+    assert!(message.contains("白名单外的非测试改动"), "文案：{message}");
+    assert!(message.contains("src/leak.rs"), "文案要点名文件：{message}");
+}
+
+/// F10 回归 · a17 口径：本场提交动了未跟踪产物目录 → 报「未跟踪产物被提交」。
+///
+/// 错实现形态：产物体检没跑 / 产物目录清单漏了 → 本用例必须变红。
+#[test]
+pub(super) fn f10_a17_reports_committed_artifacts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let subject = format!("test: 测试阶段提交 — {CHANGE_ID}");
+    let root = fixture_repo(tmp.path(), &[(subject.as_str(), &[".pi/goals/x.md"][..])]);
+    let findings = artifact_violations(&root, &change_commits(&root, CHANGE_ID));
+    assert_eq!(findings.len(), 1, "应恰好命中一条：{findings:?}");
+    let message = findings[0].message();
+    assert!(message.contains("未跟踪产物"), "文案：{message}");
+    assert!(message.contains(".pi/goals/"), "文案要点名产物目录：{message}");
+}
+
