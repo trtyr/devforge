@@ -157,6 +157,66 @@ fn wait_for_marker(pid: u32, timeout_ms: u64) -> Option<String> {
     }
 }
 
+/// 夹具层剥离 `DEVFORGE_MANAGED`：构造「未标记进程」时标记必须由夹具保证，
+/// 不能靠调用者的父环境恰好没设这个变量——测试跑在 devforge 受管树里时父环境**会**带它
+/// （生产注入在 `src/engine/process.rs` 的 spawn 命令里，那一行不动）。
+fn strip_managed_marker(cmd: &mut Command) -> &mut Command {
+    cmd.env_remove(MANAGED_ENV)
+}
+
+/// 探针变量名：夹具显式注入子进程，用来证明 `/proc/<pid>/environ` 已经可读（exec 已完成）。
+const PROBE_ENV: &str = "DEVFORGE_TEST_PROBE";
+
+/// 轮询等待子进程 environ 里出现探针变量 → 证明 exec 完成、environ 可读。
+///
+/// 负向断言（「没有标记」）只有在 environ 可读时才有意义：exec 完成前 environ 读不到，
+/// `has_devforge_marker` 会先返回 false——断言成了空断言（怎么改都绿，变异探测会空过）。
+fn wait_for_environ_ready(pid: u32, timeout_ms: u64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        let ready = match std::fs::read(format!("/proc/{pid}/environ")) {
+            Ok(raw) => raw.split(|b| *b == 0).any(|kv| {
+                kv.starts_with(PROBE_ENV.as_bytes()) && kv.get(PROBE_ENV.len()) == Some(&b'=')
+            }),
+            Err(_) => false,
+        };
+        if ready {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// 回归：夹具自己保证「未标记」——父环境带 `DEVFORGE_MANAGED` 时子进程也不该带标记。
+#[test]
+fn the_fixture_strips_the_managed_marker_even_when_the_parent_env_carries_one() {
+    // 错实现形态：夹具不剥离（子进程带着「模拟父环境」的标记）→ 断言读到标记值 → 必须变红
+    let mut cmd = Command::new("sleep");
+    cmd.arg("30")
+        // 模拟「父环境带了标记」：显式注入一个假标记值
+        .env(MANAGED_ENV, "run-from-parent-env")
+        // 探针：证明 environ 已可读，负向断言不是空断言
+        .env(PROBE_ENV, "1")
+        .stdout(Stdio::null());
+    strip_managed_marker(&mut cmd);
+    let mut child = cmd.spawn().unwrap();
+    let pid = child.id();
+    assert!(
+        wait_for_environ_ready(pid, 2000),
+        "子进程 environ 应在超时内可读（探针 {PROBE_ENV} 可见）"
+    );
+    assert_eq!(
+        read_managed_marker(pid),
+        None,
+        "夹具剥离后子进程不得带 {MANAGED_ENV} 标记（读到的是继承/注入进来的标记值）"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
 #[test]
 fn our_spawned_process_with_marker_is_ours() {
     // 自审 major 语义升级：标记**值**必须等于条目 run_id（run-1）——
@@ -189,14 +249,25 @@ fn our_spawned_process_with_marker_is_ours() {
     assert!(!process_alive(pid));
 }
 
+/// 未标记的活进程必须判 Foreign、绝不被杀。
+///
+/// 「未标记」这个前提**由夹具剥离保证**（`strip_managed_marker`），不依赖父环境：
+/// 测试跑在 devforge 受管树里时父环境带着 `DEVFORGE_MANAGED`，靠父环境「恰好没设」是巧合。
 #[test]
 fn unmarked_live_process_is_foreign_never_killed() {
-    let mut child = Command::new("sleep")
-        .arg("30")
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut cmd = Command::new("sleep");
+    cmd.arg("30")
+        .env(PROBE_ENV, "1")
+        .stdout(Stdio::null());
+    strip_managed_marker(&mut cmd);
+    let mut child = cmd.spawn().unwrap();
     let pid = child.id();
+    // 先证明 environ 可读（exec 已完成），否则「无标记」是空断言：exec 前 environ 读不到，
+    // `has_devforge_marker` 会先返回 false——剥离与否都绿。
+    assert!(
+        wait_for_environ_ready(pid, 2000),
+        "子进程 environ 应在超时内可读（探针 {PROBE_ENV} 可见）"
+    );
     assert!(!has_devforge_marker(pid));
     let ledger = SpawnLedger {
         entries: vec![entry(pid)],
@@ -278,18 +349,27 @@ fn corrupt_ledger_is_backed_up_and_recovered_as_empty() {
 }
 
 /// 引擎 #2 回归：启动对账清死条目、不碰 Foreign（无标记的活进程绝不动）。
+///
+/// 「活但无标记」的前提**由夹具剥离保证**（`strip_managed_marker`），不依赖父环境。
 #[test]
 fn startup_reconcile_clears_dead_and_spares_foreign() {
     let plans = tempfile::tempdir().unwrap();
     let proj = plans.path().join("proj");
     std::fs::create_dir_all(&proj).unwrap();
     let path = proj.join("spawn-ledger.json");
-    let mut child = Command::new("sleep")
-        .arg("30")
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut cmd = Command::new("sleep");
+    cmd.arg("30")
+        .env(PROBE_ENV, "1")
+        .stdout(Stdio::null());
+    strip_managed_marker(&mut cmd);
+    let mut child = cmd.spawn().unwrap();
     let pid = child.id();
+    // 先证明 environ 可读：Foreign 判定必须建立在「读到了 environ 且其中没有标记」上，
+    // 否则是空断言（exec 完成前 environ 读不到 → 必然判 Foreign）。
+    assert!(
+        wait_for_environ_ready(pid, 2000),
+        "子进程 environ 应在超时内可读（探针 {PROBE_ENV} 可见）"
+    );
     let mut ledger = SpawnLedger::default();
     ledger.record(entry(pid)); // 活但无标记 → Foreign
     ledger.record(entry(u32::MAX - 100)); // 已死 → Dead
