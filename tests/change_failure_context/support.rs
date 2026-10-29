@@ -88,6 +88,10 @@ pub(super) struct Commit {
 pub(super) enum FindingKind {
     /// 步提交动了白名单外的文件。
     StepOutsideWhitelist,
+    /// 非步提交（本场的）动了白名单外的非测试文件。
+    NonTestChange,
+    /// 未跟踪产物被提交进来。
+    ArtifactCommitted,
 }
 
 /// 守卫命中的一条明细：出错文件 + 所属提交的 subject + 命中类别。
@@ -107,6 +111,14 @@ impl Finding {
         match self.kind {
             FindingKind::StepOutsideWhitelist => format!(
                 "coding 步提交越界（白名单外）：{}（提交 {}）",
+                self.file, self.subject
+            ),
+            FindingKind::NonTestChange => format!(
+                "白名单外的非测试改动：{}（提交 {}）",
+                self.file, self.subject
+            ),
+            FindingKind::ArtifactCommitted => format!(
+                "未跟踪产物被提交进来了：{}（提交 {}）",
                 self.file, self.subject
             ),
         }
@@ -153,6 +165,15 @@ pub(super) fn change_step_commits(root: &Path, change_id: &str) -> Vec<Commit> {
     step_commits(&change_commits(root, change_id))
 }
 
+/// 非步提交（subject 不含 ` step `）——本场里测试阶段自己的提交。
+pub(super) fn non_step_commits(commits: &[Commit]) -> Vec<Commit> {
+    commits
+        .iter()
+        .filter(|c| !c.subject.contains(" step "))
+        .cloned()
+        .collect()
+}
+
 /// 某提交动过的文件（按迁移表归一化到现状路径）。
 ///
 /// 归一化不可省（ARC-R3 起仓库手术会迁移文件）：历史步提交是**事实**不可改，
@@ -181,6 +202,45 @@ pub(super) fn step_whitelist_violations(
             if !whitelist.contains(&f.as_str()) {
                 out.push(Finding {
                     kind: FindingKind::StepOutsideWhitelist,
+                    file: f,
+                    subject: c.subject.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// 非步提交（本场的）只许动测试文件——测试阶段自己的提交不许带生产改动。
+pub(super) fn non_test_violations(root: &Path, commits: &[Commit]) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for c in commits {
+        for f in files_of_commit(root, &c.sha) {
+            if !f.starts_with("tests/") {
+                out.push(Finding {
+                    kind: FindingKind::NonTestChange,
+                    file: f,
+                    subject: c.subject.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// 未跟踪产物一律不得被提交进本变更。
+pub(super) fn artifact_violations(root: &Path, commits: &[Commit]) -> Vec<Finding> {
+    const ARTIFACTS: [&str; 3] = [
+        ".pi/goals/",
+        "tests/e2e/results/",
+        "docs/plantree/changes/",
+    ];
+    let mut out = Vec::new();
+    for c in commits {
+        for f in files_of_commit(root, &c.sha) {
+            if ARTIFACTS.iter().any(|a| f.starts_with(a)) {
+                out.push(Finding {
+                    kind: FindingKind::ArtifactCommitted,
                     file: f,
                     subject: c.subject.clone(),
                 });

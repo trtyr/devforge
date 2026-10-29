@@ -148,61 +148,44 @@ pub(super) fn parse_whitelist(src: &str) -> Vec<String> {
 pub(super) fn a17_the_change_commits_stay_inside_the_whitelist() {
     // 错实现形态：把白名单外的文件带进本变更的提交 / 顺手 `git add -A` 把未跟踪产物卷进来
     // → 本用例必须变红
+    // F10：扫描面与 a16 同一条（本场 change-id 的步提交）+ 本场白名单对账。
+    // 「旧场 23 个白名单文件都要被本场改到」这条按场过滤后本场恒不成立 → 删（用户裁决）；
+    // 「基线之后应当有本变更的提交」这条空集断言同理（两场之间恒红，与 F10 同病）。
     let root = repo_root();
-    let log = git(&root, &["log", "--format=%H%x09%s", &format!("{BASELINE}..HEAD")]);
-    assert!(!log.trim().is_empty(), "基线之后应当有本变更的提交");
-    let mut coding_files: Vec<String> = Vec::new();
-    for line in log.lines() {
-        let (sha, subject) = line.split_once('\t').expect("提交行格式");
-        for f in git(&root, &["show", "--name-only", "--format=", sha])
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-        {
-            let f = f.trim().to_string();
-            if subject.contains(" step ") {
-                // coding 步提交：文件必须逐个在白名单内
-                assert!(
-                    WHITELIST.contains(&f.as_str()),
-                    "coding 步提交越界（白名单外）：{f}（提交 {subject}）"
-                );
-                coding_files.push(f);
-            } else {
-                // 测试阶段自己的提交：只许是测试文件
-                assert!(
-                    f.starts_with("tests/"),
-                    "白名单外的非测试改动：{f}（提交 {subject}）"
-                );
-            }
-        }
-    }
-    // 白名单里的 23 个文件都要真的被本场改到（不是「少改了」也算过）
-    for f in WHITELIST {
-        assert!(
-            coding_files.iter().any(|x| x == f),
-            "白名单文件 {f} 没被本场任何 coding 步提交改到"
-        );
-    }
+    let commits = change_commits(&root, CHANGE_ID);
+    // coding 步提交：文件必须逐个在**本场**白名单内
+    let steps = step_commits(&commits);
+    let findings = step_whitelist_violations(&root, &steps, CHANGE_WHITELIST);
+    assert!(
+        findings.is_empty(),
+        "本场 coding 步提交越界（白名单外）：\n{}",
+        findings
+            .iter()
+            .map(|f| f.message())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // 测试阶段自己的提交：只许是测试文件
+    let findings = non_test_violations(&root, &non_step_commits(&commits));
+    assert!(
+        findings.is_empty(),
+        "本场非步提交动了白名单外的非测试文件：\n{}",
+        findings
+            .iter()
+            .map(|f| f.message())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     // 未跟踪产物一律不得被 git add 进本变更
-    for artifact in [
-        ".pi/goals/",
-        "tests/e2e/results/",
-        "docs/plantree/changes/",
-    ] {
-        let touched = git(
-            &root,
-            &[
-                "log",
-                "--format=%H",
-                "--name-only",
-                &format!("{BASELINE}..HEAD"),
-                "--",
-                artifact,
-            ],
-        );
-        assert!(
-            touched.trim().is_empty(),
-            "未跟踪产物 {artifact} 被提交进来了：{touched}"
-        );
-    }
+    let findings = artifact_violations(&root, &commits);
+    assert!(
+        findings.is_empty(),
+        "本场提交卷进了未跟踪产物：\n{}",
+        findings
+            .iter()
+            .map(|f| f.message())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
