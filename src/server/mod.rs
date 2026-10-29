@@ -16,7 +16,7 @@ mod tests;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::json;
@@ -37,17 +37,59 @@ use crate::sop::planning::UserLink;
 
 // ---------- UI 中继（交互中继域） ----------
 
-/// 待答请求表的值：(应答通道, 归属 run id)
+/// 待答请求表的值：应答通道 + 归属 run id + 问题原文 + 登记时刻 + 告警打标。
 ///
-/// 自审 minor（48）：旧口径把这段嵌套泛型直接写在字段上（clippy::type_complexity），
-/// 与本文件顶部导入的 `std::sync::*` 风格也不一致。
-type PendingAsk = (std::sync::mpsc::Sender<String>, Option<String>);
+/// 自审 minor（48）：旧口径是 `(Sender<String>, Option<String>)` 二元组——问题文本与
+/// 登记时间都不留，监工想知道「agent 是不是在等人」只能靠 SSE 回放碰运气（事件环会被
+/// 挤出）或翻 agent transcript 原文：都得先怀疑、再取证，没有可直接查的清单。
+/// 现在结构体化，待答清单端点与久等告警都读这几项。
+///
+/// 仍是**私有**类型（crate 内可见）：不进任何对外契约，序列化面只有新增的清单响应体。
+struct PendingAsk {
+    /// 应答通道：`answer` 把应答值发给它，阻塞中的 `ask_blocking` 由此解阻。
+    tx: std::sync::mpsc::Sender<String>,
+    /// 归属 run id（None = 不在 run 上下文里发起；cancel 只解阻自己 run 的条目）。
+    owner: Option<String>,
+    /// 问题原文（清单端点的取证来源 + 久等告警的前缀）。
+    question: String,
+    /// 登记时刻（墙钟 ms）：清单的 `age_ms` 与告警阈值都以它为基准。
+    registered_at_ms: u64,
+    /// 是否已发过久等告警（每条待答只告警一次，防刷屏）。
+    warned: bool,
+}
+
+/// 待答表与扫描器的共享状态。
+///
+/// 独立成 `Arc` 是为了让扫描线程能访问待答表与「扫描器在跑」标志：`UiRelay::new`
+/// 返回的是**裸值**（要不要 `Arc` 包由调用方决定，`src/main.rs` 与三处仓外构造点
+/// 都自己包），扫描线程拿不到稳定的 `Arc<UiRelay>` 访问路径。
+struct UiRelayInner {
+    /// 待答表：id → 待答条目。
+    pending: Mutex<HashMap<String, PendingAsk>>,
+    /// 扫描器是否在跑（true = 已有线程在扫描待答表；false = 需要拉起）。
+    scanner_running: AtomicBool,
+}
+
+/// 待答清单的一条（`GET /api/v1/ui/pending` 的元素形态）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingAskView {
+    /// 待答 id（与 SSE `ui.request` 的 id、应答端点的路径参数同源）。
+    pub id: String,
+    /// 归属 run id（None = 不在 run 上下文里发起 → JSON `null`；与「知道归属但 id
+    /// 为空」区分开，不落成空串）。
+    pub run_id: Option<String>,
+    /// 问题原文。
+    pub question: String,
+    /// 存活时长（ms，墙钟口径）。墙钟回跳时 age 会变小——用 `saturating_sub` 保证
+    /// 不 panic、不出天文数字（取舍：宁 age 偏小，不 panic）。
+    pub age_ms: u64,
+}
 
 /// ask-user-question 的 API 中继：请求推 SSE，应答经 POST 端点回填。
 pub struct UiRelay {
     next_id: AtomicU64,
     bus: std::sync::Arc<EventBus>,
-    pending: Mutex<HashMap<String, PendingAsk>>,
+    inner: Arc<UiRelayInner>,
 }
 
 impl UiRelay {
@@ -56,7 +98,10 @@ impl UiRelay {
         Self {
             next_id: AtomicU64::new(1),
             bus,
-            pending: Mutex::new(HashMap::new()),
+            inner: Arc::new(UiRelayInner {
+                pending: Mutex::new(HashMap::new()),
+                scanner_running: AtomicBool::new(false),
+            }),
         }
     }
 
@@ -87,10 +132,20 @@ impl UiRelay {
         // server #3：记下发起方 run——cancel 只能解阻**自己那个 run** 的待答，
         // 不能把并发 run（max_concurrent_runs > 1）的 dialog 一起打掉。
         let owner = crate::observability::current_run_id();
-        self.pending
+        self.inner
+            .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(id.clone(), (tx, owner));
+            .insert(
+                id.clone(),
+                PendingAsk {
+                    tx,
+                    owner,
+                    question: question.to_string(),
+                    registered_at_ms: crate::domain::now_ms(),
+                    warned: false,
+                },
+            );
         // 先登记后广播：应答端点在事件可见后仍能命中 pending
         self.bus.emit(json!({
             "type": "ui.request",
@@ -98,6 +153,8 @@ impl UiRelay {
             "question": question,
             "options": options
         }));
+        // 久等告警扫描器：登记即有可能久等（这是唯一的拉起点）——表空时它自终止。
+        ensure_warn_scanner(&self.inner);
         // 自审 critical：无超时的 recv 会把 run 线程永久挂在无人应答的问题上——
         // run 永不落终态、串行槽占死、后续 start 一律 409。
         let outcome = match timeout {
@@ -117,14 +174,19 @@ impl UiRelay {
         };
         if outcome.is_err() {
             // 超时路径清残条目：迟到应答拿到干净的「无此待答」，不会悄悄发进虚空
-            self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+            self.inner
+                .pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
         }
         outcome
     }
 
     /// 回填应答（POST /ui/{id}/answer 调用）。
     pub fn answer(&self, id: &str, value: impl Into<String>) -> Result<()> {
-        let (tx, _owner) = self
+        let ask = self
+            .inner
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -132,21 +194,49 @@ impl UiRelay {
             .ok_or_else(|| {
                 crate::error::DevforgeError::Store(format!("无此待答 UI 请求 `{id}`"))
             })?;
-        tx.send(value.into()).map_err(|e| {
+        ask.tx.send(value.into()).map_err(|e| {
             crate::error::DevforgeError::System(format!("回传 UI 应答: {e}"))
         })
     }
 
     /// 待答请求数（测试用）。
     pub fn pending_count(&self) -> usize {
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
+    /// 待答清单快照：id / 归属 run / 问题原文 / 存活时长。
+    ///
+    /// 排序：登记时间升序，同毫秒按 id 升序兜底——`HashMap` 迭代序不稳定，不兜底的话
+    /// 「按登记时间升序」这条契约在同毫秒登记时会抖动（多跑几次结果就不一样）。
+    pub fn pending_snapshot(&self) -> Vec<PendingAskView> {
+        let map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let now = crate::domain::now_ms();
+        let mut entries: Vec<(&String, &PendingAsk)> = map.iter().collect();
+        entries.sort_by(|a, b| {
+            a.1.registered_at_ms
+                .cmp(&b.1.registered_at_ms)
+                .then_with(|| a.0.cmp(b.0))
+        });
+        entries
+            .into_iter()
+            .map(|(id, ask)| PendingAskView {
+                id: id.clone(),
+                run_id: ask.owner.clone(),
+                question: ask.question.clone(),
+                age_ms: now.saturating_sub(ask.registered_at_ms),
+            })
+            .collect()
     }
 
     /// 中止全部待答（cancel 端点解阻用）：丢弃 sender 使所有阻塞中的
     /// `ask_blocking` 立刻失败解阻，引擎得以按 cancel 语义收场——
     /// 修复 dialog 挂起态 cancel 半效（杀 pi 不解阻 mpsc recv）。
     pub fn abort_all(&self) -> usize {
-        let mut map = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
         let n = map.len();
         map.clear();
         n
@@ -156,10 +246,146 @@ impl UiRelay {
     /// 并发 run 的 dialog 不受影响。无归属信息的历史条目（不在 run 上下文里发起）
     /// 保持不动——它们不归任何 run 管，宁可不打也不误伤。
     pub fn abort_run(&self, run_id: &str) -> usize {
-        let mut map = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
         let before = map.len();
-        map.retain(|_, (_, owner)| owner.as_deref() != Some(run_id));
+        map.retain(|_, ask| ask.owner.as_deref() != Some(run_id));
         before - map.len()
+    }
+}
+
+// ---------- 久等告警（后台扫描线程） ----------
+
+/// 久等告警阈值的环境变量名。
+const UI_PENDING_WARN_ENV: &str = "DEVFORGE_UI_PENDING_WARN_MS";
+
+/// 久等告警阈值缺省值（2 分钟）。
+const DEFAULT_UI_PENDING_WARN_MS: u64 = 120_000;
+
+/// 一条待答的告警载荷（锁内收集、**锁外**发日志——不持锁写 I/O）。
+struct PendingWarn {
+    id: String,
+    owner: Option<String>,
+    age_ms: u64,
+    question_prefix: String,
+}
+
+/// 久等告警阈值（ms）：每 tick 从 env 读（运维调 env 不必重启进程）。
+///
+/// `0` = **关闭告警**。注意与相邻旋钮 `DEVFORGE_UI_ASK_TIMEOUT_MS` 的 `0` 语义
+/// **相反**：那个是「不限时」，这个是「不告警」——两个键同属 UI 中继族，调错不报错、
+/// 只静默，所以口径写在这里而不是散在别处。
+fn warn_threshold_ms() -> u64 {
+    match std::env::var(UI_PENDING_WARN_ENV) {
+        // 空串 / 非数字 → 回退缺省（非法值静默回落，同 `DEVFORGE_STALL_WARN_MS` 口径）
+        Ok(raw) => raw.trim().parse::<u64>().unwrap_or(DEFAULT_UI_PENDING_WARN_MS),
+        Err(_) => DEFAULT_UI_PENDING_WARN_MS,
+    }
+}
+
+/// 扫描周期：阈值的 1/4，夹在 25ms..1000ms（阈值 0 → 1000ms，只做退出检测）。
+fn warn_tick(warn_ms: u64) -> std::time::Duration {
+    let base = if warn_ms == 0 { 1000 } else { warn_ms / 4 };
+    std::time::Duration::from_millis(base.clamp(25, 1000))
+}
+
+/// 问题前缀（告警字段用）：按 **char** 边界截 80 字——按字节截断会在中文问题上 panic
+/// （仓内文案全是中文）。
+fn question_prefix(question: &str) -> String {
+    question.chars().take(80).collect()
+}
+
+/// 拉起久等告警扫描线程（幂等：已有扫描器在跑就直接返回）。
+fn ensure_warn_scanner(inner: &Arc<UiRelayInner>) {
+    if inner
+        .scanner_running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return; // 已有扫描器在跑
+    }
+    let owned = inner.clone();
+    if std::thread::Builder::new()
+        .name("devforge-ui-warn".into())
+        .spawn(move || scan_pending_warns(owned))
+        .is_err()
+    {
+        // 线程起不来 → 交还标志（否则再也没有扫描器被拉起，且没人知道告警哑了）
+        inner.scanner_running.store(false, Ordering::SeqCst);
+        tracing::warn!(
+            component = "ui",
+            event = "ui.pending_warn_scanner_failed",
+            "久等告警扫描线程拉起失败——待答久等不再有告警（不影响中继本身）"
+        );
+    }
+}
+
+/// 久等告警扫描线程：表空自终止（不留常驻线程），超阈值的待答各告警一次。
+///
+/// 自终止与「新登记」的竞争（漏唤醒 = 沉默失败，最难查）：退出前**先清标志再复查表**，
+/// 非空则重新抢扫描权继续跑；抢不到说明别的扫描器已接手 → 本线程退出。
+/// 这样「恰好一个扫描器」与「不漏唤醒」同时成立。
+fn scan_pending_warns(inner: Arc<UiRelayInner>) {
+    loop {
+        let warn_ms = warn_threshold_ms();
+        std::thread::sleep(warn_tick(warn_ms));
+        // 退出检测：表空 → 清标志 → 复查（防漏唤醒）
+        let empty = {
+            let map = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            map.is_empty()
+        };
+        if empty {
+            inner.scanner_running.store(false, Ordering::SeqCst);
+            let still_empty = {
+                let map = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+                map.is_empty()
+            };
+            if still_empty {
+                return; // 表空 → 线程自终止
+            }
+            // 表非空：重新抢扫描权（抢不到 = 已有别的扫描器接手 → 本线程退出）
+            if inner
+                .scanner_running
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return;
+            }
+        }
+        if warn_ms == 0 {
+            continue; // 旋钮关闭：只做退出检测
+        }
+        // 锁内挑出「超阈值且未告警」的条目并打标；锁外发 WARN
+        let mut to_warn: Vec<PendingWarn> = Vec::new();
+        {
+            let mut map = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let now = crate::domain::now_ms();
+            for (id, ask) in map.iter_mut() {
+                if ask.warned {
+                    continue;
+                }
+                let age_ms = now.saturating_sub(ask.registered_at_ms);
+                if age_ms > warn_ms {
+                    ask.warned = true;
+                    to_warn.push(PendingWarn {
+                        id: id.clone(),
+                        owner: ask.owner.clone(),
+                        age_ms,
+                        question_prefix: question_prefix(&ask.question),
+                    });
+                }
+            }
+        }
+        for w in to_warn {
+            tracing::warn!(
+                component = "ui",
+                event = "ui.pending_warn",
+                id = %w.id,
+                run_id = ?w.owner,
+                age_ms = w.age_ms,
+                question_prefix = %w.question_prefix,
+                "UI 待答久等：agent 阻塞在 ask_blocking 上，无人应答"
+            );
+        }
     }
 }
 
