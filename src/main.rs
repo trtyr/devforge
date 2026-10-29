@@ -235,41 +235,59 @@ async fn main() -> anyhow::Result<()> {
         })
     });
 
-    let mut state = devforge::server::ServerState::new(
-        // store 持久化（复验 backlog 设计错误修复）：启动加载 --root/store.json，
-        // 变更自动落盘——重启不再蒸发 projects/tasks/runs。
-        devforge::domain::Store::load(&root.join("store.json"))
-            .map(|s| s.with_persist(root.join("store.json")))
-            .unwrap_or_else(|e| {
-                // 地基批次 #3：备份要如实——旧实现先 warn「已备份为 .bak」再 `let _ = rename`，
-                // rename 失败（权限/跨设备）无日志、且文件不存在（首启）也走这条谎言。
-                let path = root.join("store.json");
-                let bak = root.join("store.json.bak");
-                if path.exists() {
-                    match std::fs::rename(&path, &bak) {
-                        Ok(()) => tracing::warn!(
-                            component = "main",
-                            error = %e,
-                            bak = %bak.display(),
-                            "store.json 不可用，已备份为 .bak 后按空仓冷启动"
-                        ),
-                        Err(re) => tracing::error!(
-                            component = "main",
-                            error = %e,
-                            rename_error = %re,
-                            path = %path.display(),
-                            "store.json 不可用且备份失败——坏文件仍在原处，下次启动会再次命中"
-                        ),
-                    }
-                } else {
-                    tracing::warn!(
+    // store 持久化（复验 backlog 设计错误修复）：启动加载 --root/store.json，
+    // 变更自动落盘——重启不再蒸发 projects/tasks/runs。
+    //
+    // 「可信度」是启动对账安全阀的输入：store 读不出来时，「活动集为空」只说明我们
+    // 不认识谁还活着，不说明没人活着（2026-10-29 事故：旧二进制读不懂新词汇的 store
+    // → 判坏 → 空仓冷启动 → 连杀三个活着的自家 agent）。故加载失败一律 `false`。
+    let store_path = root.join("store.json");
+    let (store, store_trusted) = match devforge::domain::Store::load(&store_path) {
+        Ok(s) => (s.with_persist(store_path.clone()), true),
+        Err(e) => {
+            // 地基批次 #3：备份要如实——旧实现先 warn「已备份为 .bak」再 `let _ = rename`，
+            // rename 失败（权限/跨设备）无日志、且文件不存在（首启）也走这条谎言。
+            let bak = root.join("store.json.bak");
+            if store_path.exists() {
+                match std::fs::rename(&store_path, &bak) {
+                    Ok(()) => tracing::warn!(
                         component = "main",
                         error = %e,
-                        "store.json 不存在（首次启动），按空仓冷启动"
-                    );
+                        bak = %bak.display(),
+                        "store.json 不可用，已备份为 .bak 后按空仓冷启动"
+                    ),
+                    Err(re) => tracing::error!(
+                        component = "main",
+                        error = %e,
+                        rename_error = %re,
+                        path = %store_path.display(),
+                        "store.json 不可用且备份失败——坏文件仍在原处，下次启动会再次命中"
+                    ),
                 }
-                devforge::domain::Store::new().with_persist(path)
-            }),
+            } else {
+                tracing::warn!(
+                    component = "main",
+                    error = %e,
+                    "store.json 不存在（首次启动），按空仓冷启动"
+                );
+            }
+            (devforge::domain::Store::new().with_persist(store_path), false)
+        }
+    };
+
+    // 活动 run 快照（启动对账安全阀的输入）：**僵尸 ≠ 孤儿**——
+    // 清账（`reconcile_zombie_runs`）会把 Running 全改 Failed，所以快照必须取在清账
+    // **之前**；取到的 Running 集是「疑似仍有进程在跑」的证据。
+    // 序依赖（改这个顺序 = 改安全阀行为）：取 Running 快照 → 清僵尸 → 杀对账。
+    let active_run_ids: std::collections::BTreeSet<String> = store
+        .list_runs()
+        .iter()
+        .filter(|r| r.status == devforge::domain::RunStatus::Running)
+        .map(|r| r.id.0.clone())
+        .collect();
+
+    let mut state = devforge::server::ServerState::new(
+        store,
         devforge::domain::sop::SopRegistry::builtin(),
         manifest,
         engine_factory,
@@ -334,25 +352,34 @@ async fn main() -> anyhow::Result<()> {
             （--token <值> 或 DEVFORGE_TOKEN 环境变量），拒绝裸奔启动"
         );
     }
-    // 引擎 #2 启动对账：上一进程遗留的自家子进程（Ours）直接 SIGTERM 清场，Dead 条目
+    // 引擎 #2：启动对账——上一进程遗留的自家子进程（Ours）直接 SIGTERM 清场，Dead 条目
     // 从台账清掉，Foreign 绝不动（红线：只认 DEVFORGE_MANAGED 标记）。
     // 此前 reconcile/kill_orphan 只在单测里被调用，崩溃孤儿会继续改目标仓。
     //
-    // 活动集与 store 可信度是**启动对账策略层**的输入（两道安全阀的判定依据）；
-    // 本步先把调用点适配新签名，启动侧的真实接线在下一步落地。
+    // 活动集与 store 可信度是**启动对账策略层**的输入（两道安全阀的判定依据）：
+    // 启动时通常传空集（真冷启动 = 确实没有活 run）；非空 = 上一实例仍在跑，
+    // 或 store 不可信时的兜底。两道阀是为测试与未来「运行中对账」调用留的安全阀。
     let report = devforge::engine::ledger::reconcile_all(
         &state.plans_root,
-        &std::collections::BTreeSet::new(),
-        true,
+        &active_run_ids,
+        store_trusted,
     );
-    if report.killed + report.cleared + report.foreign > 0 {
+    if report.killed
+        + report.cleared
+        + report.foreign
+        + report.skipped_active
+        + report.skipped_no_store
+        > 0
+    {
         tracing::warn!(
             component = "startup",
             event = "ledger.reconcile",
             killed = report.killed,
             cleared = report.cleared,
             foreign = report.foreign,
-            "启动对账：清掉遗留子进程与已死条目（Foreign 一律不杀）"
+            skipped_active = report.skipped_active,
+            skipped_no_store = report.skipped_no_store,
+            "启动对账：清掉遗留子进程与已死条目（Foreign 一律不杀；命中活动 run 或 store 不可信时零击杀）"
         );
     }
     devforge::server::serve(state, addr)
