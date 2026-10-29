@@ -41,6 +41,26 @@ pub(super) const WHITELIST: &[&str] = &[
     "docs/plantree/plans/010-run-resume/roadmap.md",
 ];
 
+/// 本场 change-id（守卫常量区声明一处）——F10：本场守卫只判定**本场**的提交。
+///
+/// 病根（finding F10）：变化期断言被铸成永久测试——旧口径拿**旧场基线**当扫描区间，
+/// 把区间里所有含 ` step ` 的提交都当成「本场 coding 步提交」，外场（其他 change-id）
+/// 的步提交因此被当成越界 → 守卫恒红 → 只能靠 `#[ignore]` 压住。
+/// 收敛口径：**提交 subject 含本场 change-id** 才是本场的提交，外场步提交不参与判定。
+pub(super) const CHANGE_ID: &str = "change-20261029-change-failure-context-finding-f10-sr2-g";
+
+/// 本场白名单（change-plan §6：仓内改动上限四条）——本场步提交动过的文件逐个必须落在其中。
+///
+/// 与上面的旧场 `WHITELIST`（23 个文件、值与注释都冻结）**不是**同一份：旧场那份是
+/// c7-1 场的历史快照，白名单外的守卫逐字核对它的值与注释，改不得；本场这份才是
+/// F10 之后步提交对账的依据。
+pub(super) const CHANGE_WHITELIST: &[&str] = &[
+    "tests/change_failure_context/guards.rs",
+    "tests/change_failure_context/support.rs",
+    "tests/change_failure_context/context.rs",
+    "tests/change_failure_context/main.rs",
+];
+
 /// 一条带 `path:line` 的失败明细（验收标准里的样例原文）。
 pub(super) const ISSUE_WITH_LOCATION: &str = "tests/change_ask_ring.rs:557 台账计数断言失败";
 /// 一条不带位置的失败明细。
@@ -54,7 +74,217 @@ pub(super) const KICKOFF_PROTOCOL_CLAUSE: &str = "（**声明块放在回复末�
 /// 三处「零信息 / 阉割痕迹」话术（验收标准 5、6、7 逐条点名）。
 pub(super) const ZERO_INFO_TRACES: &[&str] = &["请自己定位原因", "本消息不提供文件位置", "<位置略>"];
 
+// ---------------- 本场（F10）扫描口径 ----------------
+
+/// 一条提交（sha + subject）——扫描面只认 subject：change-id 判归属、` step ` 判步提交。
+#[derive(Debug, Clone)]
+pub(super) struct Commit {
+    pub(super) sha: String,
+    pub(super) subject: String,
+}
+
+/// 命中的类别——文案按类别不同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FindingKind {
+    /// 步提交动了白名单外的文件。
+    StepOutsideWhitelist,
+    /// 非步提交（本场的）动了白名单外的非测试文件。
+    NonTestChange,
+    /// 未跟踪产物被提交进来。
+    ArtifactCommitted,
+}
+
+/// 守卫命中的一条明细：出错文件 + 所属提交的 subject + 命中类别。
+#[derive(Debug, Clone)]
+pub(super) struct Finding {
+    /// 出错文件（相对仓根；已按迁移表归一化）。
+    pub(super) file: String,
+    /// 所属提交的 subject（文案要点名它，读者才知道是哪笔提交越界）。
+    pub(super) subject: String,
+    /// 命中类别。
+    pub(super) kind: FindingKind,
+}
+
+impl Finding {
+    /// 命中文案——点名出错文件与所属提交。
+    pub(super) fn message(&self) -> String {
+        match self.kind {
+            FindingKind::StepOutsideWhitelist => format!(
+                "coding 步提交越界（白名单外）：{}（提交 {}）",
+                self.file, self.subject
+            ),
+            FindingKind::NonTestChange => format!(
+                "白名单外的非测试改动：{}（提交 {}）",
+                self.file, self.subject
+            ),
+            FindingKind::ArtifactCommitted => format!(
+                "未跟踪产物被提交进来了：{}（提交 {}）",
+                self.file, self.subject
+            ),
+        }
+    }
+}
+
+/// 仓内提交历史（**全仓历史**，不按区间裁剪）。
+///
+/// 口径理由（F10）：扫描面用「全仓历史 + change-id 过滤」而不是「某基线区间 +
+/// change-id 过滤」——区间口径把「扫描范围」绑在会漂移的基线 sha 上（F10 的病因
+/// 就是旧场基线常量 `a36f6b7…` 早已不是本场基线），change-id 过滤已足够定位本场提交。
+pub(super) fn commit_history(root: &Path) -> Vec<Commit> {
+    git(root, &["log", "--format=%H%x09%s"])
+        .lines()
+        .filter_map(|line| {
+            let (sha, subject) = line.split_once('\t')?;
+            Some(Commit {
+                sha: sha.to_string(),
+                subject: subject.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// 本场的提交（subject 含本场 change-id）——外场提交不参与判定。
+pub(super) fn change_commits(root: &Path, change_id: &str) -> Vec<Commit> {
+    commit_history(root)
+        .into_iter()
+        .filter(|c| c.subject.contains(change_id))
+        .collect()
+}
+
+/// 步提交（subject 含 ` step `）——沿用现状口径，不扩大到「步骤 N」。
+pub(super) fn step_commits(commits: &[Commit]) -> Vec<Commit> {
+    commits
+        .iter()
+        .filter(|c| c.subject.contains(" step "))
+        .cloned()
+        .collect()
+}
+
+/// 本场的步提交——a16 / a17 的扫描面（F10 的收敛点）。
+pub(super) fn change_step_commits(root: &Path, change_id: &str) -> Vec<Commit> {
+    step_commits(&change_commits(root, change_id))
+}
+
+/// 非步提交（subject 不含 ` step `）——本场里测试阶段自己的提交。
+pub(super) fn non_step_commits(commits: &[Commit]) -> Vec<Commit> {
+    commits
+        .iter()
+        .filter(|c| !c.subject.contains(" step "))
+        .cloned()
+        .collect()
+}
+
+/// 全部步提交（**不**按 change-id 过滤）——只用于反假绿对照：
+/// 放行必须来自「过滤」，不是「扫描扫空」。
+pub(super) fn all_step_commits(root: &Path) -> Vec<Commit> {
+    step_commits(&commit_history(root))
+}
+
+/// 某提交动过的文件（按迁移表归一化到现状路径）。
+///
+/// 归一化不可省（ARC-R3 起仓库手术会迁移文件）：历史步提交是**事实**不可改，
+/// 白名单登记的是**现状**，两侧对账前必须先过迁移表。
+pub(super) fn files_of_commit(root: &Path, sha: &str) -> Vec<String> {
+    git(root, &["show", "--name-only", "--format=", sha])
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| devforge::change::plan_audit::normalize_path(l.trim()).to_string())
+        .collect()
+}
+
+/// 步提交的文件逐个必须落在白名单内——越界即命中（守卫变红）。
+///
+/// 白名单是**参数**：变异探测靠传一份删掉某项的白名单实现（不在运行时改源文件）。
+pub(super) fn step_whitelist_violations(
+    root: &Path,
+    commits: &[Commit],
+    whitelist: &[&str],
+) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for c in commits {
+        for f in files_of_commit(root, &c.sha) {
+            if !whitelist.contains(&f.as_str()) {
+                out.push(Finding {
+                    kind: FindingKind::StepOutsideWhitelist,
+                    file: f,
+                    subject: c.subject.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// 非步提交（本场的）只许动测试文件——测试阶段自己的提交不许带生产改动。
+pub(super) fn non_test_violations(root: &Path, commits: &[Commit]) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for c in commits {
+        for f in files_of_commit(root, &c.sha) {
+            if !f.starts_with("tests/") {
+                out.push(Finding {
+                    kind: FindingKind::NonTestChange,
+                    file: f,
+                    subject: c.subject.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// 未跟踪产物一律不得被提交进本变更。
+pub(super) fn artifact_violations(root: &Path, commits: &[Commit]) -> Vec<Finding> {
+    const ARTIFACTS: [&str; 3] = [".pi/goals/", "tests/e2e/results/", "docs/plantree/changes/"];
+    let mut out = Vec::new();
+    for c in commits {
+        for f in files_of_commit(root, &c.sha) {
+            if ARTIFACTS.iter().any(|a| f.starts_with(a)) {
+                out.push(Finding {
+                    kind: FindingKind::ArtifactCommitted,
+                    file: f,
+                    subject: c.subject.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
 // ---------------- 夹具 ----------------
+
+/// 造一个临时 git fixture 仓：按给定顺序，每个 (subject, 文件) 落一笔提交。
+///
+/// 用途：F10 的守卫回归要在**可控的提交集**上验证过滤与对账——真实仓的现状恒定不了
+/// 「外场步提交与本场步提交并存」这个形状（a16 在本基线上是绿的，靠的是历史运气：
+/// 那 30 笔外场步提交恰好都动了旧场白名单内的文件），靠它分不开「过滤生效」与
+/// 「扫描扫空」两种实现。
+pub(super) fn fixture_repo(dir: &Path, commits: &[(&str, &[&str])]) -> PathBuf {
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    // 空仓不能提交 → 先落一个种子文件（提交历史里不出现它，扫描面不受影响）
+    std::fs::write(root.join("seed.txt"), "seed\n").unwrap();
+    git(&root, &["init"]);
+    git(&root, &["add", "-A"]);
+    git(
+        &root,
+        &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"],
+    );
+    for (subject, files) in commits {
+        for f in *files {
+            let p = root.join(f);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, "x\n").unwrap();
+        }
+        git(&root, &["add", "-A"]);
+        git(
+            &root,
+            &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", subject],
+        );
+    }
+    root
+}
 
 pub(super) fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
