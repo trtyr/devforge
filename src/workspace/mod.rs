@@ -62,6 +62,37 @@ impl Workspace {
         spec: &WorkspaceSpec,
         frozen_candidate: Option<&str>,
     ) -> Result<Workspace> {
+        Self::ensure_inner(spec, frozen_candidate, false)
+    }
+
+    /// [`Self::ensure_with_candidate`] 的**重试形态**：run 因基础设施故障中途死亡后
+    /// 自动重试（attempt >= 2）时重建工作区。
+    ///
+    /// 与首次语义唯一的差别：任务分支的 tip 既不是基点、又**没有可用的冻结候选**
+    /// （`frozen-commit.txt` 不存在，或内容不是合法 40-hex）时，判定为「上一轮死在
+    /// coding 中途、freeze 从未发生」——那批中间产物按定义未经 testing 验证、不可信，
+    /// 正确语义是**重派生**：删掉这条未冻结遗留分支、在基点重建，并先落一条 WARN 留痕
+    /// （带完整 tip sha）。
+    ///
+    /// **有可用冻结候选时不删**：仍走 F2 收养（候选提交只靠该分支可达，删了它候选就成
+    /// 孤儿）。attempt <= 1 的首次语义一律不受影响（见 [`Self::ensure_with_candidate`]）。
+    ///
+    /// 调用方负责判定「是否处于重试上下文」——本层不读 attempt（attempt 的真源是
+    /// 线程本地的 `crate::observability::attempt()`，只有引擎层知道当前是不是重试）。
+    pub fn ensure_with_candidate_on_retry(
+        spec: &WorkspaceSpec,
+        frozen_candidate: Option<&str>,
+    ) -> Result<Workspace> {
+        Self::ensure_inner(spec, frozen_candidate, true)
+    }
+
+    /// ensure 的实现点（`ensure` / `ensure_with_candidate` / `ensure_with_candidate_on_retry`
+    /// 三条入口共用同一份实现，只有 `allow_retry_rebuild` 不同）。
+    fn ensure_inner(
+        spec: &WorkspaceSpec,
+        frozen_candidate: Option<&str>,
+        allow_retry_rebuild: bool,
+    ) -> Result<Workspace> {
         Self::validate_task_id(spec)?;
         let path = Self::target_path(spec);
         // 基点先冻结成 sha：移动引用（HEAD/main）的漂移只有 sha 对 sha 才检得出。
@@ -88,7 +119,7 @@ impl Workspace {
                 base_rev: rec.base_rev,
             });
         }
-        Self::create_with_candidate(spec, frozen_candidate)
+        Self::create_inner(spec, frozen_candidate, allow_retry_rebuild)
     }
 
     /// worktree 目标路径（仓外兄弟目录约定）。
@@ -148,15 +179,23 @@ impl Workspace {
     ///
     /// worktree 审计（2026-10-25 自审 critical）：`remove()` **保留**任务分支（候选归因要它），
     /// 而旧实现无条件 `-b` 重建同名分支 → 同一 task 的第二次 run 必报
-    /// "branch already exists"。现在分三种情形：
+    /// "branch already exists"。现在分四种情形：
     /// - 分支不存在 → 照旧 `-b`；
     /// - 分支已存在且**仍停在基点**（上一轮没产生提交 / 崩溃回退）→ 直接挂载复用；
     /// - 分支已存在且**停在上一轮冻结的候选**（tip == 传入的冻结候选）→ **收养**：
     ///   同样直接挂载，分支引用不动，worktree HEAD 即候选 tip（断点续跑靠它拿回上一轮成果）；
     /// - 分支已存在但**既非基点也非冻结候选**（外来指针 / 上一轮失败退出留下的未冻结候选）
     ///   → 明确拒绝，提示人工核验分支当前 sha 后自行决定清理方式，不静默切换基点
-    ///   （否则本轮的 diff 归因会错位），也不用任何「删分支」当建议——分支上可能留着
-    ///   唯一一份候选提交，删了它候选就变孤儿。
+    ///   （否则本轮的 diff 归因会错位）。
+    ///
+    /// **唯一的例外**（重试形态入口 [`Self::create_with_candidate_on_retry`]）：在**明确的
+    /// 重试上下文**（run 因基础设施故障中途死亡后自动重试，attempt >= 2）里，且**没有可用的
+    /// 冻结候选**（`frozen-commit.txt` 不存在，或内容不是合法 40-hex）时，分支上的东西按定义
+    /// 是「上一轮死在 coding 中途、freeze 从未发生」的未验证产物 → 自动删掉该分支并在基点
+    /// 重建（重派生），删之前先落一条带 tip sha 的 WARN 留痕。
+    ///
+    /// 这个例外**只在「无冻结候选」时开**：有可用候选时分支上可能留着唯一一份候选提交
+    /// （候选提交只靠该分支可达），删了它候选就变孤儿——那种情形仍然拒绝并指向人工核验。
     pub fn create(spec: &WorkspaceSpec) -> Result<Workspace> {
         Self::create_with_candidate(spec, None)
     }
@@ -170,18 +209,39 @@ impl Workspace {
         spec: &WorkspaceSpec,
         frozen_candidate: Option<&str>,
     ) -> Result<Workspace> {
-        // 2026-10-27 自审 majors（WA 域）：① base_rev 先冻结成 commit sha（移动 ref
-        // 漂移要 sha 对 sha，字符串对字符串时 HEAD/main 永不漂移）；② 注册表写失败
-        // 必须回滚——无记录残骸脱离孤儿扫描索引，同一 task 再 ensure 永久报错。
+        Self::create_inner(spec, frozen_candidate, false)
+    }
+
+    /// [`Self::create_with_candidate`] 的**重试形态**（语义见
+    /// [`Self::ensure_with_candidate_on_retry`]）：无冻结候选的脏分支在重试上下文里
+    /// 会被删掉并在基点重建；其余语义与既有入口一致。
+    pub fn create_with_candidate_on_retry(
+        spec: &WorkspaceSpec,
+        frozen_candidate: Option<&str>,
+    ) -> Result<Workspace> {
+        Self::create_inner(spec, frozen_candidate, true)
+    }
+
+    /// create 的实现点（三条 create 入口共用；`allow_retry_rebuild` 是唯一差别）。
+    ///
+    /// 2026-10-27 自审 majors（WA 域）：① base_rev 先冻结成 commit sha（移动 ref
+    /// 漂移要 sha 对 sha，字符串对字符串时 HEAD/main 永不漂移）；② 注册表写失败
+    /// 必须回滚——无记录残骸脱离孤儿扫描索引，同一 task 再 ensure 永久报错。
+    fn create_inner(
+        spec: &WorkspaceSpec,
+        frozen_candidate: Option<&str>,
+        allow_retry_rebuild: bool,
+    ) -> Result<Workspace> {
         Self::validate_task_id(spec)?;
         let base_sha = resolve_base(&spec.repo, &spec.base_rev)?;
-        Self::create_at_resolved(spec, base_sha, frozen_candidate)
+        Self::create_at_resolved(spec, base_sha, frozen_candidate, allow_retry_rebuild)
     }
 
     fn create_at_resolved(
         spec: &WorkspaceSpec,
         base_sha: String,
         frozen_candidate: Option<&str>,
+        allow_retry_rebuild: bool,
     ) -> Result<Workspace> {
         let path = Self::target_path(spec);
         if path.exists() {
@@ -221,6 +281,13 @@ impl Workspace {
                     // 两种情形都不新建分支、不改写引用：把现有分支直接挂到目标路径。
                     git(&spec.repo, &["worktree", "add", &path_str, &branch])?;
                     adopted_tip = at_candidate.then(|| tip.clone());
+                } else if allow_retry_rebuild && candidate.is_none() {
+                    // 重试上下文 + **无可用冻结候选** → 上一轮死在 coding 中途、freeze 从未
+                    // 发生：这批中间产物按定义未经 testing 验证、不可信 → 重派生
+                    // （删分支 + 在基点重建）。有可用候选时**不删**（候选提交只靠该分支可达，
+                    // 删了就成孤儿）→ 仍走下面的拒绝路径。
+                    Self::rebuild_unfrozen_branch(spec, &branch, &tip, &base_sha, &path_str)?;
+                    created_branch = true;
                 } else {
                     return Err(DevforgeError::Store(format!(
                         "任务分支 `{branch}` 已存在且指向 {tip}：非基点也非冻结候选（契约基点 {base_sha}）——
@@ -270,6 +337,46 @@ impl Workspace {
             )));
         }
         Ok(ws)
+    }
+
+    /// 删掉未冻结的遗留分支并在基点重建（**仅限重试上下文 + 无可用冻结候选**）。
+    ///
+    /// 顺序有意：**先落 WARN 留痕（带完整 tip sha），再删分支**——删完 tip 提交可能不可达
+    /// （不建备份 ref：「未冻结产物不可信」与「其实还在仓里」语义相反），事后取证只能靠
+    /// 这条日志里的 sha（`git gc --prune` 之前仍可 `git cat-file`）。
+    ///
+    /// `git worktree prune` 是 best-effort 兜底：上一轮被 watchdog 强杀时 worktree 元数据
+    /// 可能没清（`WsCleanup::drop` 没跑完），`git branch -D` 会以「used by worktree」失败；
+    /// prune 只清失效元数据，不动有效 worktree（目录还在的那种情形走的是复用分支，
+    /// 压根到不了这里）。
+    fn rebuild_unfrozen_branch(
+        spec: &WorkspaceSpec,
+        branch: &str,
+        tip: &str,
+        base_sha: &str,
+        path_str: &str,
+    ) -> Result<()> {
+        tracing::warn!(
+            component = "workspace",
+            event = "workspace.retry_rebuilt_unfrozen",
+            branch = %branch,
+            tip = %tip,
+            base = %base_sha,
+            attempt = crate::observability::attempt(),
+            "未冻结遗留分支已自动重建（上一轮死在 coding 中途，产物未经 testing 验证——已删除并在基点重建）"
+        );
+        if let Err(e) = git(&spec.repo, &["worktree", "prune"]) {
+            tracing::warn!(
+                component = "workspace",
+                "worktree prune 失败（继续尝试删除未冻结遗留分支）：{e}"
+            );
+        }
+        git(&spec.repo, &["branch", "-D", branch])?;
+        git(
+            &spec.repo,
+            &["worktree", "add", "-b", branch, path_str, base_sha],
+        )?;
+        Ok(())
     }
 
     /// 冻结候选：返回 worktree 当前的 HEAD sha（候选 = 冻结 commit；diff 归因的锚点）。
