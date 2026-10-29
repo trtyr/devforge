@@ -3,11 +3,14 @@
 #[allow(unused_imports)]
 use super::*;
 
-/// git 仓夹具：tempdir + init + 基线 commit；返回（目录，基线 sha）。
+/// git 仓夹具（可指定基线文件集合）：tempdir + init + 基线 commit；返回（目录，基线 sha）。
+///
+/// 既有 `git_repo_with_base()` 是本函数的薄包装（基线仍只含 `a.rs`），签名与行为不变。
+/// 「已跟踪 `.pi/**` 仍判死」的 ` M` 形态需要基线提交里已含 `.pi/goals/keep.md`。
 ///
 /// 自审 minor（50）：隔离宿主 git 配置——旧口径跑开发机/CI 的全局设置（core.hooksPath /
 /// commit.gpgsign / init.defaultBranch / template），失败时错误信息容易被误读成代码问题。
-fn git_repo_with_base() -> (tempfile::TempDir, String) {
+fn git_repo_with_base_files(files: &[(&str, &str)]) -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let git = |args: &[&str]| {
         let out = std::process::Command::new("git")
@@ -28,13 +31,21 @@ fn git_repo_with_base() -> (tempfile::TempDir, String) {
         out
     };
     git(&["init", "-q", "-b", "main"]);
-    std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    for (path, content) in files {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, content).unwrap();
+    }
     git(&["add", "-A"]);
     git(&["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "base"]);
     let base = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout)
         .trim()
         .to_string();
     (dir, base)
+}
+
+fn git_repo_with_base() -> (tempfile::TempDir, String) {
+    git_repo_with_base_files(&[("a.rs", "fn a() {}\n")])
 }
 
 fn commit_all(dir: &tempfile::TempDir, msg: &str) {
@@ -396,4 +407,263 @@ async fn forbidden_paths_fail_even_inside_owned() {
         .find(|(_, e)| e.contains("boundary.violation") && e.contains("forbidden"))
         .expect("应有 forbidden 性质的 violation 事件");
     assert!(hit.1.contains("src/secret.rs"), "事件应指认禁改文件：{}", hit.1);
+}
+
+// ---------- 未跟踪的工具元数据（仓根 `.pi/**`）不进改动面：回归用例 ----------
+
+/// 起一个带契约的 run 并等它进终态；返回 run 终态 status。
+///
+/// 新回归用例的公共骨架：登记项目 → 建带契约的任务 → start → 等终态 → 读终态。
+/// `isolation` 传 "none" 或 "worktree"（对应契约的 isolation 枚举）。
+async fn run_contract_task(
+    f: &Fixture,
+    repo: &std::path::Path,
+    base: &str,
+    isolation: &str,
+) -> String {
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(json!({"name": "p", "local_path": repo.to_str().unwrap()})),
+    )
+    .await;
+    send(
+        &f.router,
+        "POST",
+        "/api/v1/projects/p/tasks",
+        Some(json!({
+            "id": "t",
+            "sop": "doc-from-zero",
+            "contract": {
+                "owned_paths": ["src/**"],
+                "forbidden_paths": [],
+                "base_rev": base,
+                "isolation": isolation,
+            },
+        })),
+    )
+    .await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    wait_settled(f, "p", "t").await;
+    let body = body_json(
+        send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await,
+    )
+    .await;
+    body["runs"][0]["status"].as_str().unwrap_or("").to_string()
+}
+
+/// 事件流里有没有含 `marker` 的事件。
+fn has_event(f: &Fixture, marker: &str) -> bool {
+    f.state
+        .bus
+        .replay_after(0)
+        .iter()
+        .any(|(_, e)| e.contains(marker))
+}
+
+/// 取事件流里第一条含 `marker` 的事件并解析成 JSON（找不到 → None）。
+fn find_event(f: &Fixture, marker: &str) -> Option<serde_json::Value> {
+    f.state
+        .bus
+        .replay_after(0)
+        .iter()
+        .map(|(_, e)| e.as_str())
+        .find(|e| e.contains(marker))
+        .and_then(|e| serde_json::from_str(e).ok())
+}
+
+/// 回归（SR1 run 9 实证缺陷）：未跟踪的工具元数据（仓根 `.pi/**`）不是产品改动——终校验
+/// 放行，不判死。
+///
+/// 错实现形态：改动面收集不区分 porcelain 状态码（`??` 与已跟踪一视同仁）→ 未跟踪的
+/// `.pi/goals/x.md` 进改动集 → 不在 owned_paths（`src/**`）内 → run 判 failed +
+/// boundary.violation 指认 `.pi/goals/x.md`（SR1 run 9 的「29 个文件超出契约 owned_paths」
+/// 误杀同款）。
+#[tokio::test]
+async fn untracked_pi_tool_metadata_is_not_a_boundary_violation() {
+    let (g, base) = git_repo_with_base();
+    // pi 在自己 cwd 写的状态目录（未跟踪形态）：工具元数据，不是产品输出
+    std::fs::create_dir_all(g.path().join(".pi/goals")).unwrap();
+    std::fs::write(g.path().join(".pi/goals/x.md"), "# goal\n").unwrap();
+
+    let f = fixture();
+    let status = run_contract_task(&f, g.path(), &base, "none").await;
+    assert_eq!(
+        status, "settled",
+        "未跟踪的工具元数据不得判死（SR1 run 9 误杀）：{status}"
+    );
+    assert!(
+        !has_event(&f, "boundary.violation"),
+        "不得有 boundary.violation 事件"
+    );
+    // 被忽略的工具元数据不计入改动面条数（boundary.ok.files 是对外可观测的改动面计数）
+    let ok = find_event(&f, "boundary.ok").expect("必须落 boundary.ok 事件");
+    assert_eq!(
+        ok["files"].as_u64(),
+        Some(0),
+        "只含工具元数据的 run，改动面条数应为 0：{ok}"
+    );
+}
+
+/// 回归（worktree 隔离形态）：主仓工作区里的未跟踪工具元数据同样不进改动面。
+///
+/// 坑（计划 §6 风险「测试假绿陷阱」）：终校验 stat 的是 `task.workspace`（主仓），不是
+/// worktree——worktree 在引擎收尾时已被删除。把 `.pi` 放进 worktree 目录的用例在修复前
+/// 也是绿的（假绿），所以 `.pi` 必须落在**主仓**。
+///
+/// 错实现形态：豁免只加在 isolation=none 分支 / 只作用于已提交集合 → worktree 形态的
+/// 未跟踪 `.pi` 仍进改动集 → run 判 failed（boundary.violation 指认 `.pi/goals/x.md`）。
+#[tokio::test]
+async fn worktree_isolation_boundary_check_ignores_untracked_pi_tool_metadata() {
+    let (g, base) = git_repo_with_base();
+    // 候选分支 task/t：只有契约内提交（src/good.rs）→ 已提交集合侧无越界
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(g.path())
+            .args(args)
+            .output()
+            .expect("git 可执行");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    let wt = tempfile::tempdir().unwrap();
+    git(&["branch", "task/t"]);
+    git(&["worktree", "add", wt.path().to_str().unwrap(), "task/t"]);
+    let wgit = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(wt.path())
+            .args(args)
+            .output()
+            .expect("git 可执行");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    std::fs::create_dir_all(wt.path().join("src")).unwrap();
+    std::fs::write(wt.path().join("src/good.rs"), "fn good() {}\n").unwrap();
+    wgit(&["add", "-A"]);
+    wgit(&["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "candidate"]);
+    let _ = std::fs::remove_dir_all(wt.path());
+    // 主仓工作区：pi 的未跟踪工具元数据（终校验 stat 的就是这个目录）
+    std::fs::create_dir_all(g.path().join(".pi/goals")).unwrap();
+    std::fs::write(g.path().join(".pi/goals/x.md"), "# goal\n").unwrap();
+
+    let f = fixture();
+    let status = run_contract_task(&f, g.path(), &base, "worktree").await;
+    assert_eq!(
+        status, "settled",
+        "worktree 形态下未跟踪的工具元数据不得判死：{status}"
+    );
+    assert!(
+        has_event(&f, "boundary.ok"),
+        "worktree 形态同样要落 boundary.ok（豁免在 status 侧生效）"
+    );
+    assert!(
+        !has_event(&f, "boundary.violation"),
+        "不得有 boundary.violation 事件"
+    );
+}
+
+/// 回归：豁免是**按条目**的，不是「有 `.pi` 就整批跳过」——同一次 run 里既有未跟踪的
+/// `.pi/goals/x.md` 又有未跟踪的 `evil.txt` 时，必须判 failed，且 violation 清单**只含**
+/// `evil.txt`。
+///
+/// 错实现形态：豁免写成「改动集里出现 `.pi/` 就整批放行」或「未跟踪条目一律不算改动」
+/// → `evil.txt` 一并被放过 → run 判 settled（假绿）。
+#[tokio::test]
+async fn untracked_pi_tool_metadata_does_not_mask_other_violations() {
+    let (g, base) = git_repo_with_base();
+    std::fs::create_dir_all(g.path().join(".pi/goals")).unwrap();
+    std::fs::write(g.path().join(".pi/goals/x.md"), "# goal\n").unwrap();
+    std::fs::write(g.path().join("evil.txt"), "out of contract\n").unwrap();
+
+    let f = fixture();
+    let status = run_contract_task(&f, g.path(), &base, "none").await;
+    assert_eq!(
+        status, "failed",
+        "契约外的未跟踪文件仍必须判死（拦截语义不退化）：{status}"
+    );
+    let violation = find_event(&f, "boundary.violation").expect("必须有 boundary.violation 事件");
+    let listed: Vec<&str> = violation["violations"]
+        .as_array()
+        .expect("violations 必须是数组")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        vec!["evil.txt"],
+        "violation 清单必须只含 evil.txt（豁免按条目，不按批次）：{violation}"
+    );
+}
+
+/// 回归（语义边界）：已跟踪的 `.pi/**` 是**显式提交行为**，仍照常受契约判定——豁免只针对
+/// 未跟踪形态（porcelain 状态码 `??`）。两种形态各钉一次：
+/// ① 提交形态：`.pi/goals/x.md` 被 git add + commit → 进已提交集合 → 越界；
+/// ② ` M` 形态：基线提交里已含 `.pi/goals/keep.md`，工作区把它改成未提交的修改 → 越界。
+///
+/// 错实现形态：豁免只看路径不看状态码（`path.starts_with(".pi/")` 就放过）→ ①② 都判
+/// settled（假绿，语义边界被抹平）。
+#[tokio::test]
+async fn tracked_pi_tool_metadata_is_still_judged_by_the_contract() {
+    // ① 提交形态
+    let (g, base) = git_repo_with_base();
+    std::fs::create_dir_all(g.path().join(".pi/goals")).unwrap();
+    std::fs::write(g.path().join(".pi/goals/x.md"), "# goal\n").unwrap();
+    commit_all(&g, "commit-pi-metadata");
+
+    let f = fixture();
+    let status = run_contract_task(&f, g.path(), &base, "none").await;
+    assert_eq!(
+        status, "failed",
+        "已提交的 .pi/** 是显式提交行为，必须判死：{status}"
+    );
+    let violation = find_event(&f, "boundary.violation").expect("必须有 boundary.violation 事件");
+    let listed: Vec<&str> = violation["violations"]
+        .as_array()
+        .expect("violations 必须是数组")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        vec![".pi/goals/x.md"],
+        "violation 清单必须指认已提交的 .pi 文件：{violation}"
+    );
+
+    // ② ` M` 形态：基线提交里已含 .pi/goals/keep.md，工作区改成未提交的修改
+    let (g2, base2) = git_repo_with_base_files(&[
+        ("a.rs", "fn a() {}\n"),
+        (".pi/goals/keep.md", "keep\n"),
+    ]);
+    std::fs::write(g2.path().join(".pi/goals/keep.md"), "changed\n").unwrap();
+
+    let f2 = fixture();
+    let status2 = run_contract_task(&f2, g2.path(), &base2, "none").await;
+    assert_eq!(
+        status2, "failed",
+        "已跟踪 .pi 文件的未提交修改必须判死：{status2}"
+    );
+    let violation2 = find_event(&f2, "boundary.violation").expect("必须有 boundary.violation 事件");
+    let listed2: Vec<&str> = violation2["violations"]
+        .as_array()
+        .expect("violations 必须是数组")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        listed2,
+        vec![".pi/goals/keep.md"],
+        "violation 清单必须指认被修改的已跟踪 .pi 文件：{violation2}"
+    );
 }
