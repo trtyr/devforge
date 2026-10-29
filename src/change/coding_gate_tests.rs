@@ -269,6 +269,96 @@ fn gitignore_glob_covers_the_ledger_backup_and_temp_family() {
     );
 }
 
+// ── F12 通道 3 · 改动集黑名单：`.pi/` 归档与台账不进改动集 ──
+
+/// 回归（F12 通道 3）：pi 的 `.pi/` 归档不是产品改动——不进改动集，否则会被当「越界改动」
+/// 判死整轮 run（F10 run 1：14 个 `.pi` 归档被 step 提交扫进分支）。
+///
+/// 错实现形态：黑名单不含 `.pi/` 前缀 → `.pi/goals/x.md` 进改动集 → 越界判定触发 → 本用例必红。
+#[test]
+fn blacklist_filters_pi_tool_metadata() {
+    let (tmp, baseline) = repo_with_baseline();
+    std::fs::create_dir_all(tmp.path().join(".pi/goals")).unwrap();
+    std::fs::write(tmp.path().join(".pi/goals/x.md"), "# goal\n").unwrap();
+    let files = changed_files(tmp.path(), &baseline).unwrap();
+    assert!(
+        !files.iter().any(|f| f == ".pi/goals/x.md"),
+        ".pi/ 归档是工具元数据，不得进改动集：{files:?}"
+    );
+}
+
+/// 回归（F12 通道 3 · 代码盲区防线）：`.pi/` 黑名单沿用「非代码扩展名才滤」纪律——
+/// `.pi/evil.rs` 是代码，必须参与越界判定（放宽 = 把产品源码藏进 `.pi/` 绕过白名单）。
+///
+/// 错实现形态：`.pi/` 前缀无条件滤（不复用 `looks_like_code`）→ `.pi/evil.rs` 被滤 →
+/// 越界判定失效（假绿）→ 本用例必红。
+#[test]
+fn blacklist_keeps_code_files_under_pi() {
+    let (tmp, baseline) = repo_with_baseline();
+    std::fs::create_dir_all(tmp.path().join(".pi")).unwrap();
+    std::fs::write(tmp.path().join(".pi/evil.rs"), "fn evil() {}\n").unwrap();
+    let files = changed_files(tmp.path(), &baseline).unwrap();
+    assert!(
+        files.iter().any(|f| f == ".pi/evil.rs"),
+        ".pi/ 下的代码文件必须参与越界判定（黑名单不得成为代码盲区）：{files:?}"
+    );
+}
+
+/// 回归（F12 通道 3 · 台账）：预算熔断台账的两个精确名不进改动集——**任意层级**都算
+/// （台账可能落在仓根，也可能落在子目录）。
+///
+/// 错实现形态：台账黑名单只认仓根（`f == "spawn-ledger.json"`）→ `sub/spawn-ledger.json.lock`
+/// 进改动集 → 本用例必红。
+#[test]
+fn blacklist_filters_ledger_files_at_any_depth() {
+    let (tmp, baseline) = repo_with_baseline();
+    std::fs::write(tmp.path().join("spawn-ledger.json"), "{}\n").unwrap();
+    std::fs::create_dir_all(tmp.path().join("sub")).unwrap();
+    std::fs::write(tmp.path().join("sub/spawn-ledger.json.lock"), "\n").unwrap();
+    let files = changed_files(tmp.path(), &baseline).unwrap();
+    assert!(
+        !files.iter().any(|f| f == "spawn-ledger.json"),
+        "仓根台账不得进改动集：{files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f == "sub/spawn-ledger.json.lock"),
+        "任意层级的台账锁文件不得进改动集：{files:?}"
+    );
+}
+
+/// 回归（F12 通道 3 · 精确名口径可观测）：只认两个精确名——台账的临时名
+/// （`spawn-ledger.json.<pid>.tmp`）**不进**黑名单（正常场景由 `.gitignore` 的
+/// `spawn-ledger.json*` glob 挡）。口径必须可观测，否则它会被静默改宽/改窄。
+///
+/// 错实现形态：黑名单改成前缀匹配（`f.starts_with("spawn-ledger.json")`）→ 临时名被滤 →
+/// 本用例必红。
+#[test]
+fn blacklist_keeps_ledger_temp_and_backup_family() {
+    let (tmp, baseline) = repo_with_baseline();
+    std::fs::write(tmp.path().join("spawn-ledger.json.4242.tmp"), "{}\n").unwrap();
+    let files = changed_files(tmp.path(), &baseline).unwrap();
+    assert!(
+        files.iter().any(|f| f == "spawn-ledger.json.4242.tmp"),
+        "台账黑名单只认两个精确名，临时名不进黑名单：{files:?}"
+    );
+}
+
+/// 回归（F12 通道 3 · 窄口径）：`.pi/` 黑名单只认**仓根**前缀——深层 `deep/.pi/x.md` 必须
+/// 保留参与越界判定（与终校验豁免同窄口径；放宽 = 越界判定面开洞）。
+///
+/// 错实现形态：黑名单用「路径含 `.pi/`」或任意层级前缀 → `deep/.pi/x.md` 被滤 → 本用例必红。
+#[test]
+fn blacklist_keeps_nested_pi_directories() {
+    let (tmp, baseline) = repo_with_baseline();
+    std::fs::create_dir_all(tmp.path().join("deep/.pi")).unwrap();
+    std::fs::write(tmp.path().join("deep/.pi/x.md"), "# goal\n").unwrap();
+    let files = changed_files(tmp.path(), &baseline).unwrap();
+    assert!(
+        files.iter().any(|f| f == "deep/.pi/x.md"),
+        "黑名单只认仓根 .pi/ 前缀，深层 .pi/ 必须保留参与越界判定：{files:?}"
+    );
+}
+
 /// 复验 N4 回归：非 ASCII 文件名不被 quotePath 转义，白名单能精确匹配。
 #[test]
 fn non_ascii_paths_are_not_escaped() {
