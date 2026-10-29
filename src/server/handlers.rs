@@ -15,7 +15,7 @@ use crate::config::ConfigManifest;
 use crate::domain::project::Project;
 use crate::domain::task::TaskStatus;
 use crate::domain::task::Task;
-use crate::server::{run_in_background, SharedState};
+use crate::server::{run_in_background, PendingAskView, SharedState};
 
 // ---------- 错误映射（原则 §1：对外错误面向人和 AI 双读者） ----------
 
@@ -1060,6 +1060,19 @@ pub async fn answer_ui(
         }
     })?;
     Ok(Json(json!({"ok": true})))
+}
+
+/// 待答清单（GET /ui/pending）：当前所有等应答的 UI 请求。
+///
+/// 响应是**裸数组**（`[{id, run_id, question, age_ms}]`）——按需求字面取，不包
+/// `{"pending": [...]}`：这是与仓内其它列表端点（`list_projects` 裹一层）不同的
+/// **明确裁决**，不要顺手改回包裹形态。空表返回 `[]`（不是 404：清单端点的语义是
+/// 「当前没有待答」，不是「端点不存在」）。
+///
+/// id 与 SSE `ui.request` 的 id、`POST /ui/{id}/answer` 的路径参数同源——监工的
+/// 「从事件看到 id → 查清单 → 应答」这条链路靠它接上。
+pub async fn list_pending_ui(State(st): State<SharedState>) -> Json<Vec<PendingAskView>> {
+    Json(st.ui.pending_snapshot())
 }
 
 /// SSE 事件流：run 生命周期 + ui.request + 领域事件（Q002 信封：JSON 一行一事件）。
