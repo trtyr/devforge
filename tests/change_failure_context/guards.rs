@@ -98,34 +98,26 @@ pub(super) fn a16_the_whitelist_constants_match_this_change() {
             "守卫的 WHITELIST 缺 {f}（实际 {listed:?}）"
         );
     }
-    // 扫描必须通过：本场 coding 步提交的每个文件都在白名单内
+    // 扫描必须通过：本场 coding 步提交的每个文件都在本场白名单内
+    // F10：扫描面从「旧场基线区间 + 全场步提交」收敛到「本场 change-id 的步提交」——
+    // 外场步提交不参与判定；本场步提交仍逐个对账本场白名单（守卫语义不退化）。
     let root = repo_root();
-    let log = git(&root, &["log", "--format=%H%x09%s", &format!("{BASELINE}..HEAD")]);
-    assert!(!log.trim().is_empty(), "基线之后应当有本变更的提交");
-    let mut coding_files: Vec<String> = Vec::new();
-    for line in log.lines() {
-        let (sha, subject) = line.split_once('\t').expect("提交行格式");
-        if !subject.contains(" step ") {
-            continue;
-        }
-        for f in git(&root, &["show", "--name-only", "--format=", sha])
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-        {
-            let f = f.trim();
-            // ARC 迁移归一化：历史步提交的旧路径经 plan_audit 的迁移表映射后再比对
-            // （ARC-R3 起仓库手术会迁移文件；历史提交是事实，白名单登记现状）
-            let f = devforge::change::plan_audit::normalize_path(f);
-            assert!(
-                WHITELIST.contains(&f),
-                "coding 步提交越界（白名单外）：{f}（提交 {subject}）"
-            );
-            coding_files.push(f.to_string());
-        }
+    let commits = change_step_commits(&root, CHANGE_ID);
+    if commits.is_empty() {
+        // 空集放行（用户裁决）：本场尚无 step 提交 → 没有可对账的对象。
+        // 旧口径在这里「一个都没找到就红」——两场之间恒红，正是 F10 的病。
+        println!("本场尚无 step 提交，跳过对账");
+        return;
     }
+    let findings = step_whitelist_violations(&root, &commits, CHANGE_WHITELIST);
     assert!(
-        !coding_files.is_empty(),
-        "本变更的 coding 步提交一个都没找到（提交信息格式变了？）"
+        findings.is_empty(),
+        "本场 coding 步提交越界（白名单外）：\n{}",
+        findings
+            .iter()
+            .map(|f| f.message())
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
