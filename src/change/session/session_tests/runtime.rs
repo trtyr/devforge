@@ -346,6 +346,30 @@ fn write_fresh_regression_log(f: &Fixture) {
 }
 
 #[test]
+fn testing_kickoff_states_the_fenced_evidence_format_contract() {
+    // F11：回归证据的格式契约必须写进 testing 开工教科书——否则下一个 agent
+    // 只能靠撞墙猜「围栏里的 exit_code 到底算不算数」。
+    //
+    // 错实现形态：①提示句缺失/改写→ 新锚点断言必红；②提示句替换了既有段落
+    // （而非追加）→ 既有锚点断言必红。
+    let f = fixture(true);
+    let kick = testing_kickoff(&f.ctx);
+    for anchor in ["`exit_code` 行建议裸写", "必须与 `command:` 成对", "围栏"] {
+        assert!(
+            kick.contains(anchor),
+            "testing 开工消息缺格式提示锚点 {anchor}：{kick}"
+        );
+    }
+    // 追加而非替换：既有锚点逐字仍在
+    for anchor in ["至少做一次反向验证", "evidence/regression.log"] {
+        assert!(
+            kick.contains(anchor),
+            "既有锚点 {anchor} 不得被替换掉：{kick}"
+        );
+    }
+}
+
+#[test]
 fn testing_review_fail_reroutes_to_coding_instead_of_failing_the_run() {
     // change #4（testing 半）：测试审查 FAIL 不再判死——改为 RouteCoding，把审查明细
     // 变成回注 coding 的失败清单（有界：MAX_TEST_REROUTES 在编排层）。

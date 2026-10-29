@@ -269,3 +269,85 @@ fn regression_parse_error_points_at_the_regression_log() {
         "不得指向基线证据文件：{msg}"
     );
 }
+
+// ── 围栏失明修复（F11）：回归证据两段式扫描 ──
+//
+// 回归日志是 agent 手写的 markdown，把命令与退出码包进代码围栏是标准写法。
+// 旧口径按围栏跳过（防把文档示例当成真证据），于是围栏内成对写着 command +
+// exit_code 的真实证据被判「缺退出码」→ 整轮陪葬（F10 run 1 实证）。
+
+/// F11 主回归：围栏里成对写着 command + exit_code → 必须取到退出码。
+///
+/// 错实现形态：解析器只扫围栏外（旧口径，无 stage b）→ 本用例必须变红（判「缺退出码」）。
+#[test]
+fn a_fenced_command_and_exit_code_pair_counts_as_evidence() {
+    let text = "回归结果：\n```\ncommand: env -u DEVFORGE_MANAGED cargo test\nexit_code: 0\n```\n";
+    let code = check_regression_claim(text, true).unwrap();
+    assert_eq!(code, 0, "围栏内同块成对必须被认作证据：{text}");
+}
+
+/// F11 防御回归：围栏里只有孤立的 `exit_code: 0`（没有 command 配对）→ 仍判缺。
+///
+/// 错实现形态：回退时只认 exit_code 不认 command 配对 → 本用例必须变红。
+#[test]
+fn an_isolated_exit_code_inside_a_fence_is_not_evidence() {
+    let text = "```\nexit_code: 0\n```\n";
+    let err = check_regression_claim(text, true).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("缺退出码"), "孤立的 exit_code 不作数：{msg}");
+    assert!(
+        msg.contains("evidence/regression.log"),
+        "要指向回归日志：{msg}"
+    );
+    assert!(err.is_quality_failure(), "示例防御不放松：{msg}");
+}
+
+/// F11 边界回归：`command:` 在围栏外、`exit_code:` 在围栏内 → 跨边界不成对，仍判缺。
+///
+/// 错实现形态：回退时跨块拼 command / exit_code → 本用例必须变红。
+#[test]
+fn an_exit_code_in_a_fence_does_not_pair_with_a_command_outside() {
+    let text = "command: cargo test\n```\nexit_code: 0\n```\n";
+    let err = check_regression_claim(text, true).unwrap_err();
+    assert!(err.to_string().contains("缺退出码"), "{err}");
+}
+
+/// F11 优先级回归：围栏外 `exit_code: 1` 与围栏内成对并存 → 取围栏外的 1。
+///
+/// 错实现形态：围栏优先 / 两段结果混用 → 本用例必须变红。
+#[test]
+fn the_exit_code_outside_the_fence_wins_over_a_fenced_pair() {
+    let text = "command: cargo test\nexit_code: 1\n```\ncommand: cargo test\nexit_code: 0\n```\n";
+    // 诚实自述（claims_green=false）→ 取围栏外的 1
+    assert_eq!(
+        check_regression_claim(text, false).unwrap(),
+        1,
+        "围栏外优先：{text}"
+    );
+    // 声称通过 → 与围栏外的 1 矛盾 → Quality
+    let err = check_regression_claim(text, true).unwrap_err();
+    assert!(err.to_string().contains("退出码 1"), "{err}");
+}
+
+/// F11 多块回归：第 1 块不成对（只有 `exit_code: 9`）、第 2 块成对（0）→ 取第 2 块。
+///
+/// 第 3 块也成对（7）但排在后面 → 不取（判别项：让「取首个成对块」与「取最后一个块」
+/// 两种实现给出不同结果，「不成对块被跳过」也一并可观测）。
+///
+/// 错实现形态：取最后一个块 / 不跳过不成对块 / 跨块拼 command → 本用例必须变红。
+#[test]
+fn the_first_qualifying_fenced_block_wins() {
+    let text = "```\nexit_code: 9\n```\n```\ncommand: cargo test\nexit_code: 0\n```\n```\ncommand: cargo test\nexit_code: 7\n```\n";
+    let code = check_regression_claim(text, true).unwrap();
+    assert_eq!(code, 0, "不成对块被跳过，取首个成对块：{text}");
+}
+
+/// F11 防退化锚钉：同一段「围栏内同块成对」的文本喂基线门 → 仍判缺退出码。
+///
+/// 回退只服务回归门；一旦被下沉进共用解析器（基线门 / 自证门），本用例必须变红。
+#[test]
+fn the_baseline_gate_does_not_accept_a_fenced_pair() {
+    let text = "```\ncommand: cargo test\nexit_code: 0\n```\n";
+    let err = crate::change::coding_gate::parse_baseline_log(text).unwrap_err();
+    assert!(err.to_string().contains("缺退出码"), "{err}");
+}
