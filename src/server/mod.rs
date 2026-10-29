@@ -380,7 +380,12 @@ fn scan_pending_warns(inner: Arc<UiRelayInner>) {
                 component = "ui",
                 event = "ui.pending_warn",
                 id = %w.id,
-                run_id = ?w.owner,
+                // run_id 落 null 语义（无归属 = null，与清单端点的 `run_id: null` 同口径）。
+                // tracing 的 JSON 格式没有「null 字段」这条路：把 Option 直接传给字段，
+                // None 时**整个字段消失**（验收要求这行必须带 run_id）；`?owner` 则落
+                // Debug 串（"None" / "Some(\"run-a\")"）——run id 变成不可 grep 的噪音。
+                // 所以显式落字符串 "null"：字段恒在，值可读可查。
+                run_id = %w.owner.as_deref().unwrap_or("null"),
                 age_ms = w.age_ms,
                 question_prefix = %w.question_prefix,
                 "UI 待答久等：agent 阻塞在 ask_blocking 上，无人应答"
