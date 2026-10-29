@@ -540,8 +540,37 @@ fn missing_branch_is_created_at_base_even_when_a_candidate_is_supplied() {
 // 前置行为 → 假绿）。每条用例的注释写明「换成哪种错实现会红」——不会红的测试是装饰品。
 mod acceptance {
     use super::*;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::sync::{Arc, Mutex};
+
+    /// 捕获本线程内的 tracing 输出（断言只关心 event 键、字段值与文案）。
+    ///
+    /// 与 `src/server/change_engine_tests.rs` 的同名辅助同款形状：线程内默认订阅器
+    /// （`with_default` 只影响当前线程），因此不会串到并行跑的其他用例。
+    fn capture_tracing<F: FnOnce()>(f: F) -> String {
+        #[derive(Clone)]
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+        impl Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("日志缓冲锁").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let sink = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = SharedBuf(sink.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = sink.lock().expect("日志缓冲锁").clone();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
 
     // ---------- 夹具 ----------
 
@@ -1048,10 +1077,21 @@ mod acceptance {
             "workspace::tests::acceptance::ac10_workspace_domain_baseline_cases_are_still_registered",
             "workspace::tests::acceptance::ac11_no_allow_exemption_and_new_cases_are_registered",
             "workspace::tests::acceptance::ac12_the_adoption_api_stays_inside_the_whitelisted_files",
+            "workspace::tests::acceptance::ac13_retry_entry_rebuilds_the_unfrozen_branch_and_leaves_a_warn",
+            "workspace::tests::acceptance::ac14_invalid_shaped_candidate_is_treated_as_no_candidate_on_retry",
+            "workspace::tests::acceptance::ac15_retry_with_a_valid_candidate_adopts_and_never_rebuilds",
+            "workspace::tests::acceptance::ac16_retry_with_a_valid_candidate_that_is_not_the_tip_is_still_rejected",
+            "workspace::tests::acceptance::ac17_retry_does_not_rebuild_when_the_branch_is_at_base_or_absent",
+            "workspace::tests::acceptance::ac18_rebuild_rollback_removes_the_branch_it_just_created",
             "server::change_engine::tests::acceptance::ac13_absent_frozen_file_yields_none_and_a_warn",
             "server::change_engine::tests::acceptance::ac14_frozen_file_is_passed_through_verbatim",
             "server::change_engine::tests::acceptance::ac15_dirty_frozen_content_is_read_but_never_adopted",
             "server::change_engine::tests::acceptance::ac16_unreadable_frozen_file_degrades_to_none_with_a_warn",
+            "server::change_engine::tests::acceptance::ac17_first_attempt_still_rejects_the_unfrozen_branch",
+            "server::change_engine::tests::acceptance::ac18_retry_attempt_rebuilds_the_unfrozen_branch",
+            "server::change_engine::tests::acceptance::ac19_retry_attempt_with_a_valid_candidate_adopts_instead_of_rebuilding",
+            "server::change_engine::tests::acceptance::ac20_retry_context_without_a_branch_or_at_base_does_not_rebuild",
+            "server::change_engine::tests::acceptance::ac21_run_with_retry_reaches_the_retry_entry_on_the_second_attempt",
         ] {
             assert!(
                 listing.contains(name),
@@ -1079,6 +1119,10 @@ mod acceptance {
             "create_with_candidate",
             "read_frozen_candidate",
             "workspace.adopted",
+            // F6（重试形态）：新入口与新事件键同样不得泄漏到白名单四文件之外
+            "ensure_with_candidate_on_retry",
+            "create_with_candidate_on_retry",
+            "workspace.retry_rebuilt_unfrozen",
         ];
         let root = crate_root();
         let mut files = Vec::new();
@@ -1100,6 +1144,229 @@ mod acceptance {
         assert!(
             offenders.is_empty(),
             "收养 API 泄漏到白名单四文件之外（第五个文件被触碰）：{offenders:?}"
+        );
+    }
+
+    // ---------- 验收 1+2：重试形态 → 重建未冻结遗留分支 + 留痕 ----------
+
+    /// 验收 1+2：重试形态入口（`ensure_with_candidate_on_retry`）+ 现场「分支 tip ≠ 基点、
+    /// 无冻结候选」→ 自动删掉该分支、在基点重建（worktree HEAD == 基点、分支 tip 回到
+    /// 基点），并**先**落一条 WARN 留痕：event = `workspace.retry_rebuilt_unfrozen`、
+    /// 字段含完整 tip sha 与分支名、文案含「未冻结遗留分支已自动重建」。
+    /// 错实现 A（重试入口仍拒绝 / 重建但不留痕 / 留痕不带 tip sha）→ 这条红。
+    #[test]
+    fn ac13_retry_entry_rebuilds_the_unfrozen_branch_and_leaves_a_warn() {
+        let fx = AdoptionRepo::with_foreign_branch("ac13-rebuild");
+        let dirty_tip = fx.branch_tip();
+
+        let logs = capture_tracing(|| {
+            let ws = Workspace::ensure_with_candidate_on_retry(&fx.spec, None)
+                .expect("重试上下文 + 无候选的脏分支应自动重建");
+            assert!(ws.path.exists(), "重建后 worktree 目录应存在");
+            assert_eq!(ws.path, Workspace::target_path(&fx.spec));
+            assert_eq!(
+                Workspace::freeze(&ws).unwrap(),
+                fx.base,
+                "重建后的 worktree HEAD 必须落在基点"
+            );
+            assert_eq!(
+                fx.branch_tip(),
+                fx.base,
+                "未冻结遗留分支应被删掉并在基点重建（分支 tip 必须回到基点）"
+            );
+        });
+
+        assert!(
+            logs.contains("workspace.retry_rebuilt_unfrozen"),
+            "重建必须留 WARN 痕迹：{logs}"
+        );
+        assert!(
+            logs.contains(&dirty_tip),
+            "留痕必须带完整 tip sha（{dirty_tip}）：{logs}"
+        );
+        assert!(
+            logs.contains("task/ac13-rebuild"),
+            "留痕必须带分支名：{logs}"
+        );
+        assert!(
+            logs.contains("未冻结遗留分支已自动重建"),
+            "留痕文案必须点明「未冻结遗留分支已自动重建」：{logs}"
+        );
+    }
+
+    // ---------- 验收 3：非法形状的候选 = 无候选 ----------
+
+    /// 验收 3：重试形态入口 + 候选内容为非法形状（`cafebabe` / 空串 / 纯空白 /
+    /// 「40 位 sha + 垃圾行」）→ 按「无冻结候选」处理：重建成功、worktree HEAD == 基点；
+    /// 同时既有的 `workspace.candidate_shape_invalid` WARN **仍在**（形状门既未放宽
+    /// 也未收紧）。
+    /// 错实现 B（脏候选让重试入口改走拒绝 / 形状门被放宽）→ 这条红。
+    #[test]
+    fn ac14_invalid_shaped_candidate_is_treated_as_no_candidate_on_retry() {
+        let dirties = ["cafebabe".to_string(), String::new(), "   ".to_string()];
+        for (i, dirty) in dirties.iter().enumerate() {
+            let task_id = format!("ac14-dirty-{i}");
+            let fx = AdoptionRepo::with_foreign_branch(&task_id);
+            let logs = capture_tracing(|| {
+                let ws = Workspace::ensure_with_candidate_on_retry(&fx.spec, Some(dirty))
+                    .expect("脏候选 = 无候选，重试入口应照常重建");
+                assert_eq!(Workspace::freeze(&ws).unwrap(), fx.base);
+                assert_eq!(fx.branch_tip(), fx.base, "脏候选也应删分支并在基点重建");
+            });
+            assert!(
+                logs.contains("workspace.candidate_shape_invalid"),
+                "脏候选 {dirty:?} 的形状门 WARN 必须在（形状门未被放宽）：{logs}"
+            );
+            assert!(
+                logs.contains("workspace.retry_rebuilt_unfrozen"),
+                "脏候选 {dirty:?} 应走重建路径：{logs}"
+            );
+        }
+
+        // 40 位 sha 后跟别的非空行 → 同样不是候选（只取第一行的错实现会把它当候选）
+        let fx = AdoptionRepo::with_foreign_branch("ac14-dirty-tail");
+        let dirty = format!("{}\ngarbage\n", "a".repeat(40));
+        let logs = capture_tracing(|| {
+            let ws = Workspace::ensure_with_candidate_on_retry(&fx.spec, Some(&dirty))
+                .expect("sha 后跟垃圾行 = 无候选，重试入口应照常重建");
+            assert_eq!(Workspace::freeze(&ws).unwrap(), fx.base);
+            assert_eq!(fx.branch_tip(), fx.base);
+        });
+        assert!(
+            logs.contains("workspace.candidate_shape_invalid"),
+            "sha 后跟垃圾行的形状门 WARN 必须在：{logs}"
+        );
+        assert!(
+            logs.contains("workspace.retry_rebuilt_unfrozen"),
+            "sha 后跟垃圾行应走重建路径：{logs}"
+        );
+    }
+
+    // ---------- 验收 4：有可用候选 → 收养（不重建） ----------
+
+    /// 验收 4：重试形态入口 + 候选为合法 40-hex 且**等于分支 tip** → 走 F2 收养
+    /// （worktree HEAD == 候选 tip、分支引用前后一致、注册记录记的仍是基点），
+    /// 且**不出现**重建留痕（F2 行为未被本刀改写）。
+    /// 错实现 C（重建判定抢在收养判定之前 → 收养被打回）→ 这条红。
+    #[test]
+    fn ac15_retry_with_a_valid_candidate_adopts_and_never_rebuilds() {
+        let fx = AdoptionRepo::with_candidate_branch("ac15-adopt");
+        let before = fx.branch_tip();
+
+        let logs = capture_tracing(|| {
+            let ws = Workspace::ensure_with_candidate_on_retry(&fx.spec, Some(&before))
+                .expect("有可用候选时重试入口应走收养");
+            assert_eq!(
+                Workspace::freeze(&ws).unwrap(),
+                before,
+                "收养：worktree HEAD 落在候选 tip"
+            );
+            assert_eq!(fx.branch_tip(), before, "收养不得改写分支 tip");
+            assert_eq!(ws.base_rev, fx.base, "注册记录记的仍是解析后的基点");
+        });
+
+        assert!(
+            !logs.contains("workspace.retry_rebuilt_unfrozen"),
+            "有可用候选时不得走重建路径：{logs}"
+        );
+    }
+
+    // ---------- 验收 5：有可用候选但 ≠ tip → 仍拒绝 ----------
+
+    /// 验收 5：重试形态入口 + 候选为合法 40-hex 但**不等于分支 tip**（含「候选恰等于
+    /// 基点」的边角情形）→ **仍拒绝**：Store 错误、文案含「非基点也非冻结候选」、
+    /// 分支 tip 不变、目标路径不存在——**不得删分支**（候选提交可能只靠该分支可达，
+    /// 删了就成孤儿）。
+    /// 错实现 D（重试入口见「候选非 None」之外的形状就删分支）→ 这条红。
+    #[test]
+    fn ac16_retry_with_a_valid_candidate_that_is_not_the_tip_is_still_rejected() {
+        for (i, stale) in [None, Some("f".repeat(40))].into_iter().enumerate() {
+            let task_id = format!("ac16-stale-{i}");
+            let fx = AdoptionRepo::with_foreign_branch(&task_id);
+            let before = fx.branch_tip();
+            let candidate = stale.unwrap_or_else(|| fx.base.clone());
+
+            let logs = capture_tracing(|| {
+                let err = Workspace::ensure_with_candidate_on_retry(&fx.spec, Some(&candidate))
+                    .expect_err("有效候选 ≠ tip 时必须仍走拒绝路径");
+                assert!(
+                    matches!(err, DevforgeError::Store(_)),
+                    "应是 Store 错误：{err:?}"
+                );
+                let msg = err.to_string();
+                assert!(msg.contains("非基点也非冻结候选"), "{msg}");
+                assert!(
+                    !Workspace::target_path(&fx.spec).exists(),
+                    "拒绝时不得留下 worktree 目录"
+                );
+            });
+            assert_eq!(fx.branch_tip(), before, "拒绝时不得删分支（候选会变孤儿）");
+            assert!(
+                !logs.contains("workspace.retry_rebuilt_unfrozen"),
+                "有可用候选时不得走重建路径：{logs}"
+            );
+        }
+    }
+
+    // ---------- 验收 9：分支在基点 / 分支不存在 → 行为不变 ----------
+
+    /// 验收 9：重试形态入口 + 分支停在基点 / 分支不存在 → 行为与现状一致（worktree
+    /// 在基点处建/挂载），且**不出现**重建留痕、不产生多余分支。
+    /// 错实现 E（重试入口见分支就删 / 见非基点就重建）→ 这条红。
+    #[test]
+    fn ac17_retry_does_not_rebuild_when_the_branch_is_at_base_or_absent() {
+        // (a) 分支停在基点 → 挂载复用
+        let fx = AdoptionRepo::with_branch_at_base("ac17-at-base");
+        let logs = capture_tracing(|| {
+            let ws = Workspace::ensure_with_candidate_on_retry(&fx.spec, None)
+                .expect("分支停在基点时照常挂载复用");
+            assert_eq!(Workspace::freeze(&ws).unwrap(), fx.base);
+            assert_eq!(fx.branch_tip(), fx.base, "分支 tip 不得被改写");
+        });
+        assert!(
+            !logs.contains("workspace.retry_rebuilt_unfrozen"),
+            "分支停在基点时不得触发重建：{logs}"
+        );
+
+        // (b) 分支不存在 → 在基点新建
+        let fx2 = AdoptionRepo::without_branch("ac17-absent");
+        let logs = capture_tracing(|| {
+            let ws = Workspace::ensure_with_candidate_on_retry(&fx2.spec, None)
+                .expect("分支不存在时照常在基点新建");
+            assert_eq!(Workspace::freeze(&ws).unwrap(), fx2.base);
+            assert_eq!(fx2.branch_tip(), fx2.base, "新建分支必须落在基点");
+        });
+        assert!(
+            !logs.contains("workspace.retry_rebuilt_unfrozen"),
+            "分支不存在时不得触发重建：{logs}"
+        );
+    }
+
+    // ---------- 验收 10：重建路径的回滚 ----------
+
+    /// 验收 10：重试形态入口重建成功后，注册表目录被占成普通文件（写记录必失败）→
+    /// 返回 Store 错误且文案含「回滚」，worktree 目录已回滚，**本次新建的分支已被
+    /// 删除**（不留无记录残骸——孤儿扫描以注册表为唯一索引，它会永远看不见残骸，
+    /// 同一 task 再 ensure 永久报错）。
+    /// 错实现 F（重建路径不回滚分支 → 留下无记录残骸）→ 这条红。
+    #[test]
+    fn ac18_rebuild_rollback_removes_the_branch_it_just_created() {
+        let fx = AdoptionRepo::with_foreign_branch("ac18-rollback");
+        let registry = fx.spec.repo.join(".git").join("devforge-workspaces");
+        std::fs::write(&registry, b"not a dir").unwrap();
+
+        let err = Workspace::ensure_with_candidate_on_retry(&fx.spec, None)
+            .expect_err("注册表写失败必须报错");
+        assert!(matches!(err, DevforgeError::Store(_)), "应是 Store 错误：{err:?}");
+        assert!(err.to_string().contains("回滚"), "文案要点明已回滚：{err}");
+        assert!(
+            !Workspace::target_path(&fx.spec).exists(),
+            "worktree 应已回滚"
+        );
+        let listed = raw_git(&fx.spec.repo, &["branch", "--list", "task/ac18-rollback"]);
+        assert!(
+            !listed.contains("task/ac18-rollback"),
+            "本次新建的分支应已回滚删除（不留无记录残骸）：{listed}"
         );
     }
 }

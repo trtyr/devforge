@@ -515,6 +515,40 @@ mod acceptance {
                 _dir: dir,
             }
         }
+
+        /// 任务分支停在基点（上一轮没产生提交）。
+        fn with_branch_at_base(task_id: &str) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let repo = dir.path().to_path_buf();
+            raw_git(&repo, &["init", "-q", "-b", "main"]);
+            std::fs::write(repo.join("a.rs"), "fn a() {}\n").unwrap();
+            raw_git(&repo, &["add", "-A"]);
+            raw_git(
+                &repo,
+                &[
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@localhost",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "base",
+                ],
+            );
+            let base = rev_parse(&repo, "HEAD");
+            raw_git(&repo, &["branch", &format!("task/{task_id}"), &base]);
+            Self {
+                spec: crate::workspace::WorkspaceSpec {
+                    repo: repo.clone(),
+                    task_id: task_id.to_string(),
+                    base_rev: base.clone(),
+                },
+                base: base.clone(),
+                tip: base,
+                _dir: dir,
+            }
+        }
     }
 
     impl Drop for BranchFixture {
@@ -646,5 +680,211 @@ mod acceptance {
         let ws = crate::workspace::Workspace::create_with_candidate(&fx.spec, None).unwrap();
         assert_eq!(ws.freeze().unwrap(), fx.base, "读失败后 run 照常起工作区");
         assert_eq!(ws.base_rev, fx.base);
+    }
+
+    // ---------- 验收 6：首次语义（attempt = 0 / 1）仍然拒绝 ----------
+
+    /// 验收 6：change_engine 侧 attempt = 1 或 attempt = 0 且同一脏分支现场（无候选）
+    /// → 返回 Store 错误，文案含「非基点也非冻结候选」与「人工核验」；分支 tip 不变、
+    /// worktree 未创建、**无** `workspace.retry_rebuilt_unfrozen` 留痕
+    /// （首次语义完全不变）。
+    /// 错实现 A（分派把 attempt <= 1 也当重试 → 首次语义被改写）→ 这条红。
+    #[test]
+    fn ac17_first_attempt_still_rejects_the_unfrozen_branch() {
+        for attempt in [0u32, 1u32] {
+            let fx = BranchFixture::with_candidate_branch(&format!("ac17-first-{attempt}"));
+            let before = fx.tip.clone();
+
+            let logs = capture_tracing(|| {
+                let err = ensure_workspace(&fx.spec, None, attempt)
+                    .expect_err("首次语义必须仍拒绝脏分支");
+                assert!(matches!(err, DevforgeError::Store(_)), "应是 Store 错误：{err:?}");
+                let msg = err.to_string();
+                assert!(msg.contains("非基点也非冻结候选"), "文案要点明既非基点也非候选：{msg}");
+                assert!(msg.contains("人工核验"), "文案要指向人工核验：{msg}");
+                assert!(
+                    !crate::workspace::Workspace::target_path(&fx.spec).exists(),
+                    "拒绝时不得创建 worktree"
+                );
+            });
+            assert_eq!(
+                rev_parse(&fx.spec.repo, &format!("task/{}", fx.spec.task_id)),
+                before,
+                "拒绝时不得改写分支 tip（attempt={attempt}）"
+            );
+            assert!(
+                !logs.contains("workspace.retry_rebuilt_unfrozen"),
+                "首次语义不得触发重建留痕（attempt={attempt}）：{logs}"
+            );
+        }
+    }
+
+    // ---------- 验收 7：重试语义（attempt = 2 / 3）重建未冻结遗留分支 ----------
+
+    /// 验收 7：change_engine 侧 attempt = 2 或 attempt = 3 且同一脏分支现场（无候选）
+    /// → 重建成功、worktree HEAD == 基点、分支 tip 回到基点、留痕含完整 tip sha。
+    /// 错实现 B（分派不认 attempt >= 2 / 重试入口没接上）→ 这条红。
+    #[test]
+    fn ac18_retry_attempt_rebuilds_the_unfrozen_branch() {
+        for attempt in [2u32, 3u32] {
+            let fx = BranchFixture::with_candidate_branch(&format!("ac18-retry-{attempt}"));
+            let dirty_tip = fx.tip.clone();
+
+            let logs = capture_tracing(|| {
+                let ws = ensure_workspace(&fx.spec, None, attempt)
+                    .expect("重试语义应重建未冻结遗留分支");
+                assert!(ws.path.exists(), "重建后 worktree 目录应存在");
+                assert_eq!(
+                    ws.freeze().unwrap(),
+                    fx.base,
+                    "重建后的 worktree HEAD 必须落在基点"
+                );
+            });
+            assert_eq!(
+                rev_parse(&fx.spec.repo, &format!("task/{}", fx.spec.task_id)),
+                fx.base,
+                "未冻结遗留分支应被删掉并在基点重建（attempt={attempt}）"
+            );
+            assert!(
+                logs.contains("workspace.retry_rebuilt_unfrozen"),
+                "重建必须留痕（attempt={attempt}）：{logs}"
+            );
+            assert!(
+                logs.contains(&dirty_tip),
+                "留痕必须带完整 tip sha（attempt={attempt}，{dirty_tip}）：{logs}"
+            );
+        }
+    }
+
+    // ---------- 验收 7：重试语义 + 有可用冻结候选 → 收养 ----------
+
+    /// 验收 7 后半：change_engine 侧 attempt = 2 且有合法冻结候选（等于分支 tip）
+    /// → 收养（worktree HEAD == 候选 tip）、分支 tip 不变、**无**重建留痕
+    /// （F2 行为未被本刀改写）。
+    /// 错实现 C（重试入口见候选非 None 也删分支 / 重建抢在收养之前）→ 这条红。
+    #[test]
+    fn ac19_retry_attempt_with_a_valid_candidate_adopts_instead_of_rebuilding() {
+        let fx = BranchFixture::with_candidate_branch("ac19-adopt");
+        let before = fx.tip.clone();
+
+        let logs = capture_tracing(|| {
+            let ws = ensure_workspace(&fx.spec, Some(&before), 2)
+                .expect("有可用冻结候选时重试语义应走收养");
+            assert_eq!(
+                ws.freeze().unwrap(),
+                before,
+                "收养：worktree HEAD 落在候选 tip"
+            );
+        });
+        assert_eq!(
+            rev_parse(&fx.spec.repo, &format!("task/{}", fx.spec.task_id)),
+            before,
+            "收养不得改写分支 tip"
+        );
+        assert!(
+            !logs.contains("workspace.retry_rebuilt_unfrozen"),
+            "有可用候选时不得走重建路径：{logs}"
+        );
+    }
+
+    // ---------- 验收 9：重试上下文 + 分支不在基点 → 行为不变 ----------
+
+    /// 验收 9：change_engine 侧 attempt = 2 且「分支不存在」/「分支 tip == 基点」
+    /// → 行为与现状一致（worktree 在基点建/挂载），**无**重建留痕。
+    /// 错实现 D（重试入口见分支就删 / 见非基点就重建）→ 这条红。
+    #[test]
+    fn ac20_retry_context_without_a_branch_or_at_base_does_not_rebuild() {
+        // (a) 分支不存在
+        let fx = BranchFixture::without_branch("ac20-absent");
+        let logs = capture_tracing(|| {
+            let ws = ensure_workspace(&fx.spec, None, 2).expect("分支不存在时照常在基点新建");
+            assert_eq!(ws.freeze().unwrap(), fx.base);
+        });
+        assert!(
+            !logs.contains("workspace.retry_rebuilt_unfrozen"),
+            "分支不存在时不得触发重建：{logs}"
+        );
+
+        // (b) 分支停在基点
+        let fx2 = BranchFixture::with_branch_at_base("ac20-at-base");
+        let logs = capture_tracing(|| {
+            let ws = ensure_workspace(&fx2.spec, None, 2).expect("分支停在基点时照常挂载复用");
+            assert_eq!(ws.freeze().unwrap(), fx2.base);
+        });
+        assert!(
+            !logs.contains("workspace.retry_rebuilt_unfrozen"),
+            "分支停在基点时不得触发重建：{logs}"
+        );
+    }
+
+    // ---------- 验收 8：run_with_retry 合成接线（线程本地 attempt 真的到位） ----------
+
+    /// 验收 8：**真过** `crate::engine::policy::run_with_retry`（`RetryPolicy::fast()`、
+    /// 未取消）的合成接线用例——第 1 次尝试造出「tip≠base、无候选」的脏分支后返回
+    /// 基础设施故障（`DevforgeError::System` = 可重启），第 2 次尝试调分派函数时
+    /// **线程本地 attempt 已经到 2**（重试层每次尝试开始时写入）→ 走重试入口：
+    /// 重建成功、worktree HEAD == 基点、留痕含 tip sha。
+    ///
+    /// 整条用例不 spawn 任何子进程。写死 `set_attempt(2)` 的错实现会退化成纯注入、
+    /// 不再证明 F6 现场——所以这里必须让 attempt 由重试层写、由本用例读。
+    /// 错实现 E（分派读错 attempt 源 / 重试入口没接上）→ 这条红。
+    #[test]
+    fn ac21_run_with_retry_reaches_the_retry_entry_on_the_second_attempt() {
+        let fx = BranchFixture::with_candidate_branch("ac21-wiring");
+        let dirty_tip = fx.tip.clone();
+        let policy = crate::engine::policy::RetryPolicy::fast();
+        let control = crate::domain::runner::RunControl::new();
+
+        let logs = capture_tracing(|| {
+            let (result, attempts) = crate::engine::policy::run_with_retry(
+                &policy,
+                &control,
+                |attempt| {
+                    if attempt == 1 {
+                        // 第 1 次尝试：制造基础设施故障（System = 可重启）→ 重试层进第 2 次。
+                        // 现场已经是「tip≠base、无候选」的脏分支。
+                        return Err(DevforgeError::System("模拟基础设施故障".into()));
+                    }
+                    // 第 2 次尝试：attempt 只能从线程本地读（重试层每次尝试开始时写入）。
+                    // 这里读的就是生产调用点用的同一个来源（current_attempt）。
+                    let attempt_now = current_attempt();
+                    assert_eq!(
+                        attempt_now, attempt,
+                        "线程本地 attempt 必须等于本次尝试号（否则重试判定读错了源）"
+                    );
+                    let ws = ensure_workspace(&fx.spec, None, attempt_now)?;
+                    assert_eq!(
+                        ws.freeze().unwrap(),
+                        fx.base,
+                        "重试入口必须在基点重建"
+                    );
+                    Ok(crate::domain::runner::RunOutcome::Completed)
+                },
+            );
+            assert_eq!(attempts, 2, "应当失败一次后重试一次");
+            assert!(result.is_ok(), "第 2 次尝试应当成功：{result:?}");
+        });
+
+        assert!(
+            logs.contains("workspace.retry_rebuilt_unfrozen"),
+            "第 2 次尝试应留下重建留痕：{logs}"
+        );
+        assert!(
+            logs.contains(&dirty_tip),
+            "留痕必须带完整 tip sha（{dirty_tip}）：{logs}"
+        );
+        assert_eq!(
+            logs.matches("workspace.retry_rebuilt_unfrozen").count(),
+            1,
+            "只有第 2 次尝试可以重建（第 1 次尝试的日志里不得出现重建留痕）：{logs}"
+        );
+        assert_eq!(
+            rev_parse(&fx.spec.repo, &format!("task/{}", fx.spec.task_id)),
+            fx.base,
+            "未冻结遗留分支应被删掉并在基点重建"
+        );
+
+        // 线程本地 attempt 用完归零（不污染同线程后续用例；--test-threads=1 时尤其重要）
+        crate::observability::set_attempt(0);
     }
 }

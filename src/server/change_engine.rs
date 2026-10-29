@@ -130,13 +130,14 @@ impl BuiltinRpcEngine {
                 // 上一轮冻结的候选（断点续跑靠它收养候选分支）：读不到 → None，
                 // 沿用旧口径（分支停在基点才复用）；形状门在 workspace 层做，这里只交原文。
                 let frozen_candidate = read_frozen_candidate(&task_root);
-                let ws = crate::workspace::Workspace::ensure_with_candidate(
+                let ws = ensure_workspace(
                     &crate::workspace::WorkspaceSpec {
                         repo: task.workspace.clone(),
                         task_id: task.id.clone(),
                         base_rev: base,
                     },
                     frozen_candidate.as_deref(),
+                    current_attempt(),
                 )?;
                 tracing::info!(
                     component = "change-engine",
@@ -406,6 +407,46 @@ impl BuiltinRpcEngine {
             }
             Err(e) => crate::engine::policy::map_intervention(control, "change-engine", e),
         }
+    }
+}
+
+/// 当前线程的重试上下文尝试号（**生产调用点的唯一 attempt 来源**）。
+///
+/// 取自线程本地的 `crate::observability::attempt()`：run 起点置 1、每次尝试开始时被
+/// 重试层覆写、run 结束归 0。抽成具名函数是为了让「attempt 来源」只有一个入口——
+/// 接线用例直接断言它，从而钉住「重试层的 attempt 真的到达了判定点」。
+fn current_attempt() -> u32 {
+    crate::observability::attempt()
+}
+
+/// worktree 入口的分派：按 attempt 选「首次语义」还是「重试语义」。
+///
+/// - `attempt <= 1`（首次尝试 / 无 run 上下文）：沿用 F2 口径——分支停在基点才复用，
+///   停在冻结候选才收养，其余一律拒绝并指向人工核验。**一字不改**。
+/// - `attempt >= 2`（run 因基础设施故障中途死亡后的自动重试）：任务分支的 tip 既不是
+///   基点、又**没有可用的冻结候选**时，说明上一轮死在 coding 中途、freeze 从未发生——
+///   那批中间产物按定义未经 testing 验证、不可信，正确语义是**重派生**（删掉未冻结
+///   遗留分支、在基点重建）。有可用冻结候选时**不删**（候选提交只靠该分支可达，
+///   删了就成孤儿），仍走收养。
+///
+/// attempt 的真源是 `crate::observability::attempt()`（线程本地）：run 起点置 1、每次
+/// 尝试开始时被重试层覆写、run 结束归 0。**不读** runstate 的 attempt——那个值按
+/// `(project, task, sop)` 存而非按 run 存：非 fresh 的新 run（attempt 1）会读到上一轮
+/// 留下的陈旧值 → 误授权删除，直接违反「首次语义一字不改」。
+///
+/// 前提：attempt 是线程本地的，判定必须与 `run_with_retry` 同线程
+/// （`run_with_retry` → `engine.execute` → `run_change` → 本函数，全程同线程）。
+/// 若将来把 worktree ensure 移到别的线程/异步上下文，attempt 会读成 0 → 退回拒绝
+/// （fail-closed，不会误删分支），但重试会白烧。
+fn ensure_workspace(
+    spec: &crate::workspace::WorkspaceSpec,
+    frozen_candidate: Option<&str>,
+    attempt: u32,
+) -> Result<crate::workspace::Workspace> {
+    if attempt >= 2 {
+        crate::workspace::Workspace::ensure_with_candidate_on_retry(spec, frozen_candidate)
+    } else {
+        crate::workspace::Workspace::ensure_with_candidate(spec, frozen_candidate)
     }
 }
 
