@@ -598,6 +598,7 @@ fn contract_boundary_check(
     };
     // 自审 minor（126）：改动集口径必须含**未提交改动与未跟踪文件**——仓内 coding gate
     // 已明确点过这个盲区（只 diff 已提交会让「改完不提交」的越界完全隐身）。
+    // 唯一例外：未跟踪的**工具元数据**（仓根 `.pi/**`）不算产品改动（口径见下方解析处）。
     let mut changed: Vec<String> = committed;
     let worktree_status = std::process::Command::new("git")
         .args([
@@ -614,6 +615,22 @@ fn contract_boundary_check(
                 // porcelain 格式：XY <path>（rename 时形如 "old -> new"，两边都算改动）
                 let path = line.get(3..).unwrap_or("").trim();
                 if path.is_empty() {
+                    continue;
+                }
+                // 工具元数据豁免（SR1 run 9 实证缺陷）：pi 在自己的 cwd 写状态目录 `.pi/`
+                // （goals 归档、goal_events.jsonl 等）——那是工具元数据不是产品输出，计入
+                // 改动面会把「四步提交全对、测试全绿」的候选判死在 done 阶段。
+                //
+                // 语义边界：只豁免**未跟踪**形态（porcelain 状态码 `??`）；已跟踪的 `.pi/**`
+                // （` M` / `D` / `R` / 已提交）是显式提交行为，仍照常判越界。
+                // 窄口径：仅仓根 `.pi/` 前缀（`== ".pi"` 的裸文件不算）。
+                // 硬编码而非契约字段：pi 状态目录按定义非产品输出；契约在任务创建时即不可变，
+                // agent 侧无法给已有 task 补字段。
+                //
+                // 已知缺口：`git status` 默认 core.quotePath 会把含非 ASCII/空格的路径包引号
+                // （`?? ".pi/x.md"`），前缀判断对这种形态漏判 → 静默回到误杀。pi 产物名是
+                // ASCII，本期不踩；别把这里改成通用路径解析（会连带改掉已跟踪形态的判定）。
+                if line.starts_with("??") && path.starts_with(".pi/") {
                     continue;
                 }
                 if let Some((a, b)) = path.split_once(" -> ") {
