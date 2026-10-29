@@ -475,12 +475,175 @@ fn settings_carry_runtime_keys() {
     .unwrap();
     // P2-ISSUE-04 修复：运行时生存配置
     assert_eq!(settings["retry"]["maxRetries"], 3);
+    assert_eq!(settings["retry"]["baseDelayMs"], 5_000);
+    // 错实现形态：漏发 `retry.provider.timeoutMs`（中转挂起时无请求绝对上界，agent 挂死）
+    assert_eq!(settings["retry"]["provider"]["timeoutMs"], 600_000);
     assert_eq!(settings["httpIdleTimeoutMs"], 60_000);
     assert_eq!(settings["defaultThinkingLevel"], "high");
+    assert_eq!(settings["hideThinkingBlock"], true);
     assert_eq!(settings["compaction"]["enabled"], false);
+    assert_eq!(settings["compaction"]["reserveTokens"], 16_384);
+    assert_eq!(settings["compaction"]["keepRecentTokens"], 20_000);
     // 模型层键共存
     assert_eq!(settings["defaultProvider"], "newapi");
     assert_eq!(settings["defaultModel"], "mokeywork/deepseek-flash");
+}
+
+/// 清单 JSON（取自 builtin）改出「runtime 段只写一个字段」的形状——部分段/旧清单升级场景。
+fn manifest_json_with_runtime(runtime: serde_json::Value) -> serde_json::Value {
+    let mut v = serde_json::to_value(ConfigManifest::builtin()).unwrap();
+    v["runtime"] = runtime;
+    v
+}
+
+/// 错实现形态：runtime 段只写部分字段时，其余字段回落到零值/空串（serde 缺省丢失）
+/// → 产物 retry 键值错、思维层错。
+#[test]
+fn a_partial_runtime_segment_fills_the_pinned_defaults() {
+    let v = manifest_json_with_runtime(serde_json::json!({ "provider_timeout_ms": 90_000 }));
+    let manifest: ConfigManifest = serde_json::from_value(v).unwrap();
+    assert_eq!(manifest.runtime.max_retries, 3);
+    assert_eq!(manifest.runtime.base_delay_ms, 5_000);
+    assert_eq!(manifest.runtime.provider_timeout_ms, 90_000);
+    assert_eq!(manifest.runtime.http_idle_timeout_ms, 60_000);
+    assert_eq!(manifest.runtime.default_thinking_level, "high");
+    assert!(manifest.runtime.hide_thinking_block);
+    assert!(!manifest.runtime.compaction.enabled);
+    assert_eq!(manifest.runtime.compaction.reserve_tokens, 16_384);
+    assert_eq!(manifest.runtime.compaction.keep_recent_tokens, 20_000);
+
+    // 缺省填好后渲染产物照旧带齐三键（没裸奔）
+    let root = tempfile::tempdir().unwrap();
+    let profile = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(profile.join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings["retry"]["maxRetries"], 3);
+    assert_eq!(settings["retry"]["baseDelayMs"], 5_000);
+    assert_eq!(settings["retry"]["provider"]["timeoutMs"], 90_000);
+}
+
+/// 错实现形态：渲染器仍写死缺省常量（操作员改清单无效）→ 产物三键仍是 3/5000/600000。
+#[test]
+fn runtime_key_values_come_from_the_manifest_segment() {
+    let mut manifest = ConfigManifest::builtin();
+    manifest.runtime.max_retries = 7;
+    manifest.runtime.base_delay_ms = 1_234;
+    manifest.runtime.provider_timeout_ms = 90_000;
+    manifest.runtime.http_idle_timeout_ms = 30_000;
+    let root = tempfile::tempdir().unwrap();
+    let profile = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(profile.join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings["retry"]["maxRetries"], 7);
+    assert_eq!(settings["retry"]["baseDelayMs"], 1_234);
+    assert_eq!(settings["retry"]["provider"]["timeoutMs"], 90_000);
+    assert_eq!(settings["httpIdleTimeoutMs"], 30_000);
+}
+
+/// 错实现形态：思维层三键仍写死在渲染器（清单改不动）→ 产物三键不变。
+#[test]
+fn the_thinking_layer_is_distributed_from_the_runtime_segment() {
+    let mut manifest = ConfigManifest::builtin();
+    manifest.runtime.default_thinking_level = "medium".into();
+    manifest.runtime.compaction.enabled = true;
+    manifest.runtime.hide_thinking_block = false;
+    let root = tempfile::tempdir().unwrap();
+    // plan-agent 自身无档位覆盖（thinking_level = None）→ 落到 runtime 段的全局档位
+    let profile = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(profile.join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings["defaultThinkingLevel"], "medium");
+    assert_eq!(settings["compaction"]["enabled"], true);
+    assert_eq!(settings["hideThinkingBlock"], false);
+}
+
+/// 错实现形态：优先级反过来（runtime 全局盖过 Agent 覆盖）→ 审查 Agent 的 medium 档位丢失。
+#[test]
+fn the_agent_thinking_level_wins_over_the_runtime_segment() {
+    let mut manifest = ConfigManifest::builtin();
+    manifest.runtime.default_thinking_level = "low".into();
+    let root = tempfile::tempdir().unwrap();
+    // 审查 Agent 自身有档位覆盖（Some("medium")）→ Agent 覆盖赢
+    let review = renderer(&manifest).render_agent(root.path(), "plan-review").unwrap();
+    let rsettings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(review.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(rsettings["defaultThinkingLevel"], "medium");
+    // 无档位覆盖的 Agent（None）→ 落到 runtime 段的值
+    let agent = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(agent.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(settings["defaultThinkingLevel"], "low");
+}
+
+/// 错实现形态：第二次渲染丢了运行时层或叠了重复条目 → 两份产物不再相等。
+#[test]
+fn rendering_the_same_manifest_twice_is_byte_identical() {
+    let manifest = ConfigManifest::builtin();
+    let root = tempfile::tempdir().unwrap();
+    let r = renderer(&manifest);
+    r.render_agent(root.path(), "plan-agent").unwrap();
+    let first = fs::read_to_string(root.path().join("plan-agent/settings.json")).unwrap();
+    r.render_agent(root.path(), "plan-agent").unwrap();
+    let second = fs::read_to_string(root.path().join("plan-agent/settings.json")).unwrap();
+    assert_eq!(first, second, "同一清单连续渲染两次，settings.json 必须逐字节相等");
+
+    let settings: serde_json::Value = serde_json::from_str(&second).unwrap();
+    let retry = settings["retry"].as_object().unwrap();
+    assert_eq!(retry.len(), 3, "retry 下恰好三键，不得重复堆叠: {retry:?}");
+    let pkgs: Vec<&str> = settings["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(!pkgs.is_empty(), "packages 记录不得丢失");
+    let mut uniq = pkgs.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    assert_eq!(uniq.len(), pkgs.len(), "packages 不得出现重复项: {pkgs:?}");
+}
+
+/// 错实现形态：渲染器只做增量合并（把手工键/被改坏的值留在产物里）
+/// → 注入键仍在、timeoutMs 仍是 1。
+#[test]
+fn re_rendering_drops_hand_injected_keys_and_restores_manifest_values() {
+    let manifest = ConfigManifest::builtin();
+    let root = tempfile::tempdir().unwrap();
+    renderer(&manifest)
+        .render_agent(root.path(), "plan-agent")
+        .unwrap();
+    let path = root.path().join("plan-agent/settings.json");
+
+    // 手工注入：自定义键 + 把请求绝对超时改坏
+    let mut injected: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    injected["handInjectedKey"] = serde_json::json!("hand-made");
+    injected["retry"]["provider"]["timeoutMs"] = serde_json::json!(1);
+    fs::write(&path, serde_json::to_string_pretty(&injected).unwrap()).unwrap();
+
+    renderer(&manifest)
+        .render_agent(root.path(), "plan-agent")
+        .unwrap();
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(
+        after.get("handInjectedKey").is_none(),
+        "手工注入的键必须在重渲染后消失（渲染器独占）：{after}"
+    );
+    assert_eq!(
+        after["retry"]["provider"]["timeoutMs"], 600_000,
+        "被改坏的请求绝对超时必须恢复为清单值"
+    );
+    assert!(
+        !after["packages"].as_array().unwrap().is_empty(),
+        "packages 记录必须在重渲染后仍在"
+    );
 }
 
 #[test]
