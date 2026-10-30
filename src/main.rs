@@ -242,7 +242,7 @@ async fn main() -> anyhow::Result<()> {
     // 不认识谁还活着，不说明没人活着（2026-10-29 事故：旧二进制读不懂新词汇的 store
     // → 判坏 → 空仓冷启动 → 连杀三个活着的自家 agent）。故加载失败一律 `false`。
     let store_path = root.join("store.json");
-    let (store, store_trusted) = match devforge::domain::Store::load(&store_path) {
+    let (mut store, store_trusted) = match devforge::domain::Store::load(&store_path) {
         Ok(s) => (s.with_persist(store_path.clone()), true),
         Err(e) => {
             // 地基批次 #3：备份要如实——旧实现先 warn「已备份为 .bak」再 `let _ = rename`，
@@ -271,9 +271,38 @@ async fn main() -> anyhow::Result<()> {
                     "store.json 不存在（首次启动），按空仓冷启动"
                 );
             }
-            (devforge::domain::Store::new().with_persist(store_path), false)
+            (devforge::domain::Store::new().with_persist(store_path.clone()), false)
         }
     };
+
+    // 并发上限：进程启动期解析一次并回写 store（并发的唯一运行时真相源）——
+    // 优先级链 `DEVFORGE_MAX_CONCURRENT` > `store.max_concurrent_runs` > 缺省 2
+    // （解析与留痕在 `scheduler::apply_startup_concurrency`）。
+    //
+    // 位置约束：**必须在 store 移入 ServerState 之前**（apply 拿不到 store_path，
+    // 落盘由本段在生效值变化时显式 save）。序依赖不被打乱：并发落地只改
+    // `max_concurrent_runs`、不碰 runs → 「Running 快照 → 清僵尸 → 杀对账」不变。
+    //
+    // env 名用字面量：`src/docgen/inventory/support.rs` 按 `env::var(` 后的字面量
+    // 抽配置键（写常量会被抽成一个假配置键）。
+    let concurrency_env = std::env::var("DEVFORGE_MAX_CONCURRENT").ok();
+    let concurrency = devforge::server::scheduler::apply_startup_concurrency(
+        &mut store,
+        concurrency_env.as_deref(),
+        store_trusted,
+    );
+    // 只有生效值变了才落盘（避免每次启动无谓重写 store.json）。
+    // 落盘失败只 WARN 不阻断：内存态已生效、磁盘仍是旧值，重启会回到旧值。
+    if concurrency.previous != concurrency.value
+        && let Err(e) = store.save(&store_path)
+    {
+        tracing::warn!(
+            component = "main",
+            error = %e,
+            resolved = concurrency.value,
+            "并发生效值回写落盘失败：内存态已生效、磁盘仍是旧值，重启会回到旧值"
+        );
+    }
 
     // 活动 run 快照（启动对账安全阀的输入）：**僵尸 ≠ 孤儿**——
     // 清账（`reconcile_zombie_runs`）会把 Running 全改 Failed，所以快照必须取在清账
