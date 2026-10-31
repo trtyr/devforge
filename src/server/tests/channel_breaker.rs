@@ -14,6 +14,7 @@ use crate::server::scheduler::{
     CHANNEL_BREAKER_TTL_RATE_LIMIT_MS,
 };
 use crate::server::scheduler::status as scheduler_status;
+use super::{body_json, send};
 
 /// 记下的熔断条目在落盘 → 读回后渠道、到期时刻、原因摘要逐项相等。
 #[test]
@@ -377,7 +378,9 @@ async fn an_unattributable_incident_records_no_breaker_but_emits_a_warn_event() 
     let f = super::fixture();
     make_task(&f, "devforge", "chan-b", "change");
     let run_id = fail_run(&f, "devforge", "chan-b", "402 Payment Required");
-    tick(&f.state, &SchedulerConfig::default());
+    // 同渠道的待派任务：归因不出就不熔断 → 照常派发。
+    make_task(&f, "devforge", "chan-b1", "change");
+    let report = tick(&f.state, &SchedulerConfig::default());
 
     assert!(breakers(&f).is_empty(), "归因不出就不熔断：{:?}", breakers(&f));
     assert_eq!(event_count(&f, "scheduler.channel_breaker_unattributed"), 1);
@@ -386,6 +389,29 @@ async fn an_unattributable_incident_records_no_breaker_but_emits_a_warn_event() 
         .find(|e| e["type"] == "scheduler.channel_breaker_unattributed")
         .unwrap();
     assert_eq!(evt["run_id"], run_id.as_str());
+    assert!(
+        report
+            .dispatched
+            .iter()
+            .any(|(p, t)| p == "devforge" && t == "chan-b1"),
+        "同渠道任务照常派发（不可归因 ≠ 渠道死亡）：{report:?}"
+    );
+}
+
+/// 「路径 + 行号」形态的失败在扫描层也不熔断（签名层已拒，扫描层不再触发）。
+#[tokio::test]
+async fn a_path_and_line_number_failure_trips_no_breaker() {
+    let f = super::fixture();
+    make_task(&f, "devforge", "chan-p", "change");
+    fail_run(
+        &f,
+        "devforge",
+        "chan-p",
+        "越界改动：3 个文件超出契约 owned_paths：src/domain/store.rs:402",
+    );
+    tick(&f.state, &SchedulerConfig::default());
+    assert!(breakers(&f).is_empty(), "路径行号形态不熔断：{:?}", breakers(&f));
+    assert_eq!(event_count(&f, "scheduler.channel_breaker_tripped"), 0);
 }
 
 /// 质量失败不是渠道事故 → 不熔断。
@@ -399,9 +425,18 @@ async fn a_quality_failure_trips_no_breaker() {
         "chan-c",
         "change-plan-agent 连续 4 次未输出 <stage-complete>N（已追补 3 次），判定为质量失败（不自动重启）",
     );
-    tick(&f.state, &SchedulerConfig::default());
+    // 同渠道的待派任务：质量失败不熔断 → 照常派发。
+    make_task(&f, "devforge", "chan-c1", "change");
+    let report = tick(&f.state, &SchedulerConfig::default());
     assert!(breakers(&f).is_empty(), "质量失败不熔断：{:?}", breakers(&f));
     assert_eq!(event_count(&f, "scheduler.channel_breaker_tripped"), 0);
+    assert!(
+        report
+            .dispatched
+            .iter()
+            .any(|(p, t)| p == "devforge" && t == "chan-c1"),
+        "同渠道任务照常派发：{report:?}"
+    );
 }
 
 /// 扫描窗口基准是 `ended_at_ms`：跑了很久才 402 的 run 仍在窗口内。
@@ -619,6 +654,12 @@ async fn a_task_on_a_cooling_channel_is_blocked_and_stays_pending() {
         "理由带渠道 id：{reason}"
     );
     assert!(reason.ends_with("s)"), "理由带剩余秒数：{reason}");
+    let secs: u64 = reason
+        .trim_start_matches("channel_cooldown(deepseek-flash,")
+        .trim_end_matches("s)")
+        .parse()
+        .expect("理由串里的秒数应可解析");
+    assert!(secs >= 1, "剩余秒数 ≥ 1：{reason}");
     assert!(
         !report
             .dispatched
@@ -707,7 +748,7 @@ async fn an_expired_breaker_stops_blocking_and_the_task_is_dispatched() {
     );
 }
 
-/// 状态端点看得见「哪条渠道在冷却、还有多久、为什么」。
+/// 状态端点看得见「哪条渠道在冷却、还有多久、为什么」（走真实 HTTP 路由）。
 #[tokio::test]
 async fn the_status_endpoint_reports_the_cooling_channels() {
     let f = super::fixture();
@@ -720,7 +761,9 @@ async fn the_status_endpoint_reports_the_cooling_channels() {
     );
     tick(&f.state, &SchedulerConfig::default());
 
-    let body = scheduler_status(&f.state);
+    let resp = send(&f.router, "GET", "/api/v1/scheduler/status", None).await;
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
     let breakers_json = body["channel_breakers"].as_array().expect("应有熔断段");
     assert_eq!(breakers_json.len(), 1, "{body}");
     let entry = &breakers_json[0];
