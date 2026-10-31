@@ -377,6 +377,19 @@ fn doc_agent_prompt_carries_protocol_and_guards() {
     assert!(DOC_AGENT_PROMPT.contains("总览 / 架构 / 数据流 / Runbook"));
     assert!(DOC_AGENT_PROMPT.contains("严禁写“为什么”"));
     assert!(DOC_AGENT_PROMPT.contains("不得静默省略"));
+    // AF-4（2026-10-24 拍板）：写作节奏上移 AGENTS.md——DR-11/10④ 三条款的唯一权威在这里，
+    // kickoff 不再带副本（副本漂移病根拔除）。
+    assert!(DOC_AGENT_PROMPT.contains("writing-rhythm"), "节奏节要在: {DOC_AGENT_PROMPT}");
+    assert!(DOC_AGENT_PROMPT.contains("边读边写"));
+    assert!(DOC_AGENT_PROMPT.contains("批量写出"));
+    assert!(DOC_AGENT_PROMPT.contains("30K tokens"));
+    assert!(DOC_AGENT_PROMPT.contains("枢纽文档最后写"));
+    assert!(DOC_AGENT_PROMPT.contains("禁止全部看完再动笔"));
+    // AF-1：开工步骤对齐作业本口径（不再是全量清单）
+    assert!(
+        DOC_AGENT_PROMPT.contains("单元作业本"),
+        "开工步骤要指向单元作业本: {DOC_AGENT_PROMPT}"
+    );
 }
 
 #[test]

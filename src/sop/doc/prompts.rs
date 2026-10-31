@@ -30,13 +30,13 @@ pub fn doc_kickoff(
             "清单：{META_DIR}/inventory.json（先读它，本单元包含哪些文件/符号/入口）"
         ),
     };
+    // AF-4 定稿：纯变量工单，零纪律常量——节奏/批量写/事实推断分离等纪律的唯一
+    // 权威在 AGENTS.md（DOC_AGENT_PROMPT），kickoff 只点名权威位置（副本漂移病根拔除）。
     format!(
         "你是文档 Agent：本单元 `{unit}`（档位 `{doc_level}`）。\
 \n目标仓库（只读，除了产出目录）：{}\n产出目录：{DOCS_DIR}/（本单元的所有文档写这里；元数据写 {META_DIR}/）\
 \n{scope_line}\
-\n节奏（DR-11 穿插推进，强制）：按源文件粒度边读边写——读完一个源文件，立即在同回合批量写出它的全部文档（多个写调用并行、路径不相交），再进入下一个源文件；本单元的 index/runbook/overview 等枢纽文档压轴最后写（依赖全部叶子）；单回合写入总量 ≤30K tokens 超限拆回合。禁止全部看完再动笔。\
-\n纪律：只写 {DOCS_DIR}/ 下；codegraph-first；勘察只记事实、解释标 🟢/🟡/🔴；按 doc-contract 写、不适用写 N/A。\
-\n交审前自检后用 <doc-complete>{unit}</doc-complete> 收尾。",
+\n按你的纪律干（AGENTS.md：写作节奏/事实推断分离/契约与 N/A，以它为唯一权威），交审前自检，完成后交 <doc-complete>{unit}</doc-complete>。",
         repo.display()
     )
 }

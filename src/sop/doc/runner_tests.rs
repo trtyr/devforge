@@ -136,13 +136,21 @@ fn first_unit_overdue_warns_exactly_once() {        // DR-4：开跑超阈值仍
 }
 
 #[test]
-fn kickoff_carries_interleave_and_batch_rules() {
-    // DR-11/DR-10④：kickoff 必须带穿插节奏与批量写预算护栏（合同 §七 同款）
+fn kickoff_carries_no_discipline_constants() {
+    // AF-4（2026-10-24 拍板）：纪律常量上移 AGENTS.md（唯一权威），kickoff 定稿纯变量工单——
+    // 副本漂移病根拔除：同一规则不再有两个生效层。
     let k = doc_kickoff(Path::new("/repo"), "unit-x", "complete", None);
-    assert!(k.contains("穿插推进"), "要带穿插节奏条款: {k}");
-    assert!(k.contains("批量写出"), "要带同回合批量写: {k}");
-    assert!(k.contains("30K tokens"), "要带输出预算护栏: {k}");
-    assert!(k.contains("压轴最后写"), "枢纽压轴规则要在: {k}");
+    for banned in ["穿插推进", "批量写出", "30K tokens", "压轴最后写", "codegraph-first", "doc-contract"] {
+        assert!(!k.contains(banned), "kickoff 不再携带纪律常量「{banned}」: {k}");
+    }
+    assert!(k.contains("AGENTS.md"), "要点名纪律唯一权威位置: {k}");
+    assert!(
+        k.contains("<doc-complete>unit-x</doc-complete>"),
+        "完成协议提醒要在: {k}"
+    );
+    // 变量照旧：单元号/档位/仓库/产出目录都在（事实不是纪律）
+    assert!(k.contains("unit-x") && k.contains("complete") && k.contains("/repo"));
+    assert!(k.contains("docs/contexts"), "产出目录（路径事实）要在: {k}");
 }
 
 #[test]
