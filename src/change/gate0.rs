@@ -68,6 +68,23 @@ pub fn ensure_baseline(repo: &Path, out_dir: &Path) -> Result<Baseline> {
                         record.display()
                     )));
                 }
+                // F7（selfhost 台账 2026-11-01）：锚点存活 ≠ 锚点在当前历史——
+                // rebase/amend/force-push 会把旧基线吹成分叉悬挂对象（cat-file 仍可见），
+                // 而 diff baseline..HEAD 会把分叉侧改动当成本变更改动（语义已坏）。
+                // 不在 HEAD 祖先里 = 与死锚点同口径报错，不静默重锚。
+                let anc = Command::new("git")
+                    .args(["merge-base", "--is-ancestor", &sha, "HEAD"])
+                    .current_dir(repo)
+                    .output()
+                    .map_err(|e| {
+                        DevforgeError::System(format!("执行 git merge-base 失败：{e}"))
+                    })?;
+                if !anc.status.success() {
+                    return Err(DevforgeError::System(format!(
+                        "基线锚点 {sha} 不在当前 HEAD 历史中（rebase/amend 分叉？）——diff 语义已坏，不静默重锚；确认后删除 {} 可重建基线",
+                        record.display()
+                    )));
+                }
                 tracing::info!(
                     component = "change-gate0",
                     event = "baseline.reused",

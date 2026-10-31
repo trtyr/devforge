@@ -106,6 +106,70 @@ fn corrupt_baseline_record_is_rejected_not_reanchored() {
     assert!(err.to_string().contains("不是合法 commit id"), "{err}");
 }
 
+/// F7（selfhost 台账 2026-11-01）：锚点存活但**不在当前 HEAD 历史**（rebase/amend
+/// 分叉出的悬挂对象，cat-file 仍可见）→ diff 语义已坏，必须报错不静默重锚。
+#[test]
+fn baseline_sha_alive_but_off_history_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+    let out = tmp.path().join("changes/c1");
+    let first = ensure_baseline(&repo, &out).unwrap();
+
+    // amend 产生分叉：旧基线 sha 悬挂存活（cat-file 可见）但不在新 HEAD 历史
+    std::fs::write(repo.join("src/a.rs"), "a\nb\n").unwrap();
+    let amend = Command::new("git")
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@localhost",
+            "commit",
+            "-q",
+            "--amend",
+            "--no-edit",
+            "--allow-empty",
+        ])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        amend.status.success(),
+        "{}",
+        String::from_utf8_lossy(&amend.stderr)
+    );
+    let new_head = git(&repo, &["rev-parse", "HEAD"]);
+    assert_ne!(first.sha, new_head, "amend 后 HEAD 必须变化");
+    // 悬挂对象仍可见（cat-file 过）——正是 cat-file 校验挡不住的形态
+    git(&repo, &["cat-file", "-e", &format!("{}^{{commit}}", first.sha)]);
+
+    let err = ensure_baseline(&repo, &out).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("不在当前 HEAD 历史"), "{msg}");
+    // 文件未被重写（不静默重锚）
+    assert_eq!(
+        std::fs::read_to_string(out.join("baseline.txt")).unwrap().trim(),
+        first.sha
+    );
+}
+
+/// 正路径回归：正常的按步提交（基线在 HEAD 祖先里）必须继续放行——
+/// F7 校验不得误伤复用主路径。
+#[test]
+fn ancestor_baseline_still_reused_after_step_commits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+    let out = tmp.path().join("changes/c1");
+    let first = ensure_baseline(&repo, &out).unwrap();
+    std::fs::write(repo.join("src/a.rs"), "a\nb\n").unwrap();
+    commit_all(&repo, "change: c step 1");
+    let second = ensure_baseline(&repo, &out).unwrap();
+    assert_eq!(second.sha, first.sha, "祖先基线照常复用");
+}
+
 /// 自审 major 回归：死锚点（sha 在仓里已不存在）当场报错，不留给远处门禁，
 /// 也不静默重锚。
 #[test]
