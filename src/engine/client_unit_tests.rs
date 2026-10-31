@@ -28,6 +28,77 @@ fn tool_end_event(is_error: bool, result_text: &str) -> EventRecord {
     .expect("事件构造合法")
 }
 
+/// T207 回归：工具调用摘要必须能回答「它到底干了什么」。
+///
+/// 错实现形态：①args 里有 command 却不提取 → 摘要为空/整坨 JSON；
+/// ②结果里有 exitCode 却不报 → 退出码丢失；③取不到退出码就编一个 → 撒谎。
+#[test]
+fn tool_call_detail_extracts_the_command() {
+    let args = serde_json::json!({"command": "cd /repo && cargo test --lib"});
+    assert_eq!(
+        tool_call_detail(Some(&args)),
+        "cd /repo && cargo test --lib"
+    );
+}
+
+/// T207 回归：非 bash 工具（read/write/edit）按 path/file_path 提摘要。
+#[test]
+fn tool_call_detail_falls_back_to_the_path_key() {
+    let args = serde_json::json!({"file_path": "src/server/mod.rs"});
+    assert_eq!(tool_call_detail(Some(&args)), "src/server/mod.rs");
+}
+
+/// T207 回归：没有 args 时摘要为空（不编造）。
+#[test]
+fn tool_call_detail_is_empty_when_args_absent() {
+    assert_eq!(tool_call_detail(None), "");
+}
+
+/// T207 回归：结果摘要 + 退出码都得出。
+#[test]
+fn tool_result_detail_reports_exit_code_and_tail() {
+    let result = serde_json::json!({
+        "content": [{"type": "text", "text": "running 1085 tests\ntest result: ok. 1085 passed"}],
+        "details": {"exitCode": 0}
+    });
+    let (detail, code) = tool_result_detail(Some(&result));
+    assert_eq!(code, 0);
+    assert!(detail.contains("1085 passed"), "{detail}");
+}
+
+/// T207 回归：取不到退出码必须报 -1，**不许编**。
+#[test]
+fn tool_result_detail_never_invents_an_exit_code() {
+    let result = serde_json::json!({"content": [{"type": "text", "text": "done"}]});
+    let (_, code) = tool_result_detail(Some(&result));
+    assert_eq!(code, -1, "取不到退出码必须报 -1，不许编");
+}
+
+/// T207 回归：摘要必须限长且单行（不许把日志糊成 transcript）。
+#[test]
+fn tool_detail_is_truncated_and_single_line() {
+    let long = "x".repeat(1000);
+    let args = serde_json::json!({"command": long});
+    let detail = tool_call_detail(Some(&args));
+    assert!(
+        detail.chars().count() <= TOOL_DETAIL_MAX,
+        "摘要超长：{}",
+        detail.chars().count()
+    );
+    let result = serde_json::json!({"content": [{"type": "text", "text": "a\nb\nc"}]});
+    let (detail, _) = tool_result_detail(Some(&result));
+    assert!(!detail.contains('\n'), "摘要必须单行：{detail}");
+}
+
+/// T207 回归：退出码字段名兼容 exitCode / exit_code 两种写法。
+#[test]
+fn exit_code_key_variants_are_both_recognized() {
+    let snake = serde_json::json!({"details": {"exit_code": 101}});
+    assert_eq!(tool_result_detail(Some(&snake)).1, 101);
+    let camel = serde_json::json!({"exitCode": 2});
+    assert_eq!(tool_result_detail(Some(&camel)).1, 2);
+}
+
 #[test]
 fn path_guard_denial_is_detected_by_prefix() {
     let e = tool_end_event(true, "[path-guard] /x/y 不在 write 允许列表内（允许：src/**）");

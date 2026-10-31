@@ -54,6 +54,95 @@ pub struct RpcClient {
     ledger_pid: Option<u32>,
 }
 
+/// T207：工具调用摘要的长度上限（够看清「干了什么」，又不把日志糊成 transcript）。
+const TOOL_DETAIL_MAX: usize = 240;
+
+/// T207：把一段文本压成单行摘要（截尾 + 净化控制字符/ANSI）。
+///
+/// 取**尾部**而非头部：bash 的命令回显已经在 start 侧的 detail 里，
+/// 结果尾部才是信息量最大的部分（测试汇总、exit code、错误末行）。
+fn one_line_tail(s: &str) -> String {
+    let count = s.chars().count();
+    let tail: String = if count <= TOOL_DETAIL_MAX {
+        s.to_string()
+    } else {
+        s.chars().skip(count - TOOL_DETAIL_MAX).collect()
+    };
+    crate::error::sanitize_untrusted(&tail)
+}
+
+/// T207：从工具调用的 args 里抽一行摘要（它到底要干什么）。
+///
+/// 不编造：已知键（command/path/file_path/pattern/url/query）取其字符串值；
+/// 都没有就退回 args 的压缩 JSON 片段。
+fn tool_call_detail(args: Option<&serde_json::Value>) -> String {
+    const PREFERRED: [&str; 6] = ["command", "path", "file_path", "pattern", "url", "query"];
+    let Some(args) = args else {
+        return String::new();
+    };
+    if let Some(obj) = args.as_object() {
+        for key in PREFERRED {
+            if let Some(v) = obj.get(key).and_then(|v| v.as_str())
+                && !v.trim().is_empty()
+            {
+                return one_line_tail(v);
+            }
+        }
+    }
+    one_line_tail(&args.to_string())
+}
+
+/// T207：递归找结果里的退出码字段（深度有界；**取不到就不编**，返回 None）。
+fn find_exit_code(v: &serde_json::Value) -> Option<i64> {
+    fn walk(v: &serde_json::Value, depth: usize) -> Option<i64> {
+        const MAX_DEPTH: usize = 4;
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        match v {
+            serde_json::Value::Object(map) => {
+                for key in ["exitCode", "exit_code", "exitStatus", "exit_status"] {
+                    if let Some(n) = map.get(key).and_then(|x| x.as_i64()) {
+                        return Some(n);
+                    }
+                }
+                map.values().find_map(|val| walk(val, depth + 1))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().find_map(|item| walk(item, depth + 1))
+            }
+            _ => None,
+        }
+    }
+    walk(v, 0)
+}
+
+/// T207：收集工具结果里的文本（content[].text → text → 原样 JSON）。
+fn collect_result_text(result: &serde_json::Value) -> String {
+    if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
+        let parts: Vec<&str> = content
+            .iter()
+            .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+            .collect();
+        if !parts.is_empty() {
+            return parts.join(" ");
+        }
+    }
+    if let Some(t) = result.get("text").and_then(|v| v.as_str()) {
+        return t.to_string();
+    }
+    result.to_string()
+}
+
+/// T207：从工具结果里抽（摘要, 退出码）。退出码取不到时为 -1（**不编造**）。
+fn tool_result_detail(result: Option<&serde_json::Value>) -> (String, i64) {
+    let Some(result) = result else {
+        return (String::new(), -1);
+    };
+    let code = find_exit_code(result).unwrap_or(-1);
+    (one_line_tail(&collect_result_text(result)), code)
+}
+
 impl RpcClient {
     /// spawn 子 pi 进程（RPC 模式）。台账条目由调用方立即落盘（预防孤儿）。
     pub fn spawn(spec: SpawnSpec) -> Result<Self> {
@@ -553,6 +642,7 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
     ) {
         match e.r#type.as_str() {
             "tool_execution_start" => {
+                let detail = tool_call_detail(e.extra.get("args"));
                 let tool = e
                     .extra
                     .get("toolName")
@@ -570,10 +660,17 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
                     role = %self.spec.role,
                     tool = %tool,
                     phase = "start",
+                detail = %detail,
                     "工具调用开始"
                 );
             }
             "tool_execution_end" => {
+                let (detail, code) = tool_result_detail(e.extra.get("result"));
+                let is_error = e
+                    .extra
+                    .get("isError")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let tool = e
                     .extra
                     .get("toolName")
@@ -595,6 +692,9 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
                     tool = %tool,
                     phase = "end",
                     ms = ms,
+                    detail = %detail,
+                    exit_code = code,
+                    is_error = is_error,
                     "工具调用结束"
                 );
                 // P012 · path-guard 事件回流：被插件拦截的调用（isError + reason 前缀约定）
