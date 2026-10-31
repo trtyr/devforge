@@ -8,11 +8,13 @@
 //!
 //! 派工决策（tick，纯函数可测）与派工执行（`launch`，async：渲染闸门等待）分离。
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::config::ConfigManifest;
 use crate::domain::run::RunStatus;
 use crate::domain::task::TaskStatus;
 use crate::domain::now_ms;
@@ -85,6 +87,47 @@ fn mark_fused(run_id: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(run_id.to_string());
+}
+
+/// 渠道事故去重集（进程级，仿 `fused_runs`）。
+///
+/// 不去重则每次 tick（30s 周期）都会把到期时间推到 now + TTL——熔断永不过期，
+/// 而且每次都重写整份 store.json、事件反复刷屏。去重后同一次失败只处置一次，
+/// `expires_at_ms` 也就不随 tick 推进（验收标准：连扫三次到期时刻完全相同）。
+///
+/// 键带语义前缀（`incident:` / `cooldown:`）：同一个集合服务两种去重语义，互不干扰。
+fn channel_seen_runs() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 该 run 在给定语义下是否已处置过。
+fn channel_run_seen(kind: &str, run_id: &str) -> bool {
+    channel_seen_runs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&format!("{kind}:{run_id}"))
+}
+
+/// 标记该 run 在给定语义下已处置过。
+fn mark_channel_run_seen(kind: &str, run_id: &str) {
+    channel_seen_runs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(format!("{kind}:{run_id}"));
+}
+
+/// 失败原因摘要（写进熔断条目与事件）：压掉换行、截断到 200 字。
+/// 运维要的是一眼看出「为什么这条在冷却」，不是失败全文。
+fn reason_summary(reason: &str) -> String {
+    const MAX: usize = 200;
+    let flat = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= MAX {
+        return flat;
+    }
+    let head: String = flat.chars().take(MAX).collect();
+    format!("{head}…")
 }
 
 pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
@@ -185,7 +228,145 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         }));
     }
 
-    // ② 自动入集成队列：Completed + 带契约 + frozen-commit 落盘 + 队列内无此任务。
+    // ② 渠道事故扫描（gap-B）：失败 run 的原因命中渠道事故签名 → 熔断对应渠道。
+    //
+    // 触发点选 tick 而不是 `finish_run`：`finish_run` 手里只有 store，拿不到 live 清单
+    // （Store 结构体没有 manifest 字段），而归因必须知道「agent → 池条目」；
+    // tick 同时握着 store 与 ServerState.manifest。run 收尾会 kick() → 扫描延迟≈0。
+    //
+    // 锁序（风险 R5）：manifest 快照在 store 锁**之外**取，锁序恒为 manifest → store。
+    let channel_index = {
+        let manifest = st.manifest.lock().unwrap_or_else(|e| e.into_inner());
+        ChannelIndex::build(&manifest, &st.registry.ids())
+    };
+    let now = now_ms();
+    // 过期清理：TTL 到期自然解除（下轮 tick 起不再算冷却）。
+    {
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.purge_expired_channel_breakers(now);
+    }
+    // 窗口内的失败 run（窗口基准 = `ended_at_ms`：失败时刻才是事故时刻；
+    // `started_at_ms` 对长 run 可能早得多，用它会把「跑了一小时后 402」的 run 漏掉；
+    // 同时挡住「重启后把陈旧失败重放成熔断」（风险 R4））。
+    let failed_runs: Vec<(String, String, String, String)> = {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .runs
+            .iter()
+            .filter(|r| r.status == RunStatus::Failed)
+            .filter_map(|r| {
+                let reason = r.reason.clone()?;
+                let ended = r.ended_at_ms.unwrap_or(now);
+                if now.saturating_sub(ended) > CHANNEL_BREAKER_MAX_TTL_MS {
+                    return None; // 陈旧失败：不重放熔断
+                }
+                Some((
+                    r.id.0.clone(),
+                    r.task_project.clone(),
+                    r.task_id.clone(),
+                    reason,
+                ))
+            })
+            .collect()
+    };
+    for (run_id, project, task_id, reason) in failed_runs {
+        if channel_run_seen("incident", &run_id) {
+            continue; // 同一次失败只处置一次（否则到期时刻被反复推迟）
+        }
+        // 不是渠道事故（质量失败等）→ 不动熔断表。
+        let Some(ttl_ms) = channel_incident_ttl_ms(&reason) else {
+            continue;
+        };
+        let agent = extract_agent_role(&reason);
+        let channel = agent
+            .as_deref()
+            .and_then(|role| channel_index.channel_of(role))
+            .map(|c| c.to_string());
+        let summary = reason_summary(&reason);
+        match channel {
+            Some(channel) => {
+                let expires_at_ms = now + ttl_ms;
+                {
+                    let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+                    store.record_channel_breaker(&channel, expires_at_ms, &summary);
+                }
+                mark_channel_run_seen("incident", &run_id);
+                st.emit(serde_json::json!({
+                    "type": "scheduler.channel_breaker_tripped",
+                    "project": project,
+                    "task": task_id,
+                    "run_id": run_id,
+                    "channel": channel,
+                    "agent": agent,
+                    "ttl_ms": ttl_ms,
+                    "expires_at_ms": expires_at_ms,
+                    "reason": summary,
+                }));
+            }
+            None => {
+                // 归因不出渠道 → 不熔断（宁可漏熔，不可错杀健康渠道导致全线饿死），只记 WARN。
+                mark_channel_run_seen("incident", &run_id);
+                tracing::warn!(
+                    component = "scheduler",
+                    project = %project,
+                    task = %task_id,
+                    run_id = %run_id,
+                    agent = ?agent,
+                    "渠道事故归因不出具体池条目：不熔断，只记 WARN（宁可漏熔，不可错杀）"
+                );
+                st.emit(serde_json::json!({
+                    "type": "scheduler.channel_breaker_unattributed",
+                    "project": project,
+                    "task": task_id,
+                    "run_id": run_id,
+                    "agent": agent,
+                    "ttl_ms": ttl_ms,
+                    "reason": summary,
+                }));
+            }
+        }
+    }
+
+    // 撞熔断观测（gap-B · 纯观测不干预）：显式 start 路径绕过闸门（本期不改 handlers.rs），
+    // tick 扫 Running run——若它引用的渠道正在冷却，发一次事件让运维看得见。
+    // 不拦、不改状态：显式 start 是明确点名的意图通道，本期只补「看得见」。
+    let running_runs: Vec<(String, String, String)> = {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .runs
+            .iter()
+            .filter(|r| r.status == RunStatus::Running)
+            .map(|r| (r.id.0.clone(), r.task_project.clone(), r.task_id.clone()))
+            .collect()
+    };
+    for (run_id, project, task_id) in running_runs {
+        if channel_run_seen("cooldown", &run_id) {
+            continue; // 同一 run 只报一次（不刷屏）
+        }
+        let cooled = {
+            let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+            let sop = store
+                .tasks
+                .iter()
+                .find(|t| t.project == project && t.id == task_id)
+                .map(|t| t.sop.clone());
+            sop.and_then(|sop| cooled_channel(&channel_index, &sop, &store.channel_breakers, now))
+        };
+        let Some((channel, remaining_ms)) = cooled else {
+            continue;
+        };
+        mark_channel_run_seen("cooldown", &run_id);
+        st.emit(serde_json::json!({
+            "type": "channel.running_on_cooldown",
+            "project": project,
+            "task": task_id,
+            "run_id": run_id,
+            "channel": channel,
+            "remaining_secs": remaining_secs(remaining_ms),
+        }));
+    }
+
+    // ③ 自动入集成队列：Completed + 带契约 + frozen-commit 落盘 + 队列内无此任务。
     let settled: Vec<(String, String)> = {
         let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store
@@ -306,7 +487,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
         }
     }
 
-    // ③ 就绪判定 + 准入 → 派工计划。
+    // ④ 就绪判定 + 准入 → 派工计划。
     let snapshot: Vec<(String, String, TaskStatus, Vec<String>, bool)> = {
         let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store
@@ -685,6 +866,249 @@ pub fn status(st: &SharedState) -> serde_json::Value {
         "max_concurrent_runs": store_cap,
         "effective_max_concurrent": effective_cap,
     })
+}
+
+// ---------- 渠道熔断（gap-B · 派发前渠道熔断） ----------
+
+/// 渠道事故签名 → 冷却 TTL 分档（毫秒）。
+///
+/// 三档取自前置裁决：账户/凭证类 10 分钟硬熔断、限流类 60 秒短档、连接错误类 10 分钟硬熔断。
+/// 同一条 reason 同时命中多档时取**最长**档——保守方向：宁冷却久一点，不重复烧一轮。
+pub(crate) const CHANNEL_BREAKER_TTL_CREDENTIAL_MS: u64 = 600_000;
+pub(crate) const CHANNEL_BREAKER_TTL_RATE_LIMIT_MS: u64 = 60_000;
+pub(crate) const CHANNEL_BREAKER_TTL_CONNECTION_MS: u64 = 600_000;
+
+/// 扫描窗口基准 = 三档里的**最大** TTL。
+///
+/// 取最大档（10 分钟）而不是最小档：取 60 秒会把 402 这类长档失败整批漏掉；
+/// 上限约束是「重启后不要把陈旧失败重放成新熔断」（风险 R4）。
+pub(crate) const CHANNEL_BREAKER_MAX_TTL_MS: u64 = 600_000;
+
+/// 显式连接错误标记（只收这些，**不收裸 timeout / timed out**）。
+///
+/// 仓内 `timeout` 既表示「上游连不上」也表示「等 run 超时 / 批次墙钟到点」
+/// （`src/engine/client.rs` 的瞬态标记表里就混着），后者不是渠道死亡——
+/// 收进来会把健康的慢渠道按 10 分钟熔断掉。
+const CONNECTION_ERROR_MARKS: [&str; 7] = [
+    "econnreset",
+    "econnrefused",
+    "etimedout",
+    "connection reset",
+    "connection refused",
+    "connection closed",
+    "broken pipe",
+];
+
+/// 渠道事故签名 → 命中的冷却 TTL 档（None = 未命中任何签名 = 不是渠道事故）。
+///
+/// 与 `src/engine/client.rs` 的 `transient_failure` **故意不同口径**：
+/// - 那边按「独立数字 token」判瞬态，代价是内部错误分类（漏判无伤）；
+/// - 这边是熔断，代价是**错杀健康渠道 10 分钟**（误伤面比漏判大一个量级），
+///   所以额外排除「路径 + 行号」「版本号」形态（`src/a.rs:402` / `v1.402` /
+///   `src/a.rs 402`）——状态码必须独立成词才算数。
+pub(crate) fn channel_incident_ttl_ms(reason: &str) -> Option<u64> {
+    let mut ttl: Option<u64> = None;
+    // ① 账户/凭证类：402 / 401 / 403 / Insufficient Balance / No API key found。
+    if has_status_code(reason, &["402", "401", "403"])
+        || contains_ignore_case(reason, "insufficient balance")
+        || contains_ignore_case(reason, "no api key found")
+    {
+        ttl = longer_ttl(ttl, CHANNEL_BREAKER_TTL_CREDENTIAL_MS);
+    }
+    // ② 限流类：429（瞬时故障，短冷却自动恢复）。
+    if has_status_code(reason, &["429"]) {
+        ttl = longer_ttl(ttl, CHANNEL_BREAKER_TTL_RATE_LIMIT_MS);
+    }
+    // ③ 连接错误类：只收显式连接标记（不收裸 timeout——见 CONNECTION_ERROR_MARKS）。
+    if CONNECTION_ERROR_MARKS
+        .iter()
+        .any(|m| contains_ignore_case(reason, m))
+    {
+        ttl = longer_ttl(ttl, CHANNEL_BREAKER_TTL_CONNECTION_MS);
+    }
+    ttl
+}
+
+/// 两个 TTL 档取较长者（None 视作 0）。
+fn longer_ttl(a: Option<u64>, b: u64) -> Option<u64> {
+    Some(a.map_or(b, |cur| cur.max(b)))
+}
+
+/// reason 里是否出现「独立成词」的状态码。
+fn has_status_code(reason: &str, codes: &[&str]) -> bool {
+    let chars: Vec<char> = reason.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        let token: String = chars[start..i].iter().collect();
+        if codes.contains(&token.as_str()) && !is_path_position(&chars, start) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 数字 token 是不是「路径 + 行号 / 版本号」的一部分（这种形态不是状态码）。
+///
+/// 两种排除：
+/// ① 紧跟在 `:` `.` `/` `-` 之后（`src/a.rs:402` / `v1.402` / `a/402` / `x-402`）；
+/// ② 紧跟在一个「像文件名」的词之后（`src/a.rs 402`）——文件名带字母扩展名
+///    （`.rs` / `.py`）。`HTTP/1.1` 这种小数不算文件名（否则 `HTTP/1.1 402` 会被误排除）。
+fn is_path_position(chars: &[char], start: usize) -> bool {
+    if start == 0 {
+        return false;
+    }
+    if matches!(chars[start - 1], ':' | '.' | '/' | '-') {
+        return true;
+    }
+    // ② 向前取**紧邻的上一个词**（跳过空白），看它是不是文件名。
+    let mut end = start;
+    while end > 0 && chars[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    if end == start {
+        return false; // 数字前面没有词（行首或纯标点）
+    }
+    let mut begin = end;
+    while begin > 0 && !chars[begin - 1].is_whitespace() {
+        begin -= 1;
+    }
+    let word: String = chars[begin..end].iter().collect();
+    match word.rsplit_once('.') {
+        Some((_, ext)) => !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphabetic()),
+        None => false,
+    }
+}
+
+/// 大小写无关的子串包含（needle 必须已小写）。
+fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
+    haystack.to_ascii_lowercase().contains(needle)
+}
+
+/// 从失败原因里抽取 agent 身份（归因锚点，两种文案形态）：
+/// - `agent[<role>] 命令 … 失败：…`（`src/engine/client.rs` 的命令失败文案）；
+/// - `<role> 连续 N 次未输出 …`（`src/change/session.rs` 的质量失败文案）。
+///
+/// 抽不出 → None（调用方按「不可归因」处置：只记 WARN，不熔断——宁可漏熔，
+/// 不可错杀健康渠道导致全线饿死）。
+pub(crate) fn extract_agent_role(reason: &str) -> Option<String> {
+    if let Some(open) = reason.find("agent[") {
+        let rest = &reason[open + "agent[".len()..];
+        if let Some(close) = rest.find(']') {
+            let role = rest[..close].trim();
+            if !role.is_empty() {
+                return Some(role.to_string());
+            }
+        }
+    }
+    // 段首形态：`<role> 连续 N 次未输出`
+    let tokens: Vec<&str> = reason.split_whitespace().collect();
+    for pair in tokens.windows(2) {
+        if pair[1] == "连续" && looks_like_agent_name(pair[0]) {
+            return Some(pair[0].to_string());
+        }
+    }
+    None
+}
+
+/// 像个 agent 名（kebab-case 标识符；排除中文词与普通英文单词）。
+fn looks_like_agent_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.contains('-')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !s.starts_with('-')
+}
+
+/// 渠道派生索引（live 清单的只读派生）：agent 名 → 渠道（model 池条目 id）、
+/// sop → 该 sop 引用的渠道列表（清单顺序）。
+///
+/// 事实源：`AgentManifest.model` 就是 model 池条目 id（`src/config/manifest.rs`），
+/// `BuiltinRpcEngine::profiles_for_sop` 是 sop → 角色清单的唯一事实源。
+/// 本索引**只在 store 锁之外构造**（锁序：manifest → store 单向，见风险 R5）。
+pub(crate) struct ChannelIndex {
+    agent_to_channel: HashMap<String, String>,
+    sop_to_channels: HashMap<String, Vec<String>>,
+}
+
+impl ChannelIndex {
+    pub(crate) fn build(manifest: &ConfigManifest, sops: &[&str]) -> Self {
+        let mut agent_to_channel = HashMap::new();
+        for agent in &manifest.agents {
+            // 池条目必须真实存在：清单里指向不存在条目的 agent 不算「有渠道」
+            // （否则归因会指向一条根本不存在的渠道）。
+            if manifest.model_pool.iter().any(|m| m.id == agent.model) {
+                agent_to_channel.insert(agent.name.clone(), agent.model.clone());
+            }
+        }
+        let mut sop_to_channels = HashMap::new();
+        for sop in sops {
+            let profiles = crate::engine::builtin::BuiltinRpcEngine::profiles_for_sop(sop);
+            if profiles.is_empty() {
+                continue;
+            }
+            let mut channels: Vec<String> = Vec::new();
+            for agent in &manifest.agents {
+                // 清单顺序：多个渠道同时在冷却时，报清单顺序第一个（对账口径固定）。
+                if profiles.contains(&agent.name.as_str())
+                    && let Some(ch) = agent_to_channel.get(&agent.name)
+                    && !channels.contains(ch)
+                {
+                    channels.push(ch.clone());
+                }
+            }
+            sop_to_channels.insert((*sop).to_string(), channels);
+        }
+        Self {
+            agent_to_channel,
+            sop_to_channels,
+        }
+    }
+
+    /// agent 名 → 渠道（None = 清单里没这个 agent，或它没指向有效池条目）。
+    pub(crate) fn channel_of(&self, agent: &str) -> Option<&str> {
+        self.agent_to_channel.get(agent).map(|s| s.as_str())
+    }
+
+    /// 该 sop 引用的渠道列表（清单顺序；去重）。
+    pub(crate) fn channels_for_sop(&self, sop: &str) -> &[String] {
+        self.sop_to_channels
+            .get(sop)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+}
+
+/// 任务引用的渠道里第一个处于冷却中的（清单顺序第一个）→ (渠道, 剩余毫秒)。
+///
+/// 「清单顺序第一个」是固定口径：多个渠道同时在冷却时，报哪一个不许漂（对账面）。
+/// 剩余毫秒 0 = 已到期（不再算冷却）。
+pub(crate) fn cooled_channel(
+    index: &ChannelIndex,
+    sop: &str,
+    breakers: &[crate::domain::store::ChannelBreaker],
+    now_ms: u64,
+) -> Option<(String, u64)> {
+    for channel in index.channels_for_sop(sop) {
+        if let Some(b) = breakers.iter().find(|b| &b.channel == channel) {
+            let remaining = b.expires_at_ms.saturating_sub(now_ms);
+            if remaining > 0 {
+                return Some((channel.clone(), remaining));
+            }
+        }
+    }
+    None
+}
+
+/// 剩余毫秒 → 剩余秒数（向上取整，最小 1）——理由串与事件里给运维看的口径。
+pub(crate) fn remaining_secs(remaining_ms: u64) -> u64 {
+    remaining_ms.saturating_add(999) / 1000
 }
 
 /// 阻塞理由判定（**单一事实源**，自审 minor 131/235）：tick 与 status 都调它，
