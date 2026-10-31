@@ -564,6 +564,139 @@ pub async fn agents_config(State(st): State<SharedState>) -> Json<serde_json::Va
     }))
 }
 
+// ---------- 可观测：统计聚合（A5 · P019） ----------
+
+/// unix ms → UTC 日期串（`YYYY-MM-DD`；复用 change_id 的 civil_from_days——
+/// 同一算法单一实现，不引第三方时间库）。时区纪律：分桶按 UTC，前端本地渲染。
+fn utc_date_string(ms: u64) -> String {
+    let days = (ms / 86_400_000) as i64;
+    let (y, m, d) = crate::change::change_id::civil_from_days(days);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// `GET /stats?days=N`（缺省 14，clamp 1..=90）：Dashboard 图表数据——
+/// 按天 run 成功率 / 时长趋势 / 任务态分布。数据源 = store 现有 runs/tasks
+/// （不新建数据源）；分桶按 `ended_at_ms` 的 UTC 日历日，无终态的 run 不进
+/// 日桶（计入 totals.running）。
+pub async fn stats(
+    State(st): State<SharedState>,
+    axum::extract::Query(q): axum::extract::Query<StatsQuery>,
+) -> Json<serde_json::Value> {
+    let days = q.days.unwrap_or(14).clamp(1, 90);
+    let now = crate::domain::now_ms();
+    let window_start = now.saturating_sub(days * 86_400_000);
+
+    let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+
+    // 按天分桶（BTreeMap 保证日期有序——前端折线不用再排）
+    #[derive(Default)]
+    struct DayBucket {
+        settled: u64,
+        failed: u64,
+        durations_ms: Vec<u64>,
+    }
+    let mut daily: std::collections::BTreeMap<String, DayBucket> = std::collections::BTreeMap::new();
+    let mut totals = serde_json::Map::new();
+    let (mut t_settled, mut t_failed, mut t_running) = (0u64, 0u64, 0u64);
+
+    for run in &store.runs {
+        match run.status {
+            crate::domain::run::RunStatus::Running => t_running += 1,
+            crate::domain::run::RunStatus::Settled => t_settled += 1,
+            crate::domain::run::RunStatus::Failed => t_failed += 1,
+        }
+        // 日桶：只收窗口内有终态的 run（成功率/时长趋势都是终态语义）
+        let Some(ended) = run.ended_at_ms else { continue };
+        if ended < window_start {
+            continue;
+        }
+        let bucket = daily.entry(utc_date_string(ended)).or_default();
+        match run.status {
+            crate::domain::run::RunStatus::Settled => {
+                bucket.settled += 1;
+                bucket
+                    .durations_ms
+                    .push(ended.saturating_sub(run.started_at_ms));
+            }
+            crate::domain::run::RunStatus::Failed => bucket.failed += 1,
+            crate::domain::run::RunStatus::Running => {}
+        }
+    }
+
+    let daily_json: Vec<serde_json::Value> = daily
+        .into_iter()
+        .map(|(date, b)| {
+            let terminal = b.settled + b.failed;
+            let success_rate = if terminal > 0 {
+                serde_json::json!(b.settled as f64 / terminal as f64)
+            } else {
+                serde_json::Value::Null
+            };
+            let avg = if b.durations_ms.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(
+                    b.durations_ms.iter().sum::<u64>() / b.durations_ms.len() as u64
+                )
+            };
+            json!({
+                "date": date,
+                "runs_total": terminal,
+                "settled": b.settled,
+                "failed": b.failed,
+                "success_rate": success_rate,
+                "avg_duration_ms": avg,
+            })
+        })
+        .collect();
+
+    // 任务态分布（六态全列出——零也列出，前端图表键稳定）
+    let mut dist = serde_json::Map::new();
+    for s in [
+        "pending",
+        "running",
+        "completed",
+        "failed",
+        "archived",
+        "blocked",
+    ] {
+        dist.insert(s.to_string(), json!(0));
+    }
+    for t in &store.tasks {
+        let key = match t.status {
+            crate::domain::task::TaskStatus::Pending => "pending",
+            crate::domain::task::TaskStatus::Running => "running",
+            crate::domain::task::TaskStatus::Completed => "completed",
+            crate::domain::task::TaskStatus::Failed => "failed",
+            crate::domain::task::TaskStatus::Archived => "archived",
+            crate::domain::task::TaskStatus::Blocked => "blocked",
+        };
+        let cur = dist.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+        dist.insert(key.to_string(), json!(cur + 1));
+    }
+    totals.insert(
+        "runs".into(),
+        json!(t_settled + t_failed + t_running),
+    );
+    totals.insert("settled".into(), json!(t_settled));
+    totals.insert("failed".into(), json!(t_failed));
+    totals.insert("running".into(), json!(t_running));
+
+    Json(json!({
+        "range_days": days,
+        "generated_at_ms": now,
+        "daily": daily_json,
+        "task_status_distribution": dist,
+        "totals": totals,
+    }))
+}
+
+/// `GET /stats` 查询参数。
+#[derive(Debug, Deserialize)]
+pub struct StatsQuery {
+    pub days: Option<u64>,
+}
+
 /// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。
 pub async fn audit_report(
     State(st): State<SharedState>,
