@@ -65,8 +65,9 @@ pub(super) fn a1_new_state_has_no_context_and_none_kickoff_is_verbatim_unchanged
 }
 
 /// 从基线提交里取出**改动前**的开工语（逐字比对用）。
+/// 历史锚点 = c3 场基线（fixture 数据；F10/F13 物化后源码无常量，字面量内联于此）。
 pub(super) fn baseline_coding_kickoff(ctx: &ChangeCtx) -> String {
-    let src = git(&repo_root(), &["show", &format!("{BASELINE}:src/change/session.rs")]);
+    let src = git(&repo_root(), &["show", "a36f6b79dec2e681db8daed0da067f9abd47a9f5:src/change/session.rs"]);
     let start = src
         .find("\"你是 change-coding-agent。change-id：")
         .expect("基线里应有 coding 开工语");

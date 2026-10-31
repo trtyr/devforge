@@ -6,42 +6,12 @@ use super::*;
 use super::{context::*, guards::*};
 
 // ---------------- 常量 ----------------
+// F10/F13 真修（2026-11-01）：跨场守卫常量（旧场 BASELINE/WHITELIST 23 文件快照）
+// 已物化到 tests/.guard-state.json（gitignore），源码不再保留——见 guards.rs
+// f10acc11 的物化事实钉住。
 
-/// 本变更的基线提交（计划 §1.1）。
-/// 10-22 运维：与 change_ask_ring 保持同值（a16 互检）；两场之间守卫 ignore（F10/F13）。
-/// 口径：**本场基线**（`docs/plantree/changes/<change-id>/baseline.txt`）= `a36f6b7…`
-/// → 守卫的扫描范围与引擎的越界门同口径（同一个基线）。
-pub(super) const BASELINE: &str = "a36f6b79dec2e681db8daed0da067f9abd47a9f5";
-
-/// 计划 §4 的白名单去掉唯一的测试阶段文件 `tests/f6_observability.rs`
-/// = **coding 步的 23 个文件**。
-pub(super) const WHITELIST: &[&str] = &[
-    "src/observability/mod.rs",
-    "src/observability/heartbeat.rs",
-    "src/observability/tombstone.rs",
-    "src/lib.rs",
-    "src/main.rs",
-    "src/engine/policy.rs",
-    "src/engine/client.rs",
-    "src/server/mod.rs",
-    "src/server/handlers.rs",
-    "src/server/tests/mod.rs",
-    "src/change/orchestrator.rs",
-    "src/change/session.rs",
-    "src/sop/planning.rs",
-    "src/sop/coding.rs",
-    "src/sop/testing.rs",
-    "src/sop/doc/runner.rs",
-    "src/sop/doc/fix.rs",
-    "tests/change_ask_ring.rs",
-    "tests/change_failure_context/main.rs",
-    "tests/change_review_protocol/main.rs",
-    "src/change/coding_gate.rs",
-    "docs/plantree/plans/010-run-resume/decisions/README.md",
-    "docs/plantree/plans/010-run-resume/roadmap.md",
-];
-
-/// 本场 change-id（守卫常量区声明一处）——F10：本场守卫只判定**本场**的提交。
+/// 本场 change-id —— **fixture 数据**（F10 场验收对账用，回归测试拿它造场/过滤），
+/// 非跨场守卫常量；下一场的对账输入走 tests/.guard-state.json。
 ///
 /// 病根（finding F10）：变化期断言被铸成永久测试——旧口径拿**旧场基线**当扫描区间，
 /// 把区间里所有含 ` step ` 的提交都当成「本场 coding 步提交」，外场（其他 change-id）
@@ -49,11 +19,8 @@ pub(super) const WHITELIST: &[&str] = &[
 /// 收敛口径：**提交 subject 含本场 change-id** 才是本场的提交，外场步提交不参与判定。
 pub(super) const CHANGE_ID: &str = "change-20261029-change-failure-context-finding-f10-sr2-g";
 
-/// 本场白名单（change-plan §6：仓内改动上限四条）——本场步提交动过的文件逐个必须落在其中。
-///
-/// 与上面的旧场 `WHITELIST`（23 个文件、值与注释都冻结）**不是**同一份：旧场那份是
-/// c7-1 场的历史快照，白名单外的守卫逐字核对它的值与注释，改不得；本场这份才是
-/// F10 之后步提交对账的依据。
+/// 本场白名单（change-plan §6：仓内改动上限四条）——**fixture 数据**（F10 场验收
+/// 对账与回归变异用），非跨场守卫常量；下一场的对账输入走 tests/.guard-state.json。
 pub(super) const CHANGE_WHITELIST: &[&str] = &[
     "tests/change_failure_context/guards.rs",
     "tests/change_failure_context/support.rs",

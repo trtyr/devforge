@@ -18,3 +18,6 @@ docs/plantree/
 # 本地运行时产物（engine 测试与 pi 状态目录）——不入库
 spawn-ledger.json*
 .pi/
+
+# F10/F13 守卫常量物化：场内 step 1 生成的对账输入（不进提交，两场之间自然消失）
+tests/.guard-state.json

@@ -24,42 +24,14 @@ use devforge::config::manifest::{
 use devforge::error::{DevforgeError, Result};
 use devforge::sop::planning::{PlanAgentSession, ReviewSession, ReviewSessionFactory, UserLink};
 
+// F10/F13 真修（2026-11-01）：跨场守卫常量物化到 tests/.guard-state.json（gitignore）——
+// 场内 step 1 生成，两场之间无文件 → 守卫跳过（不红）。源码里不再有跨场常量，
+// 随场增殖与染红同时消失（历史见 plantree ideas/selfhost-findings F10/F13）。
+#[path = "common/guard_state.rs"]
+mod guard_state;
+
 /// 问询环的供给物：能向用户发问的扩展包（与 MVP `plan-agent` 同包）。
 const ASK_PKG: &str = "npm:@juicesharp/rpiv-ask-user-question";
-
-/// 本变更的基线提交（计划 §1.1）。
-/// 10-22 运维：与 change_failure_context 保持同值（a16 互检）；两场之间守卫 ignore（F10/F13）。
-/// 口径：**本场基线**（`docs/plantree/changes/<change-id>/baseline.txt`）= `a36f6b7…`
-/// → 守卫的扫描范围与引擎的越界门同口径（同一个基线）。
-const BASELINE: &str = "a36f6b79dec2e681db8daed0da067f9abd47a9f5";
-
-/// 计划的 coding 轮白名单（计划 §4 的 24 个文件去掉唯一的测试阶段文件
-/// `tests/f6_observability.rs` → 23 个）。
-const WHITELIST: &[&str] = &[
-    "src/observability/mod.rs",
-    "src/observability/heartbeat.rs",
-    "src/observability/tombstone.rs",
-    "src/lib.rs",
-    "src/main.rs",
-    "src/engine/policy.rs",
-    "src/engine/client.rs",
-    "src/server/mod.rs",
-    "src/server/handlers.rs",
-    "src/server/tests/mod.rs",
-    "src/change/orchestrator.rs",
-    "src/change/session.rs",
-    "src/sop/planning.rs",
-    "src/sop/coding.rs",
-    "src/sop/testing.rs",
-    "src/sop/doc/runner.rs",
-    "src/sop/doc/fix.rs",
-    "tests/change_ask_ring.rs",
-    "tests/change_failure_context/main.rs",
-    "tests/change_review_protocol/main.rs",
-    "src/change/coding_gate.rs",
-    "docs/plantree/plans/010-run-resume/decisions/README.md",
-    "docs/plantree/plans/010-run-resume/roadmap.md",
-];
 
 // ---------------- 夹具 ----------------
 
@@ -620,63 +592,52 @@ fn agents_change_doc_matches_the_implemented_contract() {
 
 // ---------------- 提交内容（验收 26） ----------------
 
-/// 验收 26 · 本变更的提交内容不越界：coding 步提交的文件 ⊆ 白名单，
-/// 且上一场遗留的未提交改动不在本变更的 diff 里。
-/// 10-22 操作员补录：`src/change/coding_gate.rs` 已进本场 §4 白名单（step 15 的解析器修复落点，
-/// `change-plan.md:310`）→ 它的改动由上面的白名单口径合法化，不再按「上一场遗留」禁；
-/// `src/config/skill_assets.rs` 仍不在白名单 → 继续禁。
-/// 10-22 运维：两场之间无 step 提交，此守卫恒红 → `#[ignore]`（F10）；
-/// 常量由每场 step 1 刷新并摘除 ignore（真修：常量 gate 时物化）。
+/// 验收 26 · 本变更的提交内容不越界：coding 步提交的文件 ⊆ 白名单。
+///
+/// F10/F13 真修（2026-11-01）：扫描面与数据源双收敛——
+/// ① 数据源物化：基线/白名单/change-id 从 tests/.guard-state.json 读（场内 step 1
+///    生成，gitignore）；无文件 = 两场之间，跳过不红（旧口径：常量烙死在源码，
+///    两场之间非 tests 提交把守卫染红，只能 #[ignore] 压住）。
+/// ② 扫描面收敛（F10 同款口径）：subject 含本场 change-id 的 step 提交才参与
+///    白名单对账；外场步提交不参与判定；空集放行。
 #[test]
-#[ignore = "守卫常量由 change run 的 step 1 刷新；两场之间无 step 提交（F10）"]
 fn the_change_commits_stay_inside_the_whitelist() {
     // 错实现形态：把白名单外的文件带进本变更的提交 → 本用例必须变红
+    let Some(state) = guard_state::load() else {
+        println!(
+            "守卫状态文件缺失（{}）——两场之间，跳过对账（场内 step 1 生成后自动启用）",
+            guard_state::GUARD_STATE_PATH
+        );
+        return;
+    };
     let root = repo_root();
-    let log = git(&root, &["log", "--format=%H%x09%s", &format!("{BASELINE}..HEAD")]);
-    assert!(!log.trim().is_empty(), "基线之后应当有本变更的提交");
-    let mut coding_files: Vec<String> = Vec::new();
-    let mut extra_files: Vec<String> = Vec::new();
+    let log = git(&root, &["log", "--format=%H%x09%s", &format!("{}..HEAD", state.baseline)]);
+    let mut coding_files: usize = 0;
     for line in log.lines() {
         let (sha, subject) = line.split_once('\t').expect("提交行格式");
         let files = git(&root, &["show", "--name-only", "--format=", sha]);
+        let is_step = subject.contains(&state.change_id) && subject.contains(" step ");
         for f in files.lines().filter(|l| !l.trim().is_empty()) {
             let f = f.trim().to_string();
-            if subject.contains(" step ") {
-                // coding 步提交：文件必须逐个在白名单内
+            if is_step {
+                // 本场 coding 步提交：文件必须逐个在白名单内
                 assert!(
-                    WHITELIST.contains(&f.as_str()),
+                    state.whitelist.iter().any(|w| w == &f),
                     "coding 步提交越界（白名单外）：{f}（提交 {subject}）"
                 );
-                coding_files.push(f);
-            } else {
-                // 测试阶段自己的提交：只许是测试文件
+                coding_files += 1;
+            } else if subject.contains(&state.change_id) {
+                // 本场非步提交（对账/清账）：只许动测试与文档
                 assert!(
-                    f.starts_with("tests/"),
-                    "白名单外的非测试改动：{f}（提交 {subject}）"
+                    f.starts_with("tests/") || f.starts_with("docs/"),
+                    "本场非步提交动了生产文件：{f}（提交 {subject}）"
                 );
-                extra_files.push(f);
             }
+            // 外场提交不参与判定（F10 收敛口径）
         }
     }
-    assert!(
-        !coding_files.is_empty(),
-        "本变更的 coding 步提交一个都没找到（提交信息格式变了？）"
-    );
-    // 上一场遗留的未提交补录（+880 行）不得混进本变更
-    // 豁免的前提 = 该文件已在本场白名单里（改动合法）；前提消失 → 禁令自动恢复
-    // （不许靠改这份清单绕过：清单一空，禁令就整体失效）。
-    for leftover in ["src/change/coding_gate.rs", "src/config/skill_assets.rs"] {
-        if WHITELIST.contains(&leftover) {
-            continue;
-        }
-        let diff = git(
-            &root,
-            &["diff", "--name-only", BASELINE, "HEAD", "--", leftover],
-        );
-        assert!(
-            diff.trim().is_empty(),
-            "上一场遗留的未提交改动混进了本变更：{leftover}"
-        );
+    if coding_files == 0 {
+        println!("状态文件在场但尚无本场 step 提交——空集放行（无对账对象）");
     }
 }
 

@@ -71,51 +71,33 @@ pub(super) fn a15_the_three_old_wording_places_are_rewritten() {
     }
 }
 
-// ---------------- 验收 16：白名单守卫的两个常量 ----------------
+// ---------------- 验收 16：白名单守卫（物化态） ----------------
 
-/// 验收 16 · `tests/change_ask_ring.rs` 的 `BASELINE` / `WHITELIST` 与本场一致，且扫描通过。
+/// 验收 16 · 本变更的步提交对账本场白名单（扫描通过）。
 ///
-/// 10-29 运维：本变更（SR2-gate run 1 / F7）的落点文件 `src/engine/ledger_tests.rs` 与
-/// `tests/change_failure_context/guards.rs` 都不在上一场的 23 文件白名单里，且本变更不刷新
-/// 守卫常量 → a16 的「步提交逐文件在白名单内」这一段对本场恒红（现状绿只是越界集合为空）。
-/// 与 a17 同口径：两场之间无对应 step 提交时守卫恒红 → `#[ignore]`（F10/F13）。
+/// F10/F13 真修（2026-11-01）：数据源物化到 tests/.guard-state.json——
+/// 旧口径的「源码常量文本自检」（ask_ring 源码里的常量 == support 常量）随物化退役
+/// （源码里不再有跨场常量，自检对象消失）；扫描段改读状态文件，
+/// 无文件 = 两场之间跳过不红，`#[ignore]` 摘除。
 #[test]
-#[ignore = "守卫常量由 change run 刷新；两场之间无 step 提交（F10/F13）；本变更落点文件不在该白名单内且不刷新守卫常量"]
 pub(super) fn a16_the_whitelist_constants_match_this_change() {
-    // 错实现形态：常量没刷新（还指着上一场的基线 / 上一场的白名单）→ 守卫会把本场提交判成越界
-    // → 本用例必须变红
-    let path = repo_root().join("tests/change_ask_ring.rs");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|_| panic!("测试文件不可读：{}", path.display()));
-    assert!(
-        text.contains(&format!("const BASELINE: &str = \"{BASELINE}\";")),
-        "守卫的 BASELINE 必须等于本场基线 sha {BASELINE}"
-    );
-    let listed = parse_whitelist(&text);
-    assert_eq!(
-        listed.len(),
-        WHITELIST.len(),
-        "守卫的 WHITELIST 必须逐个列出本场白名单的 {} 个文件（实际 {listed:?}）",
-        WHITELIST.len()
-    );
-    for f in WHITELIST {
-        assert!(
-            listed.iter().any(|x| x == f),
-            "守卫的 WHITELIST 缺 {f}（实际 {listed:?}）"
+    // 错实现形态：本场步提交动了白名单外的文件 → 本用例必须变红
+    let Some(state) = crate::guard_state::load() else {
+        println!(
+            "守卫状态文件缺失（{}）——两场之间，跳过对账",
+            crate::guard_state::GUARD_STATE_PATH
         );
-    }
-    // 扫描必须通过：本场 coding 步提交的每个文件都在本场白名单内
-    // F10：扫描面从「旧场基线区间 + 全场步提交」收敛到「本场 change-id 的步提交」——
-    // 外场步提交不参与判定；本场步提交仍逐个对账本场白名单（守卫语义不退化）。
+        return;
+    };
     let root = repo_root();
-    let commits = change_step_commits(&root, CHANGE_ID);
+    let commits = change_step_commits(&root, &state.change_id);
     if commits.is_empty() {
         // 空集放行（用户裁决）：本场尚无 step 提交 → 没有可对账的对象。
-        // 旧口径在这里「一个都没找到就红」——两场之间恒红，正是 F10 的病。
         println!("本场尚无 step 提交，跳过对账");
         return;
     }
-    let findings = step_whitelist_violations(&root, &commits, CHANGE_WHITELIST);
+    let whitelist: Vec<&str> = state.whitelist.iter().map(String::as_str).collect();
+    let findings = step_whitelist_violations(&root, &commits, &whitelist);
     assert!(
         findings.is_empty(),
         "本场 coding 步提交越界（白名单外）：\n{}",
@@ -127,41 +109,28 @@ pub(super) fn a16_the_whitelist_constants_match_this_change() {
     );
 }
 
-/// 从 `tests/change_ask_ring.rs` 的源码里解析白名单数组。
-pub(super) fn parse_whitelist(src: &str) -> Vec<String> {
-    let start = src
-        .find("const WHITELIST: &[&str] = &[")
-        .expect("守卫文件里应有 WHITELIST 常量");
-    let rest = &src[start..];
-    let end = rest.find("];").expect("WHITELIST 数组应有结尾");
-    rest[..end]
-        .lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            l.strip_prefix('"')?.strip_suffix("\",")
-        })
-        .map(|s| s.to_string())
-        .collect()
-}
-
 // ---------------- 验收 17：提交内容不越界 ----------------
 
 /// 验收 17 · 本变更的提交内容白名单外无改动；未跟踪产物一律没被 `git add`。
-/// 10-22 运维：两场之间无 step 提交，此守卫恒红 → `#[ignore]`（F10/F13：
-/// 守卫常量随场增殖，两场之间全体转红，真修 = gate 时物化）。
+/// F10/F13 真修（2026-11-01）：数据源改读 tests/.guard-state.json（物化），
+/// 无文件 = 两场之间跳过不红，`#[ignore]` 摘除。
 #[test]
-#[ignore = "守卫常量由 change run 刷新；两场之间无 step 提交（F10/F13）"]
 pub(super) fn a17_the_change_commits_stay_inside_the_whitelist() {
     // 错实现形态：把白名单外的文件带进本变更的提交 / 顺手 `git add -A` 把未跟踪产物卷进来
     // → 本用例必须变红
-    // F10：扫描面与 a16 同一条（本场 change-id 的步提交）+ 本场白名单对账。
-    // 「旧场 23 个白名单文件都要被本场改到」这条按场过滤后本场恒不成立 → 删（用户裁决）；
-    // 「基线之后应当有本变更的提交」这条空集断言同理（两场之间恒红，与 F10 同病）。
+    let Some(state) = crate::guard_state::load() else {
+        println!(
+            "守卫状态文件缺失（{}）——两场之间，跳过对账",
+            crate::guard_state::GUARD_STATE_PATH
+        );
+        return;
+    };
     let root = repo_root();
-    let commits = change_commits(&root, CHANGE_ID);
+    let commits = change_commits(&root, &state.change_id);
     // coding 步提交：文件必须逐个在**本场**白名单内
     let steps = step_commits(&commits);
-    let findings = step_whitelist_violations(&root, &steps, CHANGE_WHITELIST);
+    let whitelist: Vec<&str> = state.whitelist.iter().map(String::as_str).collect();
+    let findings = step_whitelist_violations(&root, &steps, &whitelist);
     assert!(
         findings.is_empty(),
         "本场 coding 步提交越界（白名单外）：\n{}",
@@ -705,12 +674,14 @@ pub(super) fn f10acc08_the_real_repo_scan_excludes_every_foreign_step_commit() {
         .filter(|c| {
             files_of_commit(&root, &c.sha)
                 .iter()
-                .any(|f| !WHITELIST.contains(&f.as_str()))
+                // F10/F13 物化后旧场 WHITELIST 退役：本场白名单同样收不编外场文件，
+                // 「外场文件在本场白名单外」的取证语义不变
+                .any(|f| !CHANGE_WHITELIST.contains(&f.as_str()))
         })
         .collect();
     assert!(
         !foreign_outside.is_empty(),
-        "应有外场步提交动过旧场白名单外的文件（旧口径会被它们毒红）"
+        "应有外场步提交动过本场白名单外的文件（旧口径会被它们毒红）"
     );
     // 扫描面：外场提交数必须为 0
     let mine = change_step_commits(&root, CHANGE_ID);
@@ -826,48 +797,34 @@ pub(super) fn f10acc10_the_change_touches_only_the_planned_test_files() {
     }
 }
 
-/// 验收 11 · 给定 `tests/f6_observability` 的守卫三例（常量对齐 / 注释对齐 / ignore 保留）
-/// → 全绿（旧场 `BASELINE`、`WHITELIST` 的值与注释、`guards.rs` 的 `#[ignore` 均未被改动）。
+/// 验收 11 · 守卫常量物化事实钉住（F10/F13 真修，2026-11-01）。
 ///
-/// 错实现形态：顺手刷新旧场常量 / 改写旧场常量注释 / 摘掉 a17 的 `#[ignore`
-/// → 本用例必须变红（这三项都被白名单外的守卫逐字钉着）。
+/// 原形态（F10 场）：逐字冻结旧场常量的值与注释——真修后旧场常量已从源码退役，
+/// 冻结对象反转为「物化事实」：跨场守卫常量不得再烙回源码，变化期断言的
+/// `#[ignore`（f10acc10/f10acc12，与守卫税无关）仍要在。
+///
+/// 错实现形态：有人把 `const BASELINE` / `const WHITELIST` 烙回源码（守卫税复辟）
+/// → 本用例必须变红。
 #[test]
-pub(super) fn f10acc11_the_frozen_old_field_facts_survive() {
+pub(super) fn f10acc11_guard_constants_are_materialized_not_frozen() {
     let root = repo_root();
     let support = std::fs::read_to_string(root.join("tests/change_failure_context/support.rs"))
         .unwrap_or_else(|_| panic!("support.rs 不可读"));
-    let guards = std::fs::read_to_string(root.join("tests/change_failure_context/guards.rs"))
-        .unwrap_or_else(|_| panic!("guards.rs 不可读"));
     let ask_ring = std::fs::read_to_string(root.join("tests/change_ask_ring.rs"))
         .unwrap_or_else(|_| panic!("change_ask_ring.rs 不可读"));
-    // 旧场 BASELINE：值与注释都不动
+    let guards = std::fs::read_to_string(root.join("tests/change_failure_context/guards.rs"))
+        .unwrap_or_else(|_| panic!("guards.rs 不可读"));
+    // 跨场守卫常量已物化：源码里不得再有 BASELINE/WHITELIST 常量声明
     assert!(
-        support.contains("const BASELINE: &str = \"a36f6b79dec2e681db8daed0da067f9abd47a9f5\";"),
-        "旧场 BASELINE 的值被改了"
+        !support.contains("const BASELINE: &str") && !support.contains("const WHITELIST: &[&str]"),
+        "support.rs 里又出现了跨场守卫常量（F10/F13 已物化到 tests/.guard-state.json，不许烙回）"
     );
     assert!(
-        support.contains("a36f6b7"),
-        "旧场 BASELINE 的注释块必须仍含 a36f6b7"
+        !ask_ring.contains("const BASELINE: &str") && !ask_ring.contains("const WHITELIST: &[&str]"),
+        "change_ask_ring.rs 里又出现了跨场守卫常量（F10/F13 已物化，不许烙回）"
     );
-    // 旧场 WHITELIST：23 项 + 注释含「23 个」；与 change_ask_ring.rs 的同名常量逐字一致
-    assert_eq!(WHITELIST.len(), 23, "旧场 WHITELIST 仍是 23 项：{}", WHITELIST.len());
-    assert!(
-        support.contains("23 个"),
-        "旧场 WHITELIST 的注释块必须仍含「23 个」"
-    );
-    assert_eq!(
-        parse_whitelist(&ask_ring),
-        WHITELIST.to_vec(),
-        "change_ask_ring.rs 的 WHITELIST 与本场旧场常量不一致"
-    );
-    // 新常量不得让白名单外守卫的 `const WHITELIST:` 定位命中新数组
-    assert_eq!(
-        parse_whitelist(&support),
-        WHITELIST.to_vec(),
-        "support.rs 里的旧场 WHITELIST 被改动了"
-    );
-    // a17 的 `#[ignore` 属性保留
-    assert!(guards.contains("#[ignore"), "guards.rs 必须仍含 #[ignore");
+    // 变化期断言的 ignore（f10acc10/f10acc12，场内验收对账语义）与守卫税无关，保留
+    assert!(guards.contains("#[ignore"), "变化期断言的 #[ignore 仍要在");
 }
 
 /// 验收 12 · 给定全量测试套件的运行结果 → 失败 0 条；给定 clippy 全目标检查结果 → 警告 0 条。

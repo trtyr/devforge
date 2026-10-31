@@ -32,3 +32,8 @@ use devforge::sop::planning::{PlanAgentSession, ReviewSession, ReviewSessionFact
 mod context;
 mod guards;
 mod support;
+
+// F10/F13 真修：跨场守卫常量物化到 tests/.guard-state.json（gitignore），
+// 守卫读文件对账（无文件 = 两场之间跳过）。共享模块在 tests/common/。
+#[path = "../common/guard_state.rs"]
+pub(crate) mod guard_state;
