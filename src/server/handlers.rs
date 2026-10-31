@@ -458,6 +458,67 @@ pub async fn knob_effective() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "knobs": items }))
 }
 
+// ---------- 可观测：server 运维信息（A7 · P019） ----------
+
+/// 进程内存占用（Linux：/proc/self/status 的 VmRSS；读不到 = None——非 Linux 或
+/// 容器裁剪不假装有数）。Linux-only 是本仓既定口径（P015·A1）。
+fn rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb * 1024)
+}
+
+/// 文件系统用量（libc::statvfs；目标 = plans_root 所在文件系统）。
+/// plans 目录可能尚未创建（首次启动）——向上找最近存在的祖先做 statvfs，
+/// 返回实际检查的路径（响应里如实报，不假装检查了 plans_root 本身）。
+fn disk_usage(path: &std::path::Path) -> Option<(String, u64, u64)> {
+    let mut probe = path.to_path_buf();
+    loop {
+        if probe.exists() {
+            break;
+        }
+        probe = probe.parent()?.to_path_buf();
+    }
+    let c = std::ffi::CString::new(probe.to_str()?).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statvfs(c.as_ptr(), &mut st) };
+    if rc != 0 {
+        return None;
+    }
+    let block = st.f_frsize as u64;
+    Some((
+        probe.display().to_string(),
+        st.f_bavail as u64 * block,
+        st.f_blocks as u64 * block,
+    ))
+}
+
+/// `GET /server/ops`：运维信息带（Dashboard 顶部）——版本 / 启动时刻 / uptime /
+/// 内存 RSS / plans_root 所在文件系统用量。
+/// 时区纪律（P019 定稿）：时间字段一律 unix ms（UTC 口径），永不输出裸时间字符串。
+pub async fn server_ops(State(st): State<SharedState>) -> Json<serde_json::Value> {
+    let now = crate::domain::now_ms();
+    let uptime_ms = now.saturating_sub(st.started_at_ms);
+    let memory = rss_bytes().map(|rss_bytes| {
+        json!({ "rss_bytes": rss_bytes, "source": "/proc/self/status VmRSS" })
+    });
+    let disk = disk_usage(&st.plans_root).map(|(checked, available_bytes, total_bytes)| {
+        json!({
+            "path": checked,
+            "available_bytes": available_bytes,
+            "total_bytes": total_bytes,
+        })
+    });
+    Json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "started_at_ms": st.started_at_ms,
+        "uptime_ms": uptime_ms,
+        "memory": memory,
+        "disk": disk,
+    }))
+}
+
 /// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。
 pub async fn audit_report(
     State(st): State<SharedState>,

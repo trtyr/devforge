@@ -117,6 +117,7 @@ pub fn build_router(state: SharedState) -> Router {
             get(handlers::get_manifest).put(handlers::put_manifest),
         )
         .route("/config/knobs", get(handlers::knob_effective))
+        .route("/server/ops", get(handlers::server_ops))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             handlers::auth_middleware,
