@@ -51,6 +51,11 @@ pub struct Store {
     /// None = 内存态（单测）；Some = 每个 &mut 变更方法尾调 persist()。
     #[serde(skip)]
     pub persist_path: Option<std::path::PathBuf>,
+    /// PG 持久化连接串（P018 Phase 1）：Some = persist() 写 PG 单行 JSONB
+    /// （store_state 表），load_pg 从 PG 重建。与 persist_path 互斥（config 决定，
+    /// 启动时选一个；都设时 PG 优先）。serde skip：连接串不进任何持久化文件。
+    #[serde(skip)]
+    pub persist_pg: Option<String>,
 }
 
 fn default_max_concurrent() -> usize {
@@ -128,6 +133,7 @@ impl Default for Store {
             max_runs_per_task: default_max_runs_per_task(),
             channel_breakers: Vec::new(),
             persist_path: None,
+            persist_pg: None,
         }
     }
 }
@@ -150,8 +156,25 @@ impl Store {
         self
     }
 
-    /// 变更落盘（persist_path 未设则空操作）。失败只 WARN 不阻断（可观测优先于强一致）。
+    /// 开启 PG 持久化（P018 Phase 1）：persist() 写 PG 单行 JSONB。
+    pub fn with_persist_pg(mut self, url: impl Into<String>) -> Self {
+        self.persist_pg = Some(url.into());
+        self
+    }
+
+    /// 变更落盘（persist_path/persist_pg 均未设则空操作）。失败只 WARN 不阻断
+    /// （可观测优先于强一致）。PG 模式（persist_pg Some）优先且不双写。
     fn persist(&self) {
+        if let Some(url) = &self.persist_pg {
+            if let Err(e) = self.save_pg(url) {
+                tracing::warn!(
+                    component = "store",
+                    error = %e,
+                    "store PG 落盘失败（内存态继续，重启将丢自上次成功落盘后的变更）"
+                );
+            }
+            return;
+        }
         if let Some(path) = &self.persist_path
             && let Err(e) = self.save(path)
         {
@@ -162,6 +185,66 @@ impl Store {
                 "store 落盘失败（内存态继续，重启将丢自上次成功落盘后的变更）"
             );
         }
+    }
+
+    /// P018 Phase 1：全量写 PG（store_state 单行 JSONB，单语句原子）。
+    fn save_pg(&self, url: &str) -> Result<()> {
+        let mut conn = postgres::Client::connect(url, postgres::NoTls)
+            .map_err(|e| DevforgeError::System(format!("连 PG 失败：{e}")))?;
+        Self::ensure_pg_schema(&mut conn)?;
+        // TEXT 参数 + ::jsonb cast——postgres crate 的 serde_json feature 不依赖，
+        // 序列化字符串直接 cast（PG 校验 JSON 合法性，语义等同）
+        let data = serde_json::to_string(self)
+            .map_err(|e| DevforgeError::System(format!("序列化 store（PG）失败：{e}")))?;
+        conn.execute(
+            "INSERT INTO store_state (id, data) VALUES (1, $1::text::jsonb) \
+             ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+            &[&data],
+        )
+        .map_err(|e| DevforgeError::System(format!("写 store_state 失败：{e}")))?;
+        Ok(())
+    }
+
+    /// store_state 表幂等建表（persist/load 各自调用，IF NOT EXISTS 幂等）。
+    fn ensure_pg_schema(conn: &mut postgres::Client) -> Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS store_state (\
+             id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),\
+             data JSONB NOT NULL,\
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+            &[] as &[&(dyn postgres::types::ToSql + Sync)],
+        )
+        .map_err(|e| DevforgeError::System(format!("建 store_state 表失败：{e}")))?;
+        Ok(())
+    }
+
+    /// P018 Phase 1：从 PG 重建 Store（启动入口；PG 不可达 = 硬错误，服务不启动——
+    /// 不静默回落文件模式，双真相分叉比崩溃更危险）。空库 = 全新 Store（persist 已开）。
+    pub fn load_pg(url: &str) -> Result<Self> {
+        let mut conn = postgres::Client::connect(url, postgres::NoTls).map_err(|e| {
+            DevforgeError::System(format!(
+                "连 PG 失败（PG 模式启动要求可达，不做静默回落）：{e}"
+            ))
+        })?;
+        Self::ensure_pg_schema(&mut conn)?;
+        let row = conn
+            .query_opt(
+                "SELECT data::text FROM store_state WHERE id = 1",
+                &[] as &[&(dyn postgres::types::ToSql + Sync)],
+            )
+            .map_err(|e| DevforgeError::System(format!("读 store_state 失败：{e}")))?;
+        let Some(row) = row else {
+            let store = Self {
+                persist_pg: Some(url.to_string()),
+                ..Self::default()
+            };
+            return Ok(store);
+        };
+        let data: String = row.get(0);
+        let mut store: Store = serde_json::from_str(&data)
+            .map_err(|e| DevforgeError::System(format!("解析 store（PG）失败：{e}")))?;
+        store.persist_pg = Some(url.to_string());
+        Ok(store)
     }
 
     // ---------- 项目层 ----------
@@ -1024,3 +1107,7 @@ impl Store {
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "store_pg_tests.rs"]
+mod pg_tests;
