@@ -245,3 +245,4 @@ mod retry;
 mod scheduler;
 mod start;
 mod boundary_entry;
+mod channel_breaker;

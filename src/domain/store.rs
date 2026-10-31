@@ -29,6 +29,11 @@ pub struct Store {
     /// 权威记录是事件流（logs/devforge.log.jsonl）；Running 的 run 永不被裁。
     #[serde(default = "default_max_runs_per_task")]
     pub max_runs_per_task: usize,
+    /// 渠道熔断表（gap-B）：渠道（model 池条目 id）→ 冷却到期时刻。
+    /// `#[serde(default)]`：旧 store.json 没有这一段也能读回（数据迁移方向：新二进制读旧文件）；
+    /// 反向（新文件读旧二进制）由 serde 默认的「忽略未知字段」保证——回滚不会炸。
+    #[serde(default)]
+    pub channel_breakers: Vec<ChannelBreaker>,
     /// 持久化路径（复验 backlog：store 纯内存是设计错误——重启即蒸发）。
     /// None = 内存态（单测）；Some = 每个 &mut 变更方法尾调 persist()。
     #[serde(skip)]
@@ -37,6 +42,22 @@ pub struct Store {
 
 fn default_max_concurrent() -> usize {
     1
+}
+
+/// 渠道熔断条目（gap-B · 派发前渠道熔断）：某个 model 池条目因渠道事故进入冷却。
+///
+/// 形状要点：
+/// - `expires_at_ms` 存**绝对到期时刻**（unix ms），不存剩余秒数——剩余秒数跨重启就漂
+///   （重启后必须按当前时间重算，裁决：熔断落 store.json，未到期继续熔断）；
+/// - `last_seen_reason` 是最近一次触发的原因摘要（运维一眼看出这条为什么在冷却）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChannelBreaker {
+    /// 熔断的渠道（model 池条目 id，如 `deepseek-flash`）。
+    pub channel: String,
+    /// 绝对到期时刻（unix ms）。
+    pub expires_at_ms: u64,
+    /// 最近一次触发的原因摘要。
+    pub last_seen_reason: String,
 }
 
 /// 单任务默认保留的终态 run 条数（自审 minor 114）。
@@ -58,6 +79,7 @@ impl Default for Store {
             runs: Vec::new(),
             max_concurrent_runs: default_max_concurrent(),
             max_runs_per_task: default_max_runs_per_task(),
+            channel_breakers: Vec::new(),
             persist_path: None,
         }
     }
@@ -338,6 +360,77 @@ impl Store {
 
     pub fn list_tasks(&self, project: &str) -> Vec<&Task> {
         self.tasks.iter().filter(|t| t.project == project).collect()
+    }
+
+    // ---------- 渠道熔断（gap-B · 派发前渠道熔断） ----------
+
+    /// 记一条渠道熔断（upsert：同一渠道取**较晚**的到期时刻，原因摘要刷新为最新一条）。
+    ///
+    /// 取较晚到期而不是覆盖：同一条渠道先后两次事故（新失败又来一次）时，冷却窗口
+    /// 取两次里更晚的那个，不因为后一次来得早就把已定的窗口缩短。
+    pub fn record_channel_breaker(&mut self, channel: &str, expires_at_ms: u64, reason: &str) {
+        match self
+            .channel_breakers
+            .iter_mut()
+            .find(|b| b.channel == channel)
+        {
+            Some(existing) => {
+                existing.expires_at_ms = existing.expires_at_ms.max(expires_at_ms);
+                existing.last_seen_reason = reason.to_string();
+            }
+            None => self.channel_breakers.push(ChannelBreaker {
+                channel: channel.to_string(),
+                expires_at_ms,
+                last_seen_reason: reason.to_string(),
+            }),
+        }
+        tracing::warn!(
+            component = "store",
+            event = "store.channel_breaker_recorded",
+            channel,
+            expires_at_ms,
+            "渠道进入熔断冷却"
+        );
+        self.persist();
+    }
+
+    /// 某渠道剩余冷却毫秒（0 = 没有熔断条目，或条目已到期）。
+    pub fn channel_breaker_remaining_ms(&self, channel: &str, now_ms: u64) -> u64 {
+        self.channel_breakers
+            .iter()
+            .find(|b| b.channel == channel)
+            .map(|b| b.expires_at_ms.saturating_sub(now_ms))
+            .unwrap_or(0)
+    }
+
+    /// 清掉已到期的熔断条目，返回清掉的条数（0 = 无变更，不落盘）。
+    pub fn purge_expired_channel_breakers(&mut self, now_ms: u64) -> usize {
+        let before = self.channel_breakers.len();
+        self.channel_breakers
+            .retain(|b| b.expires_at_ms.saturating_sub(now_ms) > 0);
+        let purged = before - self.channel_breakers.len();
+        if purged > 0 {
+            tracing::info!(
+                component = "store",
+                event = "store.channel_breakers_purged",
+                purged,
+                "已到期的渠道熔断条目被清除（冷却自然解除）"
+            );
+            self.persist();
+        }
+        purged
+    }
+
+    /// 活跃（未到期）熔断条目，按渠道 id 排序（输出稳定，便于对账与断言）。
+    pub fn active_channel_breakers(&self, now_ms: u64) -> Vec<ChannelBreaker> {
+        let mut active: Vec<ChannelBreaker> = self
+            .channel_breakers
+            .iter()
+            .filter(|b| b.expires_at_ms.saturating_sub(now_ms) > 0)
+            .cloned()
+            .collect();
+        active.sort_by(|a, b| a.channel.cmp(&b.channel));
+        active
     }
 
     /// 变更任务的 SOP（P005 跨 SOP 触发：同任务先规划后编码）。
