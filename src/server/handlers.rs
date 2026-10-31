@@ -970,6 +970,51 @@ pub async fn dependencies_list(State(st): State<SharedState>) -> Json<serde_json
     Json(json!({ "dependencies": deps }))
 }
 
+// ---------- 配置：集成开关读写（A10 · P019） ----------
+
+/// `GET /integrations/settings`：集成开关读面——文件缺失/损坏回落全 off
+/// （ui-9 口径：「文件不存在 = 功能不存在」）。消费方（调度器 tick 热读）
+/// 归 gap-E auto-integrate 落地时接线。
+pub async fn get_integration_settings(State(st): State<SharedState>) -> Json<serde_json::Value> {
+    let settings = crate::integration::settings::load(&crate::integration::settings::settings_path(
+        &st.plans_root,
+    ));
+    Json(serde_json::to_value(&settings).unwrap_or(serde_json::Value::Null))
+}
+
+/// `PUT /integrations/settings`：集成开关写面——原子写（tmp + rename），
+/// 半写文件永不被 tick 读走。写操作审计（A1）。
+#[derive(Debug, Deserialize)]
+pub struct PutIntegrationSettingsReq {
+    pub auto_integrate_enabled: bool,
+    pub gates: crate::integration::settings::IntegrationGates,
+}
+
+pub async fn put_integration_settings(
+    State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
+    axum::Json(req): axum::Json<PutIntegrationSettingsReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let settings = crate::integration::settings::IntegrationSettings {
+        auto_integrate_enabled: req.auto_integrate_enabled,
+        gates: req.gates,
+    };
+    crate::integration::settings::save(
+        &crate::integration::settings::settings_path(&st.plans_root),
+        &settings,
+    )
+    .map_err(|e| ApiError::internal(e.to_string()))?;
+    user.audit_write(
+        &st,
+        "put_integration_settings",
+        &format!(
+            "auto_integrate={}, gates(clippy={},doc_lint={})",
+            settings.auto_integrate_enabled, settings.gates.clippy, settings.gates.doc_lint
+        ),
+    );
+    Ok(Json(serde_json::to_value(&settings).unwrap_or(serde_json::Value::Null)))
+}
+
 /// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。
 pub async fn audit_report(
     State(st): State<SharedState>,

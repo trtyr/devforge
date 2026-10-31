@@ -491,3 +491,4 @@ fn git_out(cwd: &Path, args: &[&str]) -> Result<String> {
 
 #[cfg(test)]
 mod tests;
+pub mod settings;
