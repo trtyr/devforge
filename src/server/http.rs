@@ -121,7 +121,16 @@ pub fn build_router(state: SharedState) -> Router {
             state.clone(),
             handlers::auth_middleware,
         ));
-    Router::new().nest("/api/v1", api).with_state(state)
+    Router::new()
+        .nest("/api/v1", api)
+        // A1：登录/登出在守门之外（/api/v1 守门后鸡生蛋）；鉴权由 login 自身负责。
+        .merge(
+            Router::new()
+                .route("/auth/login", post(handlers::auth_login))
+                .route("/auth/logout", post(handlers::auth_logout))
+                .with_state(state.clone()),
+        )
+        .with_state(state)
 }
 
 /// 生产引导：绑定地址并常驻服务（main 调用）。
@@ -158,7 +167,12 @@ pub async fn serve(state: SharedState, addr: std::net::SocketAddr) -> std::io::R
     });
     // 自审 minor（218）：常驻服务要有优雅停机——旧口径 SIGINT 直接终结进程，SSE 长连接被
     // 硬断且不留停机日志，运维无法区分「主动停」与「崩了」。
-    axum::serve(listener, build_router(state))
+    // A1：ConnectInfo 注入——中间件用真实对端地址判回环豁免（oneshot 测试无此层，
+    // Option<ConnectInfo> = None 视作本机）。
+    axum::serve(
+        listener,
+        build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!(

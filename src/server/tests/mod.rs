@@ -239,6 +239,7 @@ mod http;
 mod integration_api;
 mod notifications;
 mod config_knobs;
+mod auth_login;
 mod observe;
 mod panic_safety;
 mod pending;

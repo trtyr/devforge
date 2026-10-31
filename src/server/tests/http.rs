@@ -7,6 +7,12 @@ use super::*;
 async fn auth_token_enforced_when_configured() {
     let f = fixture_with_token(Some("secret"));
 
+    // A1 后三通道并存：fixture（oneshot 无 ConnectInfo = 本机）默认豁免开 → 无头也放行。
+    // token 闸的验收要关豁免（等价于远程/收紧模式）。
+    f.state
+        .auth_loopback_exempt
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
     // 无头 → 401
     let resp = send(&f.router, "GET", "/api/v1/projects", None).await;
     assert_eq!(resp.status(), 401);

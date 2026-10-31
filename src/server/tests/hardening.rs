@@ -160,9 +160,13 @@ async fn audit_report_404_does_not_leak_absolute_path() {
 }
 
 /// 全仓审计 #6：token 校验行为不变（错误 token 401、正确 token 放行）。
+/// A1 后为三通道之一：验收 token 闸需关回环豁免（等价远程/收紧模式）。
 #[tokio::test]
 async fn token_gate_still_rejects_wrong_token() {
     let f = fixture_with_token(Some("s3cret"));
+    f.state
+        .auth_loopback_exempt
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     let resp = send(&f.router, "GET", "/api/v1/projects/nope/tasks/t/audit-report", None).await;
     assert_eq!(resp.status(), 401, "无 token 应 401");
 

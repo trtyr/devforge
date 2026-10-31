@@ -219,6 +219,40 @@ async fn main() -> anyhow::Result<()> {
     devforge::logging::init(&root.join("logs"), "devforge")
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
+    // A1：admin 账户初始化子命令（在守门之外的唯一写口；server 不提供 setup 端点
+    // ——初始化窗口不暴露给 HTTP 面）。形态：`devforge auth-init <口令> [--force]`。
+    if args.first().map(String::as_str) == Some("auth-init") {
+        let pw = args
+            .get(1)
+            .map(String::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!("用法: devforge auth-init <口令> [--force]（口令不可为空）")
+            })?;
+        let force = args.iter().any(|a| a == "--force");
+        let store_path = root.join("store.json");
+        let mut store = if store_path.exists() {
+            devforge::domain::Store::load(&store_path)?
+        } else {
+            devforge::domain::Store::new()
+        };
+        if store.auth_account().is_some() && !force {
+            anyhow::bail!("admin 账户已存在；重置口令请加 --force");
+        }
+        let hash = devforge::domain::auth::hash_password(pw);
+        store.set_auth_account(
+            "admin",
+            &hash,
+            devforge::domain::auth::Role::Admin,
+            devforge::domain::now_ms(),
+        );
+        store
+            .save(&store_path)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        println!("admin 账户已写入 {}", store_path.display());
+        return Ok(());
+    }
+
     // 观测根（心跳/墓碑的落点）：F14 后与数据根同源——main 直接注入解析好的
     // root，observability 不再自读 DEVFORGE_HOME（去 env 读点）。
     devforge::observability::set_root(root.clone());
@@ -393,7 +427,7 @@ async fn main() -> anyhow::Result<()> {
     let Some(s) = std::sync::Arc::get_mut(&mut state) else {
         panic!("启动注入 token/超时时 Arc 已被分享——注入点必须保持在服务启动之前");
     };
-    // F14：token 双承载——CLI --token > config.json token 键 > 无（env 承载已删）。
+    // 自审 minor（46）：token 双承载——CLI --token > config.json token 键 > 无（env 承载已删）。
     // 旗标/优先级契约单一来源在 server::http。
     if let Some(t) = devforge::server::resolve_startup_token(
         devforge::server::http::parse_cli_flag(&args, "--token"),
@@ -401,6 +435,10 @@ async fn main() -> anyhow::Result<()> {
     ) {
         s.token = Some(t);
     }
+    // A1：回环豁免从 knobs 注入（config.json auth_loopback_exempt；缺省 true = 本机
+    // 免鉴权的既有体验，收紧后本机也必须登录；远程永不豁免）。
+    s.auth_loopback_exempt
+        .store(devforge::config::knobs::auth_loopback_exempt(), std::sync::atomic::Ordering::Relaxed);
     // F14：run 墙钟走 knobs 单点（config.json `run_timeout_ms`，0/未设 = 不限）。
     if let Some(n) = devforge::config::knobs::run_timeout_ms() {
         s.run_timeout_ms = Some(n);

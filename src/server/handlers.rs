@@ -149,23 +149,110 @@ impl From<crate::error::DevforgeError> for ApiError {
 
 type ApiResult<T> = Result<T, ApiError>;
 
-// ---------- 鉴权（Q003：预留位——未配置 token 即放行） ----------
+// ---------- 鉴权（A1 · M-1：session cookie / token 头 / 回环豁免三通道） ----------
 
+/// 守门中间件（/api/v1/*，含 SSE 握手——EventSource 自动携 cookie，免特判）：
+/// ① `x-devforge-token` 头（DR-9 服务间通道，常量时间比较，不废）；
+/// ② 会话 cookie（server::auth 滑动续期）；
+/// ③ 回环豁免（`auth_loopback_exempt`，缺省 true = 本机免鉴权；远程永不豁免）。
+/// 三通道任一通过即放行，全不命中 → 401。
 pub async fn auth_middleware(
     State(st): State<SharedState>,
     req: Request,
     next: Next,
 ) -> Response {
+    // 真实对端地址（into_make_service_with_connect_info 注入 extensions；
+    // oneshot 测试无此层 → None，按本机处理）。不从签名提取——Option<ConnectInfo>
+    // 不满足 from_fn 的 extractor bound。
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0);
+    // ① 服务间 token 通道
     if let Some(expected) = &st.token {
         let got = req.headers().get("x-devforge-token").and_then(|v| v.to_str().ok());
         // 全仓审计 #6：常量时间比较（旧写法 `got != Some(expected)` 按字节早退，
         // 泄露 token 前缀的计时信号）
-        if !token_matches(got, expected) {
-            return (StatusCode::UNAUTHORIZED, Json(json!({"error": "token 不匹配"})))
-                .into_response();
+        if token_matches(got, expected) {
+            return next.run(req).await;
         }
     }
-    next.run(req).await
+    // ② 会话 cookie 通道
+    if let Some(cookie) = req.headers().get(axum::http::header::COOKIE).and_then(|v| v.to_str().ok())
+        && let Some(token) = crate::server::auth::token_from_cookie(cookie)
+        && crate::server::auth::validate_session(&st, &token, crate::domain::now_ms()).is_some()
+    {
+        return next.run(req).await;
+    }
+    // ③ 回环豁免通道（oneshot 测试无 ConnectInfo = None 视作本机）
+    if st.auth_loopback_exempt.load(std::sync::atomic::Ordering::Relaxed)
+        && crate::server::auth::is_loopback_peer(peer)
+    {
+        return next.run(req).await;
+    }
+    (StatusCode::UNAUTHORIZED, Json(json!({"error": "未认证（登录或携带 token）"}))).into_response()
+}
+
+/// `POST /auth/login`：校验口令签发会话 cookie。审计：成功/失败都落
+/// `store.auth_events`（login_success / login_failure + 具体原因，不含口令本体）。
+#[derive(Debug, Deserialize)]
+pub struct LoginReq {
+    pub username: String,
+    pub password: String,
+}
+
+pub async fn auth_login(
+    State(st): State<SharedState>,
+    Json(req): Json<LoginReq>,
+) -> Response {
+    let now = crate::domain::now_ms();
+    let audit = |kind: &str, detail: &str| {
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.push_auth_event(kind, &req.username, detail, now);
+    };
+    match crate::server::auth::login(&st, &req.username, &req.password, now) {
+        Ok((token, role)) => {
+            audit("login_success", "登录成功");
+            (
+                StatusCode::OK,
+                [(
+                    axum::http::header::SET_COOKIE,
+                    crate::server::auth::session_cookie_value(&token),
+                )],
+                Json(json!({
+                    "ok": true,
+                    "username": req.username,
+                    "role": role,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            audit("login_failure", e.detail());
+            (StatusCode::UNAUTHORIZED, Json(json!({"error": e.message()}))).into_response()
+        }
+    }
+}
+
+/// `POST /auth/logout`：删会话 + 清 cookie（幂等；未认证也 200——登出不值得守门）。
+pub async fn auth_logout(
+    State(st): State<SharedState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(cookie) = headers.get(axum::http::header::COOKIE).and_then(|v| v.to_str().ok())
+        && let Some(token) = crate::server::auth::token_from_cookie(cookie)
+    {
+        crate::server::auth::logout(&st, &token);
+    }
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::SET_COOKIE,
+            crate::server::auth::cleared_cookie_value(),
+        )],
+        Json(json!({"ok": true})),
+    )
+        .into_response()
 }
 
 // ---------- 编排控制：项目 ----------

@@ -73,6 +73,9 @@ pub struct RuntimeKnobs {
     pub max_concurrent: usize,
     /// 今天日期覆盖（YYYY-MM-DD；change_id 用——测试/固定口径注入，零 env 后的承接位）。
     pub today_override: Option<String>,
+    /// 回环豁免（A1）：true = 来自 127.0.0.1 的请求免鉴权（本机零摩擦的既有体验）；
+    /// false = 本机也必须 session/token（严谨模式）。远程永远不豁免。
+    pub auth_loopback_exempt: bool,
 }
 
 impl Default for RuntimeKnobs {
@@ -93,6 +96,7 @@ impl Default for RuntimeKnobs {
             doc_base: None,
             max_concurrent: 2,
             today_override: None,
+            auth_loopback_exempt: true,
         }
     }
 }
@@ -116,6 +120,12 @@ pub const KNOB_TABLE: &[(&str, &str, &str, &str)] = &[
     ("doc_base", "无", "sha", "文档增量基线覆盖"),
     ("max_concurrent", "2", "个", "并发 run 上限"),
     ("today_override", "无", "YYYY-MM-DD", "今天日期覆盖（测试/固定口径注入）"),
+    (
+        "auth_loopback_exempt",
+        "true",
+        "bool",
+        "A1 回环豁免（本机免鉴权；远程永不豁免）",
+    ),
 ];
 
 /// 生效值条目（端点形态：key + 值 + 来源）。
@@ -212,6 +222,8 @@ impl RuntimeKnobs {
                 .filter(|s| !s.is_empty())
                 .map(Some)
         );
+        set!(auth_loopback_exempt, "auth_loopback_exempt", |v: &serde_json::Value| v
+            .as_bool());
         (knobs, sources)
     }
 }
@@ -286,6 +298,11 @@ pub fn effective_values() -> Vec<KnobEffective> {
             "today_override",
             knobs.today_override,
             src_of("today_override"),
+        ),
+        eff(
+            "auth_loopback_exempt",
+            knobs.auth_loopback_exempt,
+            src_of("auth_loopback_exempt"),
         ),
     ]
 }
@@ -406,6 +423,11 @@ pub fn max_concurrent() -> usize {
 /// 今天日期覆盖（change_id 用；None = 用本地时钟）。
 pub fn today_override() -> Option<String> {
     snapshot().today_override
+}
+
+/// 回环豁免开关（A1；缺省 true = 本机免鉴权，config 可收紧）。
+pub fn auth_loopback_exempt() -> bool {
+    snapshot().auth_loopback_exempt
 }
 
 #[cfg(test)]

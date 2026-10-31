@@ -5,6 +5,7 @@
 //!
 //! 五能力域：编排控制 · 产物管理 · 交互中继 · 可观测 · 配置管理。
 
+pub mod auth;
 pub mod change_engine;
 pub mod gate;
 pub mod handlers;
@@ -427,6 +428,11 @@ pub struct ServerState {
     pub ui: Arc<UiRelay>,
     /// 鉴权预留位：Some(token) 时要求 `x-devforge-token` 头匹配（Q003）。
     pub token: Option<String>,
+    /// A1 会话表（内存态：重启即失效 = 全员重登；签发/验证在 server::auth）。
+    pub auth_sessions: crate::server::auth::SessionMap,
+    /// A1 回环豁免（knobs::auth_loopback_exempt 注入；缺省 true = 本机免鉴权）。
+    /// AtomicBool：Arc 共享后测试仍可翻转（守门中间件每次无锁读）。
+    pub auth_loopback_exempt: std::sync::atomic::AtomicBool,
     pub profiles_root: PathBuf,
     pub plans_root: PathBuf,
     pub sessions_root: PathBuf,
@@ -468,6 +474,8 @@ impl ServerState {
             runs_control: Mutex::new(HashMap::new()),
             run_timeout_ms: None,
             token: None,
+            auth_sessions: std::sync::RwLock::new(HashMap::new()),
+            auth_loopback_exempt: std::sync::atomic::AtomicBool::new(true),
             profiles_root,
             plans_root,
             sessions_root,
