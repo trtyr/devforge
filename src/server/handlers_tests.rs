@@ -64,7 +64,13 @@ async fn a_finished_render_leaves_no_in_flight_count_behind() {
     //   → 本用例必须变红
     let dir = tempfile::tempdir().unwrap();
     let st = test_state(dir.path());
-    let resp = match put_manifest(State(st.clone()), Json(ConfigManifest::builtin())).await {
+    let resp = match put_manifest(
+        State(st.clone()),
+        axum::Extension(super::AuthedUser::anonymous("loopback")),
+        Json(ConfigManifest::builtin()),
+    )
+    .await
+    {
         Ok(r) => r,
         Err(_) => panic!("内置清单应通过校验（不该 400）"),
     };

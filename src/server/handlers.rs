@@ -1,6 +1,6 @@
 //! API 端点处理器（P003 五能力域）。
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response, Sse};
@@ -151,6 +151,37 @@ type ApiResult<T> = Result<T, ApiError>;
 
 // ---------- 鉴权（A1 · M-1：session cookie / token 头 / 回环豁免三通道） ----------
 
+/// 已认证身份（中间件验证成功后注入 request extensions，写操作审计取 actor 用）。
+#[derive(Debug, Clone)]
+pub struct AuthedUser {
+    pub username: String,
+    pub role: crate::domain::auth::Role,
+    /// 认证通道：session / token / loopback（审计里可答「谁从哪条路进来的」）。
+    pub via: &'static str,
+}
+
+impl AuthedUser {
+    fn anonymous(via: &'static str) -> Self {
+        Self {
+            username: format!("@{via}"),
+            role: crate::domain::auth::Role::Admin,
+            via,
+        }
+    }
+
+    /// 写操作审计（四类写 + manifest/model swap）：store.auth_events 落 write_op。
+    /// 放在这里而非各 handler 自拼——actor 口径（via 后缀）单点。
+    pub fn audit_write(&self, st: &SharedState, op: &str, detail: &str) {
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.push_auth_event(
+            "write_op",
+            &format!("{}({})", self.username, self.via),
+            &format!("{op}: {detail}"),
+            crate::domain::now_ms(),
+        );
+    }
+}
+
 /// 守门中间件（/api/v1/*，含 SSE 握手——EventSource 自动携 cookie，免特判）：
 /// ① `x-devforge-token` 头（DR-9 服务间通道，常量时间比较，不废）；
 /// ② 会话 cookie（server::auth 滑动续期）；
@@ -158,7 +189,7 @@ type ApiResult<T> = Result<T, ApiError>;
 /// 三通道任一通过即放行，全不命中 → 401。
 pub async fn auth_middleware(
     State(st): State<SharedState>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Response {
     // 真实对端地址（into_make_service_with_connect_info 注入 extensions；
@@ -174,20 +205,28 @@ pub async fn auth_middleware(
         // 全仓审计 #6：常量时间比较（旧写法 `got != Some(expected)` 按字节早退，
         // 泄露 token 前缀的计时信号）
         if token_matches(got, expected) {
+            req.extensions_mut().insert(AuthedUser::anonymous("token"));
             return next.run(req).await;
         }
     }
-    // ② 会话 cookie 通道
+    // ② 会话 cookie 通道（携带真实身份——写操作审计的 actor 来源）
     if let Some(cookie) = req.headers().get(axum::http::header::COOKIE).and_then(|v| v.to_str().ok())
         && let Some(token) = crate::server::auth::token_from_cookie(cookie)
-        && crate::server::auth::validate_session(&st, &token, crate::domain::now_ms()).is_some()
+        && let Some((username, role)) =
+            crate::server::auth::validate_session(&st, &token, crate::domain::now_ms())
     {
+        req.extensions_mut().insert(AuthedUser {
+            username,
+            role,
+            via: "session",
+        });
         return next.run(req).await;
     }
     // ③ 回环豁免通道（oneshot 测试无 ConnectInfo = None 视作本机）
     if st.auth_loopback_exempt.load(std::sync::atomic::Ordering::Relaxed)
         && crate::server::auth::is_loopback_peer(peer)
     {
+        req.extensions_mut().insert(AuthedUser::anonymous("loopback"));
         return next.run(req).await;
     }
     (StatusCode::UNAUTHORIZED, Json(json!({"error": "未认证（登录或携带 token）"}))).into_response()
@@ -465,6 +504,7 @@ pub struct CreateTaskReq {
 
 pub async fn create_task(
     State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
     Path(project): Path<String>,
     Json(req): Json<CreateTaskReq>,
 ) -> ApiResult<(StatusCode, Json<Task>)> {
@@ -522,11 +562,13 @@ pub async fn create_task(
         .cloned()?
     };
     st.emit(json!({"type": "task.created", "project": project, "task": created.id}));
+    user.audit_write(&st, "create_task", &format!("{project}/{}", created.id));
     Ok((StatusCode::CREATED, Json(created)))
 }
 
 pub async fn cancel_task(
     State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
     Path((project, task)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     // P8-ISSUE-01 修复：取消端点——置位后 watchdog 按 run-id 精确 SIGKILL 自家 pi
@@ -556,6 +598,7 @@ pub async fn cancel_task(
                     st.ui.abort_all();
                 }
             }
+            user.audit_write(&st, "cancel_task", &format!("{project}/{task}"));
             Ok(Json(json!({"ok": true, "cancelled": true})))
         }
         None => Err(ApiError::not_found(format!(
@@ -586,6 +629,7 @@ pub struct StartReq {
 
 pub async fn start_task(
     State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
     Path((project, task)): Path<(String, String)>,
     // 2026-10-27 自审 minor：用 Bytes 显式解析——`Option<Json<StartReq>>` 在缺
     // Content-Type 时把请求体静默丢弃（sop 覆盖与 fresh 无声失效，调用方以为生效）。
@@ -804,6 +848,11 @@ pub async fn start_task(
         fresh,
         sop_override,
         "start 已受理（202 已返回后后台执行；干预面已同步登记）"
+    );
+    user.audit_write(
+        &st,
+        "start_task",
+        &format!("{project}/{task} → run {run_id}（sop={sop_name}, resumed={}）", decision.resumed),
     );
     std::thread::spawn(move || run_in_background(st, project, task, engine, run, control));
     Ok((
@@ -1197,6 +1246,7 @@ pub struct AnswerReq {
 
 pub async fn answer_ui(
     State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
     Path(id): Path<String>,
     Json(req): Json<AnswerReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
@@ -1208,6 +1258,7 @@ pub async fn answer_ui(
             ApiError::from(e)
         }
     })?;
+    user.audit_write(&st, "answer_ruling", &format!("ui/{id}"));
     Ok(Json(json!({"ok": true})))
 }
 
@@ -1292,6 +1343,7 @@ pub async fn get_manifest(State(st): State<SharedState>) -> Json<ConfigManifest>
 /// 完成/失败经 SSE `config.rendered` / `config.render_failed` 通知）。
 pub async fn put_manifest(
     State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
     Json(manifest): Json<ConfigManifest>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     let mut manifest = manifest;
@@ -1384,6 +1436,7 @@ pub async fn put_manifest(
             );
         }
     });
+    user.audit_write(&st, "put_manifest", &format!("模型/配置交换（agents={agents}）"));
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({"ok": true, "async": true, "agents": agents})),

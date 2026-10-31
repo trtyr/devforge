@@ -309,3 +309,131 @@ async fn login_body_carries_role() {
     assert_eq!(v["username"], "admin");
     let _ = SESSION_TTL_MS; // 引用保持 import 清洁（语义在 cookie Max-Age 断言里）
 }
+
+// ---------- atask-3：写操作审计（actor 随通道） ----------
+
+/// session 通道写操作：actor = 真实用户名 + (session)，detail 带 op 与对象。
+#[tokio::test]
+async fn write_op_audit_carries_session_actor() {
+    let f = fixture_auth(false, None);
+    // 登录拿 cookie
+    let resp = send_with(
+        &f.router,
+        "POST",
+        "/auth/login",
+        &[],
+        Some(serde_json::json!({"username": "admin", "password": "s3cret"})),
+    )
+    .await;
+    let cookie = resp
+        .headers()
+        .get(axum::http::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    // 建项目 + 建任务（写操作）
+    send_with(&f.router, "POST", "/api/v1/projects", &[("cookie", &cookie)],
+        Some(serde_json::json!({"name": "p", "local_path": "/tmp/auth-audit-p"}))).await;
+    let resp = send_with(&f.router, "POST", "/api/v1/projects/p/tasks", &[("cookie", &cookie)],
+        Some(serde_json::json!({"id": "t", "sop": "planning"}))).await;
+    assert_eq!(status_of(&resp).await, 201, "session 建任务应成功");
+    let store = f.state.store.lock().unwrap();
+    let last = store.auth_events.last().unwrap();
+    assert_eq!(last.kind, "write_op");
+    assert_eq!(last.actor, "admin(session)", "actor = 用户名 + 通道");
+    assert!(last.detail.contains("create_task"), "detail 带 op：{}", last.detail);
+    assert!(last.detail.contains("p/t"), "detail 带对象：{}", last.detail);
+}
+
+/// 回环通道写操作：actor = @loopback(loopback)——审计可答「谁从哪条路进来的」。
+#[tokio::test]
+async fn write_op_audit_carries_loopback_actor() {
+    let f = fixture_auth(true, None);
+    send_with(&f.router, "POST", "/api/v1/projects", &[],
+        Some(serde_json::json!({"name": "p", "local_path": "/tmp/auth-audit-l"}))).await;
+    send_with(&f.router, "POST", "/api/v1/projects/p/tasks", &[],
+        Some(serde_json::json!({"id": "t", "sop": "planning"}))).await;
+    let store = f.state.store.lock().unwrap();
+    let last = store.auth_events.last().unwrap();
+    assert_eq!(last.actor, "@loopback(loopback)");
+    assert_eq!(last.kind, "write_op");
+}
+
+/// token 通道写操作：actor = @token(token)。
+#[tokio::test]
+async fn write_op_audit_carries_token_actor() {
+    let f = fixture_auth(false, Some("ops-secret"));
+    send_with(&f.router, "POST", "/api/v1/projects", &[("x-devforge-token", "ops-secret")],
+        Some(serde_json::json!({"name": "p", "local_path": "/tmp/auth-audit-t"}))).await;
+    send_with(&f.router, "POST", "/api/v1/projects/p/tasks", &[("x-devforge-token", "ops-secret")],
+        Some(serde_json::json!({"id": "t", "sop": "planning"}))).await;
+    let store = f.state.store.lock().unwrap();
+    assert_eq!(store.auth_events.last().unwrap().actor, "@token(token)");
+}
+
+/// Observer 预留语义：observer 角色账户可登录、守门放行（角色字段先合法存在；
+/// 写降权在 M-1 之后单独立项，这里只钉「预留字段不破坏登录/守门」）。
+#[tokio::test]
+async fn observer_role_can_login_and_pass_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let bus = Arc::new(crate::server::EventBus::new());
+    let ui = Arc::new(UiRelay::new(bus.clone()));
+    let mut store = Store::new();
+    store.set_auth_account("watcher", &hash_password("pw"), Role::Observer, 1_000);
+    let mut st = ServerState::new(
+        store,
+        SopRegistry::builtin(),
+        ConfigManifest::builtin(),
+        Box::new(|| -> Box<dyn crate::domain::RunEngine + Send> {
+            unreachable!("observer 单测不触发引擎")
+        }),
+        bus,
+        ui,
+        Arc::new(FakeInstaller),
+        dir.path().join("profiles"),
+        dir.path().join("plans"),
+        dir.path().join("sessions"),
+    );
+    Arc::get_mut(&mut st).unwrap().auth_loopback_exempt.store(false, std::sync::atomic::Ordering::Relaxed);
+    let state: Arc<ServerState> = st;
+    let router = build_router(state.clone());
+
+    let resp = send_with(
+        &router,
+        "POST",
+        "/auth/login",
+        &[],
+        Some(serde_json::json!({"username": "watcher", "password": "pw"})),
+    )
+    .await;
+    assert_eq!(status_of(&resp).await, 200);
+    // 先取 header（借用），最后才消耗 body
+    let cookie = resp
+        .headers()
+        .get(axum::http::header::SET_COOKIE)
+        .and_then(|x| x.to_str().ok())
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let v: serde_json::Value = serde_json::from_slice(
+        &resp.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(v["role"], "observer", "role 序列化 snake_case（预留字段合法存在）");
+
+    // observer 登录态过守门（收紧模式 + 真实 cookie）：预留字段不破坏守门
+    let resp = send_with(
+        &router,
+        "GET",
+        "/api/v1/projects",
+        &[("cookie", &cookie)],
+        None,
+    )
+    .await;
+    assert_eq!(status_of(&resp).await, 200, "observer 登录态放行读");
+}
