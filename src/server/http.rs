@@ -120,6 +120,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/server/ops", get(handlers::server_ops))
         .route("/config/agents", get(handlers::agents_config))
         .route("/stats", get(handlers::stats))
+        .route("/logs", get(handlers::logs_query))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             handlers::auth_middleware,

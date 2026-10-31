@@ -697,6 +697,175 @@ pub struct StatsQuery {
     pub days: Option<u64>,
 }
 
+// ---------- 可观测：日志查询（A8 · P019） ----------
+
+/// Howard Hinnant days_from_civil（civil_from_days 的逆）：UTC 日历日 → 自
+/// 1970-01-01 的天数。与 change_id::civil_from_days 配对使用。
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (i64::from(m) + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// tracing JSON 行的 `timestamp`（RFC3339 Zulu，如 `2026-10-31T15:10:07.099597Z`）
+/// → unix ms。手写解析（不引第三方时间库）；畸形输入 = None。
+pub(crate) fn rfc3339_zulu_to_ms(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':'
+    {
+        return None;
+    }
+    let y: i64 = s.get(0..4)?.parse().ok()?;
+    let mo: u32 = s.get(5..7)?.parse().ok()?;
+    let d: u32 = s.get(8..10)?.parse().ok()?;
+    let h: i64 = s.get(11..13)?.parse().ok()?;
+    let mi: u64 = s.get(14..16)?.parse().ok()?;
+    let sec: u64 = s.get(17..19)?.parse().ok()?;
+    if !(1..=12).contains(&mo) || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    // 月内天数（含闰年规则）——日历合法才进天序换算
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let dim: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if d < 1 || d > dim[(mo - 1) as usize] {
+        return None;
+    }
+    // 小数秒（可选）：取前 6 位补零到微秒精度再换算毫秒
+    let mut frac_ms: u64 = 0;
+    if let Some(rest) = s.get(19..)
+        && let Some(frac) = rest.strip_prefix('.')
+    {
+        let digits: String = frac.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() {
+            let padded = format!("{:0<6}", &digits[..digits.len().min(6)]);
+            frac_ms = padded.parse::<u64>().unwrap_or(0) / 1_000;
+        }
+    }
+    let secs = days_from_civil(y, mo, d) * 86_400 + h * 3_600 + (mi * 60 + sec) as i64;
+    Some((secs as u64) * 1_000 + frac_ms)
+}
+
+/// 日志级别下限（ERROR > WARN > INFO > DEBUG）；未知级别视作最低（不被 level 过滤滤掉）。
+fn level_rank(level: &str) -> u8 {
+    match level.to_ascii_uppercase().as_str() {
+        "ERROR" => 3,
+        "WARN" => 2,
+        "INFO" => 1,
+        _ => 0,
+    }
+}
+
+/// 日志查询参数（A8）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogsQuery {
+    /// 级别下限（error/warn/info/debug；匹配该级及以上）。
+    pub level: Option<String>,
+    /// `fields.component` 精确匹配。
+    pub component: Option<String>,
+    /// 关键词（整行小写包含）。
+    pub q: Option<String>,
+    /// run_id（整行包含——引擎行在任意字段携带 run_id 时可命中）。
+    pub run_id: Option<String>,
+    /// 时间窗下限（unix ms；基于行 timestamp 解析，无法解析时间戳的行**保留**——
+    /// 日志查询丢行是事故，宁多勿丢）。
+    pub since_ms: Option<u64>,
+    /// 时间窗上限（unix ms，含端点）。
+    pub until_ms: Option<u64>,
+    /// 分页偏移（匹配集内，文件序旧→新）。
+    pub offset: Option<usize>,
+    /// 页大小（缺省 200，clamp 1..=1000）。
+    pub limit: Option<usize>,
+}
+
+/// 单行是否命中过滤（纯函数，可测）。`raw` = 原始行文本（q/run_id 全行匹配用）。
+pub(crate) fn log_line_matches(
+    line: &serde_json::Value,
+    raw: &str,
+    q: &LogsQuery,
+    since_ms: Option<u64>,
+    until_ms: Option<u64>,
+) -> bool {
+    if let Some(want) = &q.level
+        && level_rank(line["level"].as_str().unwrap_or("")) < level_rank(want)
+    {
+        return false;
+    }
+    if let Some(want) = &q.component
+        && line["fields"]["component"].as_str() != Some(want.as_str())
+    {
+        return false;
+    }
+    let lower = raw.to_ascii_lowercase();
+    if let Some(want) = &q.q
+        && !lower.contains(&want.to_ascii_lowercase())
+    {
+        return false;
+    }
+    if let Some(want) = &q.run_id
+        && !raw.contains(want.as_str())
+    {
+        return false;
+    }
+    let ts = line["timestamp"].as_str().and_then(rfc3339_zulu_to_ms);
+    if let Some(since) = since_ms
+        && let Some(ts) = ts
+        && ts < since
+    {
+        return false;
+    }
+    if let Some(until) = until_ms
+        && let Some(ts) = ts
+        && ts > until
+    {
+        return false;
+    }
+    true
+}
+
+/// `GET /logs`：引擎事件流查询（`<logs_root>/devforge.log.jsonl`）——
+/// 级别 / 组件 / 关键词 / run_id / 时间窗过滤 + 分页（文件序旧→新）。
+///
+/// 口径：全文件扫描后过滤（v1；文件轮转归运维后续）；时间窗过滤对无法解析
+/// 时间戳的行放行（宁多勿丢）；弹窗看完整命令与输出 = 本端点（引擎面）+
+/// 既有 `/projects/.../runs/{run}/transcript`（对话面）双源拼装。
+pub async fn logs_query(
+    State(st): State<SharedState>,
+    Query(q): Query<LogsQuery>,
+) -> Json<serde_json::Value> {
+    let offset = q.offset.unwrap_or(0);
+    let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    let path = crate::logging::log_file_path(&st.logs_root, "devforge");
+    let mut matched: Vec<serde_json::Value> = Vec::new();
+    let mut total_matched: usize = 0;
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        for line in content.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue; // 非法行（半写/损坏）跳过——查询面不做修复
+            };
+            if log_line_matches(&v, line, &q, q.since_ms, q.until_ms) {
+                total_matched += 1;
+                if total_matched > offset && matched.len() < limit {
+                    let mut row = v;
+                    if let Some(ts) = row["timestamp"].as_str().and_then(rfc3339_zulu_to_ms) {
+                        row["timestamp_ms"] = json!(ts);
+                    }
+                    matched.push(row);
+                }
+            }
+        }
+    }
+    Json(json!({
+        "total_matched": total_matched,
+        "offset": offset,
+        "limit": limit,
+        "lines": matched,
+    }))
+}
+
 /// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。
 pub async fn audit_report(
     State(st): State<SharedState>,

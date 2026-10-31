@@ -439,6 +439,8 @@ async fn main() -> anyhow::Result<()> {
     // 免鉴权的既有体验，收紧后本机也必须登录；远程永不豁免）。
     s.auth_loopback_exempt
         .store(devforge::config::knobs::auth_loopback_exempt(), std::sync::atomic::Ordering::Relaxed);
+    // A8：日志目录注入（引擎事件流查询端点的数据源）。
+    s.logs_root = root.join("logs");
     // F14：run 墙钟走 knobs 单点（config.json `run_timeout_ms`，0/未设 = 不限）。
     if let Some(n) = devforge::config::knobs::run_timeout_ms() {
         s.run_timeout_ms = Some(n);

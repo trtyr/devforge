@@ -435,6 +435,8 @@ pub struct ServerState {
     pub auth_loopback_exempt: std::sync::atomic::AtomicBool,
     /// 进程启动时刻（A7 运维信息带的 uptime 口径；unix ms UTC）。
     pub started_at_ms: u64,
+    /// 日志目录（A8 查询端点的数据源；main 注入 <root>/logs，测试注入 tempdir）。
+    pub logs_root: PathBuf,
     pub profiles_root: PathBuf,
     pub plans_root: PathBuf,
     pub sessions_root: PathBuf,
@@ -479,6 +481,7 @@ impl ServerState {
             auth_sessions: std::sync::RwLock::new(HashMap::new()),
             auth_loopback_exempt: std::sync::atomic::AtomicBool::new(true),
             started_at_ms: crate::domain::now_ms(),
+            logs_root: PathBuf::new(),
             profiles_root,
             plans_root,
             sessions_root,
