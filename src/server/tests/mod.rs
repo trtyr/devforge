@@ -238,6 +238,7 @@ mod hardening;
 mod http;
 mod integration_api;
 mod notifications;
+mod config_knobs;
 mod observe;
 mod panic_safety;
 mod pending;

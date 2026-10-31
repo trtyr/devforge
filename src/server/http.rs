@@ -123,6 +123,7 @@ pub fn build_router(state: SharedState) -> Router {
             "/config/manifest",
             get(handlers::get_manifest).put(handlers::put_manifest),
         )
+        .route("/config/knobs", get(handlers::knob_effective))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             handlers::auth_middleware,

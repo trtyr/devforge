@@ -5,6 +5,7 @@
 
 pub mod extension_assets;
 pub mod installer;
+pub mod knobs;
 pub mod manifest;
 pub mod render;
 pub mod skill_assets;

@@ -272,8 +272,7 @@ pub async fn scheduler_status(State(st): State<SharedState>) -> Json<serde_json:
 
 // ---------- 通知（A2 · 通知系统） ----------
 
-/// 通知列表 + 未读数（前端铃铛角标的数据源）。
-/// 查询参数 `unread=true` 时只返回未读条目。
+/// 通知列表 + 未读数（前端铃铛角标的数据源）。/// 查询参数 `unread=true` 时只返回未读条目。
 pub async fn list_notifications(
     State(st): State<SharedState>,
     Query(params): Query<NotificationQuery>,
@@ -322,6 +321,15 @@ pub async fn read_notifications(
 pub struct NotificationQuery {
     #[serde(default)]
     pub unread: Option<bool>,
+}
+
+// ---------- 配置：旋钮生效值（F14/T205） ----------
+
+/// 旋钮生效值端点：声明表全量覆盖 + 来源标注（file 覆盖可见、未覆盖=default）——
+/// 「现在生效了什么」不再靠读源码。
+pub async fn knob_effective() -> Json<serde_json::Value> {
+    let items = crate::config::knobs::effective_values();
+    Json(serde_json::json!({ "knobs": items }))
 }
 
 /// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。
