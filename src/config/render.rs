@@ -228,6 +228,22 @@ impl<'a> Renderer<'a> {
             }
         }
 
+        // extensions 分发（AF-5）：内置资产表 → `<profile>/extensions/<name>.ts`，
+        // pi 对 profile 目录（PI_CODING_AGENT_DIR）下的 extensions/ 自动加载。
+        // 未收录的名字在资产表层已 WARN（extension.unknown），这里跳过不建占位——
+        // 交卷扩展丢了引擎走文本降级（WARN 可见），不能给 agent 一个坏文件。
+        if !agent.extensions.is_empty() {
+            fs::create_dir_all(dir.join("extensions")).ctx("创建 profile extensions 目录")?;
+            for ext in &agent.extensions {
+                if let Some(files) = crate::config::skill_assets::builtin_extension_files(ext) {
+                    for (name, body) in files {
+                        fs::write(dir.join("extensions").join(name), body)
+                            .ctx(format!("写 extension {ext}/{name}"))?;
+                    }
+                }
+            }
+        }
+
         // auth.json——明文 Key，provider 键控形状（P002 decisions/001 明文不设防；
         // P2-ISSUE-01 修复：pi 期望 {"<provider>": {"type": "api_key", "key": ...}}）
         if let Some(key) = &self.manifest.api_key {

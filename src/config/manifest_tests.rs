@@ -497,8 +497,15 @@ fn only_review_agents_declare_tool_allowlists() {
     let dr = m.get_agent("doc-review").expect("doc-review 在清单");
     assert_eq!(
         dr.tools.as_deref(),
-        Some(["read".to_string(), "write".to_string()].as_slice()),
-        "doc-review 工具面必须是 read+write 白名单"
+        Some(
+            [
+                "read".to_string(),
+                "write".to_string(),
+                "submit_verdict".to_string()
+            ]
+            .as_slice()
+        ),
+        "doc-review 工具面必须是 read+write+submit_verdict 白名单（交卷工具不能被剥夺误伤）"
     );
     for a in &m.agents {
         if a.name == "doc-review" {

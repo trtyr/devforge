@@ -13,6 +13,32 @@ pub const DOC_CONTRACT_SKILL_MD: &str = include_str!("../../assets/skills/doc-co
 pub const CODING_DISCIPLINE_SKILL_MD: &str =
     include_str!("../../assets/skills/coding-discipline/SKILL.md");
 
+/// 内置 AF-5 交卷工具扩展（pi.registerTool；渲染器按清单 extensions 声明拷入
+/// profile 的 extensions/ 目录，pi 自动加载）。
+pub const SUBMIT_UNIT_EXTENSION_TS: &str = include_str!("../../assets/extensions/submit-unit.ts");
+pub const SUBMIT_VERDICT_EXTENSION_TS: &str =
+    include_str!("../../assets/extensions/submit-verdict.ts");
+
+/// 返回内置 extension 的清单（相对 extensions/ 目录的文件名 → 内容）。
+/// 未收录的名字返回 None（配置错误，调用方 WARN 可观测）。
+pub fn builtin_extension_files(extension: &str) -> Option<Vec<(&'static str, &'static str)>> {
+    match extension {
+        "submit-unit" => Some(vec![("submit-unit.ts", SUBMIT_UNIT_EXTENSION_TS)]),
+        "submit-verdict" => Some(vec![("submit-verdict.ts", SUBMIT_VERDICT_EXTENSION_TS)]),
+        other => {
+            // 同 skill.unknown 口径：名字写错是配置错误，静默折叠 = 扩展丢失 =
+            // 引擎永远走文本降级，必须可观测。
+            tracing::warn!(
+                component = "config-render",
+                event = "extension.unknown",
+                extension = %other,
+                "清单引用的 extension 不在内置资产表——profile 将不含该扩展，检查清单拼写"
+            );
+            None
+        }
+    }
+}
+
 /// 返回内置 skill 的文件清单（相对 skill 目录的路径 → 文件内容）。
 /// 未收录的 skill 返回 None（调用方回落占位行为）。
 pub fn builtin_skill_files(skill: &str) -> Option<Vec<(&'static str, &'static str)>> {

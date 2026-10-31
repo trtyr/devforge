@@ -437,8 +437,8 @@ fn tool_allowlist_renders_defaulttools_in_settings() {
         serde_json::from_str(&fs::read_to_string(dr.join("settings.json")).unwrap()).unwrap();
     assert_eq!(
         settings["defaultTools"],
-        serde_json::json!(["read", "write"]),
-        "doc-review 工具面必须是 read+write 白名单"
+        serde_json::json!(["read", "write", "submit_verdict"]),
+        "doc-review 工具面必须是 read+write+submit_verdict 白名单"
     );
 
     let worker = renderer(&manifest).render_agent(root.path(), "doc-agent").unwrap();
@@ -447,6 +447,41 @@ fn tool_allowlist_renders_defaulttools_in_settings() {
     assert!(
         settings.get("defaultTools").is_none(),
         "无 tools 声明的 agent 不写 defaultTools 键（全工具，老行为）"
+    );
+}
+
+/// AF-5：清单 extensions 声明 → profile/extensions/ 分发（pi 自动加载）；
+/// 未声明不分发（目录不存在），未收录的名字 WARN 可观测（extension.unknown）。
+#[test]
+fn declared_extensions_are_distributed_into_profile() {
+    let manifest = ConfigManifest::builtin();
+    let root = tempfile::tempdir().unwrap();
+
+    let doc = renderer(&manifest).render_agent(root.path(), "doc-agent").unwrap();
+    let ext = doc.join("extensions").join("submit-unit.ts");
+    assert!(ext.exists(), "doc-agent 应分发 submit-unit 扩展");
+    let body = fs::read_to_string(&ext).unwrap();
+    assert!(
+        body.contains("pi.registerTool") && body.contains("submit_unit"),
+        "扩展正文应是 pi.registerTool 交卷工具: {body}"
+    );
+    assert!(
+        !doc.join("extensions").join("submit-verdict.ts").exists(),
+        "doc-agent 不该拿到审查官的裁决扩展"
+    );
+
+    let review = renderer(&manifest)
+        .render_agent(root.path(), "doc-review")
+        .unwrap();
+    assert!(
+        review.join("extensions").join("submit-verdict.ts").exists(),
+        "doc-review 应分发 submit-verdict 扩展"
+    );
+
+    let worker = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
+    assert!(
+        !worker.join("extensions").exists() || fs::read_dir(worker.join("extensions")).unwrap().next().is_none(),
+        "未声明的 agent 不分发扩展"
     );
 }
 
