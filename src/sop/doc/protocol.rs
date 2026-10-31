@@ -100,6 +100,65 @@ pub fn parse_doc_complete(text: &str) -> Option<String> {
     None
 }
 
+/// AF-5（2026-10-24 拍板）：submit_verdict 工具参数 → 审查报告（结构化比对，不走文本解析）。
+/// 坏形（缺 verdict / 值非法 / FAIL 无 issues）一律 protocol_violation = true——编排层
+/// 有界重跑（拒收重试，不静默错）；route 缺失/非法 → Phase3 保守回落（文本路径同口径）。
+pub fn parse_tool_verdict(args: &serde_json::Value) -> DocReviewReport {
+    let violation = |why: String| DocReviewReport {
+        verdict: DocVerdict::Fail,
+        route: DocRoute::Phase3,
+        issues: vec![why],
+        protocol_violation: true,
+    };
+    let Some(verdict_raw) = args.get("verdict").and_then(|v| v.as_str()) else {
+        return violation("submit_verdict 参数缺 verdict".into());
+    };
+    let Some(verdict) = (
+        match verdict_raw.trim().to_ascii_uppercase().as_str() {
+            "PASS" => Some(DocVerdict::Pass),
+            "FAIL" => Some(DocVerdict::Fail),
+            _ => None,
+        }
+    ) else {
+        return violation(format!("submit_verdict 的 verdict 非法：{verdict_raw}"));
+    };
+    match verdict {
+        // PASS 只关心是否 Finish（文本路径同口径）
+        DocVerdict::Pass => DocReviewReport {
+            verdict,
+            route: DocRoute::Finish,
+            issues: vec![],
+            protocol_violation: false,
+        },
+        DocVerdict::Fail => {
+            let route = args
+                .get("route")
+                .and_then(|v| v.as_str())
+                .and_then(DocRoute::parse)
+                .unwrap_or(DocRoute::Phase3);
+            let issues: Vec<String> = args
+                .get("issues")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|i| i.as_str().map(str::to_string))
+                        .filter(|s| !s.trim().is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if issues.is_empty() {
+                return violation("submit_verdict 判 FAIL 但 issues 缺失或为空".into());
+            }
+            DocReviewReport {
+                verdict,
+                route,
+                issues,
+                protocol_violation: false,
+            }
+        }
+    }
+}
+
 /// 解析审查回复的三块协议；违例不报错（交给编排层重跑），只在报告里标记。
 pub fn parse_doc_review(text: &str) -> Result<DocReviewReport> {
     let verdict = extract_tag(text, "doc-verdict").and_then(|v| match v.trim().to_ascii_uppercase().as_str() {

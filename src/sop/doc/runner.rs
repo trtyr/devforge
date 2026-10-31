@@ -39,7 +39,7 @@ use crate::sop::doc::state::{
 };
 use crate::sop::doc::protocol::{
     MAX_DOC_CONTINUE_NUDGES, MAX_DOC_EMPTY_REPLIES, MAX_DOC_PROTOCOL_VIOLATIONS,
-    MAX_DOC_REVIEW_RETRIES, DocVerdict, parse_doc_complete, parse_doc_review,
+    MAX_DOC_REVIEW_RETRIES, DocVerdict, parse_doc_complete, parse_doc_review, parse_tool_verdict,
 };
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
 
@@ -79,9 +79,21 @@ fn spawn_review_worker<F>(
                 };
                 match session.review(&instruction) {
                     Ok(t) if !t.trim().is_empty() => {
-                        // ARC-R1（自串行 runner 移植）：审查协议违例（有内容但缺 doc-verdict/route 块）
-                        // → 就地重跑本轮审查（不回注被审 Agent）；耗尽按质量失败收场
-                        let report = parse_doc_review(&t)?;
+                        // AF-5：裁决正道 = submit_verdict 工具参数（结构化比对，截断=参数校验失败重试）；
+                        // 文本协议 = 降级回退（审查会话每轮新实例，WARN 天然每轮至多一次）。
+                        let submissions = session.take_tool_submissions();
+                        let report = match submissions.iter().rev().find(|s| s.tool == "submit_verdict") {
+                            Some(s) => parse_tool_verdict(&s.args),
+                            None => {
+                                tracing::warn!(
+                                    component = "doc-engine",
+                                    unit = %unit,
+                                    round = round,
+                                    "审查无 submit_verdict 工具提交，按文本协议解析（降级）——检查 profile 是否重渲（AF-5 扩展分发）"
+                                );
+                                parse_doc_review(&t)?
+                            }
+                        };
                         if !report.protocol_violation {
                             return Ok(t);
                         }
@@ -186,6 +198,8 @@ where
     let mut first_kickoff_sent = false;
     let mut marker = MarkerNudge::bounded(MAX_DOC_CONTINUE_NUDGES);
     let mut nudged_for = String::new();
+    // AF-5：文本降级路径每单元只 WARN 一次（不刷屏；nudge 话术引导工具优先）
+    let mut fallback_warned = false;
     // TODO(DR-10③)：流水线路径的 glue 计时（stage）尚未接线；协议违例计数已下沉到 spawn_review_worker
     let mut _stage: Option<(&'static str, std::time::Instant)> = None;
     // DR-4：首单元逾期守卫——开跑超阈值仍无任何单元完成 → 告警一次（假活/单元过重）
@@ -579,21 +593,48 @@ where
                 marker.reset();
                 nudged_for = active.clone();
             }
-            let Some(done_unit) = parse_doc_complete(&t) else {
-                let n = match marker.bump() {
-                    MarkerStep::Exhausted(n) => {
-                        return Err(DevforgeError::Quality(format!(
-                            "单元 `{active}` 连续 {n} 次未输出 <doc-complete>（已追补 {} 次），判定为质量失败（agent 不配合，重启也无意义）",
-                            marker.limit()
-                        )));
+            // AF-5（2026-10-24 拍板）：交卷正道 = submit_unit 工具事件（结构化比对）；
+            // 文本魔法块 = 降级回退（profile 未重渲/模型没调工具，宁降级不炸）。
+            let submissions = agent.take_tool_submissions();
+            let tool_unit: Option<Option<String>> = submissions.iter().rev().find_map(|s| {
+                (s.tool == "submit_unit").then(|| {
+                    s.args
+                        .get("unit")
+                        .and_then(|v| v.as_str())
+                        .map(|u| u.trim().to_string())
+                        .filter(|u| !u.is_empty())
+                })
+            });
+            let done_unit = match tool_unit {
+                Some(Some(u)) => u,
+                _ => {
+                    // 降级：每单元 WARN 一次（不刷屏），nudge 话术引导工具优先
+                    if !fallback_warned {
+                        fallback_warned = true;
+                        tracing::warn!(
+                            component = "doc-engine",
+                            unit = %active,
+                            "无 submit_unit 工具提交，按文本协议解析交卷（降级）——检查 profile 是否重渲（AF-5 扩展分发）"
+                        );
                     }
-                    MarkerStep::Nudge(n) => n,
-                    MarkerStep::Done => unreachable!("bump 不产生 Done"),
-                };
-                message = format!(
-                    "连续 {n} 次未输出完成标记。请补交：<doc-complete>{active}</doc-complete>（单独一行）。"
-                );
-                continue;
+                    let Some(u) = parse_doc_complete(&t) else {
+                        let n = match marker.bump() {
+                            MarkerStep::Exhausted(n) => {
+                                return Err(DevforgeError::Quality(format!(
+                                    "单元 `{active}` 连续 {n} 次未交卷（已追补 {} 次），判定为质量失败（agent 不配合，重启也无意义）",
+                                    marker.limit()
+                                )));
+                            }
+                            MarkerStep::Nudge(n) => n,
+                            MarkerStep::Done => unreachable!("bump 不产生 Done"),
+                        };
+                        message = format!(
+                            "连续 {n} 次未交卷。优先调用 submit_unit 工具交卷（unit=`{active}`）；无法调用工具时，回复末尾单独一行 <doc-complete>{active}</doc-complete>。"
+                        );
+                        continue;
+                    };
+                    u
+                }
             };
             if done_unit != active {
                 // 自审 critical：错号重问也必须计入上限——旧实现不计 nudges，
@@ -609,7 +650,7 @@ where
                     MarkerStep::Done => unreachable!("bump 不产生 Done"),
                 };
                 message = format!(
-                    "你输出的是 `{done_unit}`，但当前单元是 `{active}`（第 {n} 次错号）。请确认编号（不得自行改号）并重新输出 <doc-complete>{active}</doc-complete>。"
+                    "你交卷的单元号是 `{done_unit}`，但当前单元是 `{active}`（第 {n} 次错号）。请确认编号（不得自行改号）并重新调用 submit_unit（unit=`{active}`）；无法调用工具时，回复末尾单独一行 <doc-complete>{active}</doc-complete>。"
                 );
                 continue;
             }

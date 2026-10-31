@@ -28,7 +28,21 @@ pub struct WaitOutcome {
     pub last_usage: Option<(u64, u64)>,
     /// 2026-10-27 自审 major：path-guard 拦截计数（消费方持有事件总线，可上总线）。
     pub boundary_denials: usize,
+    /// AF-5（2026-10-24 拍板）：期间捕获的交卷工具提交（tool_execution_start 的
+    /// toolName+args 结构化载荷）。交卷信号的正道；文本魔法块是降级回退。
+    pub tool_submissions: Vec<ToolSubmission>,
 }
+
+/// AF-5：一次交卷工具调用的结构化载荷（toolName + 原始 args）。
+#[derive(Debug, Clone)]
+pub struct ToolSubmission {
+    pub tool: String,
+    pub args: serde_json::Value,
+}
+
+/// 交卷工具名单（AF-5）：出现在事件流即被捕获。与 assets/extensions/ 下的
+/// 扩展注册名一一对应（submit-unit.ts / submit-verdict.ts）。
+pub const SUBMIT_TOOL_NAMES: [&str; 2] = ["submit_unit", "submit_verdict"];
 
 /// extension_ui_request 是否为 dialog 类（阻塞等应答）。
 /// dialog：select/confirm/input/editor；fire-and-forget：notify/setStatus/setWidget/setTitle/set_editor_text。
@@ -649,6 +663,13 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
                     .and_then(|v| v.as_str())
                     .unwrap_or("?")
                     .to_string();
+                // AF-5：交卷工具提交捕获（结构化载荷进 WaitOutcome，SOP 循环消费）
+                if SUBMIT_TOOL_NAMES.contains(&tool.as_str()) {
+                    out.tool_submissions.push(ToolSubmission {
+                        tool: tool.clone(),
+                        args: e.extra.get("args").cloned().unwrap_or(serde_json::Value::Null),
+                    });
+                }
                 if let Some(id) = e.extra.get("toolCallId").and_then(|v| v.as_str()) {
                     tool_starts.insert(id.to_string(), std::time::Instant::now());
                 }

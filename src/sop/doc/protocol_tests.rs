@@ -83,3 +83,46 @@ fn complete_marker_ignores_quoted_examples() {
     let text = "先看示例：<doc-complete>unit-x</doc-complete>（这是格式说明）\n正文写完了\n<doc-complete>unit-a-01</doc-complete>";
     assert_eq!(parse_doc_complete(text).as_deref(), Some("unit-a-01"));
 }
+
+// ── AF-5：submit_verdict 工具参数 → 报告（结构化比对，坏形拒收重试）──
+
+use crate::sop::doc::protocol::parse_tool_verdict;
+
+#[test]
+fn tool_verdict_pass_maps_to_finish_route() {
+    let r = parse_tool_verdict(&serde_json::json!({ "verdict": "PASS", "route": "done" }));
+    assert_eq!(r.verdict, DocVerdict::Pass);
+    assert_eq!(r.route, crate::sop::doc::protocol::DocRoute::Finish);
+    assert!(!r.protocol_violation);
+}
+
+#[test]
+fn tool_verdict_fail_carries_route_and_issues() {
+    let r = parse_tool_verdict(&serde_json::json!({
+        "verdict": "FAIL", "route": "phase1",
+        "issues": ["事实错", "缺 N/A"]
+    }));
+    assert_eq!(r.verdict, DocVerdict::Fail);
+    assert_eq!(r.route, crate::sop::doc::protocol::DocRoute::Phase1);
+    assert_eq!(r.issues, vec!["事实错".to_string(), "缺 N/A".to_string()]);
+    assert!(!r.protocol_violation);
+}
+
+#[test]
+fn tool_verdict_bad_shapes_are_protocol_violations() {
+    // 缺 verdict
+    let r = parse_tool_verdict(&serde_json::json!({ "route": "phase1" }));
+    assert!(r.protocol_violation, "缺 verdict = 拒收重试");
+    // verdict 非法
+    let r = parse_tool_verdict(&serde_json::json!({ "verdict": "MAYBE" }));
+    assert!(r.protocol_violation, "非法 verdict = 拒收重试");
+    // FAIL 无 issues（与文本路径同口径：空箱拒收）
+    let r = parse_tool_verdict(&serde_json::json!({ "verdict": "FAIL", "route": "phase1" }));
+    assert!(r.protocol_violation, "FAIL 无 issues = 拒收重试");
+    // FAIL route 非法 → 保守 Phase3 但不算违例（文本路径同口径）
+    let r = parse_tool_verdict(&serde_json::json!({
+        "verdict": "FAIL", "route": "nowhere", "issues": ["x"]
+    }));
+    assert!(!r.protocol_violation);
+    assert_eq!(r.route, crate::sop::doc::protocol::DocRoute::Phase3);
+}

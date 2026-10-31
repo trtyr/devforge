@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use crate::engine::client::ToolSubmission;
 use crate::error::{DevforgeError, Result};
 use crate::runstate::StateStore;
 use crate::sop::doc::state::{bump_review, mark_done};
@@ -23,12 +24,24 @@ impl UserLink for NoUser {
 pub struct MockAgent {
     pub turns: VecDeque<String>,
     pub received: Rc<RefCell<Vec<String>>>,
+    /// AF-5：交卷工具提交脚本（队首对应当前回合；空/缺 = 该回合无提交 → 文本回退）。
+    pub submissions: RefCell<VecDeque<Vec<ToolSubmission>>>,
 }
 impl MockAgent {
     pub fn new(turns: &[&str]) -> Self {
         Self {
             turns: turns.iter().map(|s| s.to_string()).collect(),
             received: Rc::new(RefCell::new(Vec::new())),
+            submissions: RefCell::new(Default::default()),
+        }
+    }
+
+    /// AF-5：带交卷工具提交脚本的 mock（与 turns 按回合对齐）。
+    pub fn with_submissions(turns: &[&str], submissions: Vec<Vec<ToolSubmission>>) -> Self {
+        Self {
+            turns: turns.iter().map(|s| s.to_string()).collect(),
+            received: Rc::new(RefCell::new(Vec::new())),
+            submissions: RefCell::new(submissions.into()),
         }
     }
 }
@@ -36,6 +49,17 @@ impl PlanAgentSession for MockAgent {
     fn converse(&mut self, message: &str, _ui: &mut dyn UserLink) -> Result<String> {
         self.received.borrow_mut().push(message.into());
         Ok(self.turns.pop_front().expect("MockAgent 轮次耗尽"))
+    }
+    fn take_tool_submissions(&mut self) -> Vec<ToolSubmission> {
+        self.submissions.borrow_mut().pop_front().unwrap_or_default()
+    }
+}
+
+/// AF-5 测试用：构造一条 submit_unit 提交。
+pub fn submit_unit(unit: &str) -> ToolSubmission {
+    ToolSubmission {
+        tool: "submit_unit".into(),
+        args: serde_json::json!({ "unit": unit }),
     }
 }
 

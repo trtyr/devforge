@@ -45,11 +45,21 @@ pub trait UserLink {
 pub trait PlanAgentSession {
     /// 与 Plan Agent 一轮对话。UI 问答（ask-user-question）在实现内部经 `ui` 发生。
     fn converse(&mut self, message: &str, ui: &mut dyn UserLink) -> Result<String>;
+
+    /// AF-5（2026-10-24 拍板）：取走最近一轮捕获的交卷工具提交（事件流
+    /// tool_execution 的 toolName+args）。默认空 = 实现不支持捕获（mock/老链路），
+    /// SOP 循环走文本魔法块降级。
+    fn take_tool_submissions(&mut self) -> Vec<crate::engine::client::ToolSubmission> {
+        Vec::new()
+    }
 }
 
 impl<P: PlanAgentSession + ?Sized> PlanAgentSession for &mut P {
     fn converse(&mut self, message: &str, ui: &mut dyn UserLink) -> Result<String> {
         (**self).converse(message, ui)
+    }
+    fn take_tool_submissions(&mut self) -> Vec<crate::engine::client::ToolSubmission> {
+        (**self).take_tool_submissions()
     }
 }
 
@@ -67,6 +77,11 @@ pub trait ReviewSession {
     ) -> Result<String> {
         let _ = deadline;
         self.review(instruction)
+    }
+
+    /// AF-5：取走最近一轮捕获的交卷工具提交（默认空 = 文本降级，同 PlanAgentSession）。
+    fn take_tool_submissions(&mut self) -> Vec<crate::engine::client::ToolSubmission> {
+        Vec::new()
     }
 }
 

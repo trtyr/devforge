@@ -12,18 +12,20 @@ use crate::sop::planning::{PlanAgentSession, ReviewSession, ReviewSessionFactory
 /// Plan Agent 的 RPC 会话（活：同一进程跨轮次复用）。
 pub struct RpcPlanSession {
     client: RpcClient,
+    /// AF-5：最近一轮捕获的交卷工具提交（take_tool_submissions 取走）。
+    last_submissions: Vec<crate::engine::client::ToolSubmission>,
 }
 
 impl RpcPlanSession {
     pub fn new(client: RpcClient) -> Self {
-        Self { client }
+        Self { client, last_submissions: Vec::new() }
     }
 }
 
 impl PlanAgentSession for RpcPlanSession {
     fn converse(&mut self, message: &str, ui: &mut dyn UserLink) -> Result<String> {
         let id = self.client.prompt(message)?;
-        let outcome = self
+        let mut outcome = self
             .client
             .wait_settled_with_ui(|extra| {
                 // UI 请求字段提取：真实线级形状优先 title（select dialog），
@@ -61,7 +63,13 @@ impl PlanAgentSession for RpcPlanSession {
             })
             .ctx("Plan 对话（含 UI 子协议）")?;
         self.client.require_success(&outcome, &id)?;
+        // AF-5：交卷工具提交留存给 take_tool_submissions（在 move text 前拿走）
+        self.last_submissions = std::mem::take(&mut outcome.tool_submissions);
         Ok(outcome.text)
+    }
+
+    fn take_tool_submissions(&mut self) -> Vec<crate::engine::client::ToolSubmission> {
+        std::mem::take(&mut self.last_submissions)
     }
 }
 
@@ -70,6 +78,8 @@ pub struct RpcReviewSession {
     client: RpcClient,
     /// 角色名（报错时指明是哪个审查会话）——C19-R2。
     role: String,
+    /// AF-5：最近一轮捕获的交卷工具提交（take_tool_submissions 取走）。
+    last_submissions: Vec<crate::engine::client::ToolSubmission>,
 }
 
 impl ReviewSession for RpcReviewSession {
@@ -84,7 +94,7 @@ impl ReviewSession for RpcReviewSession {
         deadline: Option<std::time::Instant>,
     ) -> Result<String> {
         let id = self.client.prompt(instruction)?;
-        let outcome = self.client.wait_settled_deadline(deadline)?;
+        let mut outcome = self.client.wait_settled_deadline(deadline)?;
         self.client.require_success(&outcome, &id)?;
         // C19-R2（e2e test_19 实证）：审查进程可能“静默死亡”——会话正常结束但
         // 未产出任何正文。空串不得当作合法审查结论（否那么保守解析会把它当成
@@ -95,7 +105,13 @@ impl ReviewSession for RpcReviewSession {
                 self.role
             )));
         }
+        // AF-5：交卷工具提交留存（在 move text 前拿走）
+        self.last_submissions = std::mem::take(&mut outcome.tool_submissions);
         Ok(outcome.text)
+    }
+
+    fn take_tool_submissions(&mut self) -> Vec<crate::engine::client::ToolSubmission> {
+        std::mem::take(&mut self.last_submissions)
     }
 }
 
@@ -161,7 +177,7 @@ impl ReviewSessionFactory for RpcReviewFactory {
             .unwrap_or_else(|e| e.into_inner()))();
         let role = spec.role.clone();
         let client = RpcClient::spawn(spec)?;
-        Ok(Box::new(RpcReviewSession { client, role }))
+        Ok(Box::new(RpcReviewSession { client, role, last_submissions: Vec::new() }))
     }
 }
 

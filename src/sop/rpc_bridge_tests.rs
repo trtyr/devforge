@@ -118,6 +118,7 @@ fn empty_review_reply_is_infrastructure_error() {
     let mut session = RpcReviewSession {
         client,
         role: "coding-review".into(),
+        last_submissions: Vec::new(),
     };
     let err = session.review("开始审查").unwrap_err();
     let msg = err.to_string();

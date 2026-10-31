@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::sop::doc::mocks::{
     MockAgent, NoUser, PipeAgent, PipeReviewFactory, drive_gates, gate_pair, no_gates,
-    pipe_factory, state_path,
+    pipe_factory, state_path, submit_unit,
 };
 use crate::sop::doc::prompts::{doc_kickoff, doc_review_instruction};
 use crate::sop::doc::runner::run_pipeline;
@@ -81,7 +81,9 @@ fn missing_marker_is_bounded_not_infinite() {
     let agent = MockAgent::new(&["想想", "再想想", "还在想", "就是不写"]);
     let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>"]);
     let err = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap_err();
-    assert!(format!("{err}").contains("doc-complete"), "{err}");
+    let msg = format!("{err}");
+    assert!(err.is_quality_failure(), "{msg}");
+    assert!(msg.contains("未交卷"), "{msg}");
 }
 
 #[test]
@@ -168,6 +170,62 @@ fn kickoff_points_at_workbook_when_ready_falls_back_to_inventory_when_not() {
     let d = doc_kickoff(Path::new("/repo"), "unit-x", "complete", None);
     assert!(d.contains("inventory.json"), "降级要有清单指针: {d}");
     assert!(!d.contains("_meta/units/"), "降级不带作业本路径: {d}");
+}
+
+#[test]
+fn tool_submission_submits_without_text_marker() {
+    // AF-5 正道：submit_unit 工具提交即交卷信号——正文可以没有任何文本标记
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = MockAgent::with_submissions(
+        &["正文写完了，没有任何标记。"],
+        vec![vec![submit_unit("unit-a-01")]],
+    );
+    let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>"]);
+    let rep = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
+    assert_eq!(rep.units_done, vec!["unit-a-01".to_string()]);
+}
+
+#[test]
+fn bad_tool_submission_counts_as_miss_and_nudge_names_the_tool() {
+    // 坏参（空 unit）= 拒收重试不静默错：nudge 计数照走，话术点名 submit_unit；
+    // 连续不交 = 质量失败（上限纪律不变）。
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = MockAgent::with_submissions(
+        &["想想", "再想想", "还是不交", "就是不交"],
+        vec![vec![submit_unit("")], vec![], vec![], vec![]],
+    );
+    let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>"]);
+    let received = agent.received.clone();
+    let err = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap_err();
+    assert!(err.is_quality_failure(), "连续不交卷 = 质量失败: {err}");
+    let received = received.borrow();
+    assert!(
+        received.iter().any(|m| m.contains("submit_unit")),
+        "nudge 话术要点名工具: {:?}",
+        received
+    );
+}
+
+#[test]
+fn text_fallback_warns_once_and_still_settles() {
+    // 降级路径：无工具提交、文本魔法块交卷 → 照常成功，但 WARN 恰一条（每单元一次）
+    let out: std::sync::Arc<std::sync::Mutex<Option<usize>>> = Default::default();
+    let captured = {
+        let out = out.clone();
+        crate::observability::test_support::capture_jsonl(move || {
+            let tmp = tempfile::tempdir().unwrap();
+            let agent = MockAgent::new(&["正文\n<doc-complete>unit-a-01</doc-complete>"]);
+            let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>"]);
+            let rep = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
+            *out.lock().unwrap() = Some(rep.units_done.len());
+        })
+    };
+    assert_eq!(out.lock().unwrap().unwrap(), 1, "降级照常交卷成功");
+    let warn_count = captured
+        .lines()
+        .filter(|l| l.contains("按文本协议解析交卷"))
+        .count();
+    assert_eq!(warn_count, 1, "降级 WARN 每单元恰一条: {captured}");
 }
 
 #[test]
