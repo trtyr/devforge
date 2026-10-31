@@ -269,7 +269,8 @@ fn the_scan_window_is_the_longest_ttl_tier() {
 // ---------- step 2：tick 扫描步 ----------
 
 /// 建任务（绕过 API，直接操作 store——tick 单测只关心状态面）。
-fn make_task(f: &super::Fixture, project: &str, id: &str, sop: &str) {
+/// A2 起包 pub(crate)：通知接线测试复用同一夹具模式。
+pub(crate) fn make_task(f: &super::Fixture, project: &str, id: &str, sop: &str) {
     let mut store = f.state.store.lock().unwrap();
     if store.get_project(project).is_none() {
         store
@@ -293,7 +294,8 @@ fn make_task(f: &super::Fixture, project: &str, id: &str, sop: &str) {
 }
 
 /// 造一条失败 run（带指定原因），返回 run id。
-fn fail_run(f: &super::Fixture, project: &str, task: &str, reason: &str) -> String {
+/// A2 起包 pub(crate)：通知接线测试复用同一夹具模式。
+pub(crate) fn fail_run(f: &super::Fixture, project: &str, task: &str, reason: &str) -> String {
     let mut store = f.state.store.lock().unwrap();
     let run = store.begin_run(project, task).unwrap();
     store

@@ -34,6 +34,11 @@ pub struct Store {
     /// 反向（新文件读旧二进制）由 serde 默认的「忽略未知字段」保证——回滚不会炸。
     #[serde(default)]
     pub channel_breakers: Vec<ChannelBreaker>,
+    /// 通知表（A2 · 通知系统）：全量监控事件的落地面。
+    /// `#[serde(default)]`：旧 store.json 没有这一段也能读回（同 channel_breakers 口径）。
+    /// 上限裁剪见 `MAX_NOTIFICATIONS`：全量重写代价 O(通知数)，无界增长 = 写放大事故。
+    #[serde(default)]
+    pub notifications: Vec<Notification>,
     /// 持久化路径（复验 backlog：store 纯内存是设计错误——重启即蒸发）。
     /// None = 内存态（单测）；Some = 每个 &mut 变更方法尾调 persist()。
     #[serde(skip)]
@@ -60,8 +65,39 @@ pub struct ChannelBreaker {
     pub last_seen_reason: String,
 }
 
-/// 单任务默认保留的终态 run 条数（自审 minor 114）。
+/// 通知表上限（A2）：store 全量重写代价 O(通知数)，与 DEFAULT_MAX_RUNS_PER_TASK 同理
+/// 必须有界——超出裁掉最旧的已读条目（未读优先保留，最新永远保留）。
+pub const MAX_NOTIFICATIONS: usize = 200;
+
+/// 通知条目（A2 · 通知系统）：全量监控事件的落地面。
 ///
+/// 形状要点：
+/// - `kind` 是机器可判的枚举字符串（前端按它选图标/颜色），`level` 是严重度
+///   （error/warn/info——前端按它配色：红/琥珀/灰）；
+/// - `read` 已读标记：未读数 = 列表里 read==false 的条数；
+/// - `link` 可选跳转锚（如 `devforge/sr2-xxx` 任务页），前端点通知直接到现场；
+/// - 创建时刻存 `created_at_ms`（unix ms，UTC 口径；前端本地渲染——时区纪律）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Notification {
+    /// 单调递增 id（store 内自增：max(existing)+1）。
+    pub id: u64,
+    /// 通知类别（machine 判别用）：agent_failed / ui_pending / channel_breaker /
+    /// run_settled / integration_needs_repair。
+    pub kind: String,
+    /// 严重度：error / warn / info。
+    pub level: String,
+    /// 人读标题（一句话说清发生了什么）。
+    pub title: String,
+    /// 可选跳转锚（任务 id 等）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// 已读标记（未读数就是前端铃铛的角标）。
+    pub read: bool,
+    /// 创建时刻（unix ms，UTC 口径）。
+    pub created_at_ms: u64,
+}
+
+/// 单任务默认保留的终态 run 条数（自审 minor 114）。///
 /// 取 100 的理由：一次任务的正常重跑量级是个位数，100 条足够事后回看一整段迭代；
 /// 再多的价值在事件流里（每条 run 的 gate/审查里程碑都在），而整份 store 每次变更
 /// 全量重写的代价是 O(run 总数)——无界增长最终把每次状态迁移拖成写放大事故。
@@ -77,6 +113,7 @@ impl Default for Store {
             projects: Vec::new(),
             tasks: Vec::new(),
             runs: Vec::new(),
+            notifications: Vec::new(),
             max_concurrent_runs: default_max_concurrent(),
             max_runs_per_task: default_max_runs_per_task(),
             channel_breakers: Vec::new(),
@@ -431,6 +468,115 @@ impl Store {
             .collect();
         active.sort_by(|a, b| a.channel.cmp(&b.channel));
         active
+    }
+
+    // ---------- 通知（A2 · 通知系统） ----------
+
+    /// 记录一条通知：id 自增、未创建即未读；超上限时裁最旧的**已读**条目
+    /// （未读优先保留，最新永远保留——铃铛角标不许因裁剪丢事件）。
+    /// 返回新通知的 id（调用方用它发 SSE）。
+    pub fn push_notification(
+        &mut self,
+        kind: &str,
+        level: &str,
+        title: &str,
+        link: Option<&str>,
+        now_ms: u64,
+    ) -> u64 {
+        let id = self
+            .notifications
+            .iter()
+            .map(|n| n.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        self.notifications.push(Notification {
+            id,
+            kind: kind.to_string(),
+            level: level.to_string(),
+            title: title.to_string(),
+            link: link.map(|s| s.to_string()),
+            read: false,
+            created_at_ms: now_ms,
+        });
+        self.trim_notifications();
+        self.persist();
+        id
+    }
+
+    /// 未读数（前端铃铛角标）。
+    pub fn unread_notification_count(&self) -> usize {
+        self.notifications.iter().filter(|n| !n.read).count()
+    }
+
+    /// 标记单条已读；id 不存在时静默（幂等——重试的已读请求不该报错）。
+    /// 返回是否真的改了状态（变了才落盘）。
+    pub fn mark_notification_read(&mut self, id: u64) -> bool {
+        let Some(n) = self.notifications.iter_mut().find(|n| n.id == id) else {
+            return false;
+        };
+        if n.read {
+            return false;
+        }
+        n.read = true;
+        self.persist();
+        true
+    }
+
+    /// 全部已读；无未读时零变更不落盘。返回实际标记的条数。
+    pub fn mark_all_notifications_read(&mut self) -> usize {
+        let mut changed = 0;
+        for n in &mut self.notifications {
+            if !n.read {
+                n.read = true;
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.persist();
+        }
+        changed
+    }
+
+    /// 超上限裁剪：优先裁最旧的**已读**，未读保留；返回裁掉条数（0 = 无变更不落盘）。
+    fn trim_notifications(&mut self) -> usize {
+        if self.notifications.len() <= MAX_NOTIFICATIONS {
+            return 0;
+        }
+        let overflow = self.notifications.len() - MAX_NOTIFICATIONS;
+        // 已读的按 id 升序（最旧优先）裁；不够再裁最旧的未读（保底，避免无界）。
+        let mut read_idx: Vec<usize> = self
+            .notifications
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.read)
+            .map(|(i, _)| i)
+            .collect();
+        read_idx.sort_unstable();
+        let mut to_remove: Vec<usize> = read_idx.into_iter().take(overflow).collect();
+        if to_remove.len() < overflow {
+            let mut unread_idx: Vec<usize> = self
+                .notifications
+                .iter()
+                .enumerate()
+                .filter(|(i, n)| !n.read && !to_remove.contains(i))
+                .map(|(i, _)| i)
+                .collect();
+            unread_idx.sort_unstable();
+            to_remove.extend(unread_idx.into_iter().take(overflow - to_remove.len()));
+        }
+        let removed = to_remove.len();
+        let remove_set: std::collections::HashSet<usize> = to_remove.into_iter().collect();
+        let mut i = 0usize;
+        self.notifications.retain(|_| {
+            let keep = !remove_set.contains(&i);
+            i += 1;
+            keep
+        });
+        if removed > 0 {
+            self.persist();
+        }
+        removed
     }
 
     /// 变更任务的 SOP（P005 跨 SOP 触发：同任务先规划后编码）。

@@ -1,6 +1,7 @@
 //! （2026-10-26 测试分离：自 src/domain/store.rs 内联平移，纯移动零改动。）
 use super::*;
 use crate::domain::sop::PLANNING_SOP;
+use crate::domain::store::MAX_NOTIFICATIONS;
 
 fn setup() -> Store {
     let mut s = Store::new();
@@ -476,3 +477,93 @@ fn tmp_path_violation_cannot_be_bypassed() {
         );
     }
 }
+
+// ---------- A2 通知系统（ntask-1） ----------
+
+/// 五类事件各自映射出通知：kind/level/title/link 逐字段断言（通知是产品面，不充许字段错位）。
+#[test]
+fn five_event_kinds_push_notifications() {
+    let mut s = Store::new();
+    let cases = [
+        ("agent_failed", "error", "run 失败：sr2-x（质量）", Some("devforge/sr2-x")),
+        ("ui_pending", "warn", "agent 提问等待裁决超过 2 分钟", None),
+        ("channel_breaker", "error", "deepseek-flash 进入冷却 600s", None),
+        ("run_settled", "info", "sr2-x settled", Some("devforge/sr2-x")),
+        ("integration_needs_repair", "warn", "候选验证红，转 NeedsRepair", None),
+    ];
+    for (i, (kind, level, title, link)) in cases.iter().enumerate() {
+        let id = s.push_notification(kind, level, title, *link, 1000 + i as u64);
+        assert_eq!(id, i as u64 + 1, "id 必须从 1 自增");
+    }
+    let ns = &s.notifications;
+    assert_eq!(ns.len(), 5);
+    for (i, (kind, level, title, link)) in cases.iter().enumerate() {
+        let n = &ns[i];
+        assert_eq!(n.kind, *kind);
+        assert_eq!(n.level, *level);
+        assert_eq!(n.title, *title);
+        assert_eq!(n.link.as_deref(), *link);
+        assert!(!n.read, "新建即未读");
+        assert_eq!(n.created_at_ms, 1000 + i as u64);
+    }
+}
+
+/// 未读数与已读标记：角标口径就是 read==false 的条数。
+#[test]
+fn unread_count_and_mark_read() {
+    let mut s = Store::new();
+    s.push_notification("run_settled", "info", "a", None, 1);
+    s.push_notification("agent_failed", "error", "b", None, 2);
+    assert_eq!(s.unread_notification_count(), 2);
+    assert!(s.mark_notification_read(1), "首次标记应返回 true");
+    assert_eq!(s.unread_notification_count(), 1);
+    assert!(!s.mark_notification_read(1), "重复标记幂等返回 false");
+    assert!(!s.mark_notification_read(999), "不存在的 id 静默返回 false");
+    assert_eq!(s.mark_all_notifications_read(), 1);
+    assert_eq!(s.unread_notification_count(), 0);
+    assert_eq!(s.mark_all_notifications_read(), 0, "无未读时零变更");
+}
+
+/// 通知持久化：persist_path 设定时落盘，重启读回一致（跟 channel_breakers 同待遇）。
+#[test]
+fn notifications_persist_and_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.json");
+    let mut s = Store::new();
+    s.persist_path = Some(path.clone());
+    s.push_notification("agent_failed", "error", "挂了", Some("devforge/t"), 42);
+    s.push_notification("ui_pending", "warn", "等裁决", None, 43);
+    assert!(s.mark_notification_read(1), "首次标记应成功");
+    let reloaded = Store::load(&path).unwrap();
+    assert_eq!(reloaded.notifications.len(), 2);
+    assert!(reloaded.notifications[0].read);
+    assert!(!reloaded.notifications[1].read);
+    assert_eq!(reloaded.notifications[1].title, "等裁决");
+    assert_eq!(reloaded.unread_notification_count(), 1);
+}
+
+/// 上限裁剪：超 MAX 时先裁最旧的已读，未读保留——铃铛角标不许因裁剪丢事件。
+#[test]
+fn trim_prefers_evicting_oldest_read_notifications() {
+    let mut s = Store::new();
+    // 填满上限：一半已读（偶数 id）、一半未读
+    for i in 0..MAX_NOTIFICATIONS {
+        s.push_notification("run_settled", "info", &format!("n{i}"), None, i as u64);
+        if i % 2 == 1 {
+            let id = i as u64 + 1;
+            s.mark_notification_read(id);
+        }
+    }
+    assert_eq!(s.notifications.len(), MAX_NOTIFICATIONS);
+    // 再压 10 条（全部未读）：应先裁已读的 10 条最旧，未读一条不丢
+    for i in 0..10 {
+        s.push_notification("agent_failed", "error", &format!("late{i}"), None, 10_000 + i as u64);
+    }
+    assert_eq!(s.notifications.len(), MAX_NOTIFICATIONS, "总量封顶");
+    assert_eq!(
+        s.unread_notification_count(),
+        MAX_NOTIFICATIONS / 2 + 10,
+        "未读一条不丢（角标完整性）"
+    );
+}
+

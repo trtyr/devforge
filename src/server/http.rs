@@ -105,6 +105,15 @@ pub fn build_router(state: SharedState) -> Router {
             get(handlers::audit_report),
         )
         .route("/scheduler/status", get(handlers::scheduler_status))
+        // ── 通知（A2）──
+        .route(
+            "/notifications",
+            get(handlers::list_notifications),
+        )
+        .route(
+            "/notifications/read",
+            post(handlers::read_notifications),
+        )
         // ── 交互中继 ──
         .route("/ui/pending", get(handlers::list_pending_ui))
         .route("/ui/{id}/answer", post(handlers::answer_ui))

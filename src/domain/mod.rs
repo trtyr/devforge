@@ -16,6 +16,7 @@ pub use run::{Run, RunId, RunStatus};
 pub use runner::{RunControl, RunEngine, RunOutcome};
 pub use sop::{Sop, SopRegistry, PLANNING_SOP};
 pub use store::Store;
+pub use store::{Notification, MAX_NOTIFICATIONS};
 pub use task::{Task, TaskStatus};
 
 /// 当前时间的 epoch 毫秒（实体的 created_at/started_at 用）。

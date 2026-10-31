@@ -270,6 +270,60 @@ pub async fn scheduler_status(State(st): State<SharedState>) -> Json<serde_json:
     Json(crate::server::scheduler::status(&st))
 }
 
+// ---------- 通知（A2 · 通知系统） ----------
+
+/// 通知列表 + 未读数（前端铃铛角标的数据源）。
+/// 查询参数 `unread=true` 时只返回未读条目。
+pub async fn list_notifications(
+    State(st): State<SharedState>,
+    Query(params): Query<NotificationQuery>,
+) -> Json<serde_json::Value> {
+    let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+    let unread_only = params.unread.unwrap_or(false);
+    let items: Vec<&crate::domain::Notification> = store
+        .notifications
+        .iter()
+        .filter(|n| !unread_only || !n.read)
+        .collect();
+    Json(serde_json::json!({
+        "unread": store.unread_notification_count(),
+        "items": items,
+    }))
+}
+
+/// 已读标记：body `{"ids": [..]}` 逐条标记；或 `{"all": true}` 全部已读。
+/// 返回 `{"marked": n, "unread": 余量}`。
+pub async fn read_notifications(
+    State(st): State<SharedState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+    let marked = if body.get("all").and_then(|v| v.as_bool()).unwrap_or(false) {
+        store.mark_all_notifications_read()
+    } else {
+        body.get("ids")
+            .and_then(|v| v.as_array())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|v| v.as_u64())
+                    .filter(|&id| store.mark_notification_read(id))
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+    Json(serde_json::json!({
+        "marked": marked,
+        "unread": store.unread_notification_count(),
+    }))
+}
+
+/// `GET /notifications` 的查询参数。
+#[derive(Debug, Deserialize)]
+pub struct NotificationQuery {
+    #[serde(default)]
+    pub unread: Option<bool>,
+}
+
 /// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。
 pub async fn audit_report(
     State(st): State<SharedState>,

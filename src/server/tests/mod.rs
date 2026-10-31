@@ -237,6 +237,7 @@ mod crud;
 mod hardening;
 mod http;
 mod integration_api;
+mod notifications;
 mod observe;
 mod panic_safety;
 mod pending;

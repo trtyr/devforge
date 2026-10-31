@@ -18,7 +18,6 @@
 use super::*;
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
 
 /// 久等告警阈值的环境变量名（与生产代码同键）。
 const WARN_ENV: &str = "DEVFORGE_UI_PENDING_WARN_MS";
@@ -34,12 +33,11 @@ const MAX_ATTEMPTS: usize = 12;
 // ---------- 小工具 ----------
 
 /// 久等告警旋钮是进程级 env：并行用例会互相串味（一个用例把阈值调小，另一个用例的
-/// 待答也会被告警；两个用例同时改值 → 断言假红）。凡读/写该键的用例串行走这把锁。
+/// 待答也会被告警；两个用例同时改值 → 断言假红）。凡读/写该键的用例串行走全仓共享锁
+/// （A2 起：锁真源在 `crate::server::ui_warn_env_lock`，本文件保留原名委托——
+/// 否则两把独立锁互斥失效）。
 fn warn_env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+    crate::server::ui_warn_env_lock()
 }
 
 /// 设阈值（返回原值，供恢复）。

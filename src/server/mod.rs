@@ -274,7 +274,11 @@ struct PendingWarn {
 /// `0` = **关闭告警**。注意与相邻旋钮 `DEVFORGE_UI_ASK_TIMEOUT_MS` 的 `0` 语义
 /// **相反**：那个是「不限时」，这个是「不告警」——两个键同属 UI 中继族，调错不报错、
 /// 只静默，所以口径写在这里而不是散在别处。
-fn warn_threshold_ms() -> u64 {
+/// （A2 起 pub(crate)：调度器 tick 的 ui_pending 通知扫描同用一个阈值——同一把旋钮。
+/// `0` = **关闭告警**。注意与相邻旋钮 `DEVFORGE_UI_ASK_TIMEOUT_MS` 的 `0` 语义
+/// **相反**：那个是「不限时」，这个是「不告警」——两个键同属 UI 中继族，调错不报错、
+/// 只静默，所以口径写在这里而不是散在别处。）
+pub(crate) fn warn_threshold_ms() -> u64 {
     match std::env::var(UI_PENDING_WARN_ENV) {
         // 空串 / 非数字 → 回退缺省（非法值静默回落，同 `DEVFORGE_STALL_WARN_MS` 口径）
         Ok(raw) => raw.trim().parse::<u64>().unwrap_or(DEFAULT_UI_PENDING_WARN_MS),
@@ -290,8 +294,20 @@ fn warn_tick(warn_ms: u64) -> std::time::Duration {
 
 /// 问题前缀（告警字段用）：按 **char** 边界截 80 字——按字节截断会在中文问题上 panic
 /// （仓内文案全是中文）。
-fn question_prefix(question: &str) -> String {
+pub(crate) fn question_prefix(question: &str) -> String {
     question.chars().take(80).collect()
+}
+
+/// A2：UI 久等告警 env（DEVFORGE_UI_PENDING_WARN_MS）是进程级的——
+/// 凡读写该键的测试串行走这把共享锁（pending.rs 的旧本地锁升级为全仓共享，
+/// 否则两个文件各自持各自的锁 = 互斥失效 = 并行用例互相串味假红）。
+/// 目前唯一消费者是测试（生产代码只读该 env，不改写）→ cfg(test)。
+#[cfg(test)]
+pub(crate) fn ui_warn_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 /// 拉起久等告警扫描线程（幂等：已有扫描器在跑就直接返回）。
@@ -523,6 +539,25 @@ pub type EngineBox = Box<dyn RunEngine + Send>;
 /// 这里只收下那个 `Arc` 并在收尾时摘除——旧口径在线程体里登记，导致「紧跟 start
 /// 的 cancel」打在一个还没登记的控制对象上（404 当前无运行中的 run），
 /// 而 run 实际上已经准入在跑：取消点了却没生效。
+/// A2 通知：统一落库 + 广播入口（通知不落库就是转发，落库不广播就是 deaf）。
+///
+/// 事件源只调本函数，不直接摸 store/bus——通知的形状（字段/裁剪/持久化）
+/// 只在一处定义。事件名固定 `notification.created`，前端铃铛按此订阅。
+pub fn notify(state: &ServerState, kind: &str, level: &str, title: &str, link: Option<&str>) {
+    let id = {
+        let mut store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.push_notification(kind, level, title, link, crate::domain::now_ms())
+    };
+    state.emit(json!({
+        "type": "notification.created",
+        "id": id,
+        "kind": kind,
+        "level": level,
+        "title": title,
+        "link": link,
+    }));
+}
+
 pub fn run_in_background(
     state: SharedState,
     project: String,
@@ -706,6 +741,30 @@ pub fn run_in_background(
         "ok": completed,
         "store_finished": ok,
     }));
+    // A2 通知：run 生命周期事件 → 通知落库 + 总线广播（settled/error 都是运营者
+    // 需要知道的节点；attempt 级噪音不上通知面）。质量失败 = error，
+    // 系统失败 = warn（后者可能是基础设施抖动，重试后已自动收场）。
+    if completed {
+        notify(
+            &state,
+            "run_settled",
+            "info",
+            &format!("{project}/{task_id} settled（{attempts} 次尝试）"),
+            Some(&format!("{project}/{task_id}")),
+        );
+    } else if let Err(e) = outcome.as_ref() {
+        let level = if e.is_quality_failure() { "error" } else { "warn" };
+        notify(
+            &state,
+            "agent_failed",
+            level,
+            &format!(
+                "{project}/{task_id} run 失败（{attempts} 次尝试）：{}",
+                e.sanitized_message()
+            ),
+            Some(&format!("{project}/{task_id}")),
+        );
+    }
     // 观测上下文清位：心跳文件**保留**最后一次状态（死亡现场的证据，不删）
     crate::observability::end_run(&run.id.0);
     // 干预面摘除：终态已落账、观测已清位——此后 cancel 就该 404。

@@ -250,6 +250,116 @@ fn mark_channel_run_seen(kind: &str, run_id: &str) {
         .insert(format!("{kind}:{run_id}"));
 }
 
+// ---------- A2 通知扫描（ui 待答久等 / 集成 NeedsRepair） ----------
+
+fn ui_notify_seen_set() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn ui_notify_seen(id: &str) -> bool {
+    ui_notify_seen_set()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(id)
+}
+
+fn mark_ui_notify_seen(id: &str) {
+    ui_notify_seen_set()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id.to_string());
+}
+
+fn integration_repair_seen_set()
+-> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn integration_repair_seen(key: &str) -> bool {
+    integration_repair_seen_set()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(key)
+}
+
+fn mark_integration_repair_seen(key: &str) {
+    integration_repair_seen_set()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key.to_string());
+}
+
+/// A2：ui 待答久等 → 通知。与 scan_pending_warns 的 WARN 同一阈值旋钮，
+/// 但各自独立去重（WARN 是日志面，通知是产品面，互不抢标志）。
+/// 通知一次后同一待答不再重复（id 全局唯一，seen 集合按 id 去重）。
+/// 年龄取 pending_snapshot 的存活时长（墙钟，saturating——不另传 now）。
+pub(crate) fn notify_pending_uis(st: &SharedState) {
+    let threshold = crate::server::warn_threshold_ms();
+    if threshold == 0 {
+        return; // 旋钮关闭：不告警也不通知
+    }
+    for ask in st.ui.pending_snapshot() {
+        if ui_notify_seen(&ask.id) || ask.age_ms <= threshold {
+            continue;
+        }
+        mark_ui_notify_seen(&ask.id);
+        crate::server::notify(
+            st,
+            "ui_pending",
+            "warn",
+            &format!(
+                "agent 提问等待裁决 {}s：{}",
+                ask.age_ms / 1000,
+                crate::server::question_prefix(&ask.question)
+            ),
+            ask.run_id.as_deref(),
+        );
+    }
+}
+
+/// A2：集成队列 NeedsRepair → 通知。队列**文件**是生产事实源——不管谁把候选
+/// 推进修复队列（将来的自动集成消费者 / 手工 API / 脚本），tick 都看得到；
+/// 去重键 = project + task_id + frozen_sha（同一候选修完重入 = 新 frozen_sha = 新通知）。
+/// A2：集成队列 NeedsRepair → 通知。队列**文件**是生产事实源——不管谁把候选
+/// 推进修复队列（将来的自动集成消费者 / 手工 API / 脚本），tick 都看得到；
+/// 去重键 = project + task_id + frozen_sha（同一候选修完重入 = 新 frozen_sha = 新通知）。
+pub(crate) fn notify_integration_repairs(st: &SharedState) {
+    let projects: Vec<String> = {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.projects.iter().map(|p| p.name.clone()).collect()
+    };
+    for project in projects {
+        let Ok(queue) = MergeQueue::load(&st.plans_root, &project) else {
+            continue;
+        };
+        for cand in &queue.candidates {
+            let crate::integration::CandidateStatus::NeedsRepair { reason } = &cand.status else {
+                continue;
+            };
+            let key = format!("{project}:{}:{}", cand.task_id, cand.frozen_sha);
+            if integration_repair_seen(&key) {
+                continue;
+            }
+            mark_integration_repair_seen(&key);
+            crate::server::notify(
+                st,
+                "integration_needs_repair",
+                "warn",
+                &format!(
+                    "{project}/{} 集成转修复队列：{}",
+                    cand.task_id,
+                    reason_summary(reason)
+                ),
+                Some(&format!("{project}/{}", cand.task_id)),
+            );
+        }
+    }
+}
+
 /// 失败原因摘要（写进熔断条目与事件）：压掉换行、截断到 200 字。
 /// 运维要的是一眼看出「为什么这条在冷却」，不是失败全文。
 fn reason_summary(reason: &str) -> String {
@@ -434,6 +544,17 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
                     "expires_at_ms": expires_at_ms,
                     "reason": summary,
                 }));
+                // A2：熔断命中 → 通知（这是运营者必须马上知道的事，error 级）。
+                crate::server::notify(
+                    st,
+                    "channel_breaker",
+                    "error",
+                    &format!(
+                        "{channel} 进入冷却 {}s（{project}/{task_id}：{summary}）",
+                        ttl_ms / 1000
+                    ),
+                    Some(&format!("{project}/{task_id}")),
+                );
             }
             None => {
                 // 归因不出渠道 → 不熔断（宁可漏熔，不可错杀健康渠道导致全线饿死），只记 WARN。
@@ -497,6 +618,11 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             "remaining_secs": remaining_secs(remaining_ms),
         }));
     }
+
+    // ②′ 通知扫描（A2 · 通知系统）：ui 待答久等 + 集成 NeedsRepair。
+    //    渠道熔断的通知在上方 incident 命中处内联发。
+    notify_pending_uis(st);
+    notify_integration_repairs(st);
 
     // ③ 自动入集成队列：Completed + 带契约 + frozen-commit 落盘 + 队列内无此任务。
     let settled: Vec<(String, String)> = {
