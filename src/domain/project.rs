@@ -13,6 +13,10 @@ pub struct Project {
     /// 本地路径——用户手动指定（从 0 创建 = 指定创建位置；已有项目 = 指定路径登记）。
     pub local_path: PathBuf,
     pub created_at_ms: u64,
+    /// 归档标记（A6）：归档项目的 start 被拒（409），list 带标记；#[serde(default)]
+    /// 旧 store.json 兼容（同 channel_breakers 口径）。
+    #[serde(default)]
+    pub archived: bool,
 }
 
 impl Project {
@@ -21,6 +25,7 @@ impl Project {
             name: name.into(),
             local_path,
             created_at_ms,
+            archived: false,
         }
     }
 
@@ -52,6 +57,10 @@ impl Project {
             "name": self.name,
             "created_at_ms": self.created_at_ms,
             "has_local_path": !self.local_path.as_os_str().is_empty(),
+            // A6：P019 项目卡片定稿要显式展示本地路径与 plantree 路径——
+            // 运营者控制台，本机路径非凭证（与 api_key 脱敏是两码事）。
+            "local_path": self.local_path.display().to_string(),
+            "archived": self.archived,
         })
     }
 }

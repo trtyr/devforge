@@ -371,9 +371,76 @@ pub async fn create_project(
     Ok((StatusCode::CREATED, Json(created.public_view())))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ArchiveReq {
+    /// 缺省 true（归档）；false = 取消归档。
+    #[serde(default = "crate::server::handlers::default_true")]
+    pub archived: bool,
+}
+
+pub(crate) fn default_true() -> bool {
+    true
+}
+
+/// `POST /projects/{name}/archive`：归档/取消归档（A6）。归档项目的 start 被拒。
+pub async fn archive_project(
+    State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
+    Path(name): Path<String>,
+    body: Option<Json<ArchiveReq>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let archived = body.map(|Json(b)| b.archived).unwrap_or(true);
+    let changed = {
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.set_project_archived(&name, archived)?
+    };
+    if changed > 0 {
+        user.audit_write(&st, "archive_project", &format!("{name} → archived={archived}"));
+    }
+    Ok(Json(json!({ "ok": true, "name": name, "archived": archived, "changed": changed })))
+}
+
+/// `DELETE /projects/{name}`：删除项目（A6）——零任务才可删（有任务 409 防误删）。
+pub async fn delete_project(
+    State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
+    Path(name): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let deleted = {
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        if store.get_project(&name).is_none() {
+            return Err(ApiError::not_found(format!("项目 `{name}` 不存在")));
+        }
+        store.delete_project(&name).map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("仍有任务") {
+                ApiError::conflict(msg)
+            } else {
+                ApiError::from(e)
+            }
+        })?
+    };
+    user.audit_write(&st, "delete_project", &deleted);
+    Ok(Json(json!({ "ok": true, "deleted": deleted })))
+}
+
+/// 项目完整视图（A6）：public_view + plantree_path（`<plans_root>/plantree/<name>`，
+/// 与 change SOP 的台账根同源推导）。P019 项目卡片定稿要显式展示两条路径。
+fn project_full_view(p: &Project, plans_root: &std::path::Path) -> serde_json::Value {
+    let mut v = p.public_view();
+    v["plantree_path"] = json!(
+        crate::change::prepare::plantree_root(plans_root, &p.name).display().to_string()
+    );
+    v
+}
+
 pub async fn list_projects(State(st): State<SharedState>) -> Json<serde_json::Value> {
     let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-    let views: Vec<serde_json::Value> = store.projects.iter().map(Project::public_view).collect();
+    let views: Vec<serde_json::Value> = store
+        .projects
+        .iter()
+        .map(|p| project_full_view(p, &st.plans_root))
+        .collect();
     Json(json!({"projects": views}))
 }
 
@@ -384,8 +451,7 @@ pub async fn get_project(
     let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
     store
         .get_project(&name)
-        .map(Project::public_view)
-        .map(Json)
+        .map(|p| Json(project_full_view(p, &st.plans_root)))
         .ok_or_else(|| ApiError::not_found(format!("项目 `{name}` 不存在")))
 }
 
@@ -1106,6 +1172,15 @@ pub async fn start_task(
     // 前置校验（只读）：任务存在性 + 已完成 change 的隐式空转
     let registered_sop = {
         let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        // A6：归档项目的 start 拒绝（409）——归档语义的准入面。
+        if store
+            .get_project(&project)
+            .is_some_and(|p| p.archived)
+        {
+            return Err(ApiError::conflict(format!(
+                "项目 `{project}` 已归档——先取消归档再启动任务"
+            )));
+        }
         let t = store
             .get_task(&project, &task)
             .ok_or_else(|| ApiError::not_found(format!("任务 `{project}/{task}` 不存在")))?;

@@ -246,6 +246,7 @@ mod stats;
 mod logs_query;
 mod sops;
 mod dependencies_endpoint;
+mod project_mgmt;
 mod observe;
 mod panic_safety;
 mod pending;

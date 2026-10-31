@@ -31,17 +31,21 @@ fn empty_local_path_is_refused_not_silently_ok() {
     assert!(err.is_config_error(), "应是配置错误：{err:?}");
 }
 
-/// 自审 minor（14）：对外视图不得包含主机绝对路径。
+/// 自审 minor（14）→ A6 反转（P019 卡片定稿 2026-10-31）：运营控制台的项目卡片
+/// 要显式展示本地路径，且 A1 守门落地后「任意本机进程匿名 GET 侦察」的威胁面
+/// 已被挡在 401——public_view 现在回显 local_path + archived。
+/// （若未来暴露给不可信读者，此处应改为按角色脱敏，而不是回到静默隐藏。）
 #[test]
-fn public_view_hides_the_host_absolute_path() {
+fn public_view_carries_local_path_and_archived() {
     let p = Project::new("devforge", PathBuf::from("/home/me/secret-layout/devforge"), 7);
     let v = p.public_view();
-    let text = v.to_string();
-    assert!(!text.contains("secret-layout"), "不得回显主机目录布局：{text}");
+    assert_eq!(v["local_path"], "/home/me/secret-layout/devforge", "P019 卡片定稿：显式回显");
+    assert_eq!(v["archived"], false, "A6 归档标记默认 false");
     assert_eq!(v["name"], "devforge");
     assert_eq!(v["created_at_ms"], 7);
     assert_eq!(v["has_local_path"], true);
-    // 空路径的项目同样可以序列化（只是 has_local_path = false）
+    // 空路径的项目同样可以序列化（local_path 为空串 + has_local_path = false）
     let empty = Project::new("no-path", PathBuf::new(), 1).public_view();
     assert_eq!(empty["has_local_path"], false);
+    assert_eq!(empty["local_path"], "");
 }

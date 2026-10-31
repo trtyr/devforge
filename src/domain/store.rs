@@ -589,6 +589,41 @@ impl Store {
         removed
     }
 
+    // ---------- 项目归档/删除（A6 · P019） ----------
+
+    /// 归档/取消归档项目：存在性校验；状态无变化 = 0（不落盘）。
+    pub fn set_project_archived(&mut self, name: &str, archived: bool) -> Result<usize> {
+        let p = self
+            .projects
+            .iter_mut()
+            .find(|p| p.name == name)
+            .ok_or_else(|| {
+                DevforgeError::Store(format!("项目 `{name}` 不存在"))
+            })?;
+        if p.archived == archived {
+            return Ok(0);
+        }
+        p.archived = archived;
+        self.persist();
+        Ok(1)
+    }
+
+    /// 删除项目（A6）：**零任务才可删**——有任务（任何状态）拒绝（409 语义，
+    /// 防误删连带任务/run 历史）；返回删除的项目名。
+    pub fn delete_project(&mut self, name: &str) -> Result<String> {
+        if !self.projects.iter().any(|p| p.name == name) {
+            return Err(DevforgeError::Store(format!("项目 `{name}` 不存在")));
+        }
+        if self.tasks.iter().any(|t| t.project == name) {
+            return Err(DevforgeError::Store(format!(
+                "项目 `{name}` 仍有任务（先处理任务再删除，或改为归档）"
+            )));
+        }
+        self.projects.retain(|p| p.name != name);
+        self.persist();
+        Ok(name.to_string())
+    }
+
     // ---------- 认证（A1 · M-1） ----------
 
     /// 当前账户（None = 未初始化）。
