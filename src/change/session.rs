@@ -224,10 +224,13 @@ pub fn testing_kickoff(ctx: &ChangeCtx) -> String {
 落在任意层级的 `tests/`、`docs/`、`evidence/` 目录下的文件不算产品代码改动，可自由新建\
 ——例如模块内单元测试 `src/server/tests/xxx.rs`、集成测试 `tests/xxx.rs`、证据 `evidence/xxx.log`。\
 其余路径（如 `src/xxx.rs`）属产品代码，改动会被判质量失败。\n\
-顺序：先跑既有全套回归并把命令与退出码写进 `{}`；再为变更点写测试；\
+顺序：先跑受影响层的回归并把命令与退出码写进 `{}`；再为变更点写测试；\
 把对账表写到 `testing/acceptance.md`（每行 `- <验收标准原文> → <测试文件>:<行>`）；\
 证据格式：`exit_code` 行建议裸写；若包进围栏，必须与 `command:` 成对；\
 至少做一次反向验证。\n\
+【测试分层（T206）】全量 `cargo test` 只跑一次，放在最后（终验）。中途迭代按影响面跑分层：\
+改动集中在少数模块时，只跑受影响模块的测试（如 `cargo test --lib server::`）+ `cargo clippy --all-targets`；\
+测试红了修完再升级跑面，不要每轮迭代都跑全量——全量在本机要 7~10 分钟，是本轮最贵的操作。\n\
 失败时输出 `<route>coding</route>`（计划问题用 `<route>plan</route>`），并用 `<issues>` 块逐条列失败明细\
 （每条一行，`- ` 开头）；**路由块与 `<issues>` 块都放在回复末尾**，其后不要再写别的。\n\
 通过时输出 `<stage-complete>1</stage-complete>`。",

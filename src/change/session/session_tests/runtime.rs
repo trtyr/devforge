@@ -402,6 +402,35 @@ fn testing_kickoff_states_the_gate_exemption_rules() {
     }
 }
 
+/// T206 回归：testing 开工消息必须自带**测试分层口径**——
+/// 全量只跑一次（终验），中途迭代按影响面跑分层。
+///
+/// 实证（gap-E 5683f21b）：testing 阶段 104 分钟未出，全量冷构建 7~10 分钟/轮
+/// 被反反复复跑——全量是本轮最贵的操作税。
+#[test]
+fn testing_kickoff_states_the_layered_testing_policy() {
+    let f = fixture(true);
+    let kick = testing_kickoff(&f.ctx);
+    for anchor in [
+        "【测试分层（T206）】",
+        "全量 `cargo test` 只跑一次",
+        "受影响模块的测试",
+        "cargo clippy --all-targets",
+    ] {
+        assert!(
+            kick.contains(anchor),
+            "testing 开工消息缺测试分层锚点 {anchor}：{kick}"
+        );
+    }
+    // 追加而非替换：既有锚点逐字仍在
+    for anchor in ["至少做一次反向验证", "evidence/regression.log"] {
+        assert!(
+            kick.contains(anchor),
+            "既有锚点 {anchor} 不得被替换掉：{kick}"
+        );
+    }
+}
+
 #[test]
 fn testing_review_fail_reroutes_to_coding_instead_of_failing_the_run() {
     // change #4（testing 半）：测试审查 FAIL 不再判死——改为 RouteCoding，把审查明细
