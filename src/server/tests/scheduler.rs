@@ -906,6 +906,9 @@ async fn the_status_endpoint_reports_the_effective_concurrency_in_both_fields() 
 }
 
 /// 需求3：status 顶层字段集合不增不减（既有 status 用例保持绿）。
+///
+/// gap-B 起新增 `channel_breakers`（运维不进机器就能看见哪条渠道在冷却）——
+/// 本断言同步纳入该字段，防止将来再有字段被悄悄塞进或拿掉。
 #[tokio::test]
 async fn the_status_endpoint_keeps_its_top_level_field_set() {
     let f = fixture();
@@ -919,6 +922,7 @@ async fn the_status_endpoint_keeps_its_top_level_field_set() {
         keys,
         vec![
             "blocked",
+            "channel_breakers",
             "effective_max_concurrent",
             "max_concurrent_runs",
             "queue",
