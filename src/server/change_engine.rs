@@ -180,7 +180,9 @@ impl BuiltinRpcEngine {
             )));
         }
 
-        let doc_level = std::env::var("DEVFORGE_DOC_LEVEL").unwrap_or_else(|_| "none".into());
+        // F14：change 管线的档位走 knobs 单点 doc_level_change（缺省 none——变更
+        // 不顺手写文档；与 docgen 管线的 doc_level_docgen 缺省各异，T205 收编裁决）。
+        let doc_level = crate::config::knobs::doc_level_change();
         let today = today_parts();
         let prep = prepare(
             &self.plans_root,
@@ -503,7 +505,7 @@ pub fn build_ctx(
     }
 }
 
-/// 今天的 `(年, 月, 日)`（`DEVFORGE_TODAY` 可覆盖）。
+/// 今天的 `(年, 月, 日)`（`today_override` 旋钮可覆盖）。
 ///
 /// 自审 minor（44）：旧口径直接 `seg[0..4]` 字节切片——段长不足或含非 ASCII 时
 /// **panic**（切片越界 / 非字符边界），解析失败又会静默落成 1970-01-01（日期错标）。
@@ -527,7 +529,7 @@ fn today_parts() -> (i32, u32, u32) {
                 component = "change-engine",
                 event = "change.bad_today_segment",
                 segment = %seg,
-                "日期段不是 8 位数字（DEVFORGE_TODAY 写错了？）——回落到系统时钟"
+                "日期段不是 8 位数字（today_override 旋钮写错了？）——回落到系统时钟"
             );
             let (y, m, d) = crate::change::change_id::today_ymd();
             (y, m, d)

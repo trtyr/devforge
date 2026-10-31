@@ -192,7 +192,7 @@ fn review_rounds_carry_a_wall_clock() {
     assert_eq!(opened, 1);
     let got = seen.lock().unwrap();
     assert_eq!(got.len(), 1, "每轮一个墙钟：{got:?}");
-    assert!(got[0].is_some(), "默认必须带墙钟（DEVFORGE_REVIEW_TIMEOUT_MS 未置 0）");
+    assert!(got[0].is_some(), "默认必须带墙钟（review_timeout_ms 旋钮未置 0）");
 }
 
 // ── 2026-10-27 自审 minor（85）回归：外部文本分隔块 ──

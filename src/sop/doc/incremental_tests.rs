@@ -39,7 +39,7 @@ fn disabled_mode_is_full() {
     assert_eq!(
         decide_mode(Some(&st), Some("def"), None, false),
         Mode::Full {
-            reason: "未开启增量（DEVFORGE_DOC_INCREMENTAL）".into()
+            reason: "未开启增量（doc_incremental）".into()
         }
     );
 }

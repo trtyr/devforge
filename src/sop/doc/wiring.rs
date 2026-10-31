@@ -140,7 +140,7 @@ impl BuiltinRpcEngine {
             crate::runstate::StateKey::new(&task.project, &task.id, crate::sop::doc::resume::DOC_SOP),
         );
         let head_now = crate::sop::doc::incremental::head_sha(&workspace);
-        let (inc_on, req_base) = crate::sop::doc::incremental::enabled_from_env();
+        let (inc_on, req_base) = crate::sop::doc::incremental::enabled();
         let mode = crate::sop::doc::incremental::decide_mode(
             loaded.state(),
             head_now.as_deref(),
@@ -255,10 +255,11 @@ impl BuiltinRpcEngine {
         }
 
         let final_index = audit_index.clone();
-        // 引擎审计修复 #7：doc_level 档位接线——DEVFORGE_DOC_LEVEL=essential|complete|detailed
-        // （默认 complete），单元审计注入 / run_pipeline / 终审机械门四处同口径。
-        let doc_level_str =
-            std::env::var("DEVFORGE_DOC_LEVEL").unwrap_or_else(|_| "complete".to_string());
+        // 引擎审计修复 #7：doc_level 档位接线——essential|complete|detailed
+        // （缺省 complete），单元审计注入 / run_pipeline / 终审机械门四处同口径。
+        // F14：docgen 管线的档位走 knobs 单点 doc_level_docgen（与 change 管线的
+        // doc_level_change 缺省各异——T205 收编裁决：一名两语义拆两旋钮）。
+        let doc_level_str = crate::config::knobs::doc_level_docgen();
         let doc_level_for_audit = doc_level_str.clone();
         let audit: Box<dyn Fn(&str) -> String + Send> = Box::new(move |unit: &str| {
             let mut out = String::new();

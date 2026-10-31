@@ -136,17 +136,13 @@ async fn a_tripped_breaker_lands_a_notification_once() {
     );
 }
 
-/// ui 待答久等 → 通知（阈值走 DEVFORGE_UI_PENDING_WARN_MS 旋钮，共享锁防串味）；
+/// ui 待答久等 → 通知（阈值走 knobs 全局 ui_pending_warn_ms，test_lock 防串味）；
 /// 同一待答只通知一次。
 #[tokio::test]
 async fn pending_ui_scan_notifies_once_per_ask_after_threshold() {
     let f = fixture();
-    let _guard = crate::server::ui_warn_env_lock();
-    let prev = std::env::var("DEVFORGE_UI_PENDING_WARN_MS").ok();
-    // SAFETY: 已持 ui_warn_env_lock（进程级独占该键）。
-    unsafe {
-        std::env::set_var("DEVFORGE_UI_PENDING_WARN_MS", "50");
-    }
+    let _guard = crate::config::knobs::test_lock();
+    crate::config::knobs::with_mut(|k| k.ui_pending_warn_ms = 50);
 
     let ui = f.state.ui.clone();
     let handle = std::thread::spawn(move || {
@@ -177,13 +173,7 @@ async fn pending_ui_scan_notifies_once_per_ask_after_threshold() {
     let id = f.state.ui.pending_snapshot()[0].id.clone();
     let _ = f.state.ui.answer(&id, "选项A");
     let _ = handle.join().unwrap();
-    // SAFETY: 仍持锁。
-    unsafe {
-        match prev {
-            Some(v) => std::env::set_var("DEVFORGE_UI_PENDING_WARN_MS", v),
-            None => std::env::remove_var("DEVFORGE_UI_PENDING_WARN_MS"),
-        }
-    }
+    crate::config::knobs::with_mut(|k| k.ui_pending_warn_ms = 120_000);
 }
 
 /// 集成队列 NeedsRepair → 通知（队列文件是事实源：不管谁改的状态，tick 都看得见）；

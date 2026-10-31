@@ -421,33 +421,10 @@ pub fn run_started_at(run_id: &str) -> Option<u64> {
         .map(|s| s.started_at_ms)
 }
 
-/// 停滞告警阈值（ms）；`DEVFORGE_STALL_WARN_MS` 可覆盖（测试用小值），默认 15 分钟。
+/// 停滞告警阈值（ms）；F14 后走 knobs 单点（config.json `stall_warn_ms`，0/非法值
+/// 在解析层回落缺省并 WARN—— knobs::from_config_json 的单键口径），默认 15 分钟。
 pub fn stall_warn_ms() -> u64 {
-    // 自审 minor（166）：环境变量零校验——`0` 被接受会让 watchdog 每一跳都报 agent.stall，
-    // 非法值静默回落。现在：0 与解析失败都回落默认并 WARN 一次。
-    const DEFAULT_STALL_WARN_MS: u64 = 900_000;
-    let Ok(raw) = std::env::var("DEVFORGE_STALL_WARN_MS") else {
-        return DEFAULT_STALL_WARN_MS;
-    };
-    match raw.trim().parse::<u64>() {
-        Ok(ms) if ms > 0 => ms,
-        _ => {
-            warn_once_bad_stall_env(&raw);
-            DEFAULT_STALL_WARN_MS
-        }
-    }
-}
-
-/// 非法 `DEVFORGE_STALL_WARN_MS` 只告警一次（避免每跳刷屏）。
-fn warn_once_bad_stall_env(raw: &str) {
-    static WARNED: std::sync::Once = std::sync::Once::new();
-    WARNED.call_once(|| {
-        tracing::warn!(
-            component = "observability",
-            value = raw,
-            "DEVFORGE_STALL_WARN_MS 非法（须为正整数），回落默认 15 分钟"
-        );
-    });
+    crate::config::knobs::stall_warn_ms()
 }
 
 /// 角色内审查轮次（1-based）：同一角色在本次 run 内第几次开庭。

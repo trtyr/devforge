@@ -71,6 +71,8 @@ pub struct RuntimeKnobs {
     pub doc_base: Option<String>,
     /// 并发 run 上限（1..=64；0 视为 1）。
     pub max_concurrent: usize,
+    /// 今天日期覆盖（YYYY-MM-DD；change_id 用——测试/固定口径注入，零 env 后的承接位）。
+    pub today_override: Option<String>,
 }
 
 impl Default for RuntimeKnobs {
@@ -90,6 +92,7 @@ impl Default for RuntimeKnobs {
             doc_incremental: false,
             doc_base: None,
             max_concurrent: 2,
+            today_override: None,
         }
     }
 }
@@ -112,6 +115,7 @@ pub const KNOB_TABLE: &[(&str, &str, &str, &str)] = &[
     ("doc_incremental", "false", "bool", "文档增量开关"),
     ("doc_base", "无", "sha", "文档增量基线覆盖"),
     ("max_concurrent", "2", "个", "并发 run 上限"),
+    ("today_override", "无", "YYYY-MM-DD", "今天日期覆盖（测试/固定口径注入）"),
 ];
 
 /// 生效值条目（端点形态：key + 值 + 来源）。
@@ -157,9 +161,9 @@ impl RuntimeKnobs {
         set!(ui_ask_timeout_ms, "ui_ask_timeout_ms", |v: &serde_json::Value| v
             .as_u64()
             .map(|ms| if ms == 0 { None } else { Some(ms) }));
+        // 0 = 关闭告警（本旋钮的合法语义，与旧 env 口径一致）——不过滤
         set!(ui_pending_warn_ms, "ui_pending_warn_ms", |v: &serde_json::Value| v
-            .as_u64()
-            .filter(|ms| *ms > 0));
+            .as_u64());
         set!(review_timeout_ms, "review_timeout_ms", |v: &serde_json::Value| v
             .as_u64()
             .map(|ms| if ms == 0 { None } else { Some(ms) }));
@@ -199,6 +203,15 @@ impl RuntimeKnobs {
         set!(max_concurrent, "max_concurrent", |v: &serde_json::Value| v
             .as_u64()
             .map(|n| n.clamp(1, 64) as usize));
+        set!(
+            today_override,
+            "today_override",
+            |v: &serde_json::Value| v
+                .as_str()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(Some)
+        );
         (knobs, sources)
     }
 }
@@ -249,13 +262,7 @@ pub fn with_mut<R>(f: impl FnOnce(&mut RuntimeKnobs) -> R) -> R {
 pub fn effective_values() -> Vec<KnobEffective> {
     let knobs = snapshot();
     let sources = KNOB_SOURCES.read().unwrap_or_else(|e| e.into_inner());
-    let src_of = |key: &str| {
-        sources
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map(|(_, s)| *s)
-            .unwrap_or(KnobSource::Default)
-    };
+    let src_of = |key: &str| knob_source_in(&sources, key);
     vec![
         eff("ui_ask_timeout_ms", knobs.ui_ask_timeout_ms, src_of("ui_ask_timeout_ms")),
         eff("ui_pending_warn_ms", knobs.ui_pending_warn_ms, src_of("ui_pending_warn_ms")),
@@ -275,6 +282,11 @@ pub fn effective_values() -> Vec<KnobEffective> {
         eff("doc_incremental", knobs.doc_incremental, src_of("doc_incremental")),
         eff("doc_base", knobs.doc_base, src_of("doc_base")),
         eff("max_concurrent", knobs.max_concurrent, src_of("max_concurrent")),
+        eff(
+            "today_override",
+            knobs.today_override,
+            src_of("today_override"),
+        ),
     ]
 }
 
@@ -290,6 +302,32 @@ fn eff(key: &'static str, value: impl serde::Serialize, source: KnobSource) -> K
         source,
         unit,
         doc,
+    }
+}
+
+/// 来源表里的单键查询（表外 = Default）。
+fn knob_source_in(sources: &[(&'static str, KnobSource)], key: &str) -> KnobSource {
+    sources
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, s)| *s)
+        .unwrap_or(KnobSource::Default)
+}
+
+/// 单键来源查询（全局来源表）。
+pub(crate) fn knob_source(key: &str) -> KnobSource {
+    let sources = KNOB_SOURCES.read().unwrap_or_else(|e| e.into_inner());
+    knob_source_in(&sources, key)
+}
+
+/// 并发上限的「显式设置值」：仅 config.json/CLI 覆盖时 Some；缺省返回 None，
+/// 消费方（main 启动序 → apply_startup_concurrency）走自己的 store/缺省链——
+/// 保持 F13 的「显式值 > store > 缺省」语义，只是显式值的载体从 env 换成了 knobs。
+pub fn max_concurrent_set() -> Option<usize> {
+    if knob_source("max_concurrent") == KnobSource::Default {
+        None
+    } else {
+        Some(snapshot().max_concurrent)
     }
 }
 
@@ -363,6 +401,11 @@ pub fn doc_base() -> Option<String> {
 /// 并发 run 上限（0 视为 1 的口径在消费方，与 Store::begin_run 同链）。
 pub fn max_concurrent() -> usize {
     snapshot().max_concurrent
+}
+
+/// 今天日期覆盖（change_id 用；None = 用本地时钟）。
+pub fn today_override() -> Option<String> {
+    snapshot().today_override
 }
 
 #[cfg(test)]

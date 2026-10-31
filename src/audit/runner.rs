@@ -34,16 +34,15 @@ fn check_intervention(control: &RunControl) -> Result<()> {
 /// 显式设 DEVFORGE_RUN_IDLE_MS 时以它为准。
 pub const DEFAULT_AUDIT_IDLE_MS: u64 = 15 * 60 * 1000;
 
-/// 第三方 r3 M4：单批墙钟（默认 30 分钟）。idle 收割打不中「流式刷活性但不推进」
+/// 第三方 r3 M4：单批墙钟（缺省 30 分钟）。idle 收割打不中「流式刷活性但不推进」
 /// 的活死批（DR-3 之后 text_delta 会刷新 liveness），只能由批次自己的墙钟叫停：
 /// 到点 → 会话返回 Quality → 该批记 abandoned，余批继续。
+/// F14 后缺省真源在 knobs 声明表（audit_batch_timeout_ms），本常量仅供测试引用。
 pub const DEFAULT_AUDIT_BATCH_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 
-/// 本批墙钟；`0` 或环境变量设 0 = 不限制（旧行为）。
+/// 本批墙钟；`0` = 不限制（旧行为）。F14 后走 knobs 单点，不再读 env。
 fn batch_deadline() -> Option<std::time::Instant> {
-    let ms = std::env::var("DEVFORGE_AUDIT_BATCH_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
+    let ms = crate::config::knobs::audit_batch_timeout_ms()
         .unwrap_or(DEFAULT_AUDIT_BATCH_TIMEOUT_MS);
     batch_deadline_from_ms(ms)
 }
@@ -300,11 +299,7 @@ fn audit_concurrency() -> usize {
     if let Some(n) = tests::concurrency_override() {
         return n;
     }
-    std::env::var("DEVFORGE_AUDIT_CONCURRENCY")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .map(|n| n.clamp(1, 8))
-        .unwrap_or(4)
+    crate::config::knobs::audit_concurrency()
 }
 
 /// 批次发现落盘（先落盘再打勾的前半）。串行路径与并行 worker **都**调它：

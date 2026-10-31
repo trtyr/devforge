@@ -45,24 +45,24 @@ fn install_command_carries_profile_env() {
     assert_eq!(args, vec!["install", "npm:pi-blackhole"]);
 }
 
-/// 自审 major 回归：超时强杀 + 快命令不受影响（合并为单测：env 是进程全局，
+/// 自审 major 回归：超时强杀 + 快命令不受影响（合并为单测：旋钮是进程全局，
 /// 拆两个会自竞态）。
 #[test]
 fn install_timeout_kills_but_fast_completes() {
-    // SAFETY: 测试进程内独占该变量（无并发读者），edition 2024 下 set_var 为 unsafe
+    let _guard = crate::config::knobs::test_lock();
     // 超时路径：挂死进程被强杀，不再永久占住渲染线程
     let mut slow = Command::new("sleep");
     slow.arg("30");
-    unsafe { std::env::set_var("DEVFORGE_INSTALL_TIMEOUT_MS", "300") };
+    crate::config::knobs::with_mut(|k| k.install_timeout_ms = Some(300));
     let err = run_with_timeout(slow, "sleep").unwrap_err();
     assert!(err.to_string().contains("超时"), "{err}");
     assert!(err.to_string().contains("强杀"), "{err}");
     // 快路径：输出完整回收
     let mut fast = Command::new("echo");
     fast.arg("hello");
-    unsafe { std::env::set_var("DEVFORGE_INSTALL_TIMEOUT_MS", "10000") };
+    crate::config::knobs::with_mut(|k| k.install_timeout_ms = Some(10_000));
     let out = run_with_timeout(fast, "echo").unwrap();
-    unsafe { std::env::remove_var("DEVFORGE_INSTALL_TIMEOUT_MS") };
+    crate::config::knobs::with_mut(|k| k.install_timeout_ms = Some(600_000));
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
 }

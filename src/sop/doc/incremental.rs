@@ -31,18 +31,11 @@ pub enum Mode {
     Incremental { base: String, head: String },
 }
 
-/// 读环境变量：`DEVFORGE_DOC_INCREMENTAL=1` 开启，`DEVFORGE_DOC_BASE=<sha>` 覆盖基线。
-pub fn enabled_from_env() -> (bool, Option<String>) {
-    let on = std::env::var("DEVFORGE_DOC_INCREMENTAL")
-        .map(|v| {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "yes"
-        })
-        .unwrap_or(false);
-    let base = std::env::var("DEVFORGE_DOC_BASE")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+/// 读旋钮：config.json `doc_incremental`（true）开启，`doc_base` 覆盖基线。
+/// F14：载体从 env 换成 knobs 单点。
+pub fn enabled() -> (bool, Option<String>) {
+    let on = crate::config::knobs::doc_incremental();
+    let base = crate::config::knobs::doc_base();
     (on, base)
 }
 
@@ -55,7 +48,7 @@ pub fn decide_mode(
 ) -> Mode {
     if !enabled {
         return Mode::Full {
-            reason: "未开启增量（DEVFORGE_DOC_INCREMENTAL）".into(),
+            reason: "未开启增量（doc_incremental）".into(),
         };
     }
     let base = req_base

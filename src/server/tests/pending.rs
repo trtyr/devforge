@@ -19,9 +19,6 @@ use super::*;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// 久等告警阈值的环境变量名（与生产代码同键）。
-const WARN_ENV: &str = "DEVFORGE_UI_PENDING_WARN_MS";
-
 /// 轮询进程级缓冲的窗口大小（毫秒）。
 ///
 /// 小窗口 = 告警行从「写入」到「被取走」的暴露窗口小 → 被并行用例顺手清掉的机会小。
@@ -32,35 +29,21 @@ const MAX_ATTEMPTS: usize = 12;
 
 // ---------- 小工具 ----------
 
-/// 久等告警旋钮是进程级 env：并行用例会互相串味（一个用例把阈值调小，另一个用例的
-/// 待答也会被告警；两个用例同时改值 → 断言假红）。凡读/写该键的用例串行走全仓共享锁
-/// （A2 起：锁真源在 `crate::server::ui_warn_env_lock`，本文件保留原名委托——
-/// 否则两把独立锁互斥失效）。
+/// 久等告警旋钮（F14 后 = knobs 全局单例 ui_pending_warn_ms）：并行用例会互相
+/// 串味（一个用例把阈值调小，另一个用例的待答也会被告警；两个用例同时改值 →
+/// 断言假红）。凡触旋钮的用例串行走 `knobs::test_lock`（全仓唯一串行锁）。
 fn warn_env_lock() -> std::sync::MutexGuard<'static, ()> {
-    crate::server::ui_warn_env_lock()
+    crate::config::knobs::test_lock()
 }
 
-/// 设阈值（返回原值，供恢复）。
-///
-/// SAFETY: 调用方必须持 [`warn_env_lock`]——该 env 是进程级的，并行改值会让断言假红。
-fn set_warn_knob(ms: u64) -> Option<String> {
-    let prev = std::env::var(WARN_ENV).ok();
-    // SAFETY: 持锁期间本进程只有本用例写这个键（读者是扫描线程，只读不写）。
-    unsafe { std::env::set_var(WARN_ENV, ms.to_string()) };
-    prev
+/// 设阈值（F14：不再走 env，直接注入 knobs 全局；调用方持 [`warn_env_lock`]）。
+fn set_warn_knob(ms: u64) {
+    crate::config::knobs::with_mut(|k| k.ui_pending_warn_ms = ms);
 }
 
-/// 恢复阈值（原值不存在则删除该键）。
-///
-/// SAFETY: 同 [`set_warn_knob`]（调用方持锁）。
-fn restore_warn_knob(prev: Option<String>) {
-    // SAFETY: 持锁期间独占该键。
-    unsafe {
-        match prev {
-            Some(v) => std::env::set_var(WARN_ENV, v),
-            None => std::env::remove_var(WARN_ENV),
-        }
-    }
+/// 恢复缺省阈值（120_000）。test_lock 串行保证无并行中间态，无需保存原值。
+fn restore_warn_knob() {
+    crate::config::knobs::with_mut(|k| k.ui_pending_warn_ms = 120_000);
 }
 
 /// 唯一问题串：同一进程内不重复（并行用例的待答不得互相串味）。
@@ -434,7 +417,7 @@ fn long_pending_ask_emits_exactly_one_warn_line() {
     // ②每个周期都告警（刷屏，日志被噪音埋掉）③只带部分字段（事后定位不到是哪条待答）
     // ④打标按 question 文本（见下一个用例）。
     let _guard = warn_env_lock();
-    let prev = set_warn_knob(50);
+    set_warn_knob(50);
     crate::observability::test_support::install(); // 先装捕获器：晚装的会漏掉早到的告警
     let f = fixture();
     let ui = f.state.ui.clone();
@@ -452,7 +435,7 @@ fn long_pending_ask_emits_exactly_one_warn_line() {
             .unwrap_or_default();
         (id, handle)
     });
-    restore_warn_knob(prev);
+    restore_warn_knob();
 
     assert_eq!(
         lines.len(),
@@ -504,7 +487,7 @@ fn warn_line_carries_the_run_id_when_the_ask_has_a_run_context() {
     // 错实现形态（任一命中即红）：①run_id 落 `Some("run-a")`（grep 不到 run id）
     // ②run_id 恒为 null（分不清是哪条 run 在等人）③run_id 字段缺失。
     let _guard = warn_env_lock();
-    let prev = set_warn_knob(50);
+    set_warn_knob(50);
     crate::observability::test_support::install();
     let f = fixture();
     let ui = f.state.ui.clone();
@@ -541,7 +524,7 @@ fn warn_line_carries_the_run_id_when_the_ask_has_a_run_context() {
             (id, handle)
         },
     );
-    restore_warn_knob(prev);
+    restore_warn_knob();
 
     assert_eq!(lines.len(), 1, "恰好一条 WARN：{lines:?}");
     assert!(
@@ -559,7 +542,7 @@ fn warn_knob_zero_disables_the_warning() {
     // ②`0` 被当成「不限时」（与相邻旋钮 DEVFORGE_UI_ASK_TIMEOUT_MS 混同 → 语义分叉）
     // ③非数字/空串回退缺省时把 `0` 也算进去。
     let _guard = warn_env_lock();
-    let prev = set_warn_knob(0);
+    set_warn_knob(0);
     crate::observability::test_support::install();
     let f = fixture();
     let ui = f.state.ui.clone();
@@ -571,7 +554,7 @@ fn warn_knob_zero_disables_the_warning() {
     let lines = poll_warn_lines(&warn_filter_key(&question), 0, std::time::Duration::from_millis(400));
     settle_one(&ui);
     let _ = handle.join();
-    restore_warn_knob(prev);
+    restore_warn_knob();
 
     assert!(
         lines.is_empty(),
@@ -588,7 +571,7 @@ fn a_new_ask_with_the_same_question_gets_its_own_warn_line() {
     // 错实现形态（任一命中即红）：①打标按 question 文本（第二条被误判「已告警」→ 静默）
     // ②两条共用一个 id（清单与应答都指不准）。
     let _guard = warn_env_lock();
-    let prev = set_warn_knob(50);
+    set_warn_knob(50);
     crate::observability::test_support::install();
     let f = fixture();
     let ui = f.state.ui.clone();
@@ -626,7 +609,7 @@ fn a_new_ask_with_the_same_question_gets_its_own_warn_line() {
             break;
         }
     }
-    restore_warn_knob(prev);
+    restore_warn_knob();
 
     assert_eq!(
         lines.len(),
@@ -659,7 +642,7 @@ fn many_ask_answer_rounds_do_not_deadlock() {
     // 写成同步用例 + 自建 runtime：旋钮锁必须覆盖整段并发窗口，而 `MutexGuard` 不得跨
     // await（clippy::await_holding_lock）——锁在同步帧里持有，异步段只跑 HTTP 往返。
     let _guard = warn_env_lock();
-    let prev = set_warn_knob(1); // 极小阈值：每条待答都会告警，扫描与应答正面并发
+    set_warn_knob(1); // 极小阈值：每条待答都会告警，扫描与应答正面并发
     let f = fixture();
     let ui = f.state.ui.clone();
     let base = unique_question("rounds");
@@ -687,7 +670,7 @@ fn many_ask_answer_rounds_do_not_deadlock() {
             );
         }
     });
-    restore_warn_knob(prev);
+    restore_warn_knob();
     assert_eq!(ui.pending_count(), 0, "20 轮跑完不得残留待答");
 }
 

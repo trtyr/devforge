@@ -22,20 +22,15 @@ pub const MAX_REVIEW_INSTANCE_FAILURES: usize = 3;
 /// 回注空清单等于让 agent 盲改，可无界空转；连续这么多次还不补 → 质量失败（不自动重启）。
 pub const MAX_EMPTY_ISSUES_NUDGES: usize = 3;
 
-/// 单轮审查墙钟默认值（server #6）：旧实现只调 `review()`，`review_with_deadline`
-/// 对 planning/coding/testing 全是死路径——审查 pi 挂死只能等 15 分钟失活收割。
-/// `DEVFORGE_REVIEW_TIMEOUT_MS` 可调，0 = 不限。
-pub const DEFAULT_REVIEW_TIMEOUT_MS: u64 = 30 * 60 * 1000;
+// 单轮审查墙钟的缺省真源（server #6）：旧实现只调 `review()`，`review_with_deadline`
+// 对 planning/coding/testing 全是死路径——审查 pi 挂死只能等 15 分钟失活收割。
+// F14 后缺省与覆盖都收进 knobs 声明表（`review_timeout_ms` = 1_800_000，0 = 不限），
+// 本模块不再持有运行期常量。
 
-/// 本轮的审查墙钟（每轮现算：一轮一个 deadline）。
+/// 本轮的审查墙钟（每轮现算：一轮一个 deadline）。F14 后走 knobs 单点
+/// （config.json `review_timeout_ms` / CLI，0 = 不限），不再读 env。
 pub(crate) fn review_deadline() -> Option<std::time::Instant> {
-    let ms = std::env::var("DEVFORGE_REVIEW_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_REVIEW_TIMEOUT_MS);
-    if ms == 0 {
-        return None;
-    }
+    let ms = crate::config::knobs::review_timeout_ms()?;
     Some(std::time::Instant::now() + std::time::Duration::from_millis(ms))
 }
 

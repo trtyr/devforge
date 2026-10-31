@@ -116,16 +116,13 @@ fn install_failure_error(pkg: &str, output: &std::process::Output) -> DevforgeEr
 
 /// 带超时的子进程运行（自审 major：pi install 无超时 = 一次网络挂死永久占住
 /// 渲染线程，完成通知永不发出）。轮询 try_wait + 后台线程排空管道（防管道满
-/// 阻塞子进程）。超时上限可用 `DEVFORGE_INSTALL_TIMEOUT_MS` 调整，0 = 不限时
-///（零硬限制哲学）；默认每包 10 分钟。
+/// 阻塞子进程）。超时上限走 knobs 单点（config.json `install_timeout_ms`），
+/// `0` = 不限时（零硬限制哲学）；默认每包 10 分钟。
 fn run_with_timeout(mut cmd: Command, pkg: &str) -> Result<std::process::Output> {
     use std::io::Read;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
-    let timeout_ms: u64 = std::env::var("DEVFORGE_INSTALL_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(600_000);
+    let timeout_ms: u64 = crate::config::knobs::install_timeout_ms().unwrap_or(0);
     if timeout_ms == 0 {
         return cmd
             .output()

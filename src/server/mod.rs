@@ -107,12 +107,10 @@ impl UiRelay {
 
     /// 阻塞等待用户应答（在引擎的同步线程里调用）。
     pub fn ask_blocking(&self, question: &str, options: &[&str]) -> Result<String> {
-        // 自审 critical：显式墙钟旋钮（0/未设 = 不限，零硬限制哲学）；干预面
+        // 自审 critical：显式墙钟旋钮（None = 不限，零硬限制哲学）；干预面
         // （cancel 端点 / 墙钟超时 / 失活收割）由 watchdog 的解阻钩子兜底。
-        let timeout_ms = std::env::var("DEVFORGE_UI_ASK_TIMEOUT_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .filter(|ms| *ms > 0);
+        // F14：旋钮走 knobs 单点（config.json/CLI），不再读 env。
+        let timeout_ms = crate::config::knobs::ui_ask_timeout_ms();
         self.ask_blocking_with_timeout(
             question,
             options,
@@ -255,12 +253,6 @@ impl UiRelay {
 
 // ---------- 久等告警（后台扫描线程） ----------
 
-/// 久等告警阈值的环境变量名。
-const UI_PENDING_WARN_ENV: &str = "DEVFORGE_UI_PENDING_WARN_MS";
-
-/// 久等告警阈值缺省值（2 分钟）。
-const DEFAULT_UI_PENDING_WARN_MS: u64 = 120_000;
-
 /// 一条待答的告警载荷（锁内收集、**锁外**发日志——不持锁写 I/O）。
 struct PendingWarn {
     id: String,
@@ -274,16 +266,14 @@ struct PendingWarn {
 /// `0` = **关闭告警**。注意与相邻旋钮 `DEVFORGE_UI_ASK_TIMEOUT_MS` 的 `0` 语义
 /// **相反**：那个是「不限时」，这个是「不告警」——两个键同属 UI 中继族，调错不报错、
 /// 只静默，所以口径写在这里而不是散在别处。
-/// （A2 起 pub(crate)：调度器 tick 的 ui_pending 通知扫描同用一个阈值——同一把旋钮。
+/// 久等告警阈值（ms）：F14 后从 knobs 单点取（config.json/CLI，来源见生效值端点）。
+///
 /// `0` = **关闭告警**。注意与相邻旋钮 `DEVFORGE_UI_ASK_TIMEOUT_MS` 的 `0` 语义
 /// **相反**：那个是「不限时」，这个是「不告警」——两个键同属 UI 中继族，调错不报错、
-/// 只静默，所以口径写在这里而不是散在别处。）
+/// 只静默，所以口径写在这里而不是散在别处。
+/// （A2 起 pub(crate)：调度器 tick 的 ui_pending 通知扫描同用一个阈值——同一把旋钮。）
 pub(crate) fn warn_threshold_ms() -> u64 {
-    match std::env::var(UI_PENDING_WARN_ENV) {
-        // 空串 / 非数字 → 回退缺省（非法值静默回落，同 `DEVFORGE_STALL_WARN_MS` 口径）
-        Ok(raw) => raw.trim().parse::<u64>().unwrap_or(DEFAULT_UI_PENDING_WARN_MS),
-        Err(_) => DEFAULT_UI_PENDING_WARN_MS,
-    }
+    crate::config::knobs::ui_pending_warn_ms()
 }
 
 /// 扫描周期：阈值的 1/4，夹在 25ms..1000ms（阈值 0 → 1000ms，只做退出检测）。
@@ -298,17 +288,10 @@ pub(crate) fn question_prefix(question: &str) -> String {
     question.chars().take(80).collect()
 }
 
-/// A2：UI 久等告警 env（DEVFORGE_UI_PENDING_WARN_MS）是进程级的——
-/// 凡读写该键的测试串行走这把共享锁（pending.rs 的旧本地锁升级为全仓共享，
-/// 否则两个文件各自持各自的锁 = 互斥失效 = 并行用例互相串味假红）。
-/// 目前唯一消费者是测试（生产代码只读该 env，不改写）→ cfg(test)。
-#[cfg(test)]
-pub(crate) fn ui_warn_env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-}
+// A2→F14：UI 久等阈值原为 env（DEVFORGE_UI_PENDING_WARN_MS），现已收进 knobs
+// 单点（ui_pending_warn_ms）。测试串行锁统一走 `knobs::test_lock`（凡 init/
+// with_mut/端点触全局旋钮的用例整段持锁）——本函数的 env 锁已无存在必要。
+// （生产代码运行期只读旋钮，不改写；改写只发生在测试注入。）
 
 /// 拉起久等告警扫描线程（幂等：已有扫描器在跑就直接返回）。
 fn ensure_warn_scanner(inner: &Arc<UiRelayInner>) {

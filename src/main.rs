@@ -176,6 +176,26 @@ async fn main() -> anyhow::Result<()> {
 
     devforge::logging::init(&root.join("logs"), "devforge")
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+    // F14/T205：旋钮层引导——`<root>/config.json` 存在则装载（file 层），
+    // 缺失/损坏回落全缺省（损坏时 WARN 可见，不炸启动）。CLI 覆盖在启动
+    // 三件套（ftask-3）接入后在此链上重放。
+    let knobs_json = match std::fs::read_to_string(root.join("config.json")) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(
+                    component = "main",
+                    event = "config.parse_failed",
+                    error = %e,
+                    "config.json 解析失败，本次启动全缺省（请修复后重启）"
+                );
+                None
+            }
+        },
+        Err(_) => None,
+    };
+    devforge::config::knobs::init(knobs_json.as_ref());
     // 观测根（心跳/墓碑的落点）：与运行根同源（DEVFORGE_HOME 优先 → HOME/.devforge，
     // 双未设时回落 CWD/.devforge，Q4）——心跳/墓碑与清单/台账落在同一目录树
     let obs_root = devforge::observability::root();
@@ -212,12 +232,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 生产引擎：规划 SOP 的 RPC 接线
-    // 失活收割阈值（006 decisions/002）：DEVFORGE_RUN_IDLE_MS 显式开启（ms，>0），
-    // 默认 None = 永不因无进展自动杀 run（零硬限制哲学；慢而活着的 run 不误伤）
-    let idle_ms = std::env::var("DEVFORGE_RUN_IDLE_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|n| *n > 0);
+    // 失活收割阈值（006 decisions/002）：config.json `run_idle_ms` 显式开启（ms，>0），
+    // 默认 None = 永不因无进展自动杀 run（零硬限制哲学；慢而活着的 run 不误伤）。
+    // F14：载体从 env 换成 knobs 单点。
+    let idle_ms = devforge::config::knobs::run_idle_ms();
     let bus = std::sync::Arc::new(devforge::observability::events::EventBus::new());
     let ui = Arc::new(devforge::server::UiRelay::new(bus.clone()));
     let engine_profiles = profiles_root.clone();
@@ -276,16 +294,14 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // 并发上限：进程启动期解析一次并回写 store（并发的唯一运行时真相源）——
-    // 优先级链 `DEVFORGE_MAX_CONCURRENT` > `store.max_concurrent_runs` > 缺省 2
-    // （解析与留痕在 `scheduler::apply_startup_concurrency`）。
+    // 优先级链 config.json `max_concurrent` > `store.max_concurrent_runs` > 缺省 2
+    // （解析与留痕在 `scheduler::apply_startup_concurrency`；F14 后显式值载体 =
+    // knobs 单点，仅 file/cli 覆盖时 Some，缺省时放行 store/缺省链）。
     //
     // 位置约束：**必须在 store 移入 ServerState 之前**（apply 拿不到 store_path，
     // 落盘由本段在生效值变化时显式 save）。序依赖不被打乱：并发落地只改
     // `max_concurrent_runs`、不碰 runs → 「Running 快照 → 清僵尸 → 杀对账」不变。
-    //
-    // env 名用字面量：`src/docgen/inventory/support.rs` 按 `env::var(` 后的字面量
-    // 抽配置键（写常量会被抽成一个假配置键）。
-    let concurrency_env = std::env::var("DEVFORGE_MAX_CONCURRENT").ok();
+    let concurrency_env = devforge::config::knobs::max_concurrent_set().map(|n| n.to_string());
     let concurrency = devforge::server::scheduler::apply_startup_concurrency(
         &mut store,
         concurrency_env.as_deref(),
@@ -355,17 +371,16 @@ async fn main() -> anyhow::Result<()> {
     let Some(s) = std::sync::Arc::get_mut(&mut state) else {
         panic!("启动注入 token/超时时 Arc 已被分享——注入点必须保持在服务启动之前");
     };
-    // 自审 minor（46）：env 名与解析都在 server::http 里（单一契约来源）
+    // 自审 minor（46）：token 的 env/flag 解析在 server::http（单一契约来源；
+    // ftask-3 将把这一对也收进 CLI/config 双承载）
     if let Some(t) = devforge::server::resolve_startup_token(
         devforge::server::parse_token_flag(&args),
         devforge::server::http::token_from_env(),
     ) {
         s.token = Some(t);
     }
-    if let Ok(ms) = std::env::var("DEVFORGE_RUN_TIMEOUT_MS")
-        && let Ok(n) = ms.parse::<u64>()
-        && n > 0
-    {
+    // F14：run 墙钟走 knobs 单点（config.json `run_timeout_ms`，0/未设 = 不限）。
+    if let Some(n) = devforge::config::knobs::run_timeout_ms() {
         s.run_timeout_ms = Some(n);
     }
 
