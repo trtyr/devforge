@@ -7,6 +7,7 @@
 
 pub mod auth;
 pub mod change_engine;
+pub mod dependencies;
 pub mod gate;
 pub mod handlers;
 pub mod http;
@@ -437,6 +438,8 @@ pub struct ServerState {
     pub started_at_ms: u64,
     /// 日志目录（A8 查询端点的数据源；main 注入 <root>/logs，测试注入 tempdir）。
     pub logs_root: PathBuf,
+    /// 依赖探测器（A4；生产 RealProbe，测试注入 Fake——不依赖本机真装了什么）。
+    pub dependency_probe: Arc<dyn dependencies::DependencyProbe>,
     pub profiles_root: PathBuf,
     pub plans_root: PathBuf,
     pub sessions_root: PathBuf,
@@ -482,6 +485,7 @@ impl ServerState {
             auth_loopback_exempt: std::sync::atomic::AtomicBool::new(true),
             started_at_ms: crate::domain::now_ms(),
             logs_root: PathBuf::new(),
+            dependency_probe: Arc::new(dependencies::RealProbe),
             profiles_root,
             plans_root,
             sessions_root,

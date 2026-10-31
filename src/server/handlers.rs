@@ -892,6 +892,18 @@ pub async fn sops_list(State(st): State<SharedState>) -> Json<serde_json::Value>
     Json(json!({ "sops": sops }))
 }
 
+// ---------- 配置：依赖管理读面（A4 · P019） ----------
+
+/// `GET /dependencies`：外部依赖清单 + 存活/版本探测 + 日志桥接（A4 读面）。
+///
+/// 口径（P019 定稿）：只读监控——无卸载、无 AI 自动修复；下载/更新是写操作
+/// +长任务，留待后续任务化。探测带 3s 超时（不卡 HTTP 请求）；清单静态写死
+/// （pi/codegraph/git），日志候选如实报存在性（「没有日志的就算了」）。
+pub async fn dependencies_list(State(st): State<SharedState>) -> Json<serde_json::Value> {
+    let deps = crate::server::dependencies::list_dependencies(st.dependency_probe.as_ref());
+    Json(json!({ "dependencies": deps }))
+}
+
 /// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。
 pub async fn audit_report(
     State(st): State<SharedState>,
