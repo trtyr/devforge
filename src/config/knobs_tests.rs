@@ -115,3 +115,40 @@ fn doc_level_split_knobs_keep_their_own_defaults() {
         "change 侧的覆盖不得串到 docgen 侧（漂移收编后的核心回归）"
     );
 }
+
+/// F14 红线（全仓机械扫）：src/ 下不得存在 `env::var*("DEVFORGE_*")` 读点——
+/// var 与 var_os 两种形态都算（审计 2026-10-31 实证：var_os 变体漏过字面 grep）。
+/// 命中条件 = 真实调用语法（`env::var("` / `env::var_os("` 括号后紧跟真引号）；
+/// 字符串字面量里的转义形态（`env::var(\"…）`，如契约测试的 contains 断言）
+/// 与注释行不算。唯一豁免 `DEVFORGE_MANAGED`：它是 engine/ledger.rs 的字符串
+/// 常量（/proc/environ 跨进程标记），不走 env::var 进程读取，天然不在命中面。
+#[test]
+fn no_devforge_env_read_sites_anywhere_in_src() {
+    fn walk(dir: &std::path::Path, hits: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, hits);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && let Ok(text) = std::fs::read_to_string(&p)
+                && text.lines().any(|line| {
+                    let t = line.trim_start();
+                    !t.starts_with("//")
+                        && (line.contains("env::var(\"DEVFORGE")
+                            || line.contains("env::var_os(\"DEVFORGE"))
+                })
+            {
+                hits.push(p.display().to_string());
+            }
+        }
+    }
+    let mut hits = Vec::new();
+    walk(std::path::Path::new("src"), &mut hits);
+    assert!(
+        hits.is_empty(),
+        "发现 DEVFORGE_* env 读取点残留（零 env 红线）：{hits:?}"
+    );
+}

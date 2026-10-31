@@ -35,11 +35,16 @@ pub fn plantree_root(plans_root: &Path, project: &str) -> PathBuf {
         .join(project)
 }
 
-/// 从环境推默认台账根（无 plans_root 的调用方/测试用）。
+/// 缺省台账根（无 plans_root 的调用方/测试用）：`$HOME/.devforge/plantree/<project>`。
+///
+/// F14 后不再读 `DEVFORGE_HOME`（零 env 红线）：运行根由 main 的
+/// `--home`/config.json 归一后注入生产链路（plantree_root(plans_root) 同源推导）；
+/// 本函数只服务「无进程上下文」的守卫测试，落在缺省根 = 运行根缺省值，
+/// 用 --home 挪过根的机器上由守卫自身的「台账缺失则跳过」分支兜住。
 pub fn default_plantree_root(project: &str) -> PathBuf {
-    let root = std::env::var_os("DEVFORGE_HOME")
+    let root = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".devforge")))
+        .map(|h| h.join(".devforge"))
         .unwrap_or_else(|| PathBuf::from(".devforge"));
     root.join("plantree").join(project)
 }

@@ -209,8 +209,9 @@ async fn main() -> anyhow::Result<()> {
     let config_token = cfg_str("token");
 
     // 运行根推导口径：CLI --home 优先 → config.json home → $HOME/.devforge →
-    // 双未设 fail fast；与 default_plantree_root 同源（台账根与运行根必须同根，
-    // 否则台账与运行状态分家）。自审 major：旧口径先无条件读 HOME 且 `?` 直接
+    // 双未设 fail fast；台账根由 plantree_root(plans_root) 从本根同源推导
+    // （台账与运行状态不分家；lib 侧 default_plantree_root 仅剩测试用途，
+    // F14 后不再读 DEVFORGE_HOME env）。自审 major：旧口径先无条件读 HOME 且 `?` 直接
     // 退进程——即便显式设了根也强依赖 HOME；现在显式根已设时完全不碰 HOME。
     let explicit_root = home_cli.clone().or(config_home);
     let root = resolve_runtime_root(explicit_root.as_deref(), home_fallback)?;
