@@ -113,6 +113,11 @@ impl SopRegistry {
         })
     }
 
+    /// 全量 SOP 视图（A3 配置端点/剧本规划页的清单源；只读切片）。
+    pub fn all(&self) -> &[Sop] {
+        &self.sops
+    }
+
     pub fn ids(&self) -> Vec<&'static str> {
         self.sops.iter().map(|s| s.id).collect()
     }

@@ -241,6 +241,7 @@ mod notifications;
 mod config_knobs;
 mod auth_login;
 mod server_ops;
+mod agents_config;
 mod observe;
 mod panic_safety;
 mod pending;

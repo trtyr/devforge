@@ -519,6 +519,51 @@ pub async fn server_ops(State(st): State<SharedState>) -> Json<serde_json::Value
     }))
 }
 
+// ---------- 配置：Agent 只读视图（A3 · P019） ----------
+
+/// `GET /config/agents`：Agent 管理页属性面板数据源——manifest 只读序列化。
+///
+/// 每个 agent：描述（role_prompt 全文，前端自折叠）/ 工具面（extra_packages /
+/// skills / mcp / path_permissions）/ 思考档位 / 模型绑定（id + 池条目解引用出
+/// provider/model_id/base_url）。附带 sops 清单（剧本规划页复用）与模型池全量
+/// （换模型的候选列表）。
+///
+/// 口径：只读，无 key 类字段（嵌套结构本无 key；顶层 api_key 不在本视图）。
+/// 「流程出场」无结构化数据源（SOP 的 agent 绑定在实现层硬编码）——不在本端点
+/// 编造，归 A9 SOP 序列化时定数据源。
+pub async fn agents_config(State(st): State<SharedState>) -> Json<serde_json::Value> {
+    let m = st.manifest.lock().unwrap_or_else(|e| e.into_inner());
+    let agents: Vec<serde_json::Value> = m
+        .agents
+        .iter()
+        .map(|a| {
+            let pool = m.model_pool.iter().find(|e| e.id == a.model);
+            json!({
+                "name": a.name,
+                "role_prompt": a.role_prompt,
+                "extra_packages": a.extra_packages,
+                "skills": a.skills,
+                "mcp": a.mcp,
+                "thinking_level": a.thinking_level,
+                "path_permissions": a.path_permissions,
+                "model": a.model,
+                "model_detail": pool,
+            })
+        })
+        .collect();
+    let sops: Vec<serde_json::Value> = st
+        .registry
+        .all()
+        .iter()
+        .map(|s| json!({ "id": s.id, "name": s.name, "description": s.description }))
+        .collect();
+    Json(json!({
+        "agents": agents,
+        "sops": sops,
+        "model_pool": m.model_pool,
+    }))
+}
+
 /// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。
 pub async fn audit_report(
     State(st): State<SharedState>,
