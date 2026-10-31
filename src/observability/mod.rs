@@ -4,8 +4,8 @@
 //! - **run 上下文**（run id / 阶段 / 步骤 / attempt）：当前线程的 run 归属 + 进程级的快照表。
 //!   MVP 是串行执行（同一时刻只有一个 run），故线程级归属足够；快照表让**别的线程**
 //!   （watchdog 线程、panic hook）也能读到「当前阶段」。
-//! - **观测根**（root）：心跳与墓碑都落它下面。解析顺序（Q4）：
-//!   **进程内注入**（单测用）> `DEVFORGE_HOME` > `HOME/.devforge`（生产默认）。
+//! - **观测根**（root）：心跳与墓碑都落它下面。解析顺序（F14 后）：
+//!   **进程内注入**（main 启动序直接注入解析好的运行根；单测用）> `HOME/.devforge`（兑底）。
 //! - **里程碑字段**：由各调用点**内联**写 `tracing::info!`——`tracing` 的 `target` 必须是
 //!   发出它的模块，包装函数会让所有里程碑共用同一个 target，「按 target 过滤」这条需求直接作废。
 //!
@@ -506,7 +506,7 @@ pub fn set_root(root: impl Into<PathBuf>) {
     *slot = Some(root.into());
 }
 
-/// 清掉进程级注入（回落 `DEVFORGE_HOME` / `HOME` 解析）。
+/// 清掉进程级注入（回落 `HOME/.devforge` 兑底）。
 pub fn clear_root() {
     let mut slot = root_slot().lock().unwrap_or_else(|e| e.into_inner());
     *slot = None;
@@ -517,22 +517,17 @@ fn root_slot() -> &'static Mutex<Option<PathBuf>> {
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
-/// 解析观测根：进程内注入 > `DEVFORGE_HOME` > `HOME/.devforge`。
+/// 解析观测根：进程内注入 > `HOME/.devforge`（F14：main 启动序注入运行根，
+/// 本函数不再自读 DEVFORGE_HOME env）。
 pub fn root() -> PathBuf {
     if let Some(r) = root_slot().lock().unwrap_or_else(|e| e.into_inner()).clone() {
         return r;
     }
-    resolve_root(
-        std::env::var("DEVFORGE_HOME").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    )
+    resolve_root(std::env::var("HOME").ok().as_deref())
 }
 
-/// 观测根的解析（纯函数，便于单测；空串视作未设）。
-fn resolve_root(devforge_home: Option<&str>, home: Option<&str>) -> PathBuf {
-    if let Some(d) = devforge_home.map(str::trim).filter(|s| !s.is_empty()) {
-        return PathBuf::from(d);
-    }
+/// 观测根的兑底解析（纯函数，便于单测；空串视作未设；双缺回落 CWD/.devforge）。
+fn resolve_root(home: Option<&str>) -> PathBuf {
     if let Some(h) = home.map(str::trim).filter(|s| !s.is_empty()) {
         return PathBuf::from(h).join(".devforge");
     }
@@ -542,7 +537,7 @@ fn resolve_root(devforge_home: Option<&str>, home: Option<&str>) -> PathBuf {
     WARNED.call_once(|| {
         tracing::warn!(
             component = "observability",
-            "DEVFORGE_HOME 与 HOME 均未设置，观测根回落 CWD/.devforge（证据落点不稳定）"
+            "HOME 未设且无进程内注入，观测根回落 CWD/.devforge（证据落点不稳定）"
         );
     });
     std::env::current_dir()

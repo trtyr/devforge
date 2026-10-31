@@ -3,18 +3,17 @@
 use anyhow::Context as _;
 use std::sync::Arc;
 
-/// 解析运行根（纯函数；`home` 惰性求值——DEVFORGE_HOME 已设时完全不读 HOME）。
+/// 解析运行根（纯函数；`home` 惰性求值——显式根已设时完全不读 HOME）。
 ///
-/// 口径：`DEVFORGE_HOME` 已设（trim 后非空）→ 它就是运行根；否则才读 `HOME` 回落
-/// `$HOME/.devforge`；两者皆未设（或只有空白）→ fail fast，错误文案同时点名
-/// `DEVFORGE_HOME` 与 `HOME` 给出双出路。
-/// 与 `observability::resolve_root` 同源（DEVFORGE_HOME 优先、空串视作未设），
-/// 保证运行根与观测根（心跳/墓碑落点）同根。
+/// 口径（F14）：显式根（CLI --home > config.json home，main 已归一为一个 Option）
+/// trim 后非空 → 它就是运行根；否则才读 `HOME` 回落 `$HOME/.devforge`；两者皆未设
+/// （或只有空白）→ fail fast，错误文案同时点名显式根与 HOME 给出双出路。
+/// 观测根不再独立解析——main 解析后直接 set_root 注入，同根保证由调用序承担。
 fn resolve_runtime_root(
-    devforge_home: Option<&str>,
+    explicit: Option<&str>,
     home: impl FnOnce() -> Option<String>,
 ) -> anyhow::Result<std::path::PathBuf> {
-    if let Some(d) = devforge_home.map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(d) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
         return Ok(std::path::PathBuf::from(d));
     }
     let home = home();
@@ -22,8 +21,8 @@ fn resolve_runtime_root(
         return Ok(std::path::PathBuf::from(h).join(".devforge"));
     }
     anyhow::bail!(
-        "无法确定运行根：DEVFORGE_HOME 与 HOME 均未设置（或只有空白）——\
-         请设置 DEVFORGE_HOME=<运行根路径>，或设置 HOME 后使用 $HOME/.devforge"
+        "无法确定运行根：--home（或 config.json home）与 HOME 均未设置（或只有空白）——\
+         请传 --home <运行根路径>（或在 config.json 写 home 键），或设置 HOME 后使用 $HOME/.devforge"
     )
 }
 
@@ -164,31 +163,30 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    // 运行根推导口径：DEVFORGE_HOME 优先 → HOME/.devforge → 双未设 fail fast；
-    // 与 default_plantree_root 同源（台账根与运行根必须同根，否则台账与运行状态分家）。
-    // 自审 major：旧口径先无条件读 HOME 且 `?` 直接退进程——即便显式设了 DEVFORGE_HOME
-    // 也强依赖 HOME（无 HOME 的最小环境里起不来），与本段宣称的优先级正好相反。
-    // 现在 DEVFORGE_HOME 已设时完全不碰 HOME，HOME 只在兜底分支被读。
-    let root = resolve_runtime_root(
-        std::env::var("DEVFORGE_HOME").ok().as_deref(),
-        || std::env::var("HOME").ok(),
-    )?;
-
-    devforge::logging::init(&root.join("logs"), "devforge")
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
-    // F14/T205：旋钮层引导——`<root>/config.json` 存在则装载（file 层），
-    // 缺失/损坏回落全缺省（损坏时 WARN 可见，不炸启动）。CLI 覆盖在启动
-    // 三件套（ftask-3）接入后在此链上重放。
-    let knobs_json = match std::fs::read_to_string(root.join("config.json")) {
+    // F14/T205 启动三件套（ftask-3）：--home/--addr/--token，优先级 CLI >
+    // config.json > 缺省。HOME 是 OS 层兑底（非 DEVFORGE_* env，零 env 红线不涉及），
+    // 单一惰性闭包：只在显式根缺失的分支被读（引导锚与回落共用一份）。
+    let home_fallback = || std::env::var("HOME").ok();
+    let home_cli = devforge::server::http::parse_cli_flag(&args, "--home");
+    // 引导锚（T205 设计裁决）：config.json 恒在「CLI --home 根 or $HOME/.devforge」找；
+    // 配置文件里的 home 键只重指**数据根**，配置文件自身不搬家——CLI 是配置文件
+    // 缺失时的自举锚，避免「HOME 没了配置文件在哪」的自举环。
+    let lookup_root = match home_cli.as_deref() {
+        Some(h) => std::path::PathBuf::from(h),
+        None => match (home_fallback)() {
+            Some(h) if !h.trim().is_empty() => std::path::PathBuf::from(h).join(".devforge"),
+            _ => anyhow::bail!("无法定位运行根：--home 未给且 HOME 未设（最小环境请显式传 --home）"),
+        },
+    };
+    // 旋钮层引导：`<lookup_root>/config.json` 存在则装载（file 层），
+    // 缺失/损坏回落全缺省（损坏时 WARN 可见，不炸启动）。
+    let knobs_json = match std::fs::read_to_string(lookup_root.join("config.json")) {
         Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
             Ok(v) => Some(v),
             Err(e) => {
-                tracing::warn!(
-                    component = "main",
-                    event = "config.parse_failed",
-                    error = %e,
-                    "config.json 解析失败，本次启动全缺省（请修复后重启）"
+                eprintln!(
+                    "WARN: {} 解析失败（{e}），本次启动全缺省（请修复后重启）",
+                    lookup_root.join("config.json").display()
                 );
                 None
             }
@@ -196,12 +194,35 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => None,
     };
     devforge::config::knobs::init(knobs_json.as_ref());
-    // 观测根（心跳/墓碑的落点）：与运行根同源（DEVFORGE_HOME 优先 → HOME/.devforge，
-    // 双未设时回落 CWD/.devforge，Q4）——心跳/墓碑与清单/台账落在同一目录树
-    let obs_root = devforge::observability::root();
-    devforge::observability::set_root(obs_root.clone());
+    // 三件套的 config 承载层（字符串，trim 后空 = 未设）：
+    let cfg_str = |key: &str| -> Option<String> {
+        knobs_json
+            .as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let config_home = cfg_str("home");
+    let config_addr = cfg_str("addr");
+    let config_token = cfg_str("token");
+
+    // 运行根推导口径：CLI --home 优先 → config.json home → $HOME/.devforge →
+    // 双未设 fail fast；与 default_plantree_root 同源（台账根与运行根必须同根，
+    // 否则台账与运行状态分家）。自审 major：旧口径先无条件读 HOME 且 `?` 直接
+    // 退进程——即便显式设了根也强依赖 HOME；现在显式根已设时完全不碰 HOME。
+    let explicit_root = home_cli.clone().or(config_home);
+    let root = resolve_runtime_root(explicit_root.as_deref(), home_fallback)?;
+
+    devforge::logging::init(&root.join("logs"), "devforge")
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+    // 观测根（心跳/墓碑的落点）：F14 后与数据根同源——main 直接注入解析好的
+    // root，observability 不再自读 DEVFORGE_HOME（去 env 读点）。
+    devforge::observability::set_root(root.clone());
     // 死亡取证：进程启动即装 panic hook（panic 原文 + 位置 + 当时阶段写进墓碑文件）
-    devforge::observability::tombstone::install_hook(obs_root);
+    devforge::observability::tombstone::install_hook(root.clone());
     tracing::info!(component = "main", "devforge 启动");
 
     // 配置清单：真源落盘 ~/.devforge/manifest.json（无则用内置默认生成）
@@ -371,11 +392,11 @@ async fn main() -> anyhow::Result<()> {
     let Some(s) = std::sync::Arc::get_mut(&mut state) else {
         panic!("启动注入 token/超时时 Arc 已被分享——注入点必须保持在服务启动之前");
     };
-    // 自审 minor（46）：token 的 env/flag 解析在 server::http（单一契约来源；
-    // ftask-3 将把这一对也收进 CLI/config 双承载）
+    // F14：token 双承载——CLI --token > config.json token 键 > 无（env 承载已删）。
+    // 旗标/优先级契约单一来源在 server::http。
     if let Some(t) = devforge::server::resolve_startup_token(
-        devforge::server::parse_token_flag(&args),
-        devforge::server::http::token_from_env(),
+        devforge::server::http::parse_cli_flag(&args, "--token"),
+        config_token,
     ) {
         s.token = Some(t);
     }
@@ -384,16 +405,18 @@ async fn main() -> anyhow::Result<()> {
         s.run_timeout_ms = Some(n);
     }
 
-    let addr: std::net::SocketAddr = std::env::var("DEVFORGE_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:7888".into())
+    // F14：addr 双承载——CLI --addr > config.json addr 键 > 缺省回环（env 已删）。
+    let addr: std::net::SocketAddr = devforge::server::http::parse_cli_flag(&args, "--addr")
+        .or(config_addr)
+        .unwrap_or_else(|| "127.0.0.1:7888".into())
         .parse()
-        .context("解析 DEVFORGE_ADDR")?;
+        .context("解析 addr（CLI --addr 或 config.json addr 键）")?;
     // DR-9 L5：远程可视的安全闸——绑非回环地址（暴露给局域网/tailnet，供 Win10 等外部机器
     // 查看全部行为）必须配 token，否则拒绝启动：无鉴权的全行为可视端点不能裸奔。
     if !addr.ip().is_loopback() && state.token.is_none() {
         anyhow::bail!(
-            "DEVFORGE_ADDR 绑定非回环地址 {addr} 但未配置 token：远程可视必须带鉴权
-            （--token <值> 或 DEVFORGE_TOKEN 环境变量），拒绝裸奔启动"
+            "绑定非回环地址 {addr} 但未配置 token：远程可视必须带鉴权
+            （--token <值> 或 config.json 的 token 键），拒绝裸奔启动"
         );
     }
     // 引擎 #2：启动对账——上一进程遗留的自家子进程（Ours）直接 SIGTERM 清场，Dead 条目
@@ -437,31 +460,31 @@ mod tests {
     use super::resolve_runtime_root;
     use std::path::PathBuf;
 
-    /// 需求：DEVFORGE_HOME 已设时**不要求 HOME 存在**。
+    /// 需求：显式根（CLI --home / config.json home）已设时**不要求 HOME 存在**。
     /// 断言钉的是对外行为（解析结果 + HOME 根本没被读）——
     /// 换成「先无条件读 HOME」的旧实现：HOME 闭包被调用 → 这条红。
     #[test]
-    fn devforge_home_alone_resolves_without_reading_home() {
+    fn explicit_root_alone_resolves_without_reading_home() {
         let mut home_read = false;
         let root = resolve_runtime_root(Some("/x/devforge"), || {
             home_read = true;
             Some("/home/u".to_string())
         })
-        .expect("DEVFORGE_HOME 已设时必须解析成功，不依赖 HOME");
+        .expect("显式根已设时必须解析成功，不依赖 HOME");
         assert_eq!(root, PathBuf::from("/x/devforge"));
-        assert!(!home_read, "DEVFORGE_HOME 已设时不得读取 HOME");
+        assert!(!home_read, "显式根已设时不得读取 HOME");
     }
 
-    /// 需求点 2：DEVFORGE_HOME 与 HOME 同时存在时，root 仍是 DEVFORGE_HOME。
+    /// 需求点 2：显式根与 HOME 同时存在时，root 仍是显式根。
     /// 换成「优先 HOME」的错实现：root 变成 $HOME/.devforge → 这条红。
     #[test]
-    fn devforge_home_wins_over_home() {
+    fn explicit_root_wins_over_home() {
         let root = resolve_runtime_root(Some("/x/devforge"), || Some("/home/u".to_string()))
-            .expect("DEVFORGE_HOME 与 HOME 同时存在时必须解析成功");
+            .expect("显式根与 HOME 同时存在时必须解析成功");
         assert_eq!(
             root,
             PathBuf::from("/x/devforge"),
-            "DEVFORGE_HOME 优先于 HOME"
+            "显式根优先于 HOME"
         );
     }
 
@@ -474,38 +497,36 @@ mod tests {
         assert_eq!(root, PathBuf::from("/home/u").join(".devforge"));
     }
 
-    /// 空串/纯空白视作未设（与 observability::resolve_root 同口径）。
+    /// 空串/纯空白视作未设（F14 前与 observability::resolve_root 同口径，
+    /// 现后者已收归 main 注入；口径在本函数内自洽）。
     /// 换成旧 var_os 口径（空串 = 已设）：root 变成空路径 → 这条红。
     #[test]
-    fn blank_devforge_home_falls_back_to_home() {
+    fn blank_explicit_root_falls_back_to_home() {
         for blank in ["", "   "] {
             let root = resolve_runtime_root(Some(blank), || Some("/home/u".to_string()))
-                .expect("DEVFORGE_HOME 只有空白时回落 HOME 必须成功");
+                .expect("显式根只有空白时回落 HOME 必须成功");
             assert_eq!(
                 root,
                 PathBuf::from("/home/u").join(".devforge"),
-                "DEVFORGE_HOME={blank:?} 视作未设，应回落 $HOME/.devforge"
+                "显式根={blank:?} 视作未设，应回落 $HOME/.devforge"
             );
         }
     }
 
-    /// 双未设 fail fast，错误文案同时点名两个变量名（给出双出路）。
-    /// 换成只点 HOME 的旧文案（"读取 HOME 环境变量"）：缺 DEVFORGE_HOME → 这条红。
+    /// 双未设 fail fast，错误文案同时点名两条出路（--home / config.json home 与 HOME）。
+    /// 换成只点 HOME 的旧文案（"读取 HOME 环境变量"）：缺显式根 → 这条红。
     #[test]
-    fn missing_both_fails_fast_naming_both_vars() {
+    fn missing_both_fails_fast_naming_both_carriers() {
         let cases: [(Option<&str>, Option<String>); 3] = [
             (None, None),
             (Some("   "), None),
             (None, Some("  ".to_string())),
         ];
-        for (devforge_home, home) in cases {
-            let err = resolve_runtime_root(devforge_home, || home.clone())
-                .expect_err("DEVFORGE_HOME 与 HOME 都没有时必须 fail fast");
+        for (explicit, home) in cases {
+            let err = resolve_runtime_root(explicit, || home.clone())
+                .expect_err("显式根与 HOME 都没有时必须 fail fast");
             let msg = err.to_string();
-            assert!(
-                msg.contains("DEVFORGE_HOME"),
-                "错误文案须点名 DEVFORGE_HOME：{msg}"
-            );
+            assert!(msg.contains("--home"), "错误文案须点名 --home：{msg}");
             assert!(msg.contains("HOME"), "错误文案须点名 HOME：{msg}");
         }
     }
@@ -538,41 +559,42 @@ mod acceptance_tests {
     // 文本层面的口径漂移；不钉实现步骤数 / 内部调用次序（纯内部重构不该让它们变红）。
     // 每条用例的注释写明「换成哪种错实现会红」——不会红的测试是装饰品。
 
-    /// 验收 1：`DEVFORGE_HOME = "/x/devforge"`、`HOME = None` → 解析成功并返回
-    /// `/x/devforge`（不再因缺 HOME 返回错误）。
+    /// 验收 1（F14 后语义：显式根 = CLI --home / config.json home 归一后的值）、
+    /// 显式根 = "/x/devforge"、HOME = None → 解析成功并返回 /x/devforge
+    /// （不再因缺 HOME 返回错误）。
     /// 错实现 A（无条件先读 HOME 并 `?` 退进程）→ 这条红（HOME 闭包被调用）。
     #[test]
-    fn ac01_devforge_home_alone_resolves_without_home() {
+    fn ac01_explicit_root_alone_resolves_without_home() {
         let mut home_read = false;
         let root = resolve_runtime_root(Some("/x/devforge"), || {
             home_read = true;
             Some("/home/u".to_string())
         })
-        .expect("DEVFORGE_HOME 已设时不得因缺 HOME 失败");
+        .expect("显式根已设时不得因缺 HOME 失败");
         assert_eq!(
             root,
             PathBuf::from("/x/devforge"),
-            "DEVFORGE_HOME 已设时运行根就是它本身"
+            "显式根已设时运行根就是它本身"
         );
-        assert!(!home_read, "DEVFORGE_HOME 已设时不得读取 HOME");
+        assert!(!home_read, "显式根已设时不得读取 HOME");
     }
 
-    /// 验收 2：`DEVFORGE_HOME = "/x/devforge"`、`HOME = Some("/home/u")` → 返回
-    /// `/x/devforge`（HOME 不影响结果）。
+    /// 验收 2：显式根 = "/x/devforge"、HOME = Some("/home/u") → 返回
+    /// /x/devforge（HOME 不影响结果）。
     /// 错实现 B（优先 HOME）→ 这条红。
     #[test]
-    fn ac02_devforge_home_wins_over_home() {
+    fn ac02_explicit_root_wins_over_home() {
         let root = resolve_runtime_root(Some("/x/devforge"), || Some("/home/u".to_string()))
-            .expect("DEVFORGE_HOME 与 HOME 同时存在时必须解析成功");
+            .expect("显式根与 HOME 同时存在时必须解析成功");
         assert_eq!(
             root,
             PathBuf::from("/x/devforge"),
-            "两个变量同时存在时 DEVFORGE_HOME 优先"
+            "两个来源同时存在时显式根优先"
         );
     }
 
-    /// 验收 3：`DEVFORGE_HOME = None`、`HOME = Some("/home/u")` → 返回 `/home/u/.devforge`。
-    /// 错实现 C（只认 DEVFORGE_HOME、忽略 HOME）→ 这条红（解析失败）。
+    /// 验收 3：显式根 = None、HOME = Some("/home/u") → 返回 /home/u/.devforge。
+    /// 错实现 C（只认显式根、忽略 HOME）→ 这条红（解析失败）。
     #[test]
     fn ac03_home_only_resolves_to_home_dot_devforge() {
         let root = resolve_runtime_root(None, || Some("/home/u".to_string()))
@@ -580,53 +602,47 @@ mod acceptance_tests {
         assert_eq!(
             root,
             PathBuf::from("/home/u").join(".devforge"),
-            "未设 DEVFORGE_HOME 时回落 $HOME/.devforge"
+            "未设显式根时回落 $HOME/.devforge"
         );
     }
 
-    /// 验收 4：`DEVFORGE_HOME = Some("")`（空串）与 `Some("  ")`（纯空白）、
-    /// `HOME = Some("/home/u")` → 返回 `/home/u/.devforge`（空串/空白视为未设置）。
+    /// 验收 4：显式根 = Some("")（空串）与 Some("  ")（纯空白）、
+    /// HOME = Some("/home/u") → 返回 /home/u/.devforge（空串/空白视为未设置）。
     /// 错实现 D（空串按 var_os 口径视作已设）→ 这条红。
     #[test]
-    fn ac04_blank_devforge_home_falls_back_to_home() {
+    fn ac04_blank_explicit_root_falls_back_to_home() {
         for blank in ["", "  ", "\t", "\n  "] {
             let root = resolve_runtime_root(Some(blank), || Some("/home/u".to_string()))
-                .expect("DEVFORGE_HOME 只有空白时必须回落 HOME 而不是失败");
+                .expect("显式根只有空白时必须回落 HOME 而不是失败");
             assert_eq!(
                 root,
                 PathBuf::from("/home/u").join(".devforge"),
-                "DEVFORGE_HOME={blank:?} 视作未设，应回落 $HOME/.devforge"
+                "显式根={blank:?} 视作未设，应回落 $HOME/.devforge"
             );
         }
     }
 
-    /// 验收 5：`DEVFORGE_HOME = Some("  ")`、`HOME = None` → 返回错误，错误文案同时包含
-    /// `DEVFORGE_HOME` 与 `HOME` 两个字面名（双未设 fail fast，且给出两条出路）。
+    /// 验收 5：显式根 = Some("  ")、HOME = None → 返回错误，错误文案同时包含
+    /// `--home` 与 `HOME` 两个字面名（双未设 fail fast，且给出两条出路）。
     /// 错实现 E（文案只点 HOME）→ 这条红。
     #[test]
-    fn ac05_blank_devforge_home_without_home_fails_naming_both_vars() {
+    fn ac05_blank_explicit_root_without_home_fails_naming_both_carriers() {
         let err = resolve_runtime_root(Some("  "), || None)
-            .expect_err("DEVFORGE_HOME 只有空白且无 HOME 时必须 fail fast");
+            .expect_err("显式根只有空白且无 HOME 时必须 fail fast");
         let msg = err.to_string();
-        assert!(
-            msg.contains("DEVFORGE_HOME"),
-            "错误文案须点名 DEVFORGE_HOME：{msg}"
-        );
+        assert!(msg.contains("--home"), "错误文案须点名 --home：{msg}");
         assert!(msg.contains("HOME"), "错误文案须点名 HOME：{msg}");
     }
 
-    /// 验收 6：`DEVFORGE_HOME = None`、`HOME = None` → 返回错误，错误文案同时包含
-    /// `DEVFORGE_HOME` 与 `HOME` 两个字面名。
+    /// 验收 6：显式根 = None、HOME = None → 返回错误，错误文案同时包含
+    /// `--home` 与 `HOME` 两个字面名。
     /// 错实现 E（文案只点 HOME）→ 这条红。
     #[test]
-    fn ac06_both_missing_fails_naming_both_vars() {
+    fn ac06_both_missing_fails_naming_both_carriers() {
         let err = resolve_runtime_root(None, || None)
-            .expect_err("DEVFORGE_HOME 与 HOME 都没有时必须 fail fast");
+            .expect_err("显式根与 HOME 都没有时必须 fail fast");
         let msg = err.to_string();
-        assert!(
-            msg.contains("DEVFORGE_HOME"),
-            "错误文案须点名 DEVFORGE_HOME：{msg}"
-        );
+        assert!(msg.contains("--home"), "错误文案须点名 --home：{msg}");
         assert!(msg.contains("HOME"), "错误文案须点名 HOME：{msg}");
     }
 
@@ -688,19 +704,18 @@ mod acceptance_tests {
                 line.trim()
             );
         }
-        let devforge_home_at = prod.find("env::var(\"DEVFORGE_HOME\")");
-        let home_at = prod.find("env::var(\"HOME\")");
-        if let (Some(d), Some(h)) = (devforge_home_at, home_at) {
-            assert!(
-                d < h,
-                "DEVFORGE_HOME 的读取必须排在 HOME 读取之前（HOME 只在兜底分支被读）"
-            );
-        }
+        // F14 红线：生产段不得再读 DEVFORGE_HOME env——启动根走 CLI/config 双承载。
+        // （旧验收的「DEVFORGE_HOME 读点排在 HOME 之前」随 env 载体退役，
+        // 惰性语义由上面的闭包形态检查与显式根单测继续钉住。）
+        assert!(
+            !prod.contains("env::var(\"DEVFORGE_HOME\")"),
+            "生产段仍读 DEVFORGE_HOME env——F14 后启动根走 CLI/config 双承载"
+        );
     }
 
-    /// 验收 9：根解析口径注释与观测根注释都表述为「DEVFORGE_HOME 优先；HOME 仅在
-    /// DEVFORGE_HOME 未设时兜底；双未设 fail fast」，无「HOME 必需」或
-    /// 「DEVFORGE_HOME 只改观测根」表述。
+    /// 验收 9（F14 后）：根解析口径注释表述为「CLI --home / config.json home 优先；
+    /// HOME 仅在显式根未设时兜底；双未设 fail fast」，无「HOME 必需」或
+    /// 「显式根只改观测根」表述。
     /// 错实现 G（注释沿用旧口径）→ 这条红。
     #[test]
     fn ac09_root_resolution_comments_match_the_contract() {
@@ -713,11 +728,11 @@ mod acceptance_tests {
         }
         let contract_comment = prod.lines().any(|l| {
             let t = l.trim_start();
-            t.starts_with("//") && t.contains("DEVFORGE_HOME") && t.contains("HOME")
+            t.starts_with("//") && t.contains("--home") && t.contains("HOME")
         });
         assert!(
             contract_comment,
-            "口径注释须有一行同时点名 DEVFORGE_HOME 与 HOME（DEVFORGE_HOME 优先 / HOME 兜底 / 双未设 fail fast）"
+            "口径注释须有一行同时点名 --home 与 HOME（显式根优先 / HOME 兜底 / 双未设 fail fast）"
         );
     }
 

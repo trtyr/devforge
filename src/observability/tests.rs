@@ -35,22 +35,21 @@ fn root_prefers_the_injected_value() {
 }
 
 #[test]
-fn resolve_root_prefers_devforge_home_then_home() {
-    // 纯函数口径：DEVFORGE_HOME > HOME/.devforge；空串视作未设
+fn resolve_root_falls_back_to_home_then_cwd() {
+    // 纯函数口径（F14 后单参）：HOME/.devforge 兑底；空串视作未设
     assert_eq!(
-        resolve_root(Some("/x/devforge"), Some("/home/u")),
-        PathBuf::from("/x/devforge")
-    );
-    assert_eq!(
-        resolve_root(None, Some("/home/u")),
+        resolve_root(Some("/home/u")),
         PathBuf::from("/home/u/.devforge")
     );
-    assert_eq!(
-        resolve_root(Some("  "), Some("/home/u")),
-        PathBuf::from("/home/u/.devforge")
+    // 空串视作未设：与 None 同走 CWD 兜底（绝对化，不落相对路径）
+    let blank_fb = resolve_root(Some("  "));
+    assert!(
+        blank_fb.is_absolute(),
+        "空白串视作未设，同样走绝对化兑底：{}",
+        blank_fb.display()
     );
-    // 自审 minor（39）：HOME/DEVFORGE_HOME 都没设时不得回落**相对**路径（证据落点随 CWD 漂移）
-    let fallback = resolve_root(None, None);
+    // 自审 minor（39）：HOME 没设时不得回落**相对**路径（证据落点随 CWD 漂移）
+    let fallback = resolve_root(None);
     assert!(
         fallback.is_absolute(),
         "回落路径必须绝对化：{}",

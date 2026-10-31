@@ -7,53 +7,46 @@ use axum::Router;
 use crate::server::handlers;
 use crate::server::SharedState;
 
-/// token 的环境变量名（自审 minor 46：契约不再被劈成两半——旧口径本文件管优先级与解析、
-/// `DEVFORGE_TOKEN` 却由 main.rs 独家持有，读本文件看不到配置入口全貌）。
-pub const TOKEN_ENV: &str = "DEVFORGE_TOKEN";
-
-/// 从进程环境读 token（`TOKEN_ENV`）。
-pub fn token_from_env() -> Option<String> {
-    std::env::var(TOKEN_ENV).ok()
-}
-
-/// 从启动参数解析 `--token <v>` / `--token=<v>`（首个命中生效；无则 None）。
+/// 从启动参数解析 `--<name> <v>` / `--<name>=<v>`（首个命中生效；无则 None）。
+/// F14/T205 启动三件套（--home/--addr/--token）共用的旗标语法契约。
 /// 自审 major：空格形的下一个参数若以 `--` 开头，视为缺值——否则 `--token --port`
-/// 会把 `--port` 当密钥吞掉（公开常量成了实际生效的共享密钥，还顶掉 env 里的真 token）。
-pub fn parse_token_flag(args: &[String]) -> Option<String> {
+/// 会把 `--port` 当值吞掉（公开旗标成了实际生效的配置载体）。
+pub fn parse_cli_flag(args: &[String], name: &str) -> Option<String> {
+    let with_eq = format!("{name}=");
     let mut iter = args.iter();
     while let Some(a) = iter.next() {
-        if let Some(v) = a.strip_prefix("--token=") {
+        if let Some(v) = a.strip_prefix(&with_eq) {
             return Some(v.to_string());
         }
-        if a == "--token" {
+        if a == name {
             match iter.next() {
                 Some(v) if !v.starts_with("--") => return Some(v.clone()),
-                _ => return None, // 缺值或紧跟另一个 flag：不猜，交给 env
+                _ => return None, // 缺值或紧跟另一个 flag：不猜，交给下一层承载
             }
         }
     }
     None
 }
 
-/// 启动 token 解析：CLI > env > 无；空串视为未设置（防空 token 锁死）。
+/// 启动 token 解析：CLI > config.json > 无；空串视为未设置（防空 token 锁死）。
 /// 自审 major：返回值归一化 trim——「 abc 」当密钥收下但客户端只发 abc，
 /// 服务永久 401 且启动期无任何报错。
-pub fn resolve_startup_token(cli: Option<String>, env: Option<String>) -> Option<String> {
+pub fn resolve_startup_token(cli: Option<String>, config: Option<String>) -> Option<String> {
     // 自审 minor（215）：CLI 来的密钥会进进程 argv（/proc/<pid>/cmdline、ps、shell history
-    // 全可见），暴露面比 env 大。不阻止（运维便利），但必须大声提示。
-    if cli.as_deref().is_some_and(|v| !v.trim().is_empty()) && env.is_some() {
+    // 全可见），暴露面比 config.json 大。不阻止（运维便利），但必须大声提示。
+    if cli.as_deref().is_some_and(|v| !v.trim().is_empty()) && config.is_some() {
         tracing::warn!(
             component = "server",
             event = "auth.token_source",
             source = "argv",
-            "token 取自命令行参数（会出现在 ps / /proc/<pid>/cmdline 里）——生产环境建议改用 {TOKEN_ENV}"
+            "token 取自命令行参数（会出现在 ps / /proc/<pid>/cmdline 里）——生产环境建议改用 config.json 的 token 键"
         );
     }
     let normalized = |s: String| {
         let t = s.trim().to_string();
         (!t.is_empty()).then_some(t)
     };
-    cli.and_then(normalized).or_else(|| env.and_then(normalized))
+    cli.and_then(normalized).or_else(|| config.and_then(normalized))
 }
 
 pub fn build_router(state: SharedState) -> Router {
