@@ -13,6 +13,7 @@ use crate::server::scheduler::{
     CHANNEL_BREAKER_MAX_TTL_MS, CHANNEL_BREAKER_TTL_CREDENTIAL_MS,
     CHANNEL_BREAKER_TTL_RATE_LIMIT_MS,
 };
+use crate::server::scheduler::status as scheduler_status;
 
 /// 记下的熔断条目在落盘 → 读回后渠道、到期时刻、原因摘要逐项相等。
 #[test]
@@ -586,5 +587,201 @@ async fn a_running_run_on_a_cooling_channel_is_reported_once_without_interferenc
         event_count(&f, "channel.running_on_cooldown"),
         1,
         "同一 run 不重复发（不刷屏）"
+    );
+}
+
+// ---------- step 3：派发闸门与状态端点 ----------
+
+/// 渠道在冷却 → 引用它的任务被 blocked（理由带渠道 id 与剩余秒数）、保持 Pending、不派工。
+#[tokio::test]
+async fn a_task_on_a_cooling_channel_is_blocked_and_stays_pending() {
+    let f = super::fixture();
+    // 先让 deepseek-flash 熔断（change-plan-agent 绑定它）。
+    make_task(&f, "devforge", "chan-k0", "change");
+    fail_run(
+        &f,
+        "devforge",
+        "chan-k0",
+        "agent[change-plan-agent] 命令 prompt 失败：402 Payment Required",
+    );
+    // 待派任务同样引用 change-plan-agent → 命中同一条渠道。
+    make_task(&f, "devforge", "chan-k", "change");
+    let report = tick(&f.state, &SchedulerConfig::default());
+
+    let reason = report
+        .blocked
+        .iter()
+        .find(|(t, _)| t == "devforge/chan-k")
+        .map(|(_, r)| r.clone())
+        .expect("引用冷却渠道的任务应被 blocked");
+    assert!(
+        reason.starts_with("channel_cooldown(deepseek-flash,"),
+        "理由带渠道 id：{reason}"
+    );
+    assert!(reason.ends_with("s)"), "理由带剩余秒数：{reason}");
+    assert!(
+        !report
+            .dispatched
+            .iter()
+            .any(|(p, t)| p == "devforge" && t == "chan-k"),
+        "冷却中的任务不进派工计划：{report:?}"
+    );
+    let status = {
+        let store = f.state.store.lock().unwrap();
+        store.get_task("devforge", "chan-k").unwrap().status
+    };
+    assert_eq!(
+        status,
+        crate::domain::task::TaskStatus::Pending,
+        "熔断是调度决策，不是任务失败——状态保持 Pending"
+    );
+}
+
+/// 一条渠道熔断后，引用**其他**条目的任务照常派发（不按任务宽泛熔断）。
+#[tokio::test]
+async fn a_task_on_another_channel_is_still_dispatched() {
+    let f = super::fixture();
+    make_task(&f, "devforge", "chan-l0", "change");
+    fail_run(
+        &f,
+        "devforge",
+        "chan-l0",
+        "agent[change-plan-agent] 命令 prompt 失败：402 Payment Required",
+    );
+    // doc-from-zero 的角色只绑 minimax-m3.1-flash 与 grok-4.7，不碰 deepseek-flash。
+    make_task(&f, "devforge", "chan-l", "doc-from-zero");
+    let report = tick(&f.state, &SchedulerConfig::default());
+    assert!(
+        report
+            .dispatched
+            .iter()
+            .any(|(p, t)| p == "devforge" && t == "chan-l"),
+        "引用其他渠道的任务照常派发：{report:?}"
+    );
+    assert!(
+        !report
+            .blocked
+            .iter()
+            .any(|(t, _)| t == "devforge/chan-l"),
+        "它不该被渠道冷却挡住：{report:?}"
+    );
+}
+
+/// 熔断过期 → 条目从 store 消失、任务恢复派发（TTL 过后 tick 自然派发）。
+#[tokio::test]
+async fn an_expired_breaker_stops_blocking_and_the_task_is_dispatched() {
+    let f = super::fixture();
+    make_task(&f, "devforge", "chan-m0", "change");
+    fail_run(
+        &f,
+        "devforge",
+        "chan-m0",
+        "agent[change-plan-agent] 命令 prompt 失败：402 Payment Required",
+    );
+    make_task(&f, "devforge", "chan-m", "change");
+    tick(&f.state, &SchedulerConfig::default());
+    assert_eq!(breakers(&f).len(), 1, "先熔断");
+
+    // 把到期时刻改到过去（模拟 TTL 已过）。
+    {
+        let mut store = f.state.store.lock().unwrap();
+        for b in store.channel_breakers.iter_mut() {
+            b.expires_at_ms = crate::domain::now_ms() - 1_000;
+        }
+    }
+    let report = tick(&f.state, &SchedulerConfig::default());
+    assert!(breakers(&f).is_empty(), "过期条目被清掉：{:?}", breakers(&f));
+    assert!(
+        !report
+            .blocked
+            .iter()
+            .any(|(t, _)| t == "devforge/chan-m"),
+        "不再被渠道冷却挡住：{report:?}"
+    );
+    assert!(
+        report
+            .dispatched
+            .iter()
+            .any(|(p, t)| p == "devforge" && t == "chan-m"),
+        "TTL 过后自然恢复派发：{report:?}"
+    );
+}
+
+/// 状态端点看得见「哪条渠道在冷却、还有多久、为什么」。
+#[tokio::test]
+async fn the_status_endpoint_reports_the_cooling_channels() {
+    let f = super::fixture();
+    make_task(&f, "devforge", "chan-n0", "change");
+    fail_run(
+        &f,
+        "devforge",
+        "chan-n0",
+        "agent[change-plan-agent] 命令 prompt 失败：402 Payment Required",
+    );
+    tick(&f.state, &SchedulerConfig::default());
+
+    let body = scheduler_status(&f.state);
+    let breakers_json = body["channel_breakers"].as_array().expect("应有熔断段");
+    assert_eq!(breakers_json.len(), 1, "{body}");
+    let entry = &breakers_json[0];
+    assert_eq!(entry["channel"], "deepseek-flash");
+    assert!(
+        entry["remaining_secs"].as_u64().unwrap() >= 1,
+        "带剩余秒数：{entry}"
+    );
+    assert!(
+        !entry["last_seen_reason"].as_str().unwrap().is_empty(),
+        "带原因摘要：{entry}"
+    );
+}
+
+/// 同源不漂：status 的 blocked 理由与 tick 的 channel_cooldown 串同渠道同形态。
+#[tokio::test]
+async fn the_status_block_reason_matches_the_tick_reason() {
+    let f = super::fixture();
+    make_task(&f, "devforge", "chan-o0", "change");
+    fail_run(
+        &f,
+        "devforge",
+        "chan-o0",
+        "agent[change-plan-agent] 命令 prompt 失败：402 Payment Required",
+    );
+    make_task(&f, "devforge", "chan-o", "change");
+    let report = tick(&f.state, &SchedulerConfig::default());
+    let tick_reason = report
+        .blocked
+        .iter()
+        .find(|(t, _)| t == "devforge/chan-o")
+        .map(|(_, r)| r.clone())
+        .expect("应被 blocked");
+
+    let body = scheduler_status(&f.state);
+    let status_reason = body["blocked"]
+        .as_array()
+        .expect("应有 blocked 段")
+        .iter()
+        .find(|e| e["task"] == "devforge/chan-o")
+        .map(|e| e["reason"].as_str().unwrap_or_default().to_string())
+        .expect("该任务应在 blocked[] 里");
+    assert!(
+        !body["runnable"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "devforge/chan-o"),
+        "冷却中的任务不在 runnable[]：{body}"
+    );
+    // 两边同渠道同形态；秒数是各自采样时刻算出的，最多差 1s（跨秒边界）。
+    assert!(tick_reason.starts_with("channel_cooldown(deepseek-flash,"));
+    assert!(status_reason.starts_with("channel_cooldown(deepseek-flash,"));
+    let secs_of = |s: &str| -> u64 {
+        s.trim_start_matches("channel_cooldown(deepseek-flash,")
+            .trim_end_matches("s)")
+            .parse()
+            .expect("理由串里的秒数应可解析")
+    };
+    assert!(
+        secs_of(&tick_reason).abs_diff(secs_of(&status_reason)) <= 1,
+        "两处口径同源（秒数只允许采样抖动）：{tick_reason} vs {status_reason}"
     );
 }

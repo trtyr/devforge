@@ -488,7 +488,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
     }
 
     // ④ 就绪判定 + 准入 → 派工计划。
-    let snapshot: Vec<(String, String, TaskStatus, Vec<String>, bool)> = {
+    let snapshot: Vec<(String, String, TaskStatus, Vec<String>, bool, String)> = {
         let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store
             .tasks
@@ -500,6 +500,8 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
                     t.status,
                     t.depends_on.clone(),
                     t.exclusive,
+                    // 渠道闸门要按 sop 反查 profile → 渠道（sop 不在快照里就没法判冷却）。
+                    t.sop.clone(),
                 )
             })
             .collect()
@@ -525,7 +527,7 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
 
     let mut dispatched_this_tick = 0usize;
     let mut exclusive_dispatched_this_tick = false;
-    for (project, task_id, status, deps, exclusive) in snapshot {
+    for (project, task_id, status, deps, exclusive, sop) in snapshot {
         if !matches!(status, TaskStatus::Pending | TaskStatus::Blocked) {
             continue;
         }
@@ -558,6 +560,23 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
                 .any(|d| dep_status(&store, &project, d) != TaskStatus::Completed)
             {
                 continue; // 依赖未就绪——静默等（非阻塞态）
+            }
+        }
+        // 渠道闸门（gap-B）：任务引用的渠道在冷却中 → 不发 run、任务保持 Pending。
+        // **绝不标 Failed**：熔断是调度决策，不是任务失败（前置裁决：状态保持 Pending，
+        // TTL 过后 tick 自然派发；已 Failed 的 run 不因熔断恢复而自动重跑）。
+        // 位置：依赖判定之后、独占/容量之前（依赖没就绪的任务与渠道无关，先等依赖）。
+        {
+            let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((channel, remaining_ms)) =
+                cooled_channel(&channel_index, &sop, &store.channel_breakers, now)
+            {
+                drop(store);
+                report.blocked.push((
+                    format!("{project}/{task_id}"),
+                    format!("channel_cooldown({channel},{}s)", remaining_secs(remaining_ms)),
+                ));
+                continue; // 不进「解除阻塞 → 派工」分支
             }
         }
         // 独占窗口：已有独占任务在跑，或本 tick 已派工过独占任务（复验 #3：
@@ -744,10 +763,30 @@ pub async fn scheduler_loop(st: SharedState, cfg: SchedulerConfig) {
     }
 }
 
+/// status() 的一次性快照（锁内取、锁外用）。
+/// 元组给别名：七元组直接写在签名里会被 clippy 判 `type_complexity`。
+type StatusSnapshot = (
+    Vec<serde_json::Value>, // running
+    Vec<String>,            // runnable
+    Vec<serde_json::Value>, // blocked
+    Vec<String>,            // project_names
+    usize,                  // store_cap（store 硬上限）
+    usize,                  // effective_cap（生效的准入上限）
+    Vec<serde_json::Value>, // channel_breakers（渠道熔断段）
+);
+
 /// M5 · T5.1：调度态只读快照（GET /scheduler/status）——
 /// 不登机器纯 API 回答「现在几个 worktree 在飞、各自卡在哪、队列多长、冲突了没有」。
 /// 判定逻辑与 tick 同款但零副作用（不置状态不派工）。
 pub fn status(st: &SharedState) -> serde_json::Value {
+    // 渠道派生映射（清单 → sop/agent → 渠道）在进 store 锁**之前**算好：
+    // 锁内再取 manifest 就是「store → manifest」反向嵌套，与 PUT /config/manifest
+    // （先锁 manifest）构成锁序环（风险 R5）。锁内只查算好的快照。
+    let channel_index = {
+        let manifest = st.manifest.lock().unwrap_or_else(|e| e.into_inner());
+        ChannelIndex::build(&manifest, &st.registry.ids())
+    };
+    let now = now_ms();
     // 自审 minor（236）：旧口径全程持 store 互斥锁、并跨越逐项目队列文件 I/O——
     // 把全部 store 操作（所有 API handler）堵在磁盘读后面。现在锁内只做快照，
     // 放开锁之后再做文件 I/O（与 tick 的「先放锁再做 I/O」纪律一致）。
@@ -758,14 +797,8 @@ pub fn status(st: &SharedState) -> serde_json::Value {
         project_names,
         store_cap,
         effective_cap,
-    ): (
-        Vec<serde_json::Value>,
-        Vec<String>,
-        Vec<serde_json::Value>,
-        Vec<String>,
-        usize,
-        usize,
-    ) = {
+        channel_breakers,
+    ): StatusSnapshot = {
         let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         let running: Vec<serde_json::Value> = store
             .runs
@@ -798,7 +831,14 @@ pub fn status(st: &SharedState) -> serde_json::Value {
         let mut blocked: Vec<serde_json::Value> = Vec::new();
         for t in &store.tasks {
             let key = format!("{}/{}", t.project, t.id);
-            let reason = block_reason(&store, t, exclusive_running, capacity_full);
+            let reason = block_reason(
+                &store,
+                t,
+                exclusive_running,
+                capacity_full,
+                &channel_index,
+                now,
+            );
             match (t.status, reason) {
                 (TaskStatus::Blocked, Some(r)) => {
                     blocked.push(serde_json::json!({"task": key, "reason": r}))
@@ -814,6 +854,19 @@ pub fn status(st: &SharedState) -> serde_json::Value {
             }
         }
         let project_names: Vec<String> = store.projects.iter().map(|p| p.name.clone()).collect();
+        // 渠道熔断段（运维不进机器也能看见「哪条渠道在冷却、还有多久、为什么」）。
+        let channel_breakers: Vec<serde_json::Value> = store
+            .active_channel_breakers(now)
+            .into_iter()
+            .map(|b| {
+                serde_json::json!({
+                    "channel": b.channel,
+                    "remaining_secs": remaining_secs(b.expires_at_ms.saturating_sub(now)),
+                    "expires_at_ms": b.expires_at_ms,
+                    "last_seen_reason": b.last_seen_reason,
+                })
+            })
+            .collect();
         (
             running,
             runnable,
@@ -821,6 +874,7 @@ pub fn status(st: &SharedState) -> serde_json::Value {
             project_names,
             store.max_concurrent_runs,
             effective_cap,
+            channel_breakers,
         )
     };
 
@@ -865,6 +919,7 @@ pub fn status(st: &SharedState) -> serde_json::Value {
         "queue": queue,
         "max_concurrent_runs": store_cap,
         "effective_max_concurrent": effective_cap,
+        "channel_breakers": channel_breakers,
     })
 }
 
@@ -1113,21 +1168,37 @@ pub(crate) fn remaining_secs(remaining_ms: u64) -> u64 {
 
 /// 阻塞理由判定（**单一事实源**，自审 minor 131/235）：tick 与 status 都调它，
 /// 两套语义不许漂移。返回 None = 条件已解（可派工 / 待恢复）。
+///
+/// 返回 `Option<String>`（原 `Option<&'static str>`）：渠道冷却的理由串带参数
+/// （渠道 id + 剩余秒数），静态 str 装不下。其余四条理由串**原文不动**
+/// （`dependency_failed` / `dependency_pending` / `exclusive_window` / `capacity`
+/// 已被 status 与 UI 当词表用）。
+///
+/// 判定顺序与 tick 的闸门顺序同源：依赖 → 渠道冷却 → 独占 → 容量。
 fn block_reason(
     store: &crate::domain::store::Store,
     t: &crate::domain::task::Task,
     exclusive_running: bool,
     capacity_full: bool,
-) -> Option<&'static str> {
+    channels: &ChannelIndex,
+    now_ms: u64,
+) -> Option<String> {
     if deps_failed(store, t) {
-        Some("dependency_failed")
+        Some("dependency_failed".into())
     } else if !deps_ready(store, t) {
         // 缺依赖但未失败：等待中（tick 静默等；status 也要显式报出来，不许隐形）
-        Some("dependency_pending")
+        Some("dependency_pending".into())
+    } else if let Some((channel, remaining_ms)) =
+        cooled_channel(channels, &t.sop, &store.channel_breakers, now_ms)
+    {
+        Some(format!(
+            "channel_cooldown({channel},{}s)",
+            remaining_secs(remaining_ms)
+        ))
     } else if exclusive_running {
-        Some("exclusive_window")
+        Some("exclusive_window".into())
     } else if capacity_full {
-        Some("capacity")
+        Some("capacity".into())
     } else {
         None
     }
