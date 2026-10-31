@@ -349,7 +349,8 @@ fn collect_markdown(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-/// 抽取 Runbook 里的可执行命令块（bash/sh/console），供审查官“从零 boot”时逐条跑。
+/// 抽取 Runbook 里的可执行命令块（bash/sh/console），注入审查输入供逐条验收存在与形状
+/// （AF-3：实际 boot 执行不在审查官职责内，以引擎审计为准）。
 pub fn runbook_commands(docs_dir: &Path) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for f in collect_markdown(docs_dir)? {

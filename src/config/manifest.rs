@@ -145,6 +145,10 @@ pub struct AgentManifest {
     /// 拦截 read/write/edit。None = 不生成（老清单兼容）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_permissions: Option<PathPermissions>,
+    /// 工具白名单（AF-3，2026-10-24 拍板）：渲染 settings.json `defaultTools`——
+    /// 「工具权限靠剥夺不靠劝阻」。None = 不写键（全工具，老清单/老 agent 兼容）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
 }
 
 /// 工具级路径权限声明（deny-first：deny 永远赢；read 拒绝连带堵 write/edit）。
@@ -413,6 +417,7 @@ impl ConfigManifest {
                     mcp: vec![],
                     thinking_level: None,
                     path_permissions: None,
+                    tools: None,
                 },
                 AgentManifest {
                     name: "plan-review".into(),
@@ -423,6 +428,7 @@ impl ConfigManifest {
                     mcp: vec![],
                     thinking_level: Some("medium".into()),
                     path_permissions: None,
+                    tools: None,
                 },
                 // P005 T003：编码双 Agent（提示词 T004/T005 换正稿）；模型沿规划期拍板：
                 // 编码 → deepseek-flash，审查 → grok-4.7
@@ -442,6 +448,7 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp(), context7_mcp()],
                     thinking_level: None,
                     path_permissions: None,
+                    tools: None,
                 },
                 AgentManifest {
                     name: "coding-review".into(),
@@ -459,6 +466,7 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp(), context7_mcp()],
                     thinking_level: Some("medium".into()),
                     path_permissions: None,
+                    tools: None,
                 },
                 // P007 T001：测试双 Agent（D007 供给即纪律：外部知识给，内部捷径扣）
                 AgentManifest {
@@ -470,6 +478,7 @@ impl ConfigManifest {
                     mcp: vec![context7_mcp()],
                     thinking_level: None,
                     path_permissions: None,
+                    tools: None,
                 },
                 AgentManifest {
                     name: "test-review".into(),
@@ -480,6 +489,7 @@ impl ConfigManifest {
                     mcp: vec![],
                     thinking_level: Some("medium".into()),
                     path_permissions: None,
+                    tools: None,
                 },
                 // P007 T001：文档双 Agent（doc-fix=coding 家族供给，需对着代码 triage；doc-review 极简）
                 AgentManifest {
@@ -497,6 +507,7 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp(), context7_mcp()],
                     thinking_level: None,
                     path_permissions: None,
+                    tools: None,
                 },
                 AgentManifest {
                     name: "doc-agent".into(),
@@ -513,6 +524,7 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp(), context7_mcp()],
                     thinking_level: None,
                     path_permissions: None,
+                    tools: None,
                 },
                 AgentManifest {
                     name: "doc-review".into(),
@@ -526,6 +538,10 @@ impl ConfigManifest {
                     mcp: vec![],
                     thinking_level: Some("medium".into()),
                     path_permissions: None,
+                    // AF-3（2026-10-24 拍板）：审查官 = 读者 + 判官，不是探索者——工具面剥夺到
+                    // read + write（pi settings defaultTools 白名单）。实际 boot 验证不在其职责内，
+                    // 以引擎确定性审计为准（coverage/lint/runbook 命令块注入）。
+                    tools: Some(vec!["read".into(), "write".into()]),
                 },
                 // P009：变更 SOP 规划双 Agent。与 MVP 的 plan 双 Agent 平行：
                 // 工具多一层 codegraph（把需求落到文件与符号上），技能仍是 plan-tree。
@@ -541,6 +557,7 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("high".into()),
                     path_permissions: None,
+                    tools: None,
                 },
                 AgentManifest {
                     name: "change-plan-review".into(),
@@ -552,6 +569,7 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
                     path_permissions: None,
+                    tools: None,
                 },
                 // P009：变更编码双 Agent（D014/D016）——与 MVP coding 同款供给，提示词换 change 纪律。
                 AgentManifest {
@@ -570,6 +588,7 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp(), context7_mcp()],
                     thinking_level: Some("high".into()),
                     path_permissions: None,
+                    tools: None,
                 },
                 AgentManifest {
                     name: "change-coding-review".into(),
@@ -581,6 +600,7 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
                     path_permissions: None,
+                    tools: None,
                 },
                 // P009：变更测试双 Agent（黑盒：不给 codegraph，D019）
                 AgentManifest {
@@ -596,6 +616,7 @@ impl ConfigManifest {
                     mcp: vec![],
                     thinking_level: Some("high".into()),
                     path_permissions: None,
+                    tools: None,
                 },
                 AgentManifest {
                     name: "change-test-review".into(),
@@ -606,6 +627,7 @@ impl ConfigManifest {
                     mcp: vec![],
                     thinking_level: Some("medium".into()),
                     path_permissions: None,
+                    tools: None,
                 },
                 // P013：全量代码审计单 Agent（批次综合六视角；量大走便宜模型；
                 // codegraph 供 V5 一致性全调用点比对；CODING_AGENT_EXTRA 供只读检查工具）
@@ -618,6 +640,7 @@ impl ConfigManifest {
                     mcp: vec![codegraph_mcp()],
                     thinking_level: Some("medium".into()),
                     path_permissions: None,
+                    tools: None,
                 },
             ],
             api_key: None,

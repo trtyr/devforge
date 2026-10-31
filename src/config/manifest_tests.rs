@@ -476,6 +476,43 @@ fn manifest_json_roundtrip() {
     assert_eq!(m, loaded);
 }
 
+/// AF-3（2026-10-24 拍板）：只有审查官被剥夺工具面——doc-review 声明 [read, write]，
+/// 其余全部 None（干活 agent 的工具面不动，剥夺错了直接瘫工作流）。
+#[test]
+fn only_review_agents_declare_tool_allowlists() {
+    let m = ConfigManifest::builtin();
+    let dr = m.get_agent("doc-review").expect("doc-review 在清单");
+    assert_eq!(
+        dr.tools.as_deref(),
+        Some(["read".to_string(), "write".to_string()].as_slice()),
+        "doc-review 工具面必须是 read+write 白名单"
+    );
+    for a in &m.agents {
+        if a.name == "doc-review" {
+            continue;
+        }
+        assert!(a.tools.is_none(), "{} 不应被剥夺工具面（AF-3 只针对审查官）", a.name);
+    }
+}
+
+/// 老清单兼容：host manifest.json 无 tools 字段（升级前的存量）→ load 成功且 None。
+/// host 同步走既有 PUT 通道（PUT 全量重建落盘后 builtin 声明生效）。
+#[test]
+fn legacy_manifest_without_tools_field_still_loads() {
+    let m = ConfigManifest::builtin();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("manifest.json");
+    m.save(&path).unwrap();
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for a in v["agents"].as_array_mut().unwrap() {
+        a.as_object_mut().unwrap().remove("tools");
+    }
+    std::fs::write(&path, serde_json::to_string(&v).unwrap()).unwrap();
+    let loaded = ConfigManifest::load(&path).unwrap();
+    assert!(loaded.agents.iter().all(|a| a.tools.is_none()));
+}
+
 // ── 2026-10-27 自审 majors（01a1450b 会话）──
 
 /// 落盘文件权限必须 0600——清单里躺着明文 api_key，

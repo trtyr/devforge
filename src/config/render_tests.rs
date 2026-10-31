@@ -425,6 +425,31 @@ fn review_profiles_render_reduced_thinking_level() {
     }
 }
 
+/// AF-3（2026-10-24 拍板）：工具白名单靠剥夺不靠劝阻——doc-review 的 tools 声明
+/// 渲染成 pi settings 的 defaultTools 白名单；无声明（None）的 agent 不写键（全工具）。
+#[test]
+fn tool_allowlist_renders_defaulttools_in_settings() {
+    let manifest = ConfigManifest::builtin();
+    let root = tempfile::tempdir().unwrap();
+
+    let dr = renderer(&manifest).render_agent(root.path(), "doc-review").unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dr.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(
+        settings["defaultTools"],
+        serde_json::json!(["read", "write"]),
+        "doc-review 工具面必须是 read+write 白名单"
+    );
+
+    let worker = renderer(&manifest).render_agent(root.path(), "doc-agent").unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(worker.join("settings.json")).unwrap()).unwrap();
+    assert!(
+        settings.get("defaultTools").is_none(),
+        "无 tools 声明的 agent 不写 defaultTools 键（全工具，老行为）"
+    );
+}
+
 #[test]
 fn api_key_written_provider_keyed() {
     let mut manifest = ConfigManifest::builtin();

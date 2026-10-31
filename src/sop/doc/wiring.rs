@@ -291,7 +291,7 @@ impl BuiltinRpcEngine {
             if let Ok(cmds) = crate::docgen::audit::runbook_commands(&docs)
                 && !cmds.is_empty()
             {
-                out.push_str("\nRunbook 可执行命令块（审查时逐条从零 boot）：\n");
+                out.push_str("\nRunbook 可执行命令块（AF-3：逐条核对存在与形状；实际执行以引擎为准，审查官不亲自 boot）：\n");
                 for c in cmds {
                     out.push_str(&format!("- ```\n{c}\n```\n"));
                 }

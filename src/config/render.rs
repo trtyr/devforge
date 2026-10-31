@@ -111,6 +111,14 @@ impl<'a> Renderer<'a> {
         if let Some(level) = &agent.thinking_level {
             settings["defaultThinkingLevel"] = serde_json::Value::String(level.clone());
         }
+        // AF-3（2026-10-24 拍板）：工具白名单靠剥夺不靠劝阻——Some(list) 写 pi 的
+        // settings `defaultTools`（白名单语义，不在名单的工具不可达）；None 不写键
+        // （全工具，老清单/老 agent 兼容）。
+        if let Some(tools) = &agent.tools {
+            settings["defaultTools"] = serde_json::Value::Array(
+                tools.iter().cloned().map(serde_json::Value::String).collect(),
+            );
+        }
         fs::write(
             dir.join("settings.json"),
             serde_json::to_string_pretty(&settings).ctx("序列化 settings")?,
