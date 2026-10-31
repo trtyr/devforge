@@ -866,6 +866,32 @@ pub async fn logs_query(
     }))
 }
 
+// ---------- 配置：SOP 只读序列化（A9 · P019） ----------
+
+/// `GET /sops`：剧本规划页数据源——SOP 定义 + agent 出场表（A9）。
+///
+/// 口径（侦察结论，2026-10-31）：SOP 的结构化面 = id/name/description + agent
+/// 出场表（[`SopRegistry::agent_appearances`]，资产层事实的人工编码，守卫测试
+/// 钉 agent 名存在于 manifest）；**节点图/门序列无结构化数据源**（编排逻辑在
+/// 编排器代码里显式接线）——不编造节点图，前端剧本页的「只读编排图」以出场
+/// 表为节点集，图结构待编排器数据化后另立任务。
+pub async fn sops_list(State(st): State<SharedState>) -> Json<serde_json::Value> {
+    let sops: Vec<serde_json::Value> = st
+        .registry
+        .all()
+        .iter()
+        .map(|s| {
+            json!({
+                "id": s.id,
+                "name": s.name,
+                "description": s.description,
+                "agents": st.registry.agent_appearances(s.id),
+            })
+        })
+        .collect();
+    Json(json!({ "sops": sops }))
+}
+
 /// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。
 pub async fn audit_report(
     State(st): State<SharedState>,

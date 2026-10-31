@@ -244,6 +244,7 @@ mod server_ops;
 mod agents_config;
 mod stats;
 mod logs_query;
+mod sops;
 mod observe;
 mod panic_safety;
 mod pending;

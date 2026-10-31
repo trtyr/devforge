@@ -118,6 +118,30 @@ impl SopRegistry {
         &self.sops
     }
 
+    /// SOP 的 agent 出场表（A9 · P019 剧本规划页）：资产层事实的人工编码——
+    /// 与 [`Sop`] 常量同处写死（decisions/002「内置写死」同哲学）。
+    /// 守卫测试钉住：映射里的每个 agent 名必须在 manifest.agents 中存在，
+    /// 编排器改名时这里会红（防漂移）。
+    pub fn agent_appearances(&self, id: &str) -> Vec<&'static str> {
+        match id {
+            "planning" => vec!["plan-agent", "plan-review"],
+            "coding" => vec!["coding-agent", "coding-review"],
+            "testing" => vec!["test-agent", "test-review"],
+            "doc-fix" => vec!["doc-fix", "doc-review"],
+            "doc-from-zero" => vec!["doc-agent", "doc-review"],
+            "change" => vec![
+                "change-plan-agent",
+                "change-plan-review",
+                "change-coding-agent",
+                "change-coding-review",
+                "change-test-agent",
+                "change-test-review",
+            ],
+            "code-review" => vec!["code-review"],
+            _ => Vec::new(),
+        }
+    }
+
     pub fn ids(&self) -> Vec<&'static str> {
         self.sops.iter().map(|s| s.id).collect()
     }
