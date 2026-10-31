@@ -230,8 +230,15 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::anyhow!("用法: devforge auth-init <口令> [--force]（口令不可为空）")
             })?;
         let force = args.iter().any(|a| a == "--force");
+        // P018 Phase 1：--pg <url> → admin 写进 PG（load_pg 返回的 store 自带
+        // persist_pg，set_auth_account 尾调 persist() 自动落 PG，无需显式 save）。
+        let pg_flag = devforge::server::http::parse_cli_flag(&args, "--pg")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let store_path = root.join("store.json");
-        let mut store = if store_path.exists() {
+        let mut store = if let Some(url) = &pg_flag {
+            devforge::domain::Store::load_pg(url).map_err(|e| anyhow::anyhow!(e.to_string()))?
+        } else if store_path.exists() {
             devforge::domain::Store::load(&store_path)?
         } else {
             devforge::domain::Store::new()
@@ -246,10 +253,38 @@ async fn main() -> anyhow::Result<()> {
             devforge::domain::auth::Role::Admin,
             devforge::domain::now_ms(),
         );
+        if let Some(url) = &pg_flag {
+            println!("admin 账户已写入 PG（{url}）");
+            return Ok(());
+        }
         store
             .save(&store_path)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         println!("admin 账户已写入 {}", store_path.display());
+        return Ok(());
+    }
+
+    // P018 Phase 1：store.json → PG 一次性迁移（roundtrip 比对，不一致非零退出）。
+    // 形态：`devforge store-migrate --pg <连接串>`。
+    if args.first().map(String::as_str) == Some("store-migrate") {
+        let pg = devforge::server::http::parse_cli_flag(&args, "--pg")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("用法: devforge store-migrate --pg <连接串>"))?;
+        let json_path = root.join("store.json");
+        if !json_path.exists() {
+            anyhow::bail!("源文件不存在：{}", json_path.display());
+        }
+        let rep = devforge::domain::Store::migrate_json_to_pg(&json_path, &pg)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        println!(
+            "迁移完成（roundtrip 比对通过）：projects={} tasks={} runs={}",
+            rep.projects, rep.tasks, rep.runs
+        );
+        println!(
+            "源文件保留在原处（{}）；切换 PG 模式请在 config.json 配置 pg.url",
+            rep.source.display()
+        );
         return Ok(());
     }
 
@@ -316,7 +351,24 @@ async fn main() -> anyhow::Result<()> {
     // 不认识谁还活着，不说明没人活着（2026-10-29 事故：旧二进制读不懂新词汇的 store
     // → 判坏 → 空仓冷启动 → 连杀三个活着的自家 agent）。故加载失败一律 `false`。
     let store_path = root.join("store.json");
-    let (mut store, store_trusted) = match devforge::domain::Store::load(&store_path) {
+    // P018 Phase 1：config.json 顶层 pg.url 有值 → PG 模式（load_pg 硬错误不回落
+    // 文件——双真相分叉比崩溃危险；JSON 兜底 = 不配 pg 段的默认形态）。
+    let pg_url: Option<String> = knobs_json
+        .as_ref()
+        .and_then(|v| v.get("pg"))
+        .and_then(|v| v.get("url"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let (mut store, store_trusted) = if let Some(url) = &pg_url {
+        tracing::info!(component = "main", "store 持久化 = PostgreSQL（P018 Phase 1）");
+        (
+            devforge::domain::Store::load_pg(url)
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+            true,
+        )
+    } else {
+        match devforge::domain::Store::load(&store_path) {
         Ok(s) => (s.with_persist(store_path.clone()), true),
         Err(e) => {
             // 地基批次 #3：备份要如实——旧实现先 warn「已备份为 .bak」再 `let _ = rename`，
@@ -347,7 +399,11 @@ async fn main() -> anyhow::Result<()> {
             }
             (devforge::domain::Store::new().with_persist(store_path.clone()), false)
         }
+    }
     };
+    if let Some(url) = &pg_url {
+        store = store.with_persist_pg(url.clone());
+    }
 
     // 并发上限：进程启动期解析一次并回写 store（并发的唯一运行时真相源）——
     // 优先级链 config.json `max_concurrent` > `store.max_concurrent_runs` > 缺省 2

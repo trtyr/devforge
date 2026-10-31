@@ -187,22 +187,45 @@ impl Store {
         }
     }
 
+    /// postgres 0.19 的同步 Client 内部自带 tokio runtime——在 tokio worker 线程
+    /// （server 的 async 上下文）直接调用会「runtime 嵌套」panic。桥接：
+    /// 有 runtime → spawn_blocking（专用线程允许 block_on）；
+    /// 无 runtime（单测/同步线程）→ 直接跑。
+    fn run_pg_blocking<T: Send + 'static>(
+        f: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        match tokio::runtime::Handle::try_current() {
+            // tokio worker 线程：切到普通线程执行——postgres 0.19 的同步 Client
+            // 内部 block_on 自起 runtime，在非 tokio 线程上合法，在 worker 上必炸。
+            Ok(_) => std::thread::scope(|s| {
+                s.spawn(f).join().unwrap_or_else(|_| {
+                    Err(DevforgeError::System("PG 阻塞线程 join 失败".into()))
+                })
+            }),
+            Err(_) => f(),
+        }
+    }
+
     /// P018 Phase 1：全量写 PG（store_state 单行 JSONB，单语句原子）。
     fn save_pg(&self, url: &str) -> Result<()> {
-        let mut conn = postgres::Client::connect(url, postgres::NoTls)
-            .map_err(|e| DevforgeError::System(format!("连 PG 失败：{e}")))?;
-        Self::ensure_pg_schema(&mut conn)?;
-        // TEXT 参数 + ::jsonb cast——postgres crate 的 serde_json feature 不依赖，
-        // 序列化字符串直接 cast（PG 校验 JSON 合法性，语义等同）
+        let url = url.to_string();
         let data = serde_json::to_string(self)
-            .map_err(|e| DevforgeError::System(format!("序列化 store（PG）失败：{e}")))?;
-        conn.execute(
-            "INSERT INTO store_state (id, data) VALUES (1, $1::text::jsonb) \
-             ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
-            &[&data],
-        )
-        .map_err(|e| DevforgeError::System(format!("写 store_state 失败：{e}")))?;
-        Ok(())
+            .map_err(|e| DevforgeError::System(format!("序列化 store（PG）失败：{e}")));
+        Self::run_pg_blocking(move || {
+            let data = data?;
+            let mut conn = postgres::Client::connect(&url, postgres::NoTls)
+                .map_err(|e| DevforgeError::System(format!("连 PG 失败：{e}")))?;
+            Self::ensure_pg_schema(&mut conn)?;
+            // TEXT 参数 + ::text::jsonb cast——postgres crate 的 serde_json feature 不依赖，
+            // 序列化字符串直接 cast（PG 校验 JSON 合法性，语义等同）
+            conn.execute(
+                "INSERT INTO store_state (id, data) VALUES (1, $1::text::jsonb) \
+                 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+                &[&data],
+            )
+            .map_err(|e| DevforgeError::System(format!("写 store_state 失败：{e}")))?;
+            Ok(())
+        })
     }
 
     /// store_state 表幂等建表（persist/load 各自调用，IF NOT EXISTS 幂等）。
@@ -218,33 +241,61 @@ impl Store {
         Ok(())
     }
 
+    /// P018 Phase 1：store.json → PG 一次性迁移（roundtrip 比对，不等长即非零失败）。
+    pub fn migrate_json_to_pg(json_path: &Path, url: &str) -> Result<MigrateReport> {
+        let source = Self::load(json_path)?;
+        let rep = MigrateReport {
+            source: json_path.to_path_buf(),
+            projects: source.projects.len(),
+            tasks: source.tasks.len(),
+            runs: source.runs.len(),
+            verified: false,
+        };
+        source.save_pg(url)?;
+        let back = Self::load_pg(url)?;
+        // roundtrip 比对（persist 字段是 serde skip，不参与序列化）
+        let src_val = serde_json::to_value(&source)
+            .map_err(|e| DevforgeError::System(format!("序列化源 store 失败：{e}")))?;
+        let back_val = serde_json::to_value(&back)
+            .map_err(|e| DevforgeError::System(format!("序列化回读 store 失败：{e}")))?;
+        if src_val != back_val {
+            return Err(DevforgeError::System(
+                "迁移 roundtrip 比对不一致——PG 数据与源不符，勿切换 PG 模式".into(),
+            ));
+        }
+        Ok(MigrateReport { verified: true, ..rep })
+    }
+
     /// P018 Phase 1：从 PG 重建 Store（启动入口；PG 不可达 = 硬错误，服务不启动——
     /// 不静默回落文件模式，双真相分叉比崩溃更危险）。空库 = 全新 Store（persist 已开）。
     pub fn load_pg(url: &str) -> Result<Self> {
-        let mut conn = postgres::Client::connect(url, postgres::NoTls).map_err(|e| {
-            DevforgeError::System(format!(
-                "连 PG 失败（PG 模式启动要求可达，不做静默回落）：{e}"
-            ))
-        })?;
-        Self::ensure_pg_schema(&mut conn)?;
-        let row = conn
-            .query_opt(
-                "SELECT data::text FROM store_state WHERE id = 1",
-                &[] as &[&(dyn postgres::types::ToSql + Sync)],
-            )
-            .map_err(|e| DevforgeError::System(format!("读 store_state 失败：{e}")))?;
-        let Some(row) = row else {
-            let store = Self {
-                persist_pg: Some(url.to_string()),
-                ..Self::default()
+        let url = url.to_string();
+        Self::run_pg_blocking(move || {
+            let mut conn = postgres::Client::connect(&url, postgres::NoTls).map_err(|e| {
+                DevforgeError::System(format!(
+                    "连 PG 失败（PG 模式启动要求可达，不做静默回落）：{e}"
+                ))
+            })?;
+            Self::ensure_pg_schema(&mut conn)?;
+            let row = conn
+                .query_opt(
+                    "SELECT data::text FROM store_state WHERE id = 1",
+                    &[] as &[&(dyn postgres::types::ToSql + Sync)],
+                )
+                .map_err(|e| DevforgeError::System(format!("读 store_state 失败：{e}")))?;
+            let Some(row) = row else {
+                let store = Self {
+                    persist_pg: Some(url.clone()),
+                    ..Self::default()
+                };
+                return Ok(store);
             };
-            return Ok(store);
-        };
-        let data: String = row.get(0);
-        let mut store: Store = serde_json::from_str(&data)
-            .map_err(|e| DevforgeError::System(format!("解析 store（PG）失败：{e}")))?;
-        store.persist_pg = Some(url.to_string());
-        Ok(store)
+            let data: String = row.get(0);
+            let mut store: Store = serde_json::from_str(&data)
+                .map_err(|e| DevforgeError::System(format!("解析 store（PG）失败：{e}")))?;
+            store.persist_pg = Some(url);
+            Ok(store)
+        })
     }
 
     // ---------- 项目层 ----------
@@ -1102,6 +1153,16 @@ impl Store {
         }
         Ok(store)
     }
+}
+
+/// 迁移报告（store-migrate 子命令的输出载体）。
+#[derive(Debug)]
+pub struct MigrateReport {
+    pub source: std::path::PathBuf,
+    pub projects: usize,
+    pub tasks: usize,
+    pub runs: usize,
+    pub verified: bool,
 }
 
 #[cfg(test)]

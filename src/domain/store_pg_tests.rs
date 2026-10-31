@@ -95,3 +95,28 @@ fn pg_unreachable_url_is_a_hard_error_on_load() {
     let err = Store::load_pg("postgresql:///no_such_db_xyz?host=/var/run/postgresql").unwrap_err();
     assert!(err.to_string().contains("连 PG 失败"), "{err}");
 }
+
+#[test]
+fn migrate_json_to_pg_roundtrip_verifies() {
+    let _g = PG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut conn) = pg_test_conn() else { return };
+    drop_store_state(&mut conn);
+
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("store.json");
+    let mut s = Store::new();
+    s.create_project(crate::domain::Project::new(
+        "mig",
+        dir.path().to_path_buf(),
+        1700000000000,
+    ))
+    .unwrap();
+    s.save(&src).unwrap();
+
+    let rep = Store::migrate_json_to_pg(&src, PG_TEST_URL).unwrap();
+    assert!(rep.verified, "roundtrip 比对应通过：{rep:?}");
+    assert_eq!(rep.projects, 1);
+    let back = Store::load_pg(PG_TEST_URL).unwrap();
+    assert_eq!(back.projects.len(), 1);
+    assert_eq!(back.projects[0].name, "mig");
+}
