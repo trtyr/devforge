@@ -369,6 +369,39 @@ fn testing_kickoff_states_the_fenced_evidence_format_contract() {
     }
 }
 
+/// T208 回归：testing 开工消息必须自带**门禁豁免说明书**。
+///
+/// 实证（gap-E 5683f21b）：test agent 因不知道「测试文件放哪不算改产品代码」，
+/// 每轮花数万 token 逆向推导门禁实现（单条思考块 10 万字符）——
+/// 规则是我们定的，直接写进教科书，不必推理。
+///
+/// 错实现形态：①提示段缺失 → 本断言红；②提示段替换了既有锚点 → 既有锚点断言红。
+#[test]
+fn testing_kickoff_states_the_gate_exemption_rules() {
+    let f = fixture(true);
+    let kick = testing_kickoff(&f.ctx);
+    for anchor in [
+        "【门禁豁免规则",
+        "tests/",
+        "docs/",
+        "evidence/",
+        "src/server/tests/xxx.rs",
+        "不必推理验证",
+    ] {
+        assert!(
+            kick.contains(anchor),
+            "testing 开工消息缺门禁豁免锚点 {anchor}：{kick}"
+        );
+    }
+    // 追加而非替换：既有锚点逐字仍在
+    for anchor in ["至少做一次反向验证", "evidence/regression.log"] {
+        assert!(
+            kick.contains(anchor),
+            "既有锚点 {anchor} 不得被替换掉：{kick}"
+        );
+    }
+}
+
 #[test]
 fn testing_review_fail_reroutes_to_coding_instead_of_failing_the_run() {
     // change #4（testing 半）：测试审查 FAIL 不再判死——改为 RouteCoding，把审查明细

@@ -220,9 +220,26 @@ pub fn snapshot_tracked_changes(
     Ok(set)
 }
 
-/// 豁免前缀（tests/ docs/ evidence/）+ 常见构建/缓存产物目录。
+/// 豁免目录段名（出现在路径的**任一目录段**位置即豁免）。
+///
+/// 2026-10-31（T208）：旧口径只认**仓库根前缀** `tests/`、`docs/`、`evidence/`——
+/// 于是 `src/server/tests/foo.rs`（Rust 单元测试的常规落点）被判成产品代码改动，
+/// test agent 每轮要花数万 token 推理「测试文件该放哪才能不被门禁误杀」
+/// （gap-E 5683f21b 实录：单条思考块 10 万字符）。规则本来就是我们定的，
+/// 直接说清楚，并且把「目录段」语义写进代码。
+///
+/// 段级判定而非前缀判定：`src/foo/tests.rs` ✅、`src/foo/tests/x.rs` ✅、
+/// `src/foo/tests_helpers.rs` ❌（段名不等于 tests，不是目录段）。
+pub(crate) const EXEMPT_DIR_SEGMENTS: [&str; 3] = ["tests", "docs", "evidence"];
+
+/// 路径是否落在豁免目录下（任意层级的 tests/docs/evidence 目录段）。
+pub(crate) fn is_exempt_path(path: &str) -> bool {
+    path.split('/')
+        .any(|seg| EXEMPT_DIR_SEGMENTS.contains(&seg))
+}
+
+/// 豁免目录段（任意层级的 tests/ docs/ evidence/）+ 常见构建/缓存产物目录。
 fn is_exempt_or_junk(path: &str) -> bool {
-    const EXEMPT: [&str; 3] = ["tests/", "docs/", "evidence/"];
     const JUNK_DIRS: [&str; 6] = [
         "node_modules/",
         "target/",
@@ -231,7 +248,7 @@ fn is_exempt_or_junk(path: &str) -> bool {
         ".pytest_cache/",
         ".venv/",
     ];
-    if EXEMPT.iter().any(|p| path.starts_with(p)) {
+    if is_exempt_path(path) {
         return true;
     }
     if JUNK_DIRS.iter().any(|p| path.contains(p)) {
@@ -254,11 +271,7 @@ pub fn check_no_product_code_edits(
 ) -> Result<()> {
     let new_edits: Vec<&String> = after
         .difference(before)
-        .filter(|f| {
-            !f.starts_with("tests/")
-                && !f.starts_with("docs/")
-                && !f.starts_with("evidence/")
-        })
+        .filter(|f| !is_exempt_path(f))
         .collect();
     if !new_edits.is_empty() {
         return Err(DevforgeError::Quality(format!(
@@ -274,11 +287,7 @@ pub fn check_no_product_code_edits(
     // coding 的成果 checkout 回基线/删掉。旧口径只看「新增项」，回退完全隐形。
     let vanished: Vec<&String> = before
         .difference(after)
-        .filter(|f| {
-            !f.starts_with("tests/")
-                && !f.starts_with("docs/")
-                && !f.starts_with("evidence/")
-        })
+        .filter(|f| !is_exempt_path(f))
         .collect();
     if !vanished.is_empty() {
         return Err(DevforgeError::Quality(format!(

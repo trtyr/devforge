@@ -114,7 +114,7 @@ description: 测试阶段机械门——回归证据判定、验收对账、失�
 - **行为语义**（🟢 CONFIRMED `src/change/testing_gate.rs:88` 至 `:155`）：
   - 基线 sha 先过形状门（7-64 位十六进制），非法 → `Config`（确定性配置错误，重启不会变好，`src/change/testing_gate.rs:92` 至 `:102`）；
   - `git diff --name-only <baseline> --` 收 tracked 改动；git 失败 → `System` 且 fail-closed（快照失败 = 本阶段机械门未生效，绝不把「查不了」当「查过、干净」，`:116` 至 `:125`）；
-  - `git status --porcelain -uall` 收未跟踪文件，经豁免过滤（`is_exempt_or_junk`：tests/ docs/ evidence/ 前缀、常见构建产物目录、无源码扩展名的运行产物；带源码扩展名的新文件**不豁免**，`:157` 至 `:180`）。
+  - `git status --porcelain -uall` 收未跟踪文件，经豁免过滤（`is_exempt_or_junk`：**任意层级的 tests/ docs/ evidence/ 目录段**（T208 起：旧口径只认仓库根前缀，模块内单元测试 `src/**/tests/` 会被误判）、常见构建产物目录、无源码扩展名的运行产物；带源码扩展名且不在豁免目录段里的新文件**不豁免**，`:157` 至 `:180`）。
 - **参数**：`repo: &Path`（目标仓根）、`baseline: &str`（基线 sha）。
 - **返回**：`Result<BTreeSet<String>>` — 改动文件集（相对路径）。
 - **异常**：`Config`（基线形状非法）；`System`（git 调用失败）。
@@ -124,11 +124,11 @@ description: 测试阶段机械门——回归证据判定、验收对账、失�
 
 - **摘要**：测试阶段出口校验——对比入口/出口快照，测试期间新增或删除/还原产品代码都是 `Quality`。
 - **行为语义**（🟢 CONFIRMED `src/change/testing_gate.rs:185` 至 `:228`）：
-  - 出口比入口**多出**的非豁免路径（新增产品代码，tests/ docs/ evidence/ 之外）→ `Quality("测试阶段修改了产品代码（测试 Agent 只准写测试）：…——发现 bug 回注，不自己修")`；
+  - 出口比入口**多出**的非豁免路径（新增产品代码，不在任意层级的 tests/ docs/ evidence/ 目录段里）→ `Quality("测试阶段修改了产品代码（测试 Agent 只准写测试）：…——发现 bug 回注，不自己修")`；
   - 入口有、出口**没了**的非豁免路径（把 coding 成果 checkout 回基线/删除）→ `Quality("测试阶段删除/还原了产品代码（coding 的改动不得被测试阶段抹掉）：…")`（自审 major：旧口径只看新增项，回退完全隐形）。
 - **参数**：`before: &BTreeSet<String>`（入口快照）、`after: &BTreeSet<String>`（出口快照）。
 - **返回**：`Result<()>`。
-- **异常**：`Quality` —— 上述两种；豁免前缀为 tests/ docs/ evidence/。
+- **异常**：`Quality` —— 上述两种；豁免口径为任意层级的 tests/ docs/ evidence/ **目录段**（T208：`src/server/tests/x.rs` 豁免，`src/foo/tests_helpers.rs` 不豁免）。
 - **示例**：测试轮里写产品文件 → `Err` 点名该文件（`product_code_edits_during_testing_are_quality_failure`，`src/change/testing_gate_tests.rs:122`）；还原基线路径 → `Err`（`reverted_product_code_is_quality_failure`，`:89`）。
 
 ### parse_acceptance_table

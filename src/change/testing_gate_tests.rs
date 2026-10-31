@@ -1,6 +1,49 @@
 //! （2026-10-26 测试分离：自 src/change/testing_gate.rs 内联平移，纯移动零改动。）
 use super::*;
 
+/// T208 回归：模块内单元测试目录（`src/**/tests/`）不得被判成产品代码改动。
+///
+/// 旧口径只认**仓库根前缀** `tests/`，于是 `src/server/tests/x.rs`（Rust 单元测试的
+/// 常规落点）被判成产品代码改动——test agent 每轮要花数万 token 推理「测试文件该放哪
+/// 才能不被门禁误杀」（gap-E 5683f21b 实录：单条思考块 10 万字符）。
+#[test]
+fn module_level_tests_dir_is_exempt_from_product_code_gate() {
+    for path in [
+        "src/server/tests/integration_acceptance.rs",
+        "src/change/tests/foo.rs",
+        "tests/foo.rs",
+        "evidence/self-check.log",
+        "docs/contexts/x.md",
+    ] {
+        assert!(is_exempt_path(path), "应豁免：{path}");
+    }
+    let before = std::collections::BTreeSet::new();
+    let after = std::collections::BTreeSet::from([
+        "src/server/tests/integration_acceptance.rs".to_string(),
+    ]);
+    check_no_product_code_edits(&before, &after)
+        .expect("模块内测试文件不算产品代码改动，不该被判质量失败");
+}
+
+/// T208 回归：只有**目录段**才豁免——`tests_helpers.rs` 这类同前缀但非目录段的
+/// 路径仍属产品代码（还原检测同理）。
+#[test]
+fn non_tests_segment_is_still_product_code() {
+    assert!(!is_exempt_path("src/foo/tests_helpers.rs"));
+    assert!(!is_exempt_path("src/foo.rs"));
+    assert!(!is_exempt_path("src/testing.rs"));
+    let before = std::collections::BTreeSet::from(["src/foo.rs".to_string()]);
+    let after = std::collections::BTreeSet::new();
+    let err = check_no_product_code_edits(&before, &after).unwrap_err();
+    assert!(err.to_string().contains("删除/还原"), "{err}");
+    let err = check_no_product_code_edits(
+        &std::collections::BTreeSet::new(),
+        &std::collections::BTreeSet::from(["src/foo.rs".to_string()]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("修改了产品代码"), "{err}");
+}
+
 #[test]
 fn red_regression_contradicting_the_claim_fails() {
     let err = check_regression_claim("command: cargo test\nexit_code: 1\n", true).unwrap_err();

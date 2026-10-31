@@ -220,6 +220,10 @@ pub fn testing_kickoff(ctx: &ChangeCtx) -> String {
         "你是 change-test-agent。change-id：`{}`。\n\
 目标仓：{}\n验收标准来自计划：{}\n\
 黑板（当前目录）：{}\n\n\
+【门禁豁免规则（照做即可，不必推理验证）】testing 阶段只准写测试。\
+落在任意层级的 `tests/`、`docs/`、`evidence/` 目录下的文件不算产品代码改动，可自由新建\
+——例如模块内单元测试 `src/server/tests/xxx.rs`、集成测试 `tests/xxx.rs`、证据 `evidence/xxx.log`。\
+其余路径（如 `src/xxx.rs`）属产品代码，改动会被判质量失败。\n\
 顺序：先跑既有全套回归并把命令与退出码写进 `{}`；再为变更点写测试；\
 把对账表写到 `testing/acceptance.md`（每行 `- <验收标准原文> → <测试文件>:<行>`）；\
 证据格式：`exit_code` 行建议裸写；若包进围栏，必须与 `command:` 成对；\
