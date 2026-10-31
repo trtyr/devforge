@@ -44,6 +44,6 @@ settings.json 本体在 master 尚不存在（gap-E 候选在 recovery/sr2-gapE-
 
 ## 测试
 
-`settings_tests.rs` 4 例（缺失缺省/往返+无 tmp 残留/损坏回落/ui-9 schema 形状）；
+`src/integration/settings_tests.rs` 4 例（缺失缺省/往返+无 tmp 残留/损坏回落/ui-9 schema 形状）；
 端点 3 例（tests/integration_settings.rs：GET 缺失全 off/PUT-GET 往返+落盘+审计/
 损坏回落+PUT 修复）。

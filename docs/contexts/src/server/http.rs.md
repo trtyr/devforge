@@ -25,7 +25,7 @@ axum Router 组装与生产引导（serve）。2026-11-01 状态：A 组后端�
 | `build_router` | 函数（Router 组装） |
 | `serve` | 异步函数（生产引导） |
 | `parse_cli_flag` / `resolve_startup_token` | 函数（启动三件套契约） |
-| `TOKEN_ENV`（已随 F14 删除）| —— |
+| TOKEN_ENV（已随 F14 删除，非现存成员）| —— |
 
 ## 依赖
 

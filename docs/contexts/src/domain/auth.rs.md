@@ -8,7 +8,7 @@ description: A1 认证域——admin 账户（argon2id）、角色、审计事�
 # src/domain/auth.rs
 
 A1 认证（P019 M-1）的领域层：单 admin 账户模型 + 审计事件结构 + 口令哈希工具。
-存储落在 `Store.auth` / `Store.auth_events`（见 store.rs）；HTTP 面在 server/auth.rs
+存储落在 `Store` 的 `auth` 段与 `auth_events` 段（见 src/domain/store.rs）；HTTP 面在 src/server/auth.rs
 （会话签发/验证）与 handlers.rs（登录端点、守门中间件）。
 
 ## 职责
@@ -33,10 +33,10 @@ A1 认证（P019 M-1）的领域层：单 admin 账户模型 + 审计事件结�
 ## 依赖
 
 - 上游：`Store`（auth 段持久化，`#[serde(default)]` 旧 store.json 兼容）；
-  `server/auth.rs` 与 `server/handlers.rs` 消费。
+  `src/server/auth.rs` 与 `src/server/handlers.rs` 消费。
 - 外部：`argon2` 0.5（纯 Rust）、`uuid`。
 
 ## 测试
 
-`auth_tests.rs` 5 例：哈希往返（随机盐）、垃圾 PHC 串、令牌形态/唯一性、store 段
+`src/domain/auth_tests.rs` 5 例：哈希往返（随机盐）、垃圾 PHC 串、令牌形态/唯一性、store 段
 serde 兼容、审计事件 cap 裁剪。

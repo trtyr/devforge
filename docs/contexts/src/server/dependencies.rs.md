@@ -47,5 +47,5 @@ AI 自动修复；下载/更新是写操作+长任务，留待后续任务化。
 
 ## 测试
 
-`dependencies_tests.rs` 4 例 + 端点测试 `tests/dependencies_endpoint.rs` 1 例
+`src/server/dependencies_tests.rs` 4 例 + 端点测试 `src/server/tests/dependencies_endpoint.rs` 1 例
 （Fake 注入验响应结构 + 只读字段守卫：无 uninstall/auto_fix）。

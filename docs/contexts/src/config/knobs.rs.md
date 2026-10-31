@@ -52,5 +52,5 @@ T205/F14 的核心：全部运行期旋钮的**唯一声明处**。零环境变�
 
 ## 测试
 
-`knobs_tests.rs` 9 例：缺省/覆盖回落/0=不限/全局 init+getter/生效值来源标注/
+`src/config/knobs_tests.rs` 9 例：缺省/覆盖回落/0=不限/全局 init+getter/生效值来源标注/
 DOC_LEVEL 拆分回归/零 env 守卫等。
