@@ -373,6 +373,18 @@ fn audit_inner_roots(plan: &str, repo: &Path, plantree: Option<&Path>) -> PlanAu
         a.issues.push("白名单为空（改动边界没写）".into());
     }
 
+    // 3.5) F12（selfhost 台账 2026-11-01）：白名单触及 tests/ → 必须盘点既有测试夹具。
+    // 病根：计划要求与既有测试夹具冲突（如观测根重定向 vs 夹具的路径假设），
+    // flash 模型 3 轮捋不顺 → 审查 3 轮上限打满 → Quality（c7 第四场死法）。
+    // 条件强制：纯 src 变更不要求（一般目标仓无此关注）；盘点节非空即可（内容质量归审查）。
+    let touches_tests = whitelist.iter().any(|f| f.starts_with("tests/"));
+    if touches_tests && section_lines(plan, "既有夹具冲突盘点").is_empty() {
+        a.issues.push(
+            "白名单触及 tests/ 但缺「既有夹具冲突盘点」节——列出受影响的既有测试/夹具与兼容口径（不盘点 = 审查轮必然撞夹具）"
+                .into(),
+        );
+    }
+
     // 4) 验收标准可观测性
     for line in section_lines(plan, "验收标准") {
         let t = line.trim();
@@ -514,7 +526,9 @@ pub fn review_instruction(
 5. 风险诚实：已知耦合、文档与代码不一致、缓存/构建产物有没有写进去。\n\
 6. 留痕核对：歧义块里标了「{VERDICT_MUST_ASK}」的条目必须带非空的「{VERDICT_ANSWER_FIELD}」字段（答复原文逐字抄）；缺字段 = FAIL。\n\
 7. 分类恰当性：需求与代码都定不下来、且影响验收口径的歧义被标成「{VERDICT_SELF}」（带默认值自决放行）= FAIL。\n\
-8. 结构缺失：歧义块缺失，或块内条目既没标「{VERDICT_MUST_ASK}」也没标「{VERDICT_SELF}」= FAIL。\n\n\
+8. 结构缺失：歧义块缺失，或块内条目既没标「{VERDICT_MUST_ASK}」也没标「{VERDICT_SELF}」= FAIL。
+\
+9. 夹具冲突盘点（仅当白名单触及 tests/）：盘点节列出的既有测试/夹具是否真实、兼容口径是否成立——盘漏了会撞夹具的测试 = FAIL（F12：c7 第四场死法的治理）。\n\n\
 ## 引擎审计（确定性，勿质疑、勿重算）\n\n{}\n\n\
 ## 裁决门事实（确定性，勿质疑、勿重算）\n\n{}\n\n\
 ## 计划全文（`{}`）\n\n```markdown\n{}\n```\n\n\

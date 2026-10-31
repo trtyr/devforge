@@ -16,7 +16,8 @@ fn good_plan() -> String {
 ## 3 要改的\n| 文件 | 理由 |\n| --- | --- |\n| `src/a.rs` | 需求点 |\n\n\
 ## 4 白名单\n`src/a.rs`\n`tests/a_test.rs`\n\n\
 ## 5 验收标准\n- 给定 x=1 → 返回 2\n\n\
-## 6 风险\n- 无\n"
+## 6 风险\n- 无\n\
+## 7 既有夹具冲突盘点\n- `tests/a_test.rs` 为新增文件，不影响既有测试；无其他 tests/ 改动，无夹具冲突。\n"
         .to_string()
 }
 
@@ -397,4 +398,54 @@ fn ref_resolves_rejects_missing_file_and_out_of_range_line() {
     assert!(missing.contains("不存在"), "got: {missing}");
     let oob = ref_resolves(r.path(), &[("src/a.rs".into(), 99)]).unwrap_err();
     assert!(oob.contains("越界"), "got: {oob}");
+}
+
+// ── F12（selfhost 台账 2026-11-01）：白名单触及 tests/ 必须盘点既有夹具 ──
+
+/// F12 测试夹具：可配白名单与盘点节的计划。
+fn plan_with_whitelist(whitelist: &str, inventory: Option<&str>) -> String {
+    let mut s = String::from(
+        "# 变更计划\n\n## 1 需求复述\n改测试。\n\n## 2 影响面\n- 直接命中：`src/a.rs:1`\n\n## 3 要改的\n| 文件 | 理由 |\n| --- | --- |\n| `src/a.rs` | 需求点 |\n\n## 4 白名单\n",
+    );
+    s.push_str(whitelist);
+    s.push_str("\n\n## 5 验收标准\n- 给定 x=1 → 返回 2\n\n## 6 风险\n- 无\n");
+    if let Some(inv) = inventory {
+        s.push_str("\n## 7 既有夹具冲突盘点\n");
+        s.push_str(inv);
+        s.push('\n');
+    }
+    s
+}
+
+#[test]
+fn tests_touching_whitelist_without_inventory_is_flagged() {
+    // 错实现形态：白名单动了 tests/ 却不盘点夹具冲突 → 审查轮撞夹具（c7 第四场死法）
+    let r = repo();
+    let plan = plan_with_whitelist("`src/a.rs`\n`tests/a_test.rs`", None);
+    let a = audit(&plan, r.path());
+    assert!(
+        a.issues.iter().any(|i| i.contains("既有夹具冲突盘点")),
+        "触 tests/ 缺盘点节必须判失败：{:?}",
+        a.issues
+    );
+}
+
+#[test]
+fn tests_touching_whitelist_with_inventory_passes() {
+    let r = repo();
+    let plan = plan_with_whitelist(
+        "`src/a.rs`\n`tests/a_test.rs`",
+        Some("- `tests/a_test.rs` 为新增文件，不影响既有测试。"),
+    );
+    let a = audit(&plan, r.path());
+    assert!(a.is_clean(), "有盘点节应过审：{:?}", a.issues);
+}
+
+#[test]
+fn src_only_whitelist_does_not_require_inventory() {
+    // 条件强制：纯 src 变更不要求盘点节（一般目标仓无此关注）
+    let r = repo();
+    let plan = plan_with_whitelist("`src/a.rs`", None);
+    let a = audit(&plan, r.path());
+    assert!(a.is_clean(), "纯 src 白名单不该要求盘点节：{:?}", a.issues);
 }
