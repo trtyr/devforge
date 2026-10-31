@@ -11,11 +11,29 @@ pub const META_DIR: &str = "docs/contexts/_meta";
 pub const DOC_REMEDIATION_PREFIX: &str = "审查未通过，以下是必须修复的问题（请按 route 回到对应阶段修）：";
 
 /// doc-agent 开场指令：告知仓库、产出目录、本单元、文档档位。
-pub fn doc_kickoff(repo: &Path, unit: &str, doc_level: &str) -> String {
+///
+/// AF-1：`workbook` = 已落盘的单元作业本路径——开场只留指针，本单元要写什么
+/// 与评分标准全在作业本里（写手与审查官同源同文件）；`None` = 降级回清单
+/// 全量指针（作业本落盘失败或零条目，宁降级不炸）。
+pub fn doc_kickoff(
+    repo: &Path,
+    unit: &str,
+    doc_level: &str,
+    workbook: Option<&Path>,
+) -> String {
+    let scope_line = match workbook {
+        Some(wb) => format!(
+            "单元作业本：{}（开工前**先读它**——本单元要写什么、覆盖评分标准，全在里面；后期忘了随时重读）",
+            wb.display()
+        ),
+        None => format!(
+            "清单：{META_DIR}/inventory.json（先读它，本单元包含哪些文件/符号/入口）"
+        ),
+    };
     format!(
         "你是文档 Agent：本单元 `{unit}`（档位 `{doc_level}`）。\
 \n目标仓库（只读，除了产出目录）：{}\n产出目录：{DOCS_DIR}/（本单元的所有文档写这里；元数据写 {META_DIR}/）\
-\n清单：{META_DIR}/inventory.json（先读它，本单元包含哪些文件/符号/入口）\
+\n{scope_line}\
 \n节奏（DR-11 穿插推进，强制）：按源文件粒度边读边写——读完一个源文件，立即在同回合批量写出它的全部文档（多个写调用并行、路径不相交），再进入下一个源文件；本单元的 index/runbook/overview 等枢纽文档压轴最后写（依赖全部叶子）；单回合写入总量 ≤30K tokens 超限拆回合。禁止全部看完再动笔。\
 \n纪律：只写 {DOCS_DIR}/ 下；codegraph-first；勘察只记事实、解释标 🟢/🟡/🔴；按 doc-contract 写、不适用写 N/A。\
 \n交审前自检后用 <doc-complete>{unit}</doc-complete> 收尾。",

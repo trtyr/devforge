@@ -508,7 +508,27 @@ where
                     total = units.len(),
                     "单元开始（流水线）"
                 );
-                let mut msg = doc_kickoff(repo, &u, doc_level);
+                // AF-1：开工前落盘单元作业本（幂等重生成，随 run 生命周期）；失败降级——
+        // kickoff 回退清单全量指针（作业本是上下文优化不是正确性依赖，机械门照旧）
+        let workbook = match &gates {
+            Some((inv, _)) => {
+                match crate::docgen::workbook::write_workbook(&docs_root, inv, level, &u) {
+                    Ok(Some(path)) => Some(path),
+                    Ok(None) => None,
+                    Err(e) => {
+                        tracing::warn!(
+                            component = "doc-engine",
+                            unit = %u,
+                            error = %e,
+                            "作业本落盘失败，kickoff 降级清单指针"
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        let mut msg = doc_kickoff(repo, &u, doc_level, workbook.as_deref());
                 if !first_kickoff_sent && !resume_note.is_empty() {
                     msg.push_str("\n\n");
                     msg.push_str(&resume_note);

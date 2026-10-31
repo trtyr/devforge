@@ -138,11 +138,28 @@ fn first_unit_overdue_warns_exactly_once() {        // DR-4：开跑超阈值仍
 #[test]
 fn kickoff_carries_interleave_and_batch_rules() {
     // DR-11/DR-10④：kickoff 必须带穿插节奏与批量写预算护栏（合同 §七 同款）
-    let k = doc_kickoff(Path::new("/repo"), "unit-x", "complete");
+    let k = doc_kickoff(Path::new("/repo"), "unit-x", "complete", None);
     assert!(k.contains("穿插推进"), "要带穿插节奏条款: {k}");
     assert!(k.contains("批量写出"), "要带同回合批量写: {k}");
     assert!(k.contains("30K tokens"), "要带输出预算护栏: {k}");
     assert!(k.contains("压轴最后写"), "枢纽压轴规则要在: {k}");
+}
+
+#[test]
+fn kickoff_points_at_workbook_when_ready_falls_back_to_inventory_when_not() {
+    // AF-1：作业本就绪 → 指针指向作业本，且不再带清单全量指针（上下文税不再交第二遍）
+    let wb = Path::new("/repo/docs/contexts/_meta/units/unit-x.md");
+    let k = doc_kickoff(Path::new("/repo"), "unit-x", "complete", Some(wb));
+    assert!(k.contains("_meta/units/unit-x.md"), "要带作业本确切路径: {k}");
+    assert!(k.contains("先读它"), "作业本指针要点名先读: {k}");
+    assert!(
+        !k.contains("inventory.json"),
+        "作业本就绪时不再全量指针清单（34 单元交 34 遍上下文税的病根）: {k}"
+    );
+    // 降级：作业本缺位 → 回退清单指针（宁降级不炸）
+    let d = doc_kickoff(Path::new("/repo"), "unit-x", "complete", None);
+    assert!(d.contains("inventory.json"), "降级要有清单指针: {d}");
+    assert!(!d.contains("_meta/units/"), "降级不带作业本路径: {d}");
 }
 
 #[test]

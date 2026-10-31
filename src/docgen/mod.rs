@@ -8,3 +8,4 @@ pub mod impact;
 pub mod inventory;
 pub mod lint;
 pub mod usage;
+pub mod workbook;

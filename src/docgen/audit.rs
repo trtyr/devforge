@@ -65,7 +65,7 @@ impl DocLevel {
         !matches!(self, Self::None)
     }
 
-    fn requires(self, kind: EntryKind) -> bool {
+    pub(crate) fn requires(self, kind: EntryKind) -> bool {
         match self {
             Self::None => false,
             Self::Essential => kind == EntryKind::Entry,
@@ -135,7 +135,7 @@ impl CoverageReport {
     }
 }
 
-fn kind_str(kind: EntryKind) -> &'static str {
+pub(crate) fn kind_str(kind: EntryKind) -> &'static str {
     match kind {
         EntryKind::Entry => "entry",
         EntryKind::Module => "module",

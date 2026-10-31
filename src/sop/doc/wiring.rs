@@ -264,6 +264,12 @@ impl BuiltinRpcEngine {
         let audit: Box<dyn Fn(&str) -> String + Send> = Box::new(move |unit: &str| {
             let mut out = String::new();
             let docs = audit_ws.join(DOCS_DIR);
+            // AF-1 同源改读：审查注入直接读作业本（评分标准，与写手同一份文件）——
+            // 读不到则降级为只给现场计算的审计结果，不炸。
+            if let Some(wb) = crate::docgen::workbook::workbook_section(&docs, unit) {
+                out.push_str(&wb);
+                out.push('\n');
+            }
             if let Ok(cov) = crate::docgen::audit::coverage_for_unit(
                 &audit_inv,
                 &docs,
