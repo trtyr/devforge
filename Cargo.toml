@@ -20,6 +20,8 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 # API 服务器（P003：REST + SSE，2026-10-16 定案）
 axum = "0.8"
 tokio-stream = { version = "0.1", features = ["sync"] }
+# A1 认证（P019 M-1）：admin 账户密码哈希（argon2id，PHC 串落盘；纯 Rust）
+argon2 = "0.5"
 # 孤儿清理的 kill 系统调用（decisions/007/Q005）
 libc = "0.2"
 

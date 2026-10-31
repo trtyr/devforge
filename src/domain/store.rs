@@ -11,6 +11,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::auth::{AuthAccount, AuthEvent, MAX_AUTH_EVENTS};
 use crate::domain::run::{Run, RunId, RunStatus};
 use crate::domain::sop::SopRegistry;
 use crate::domain::task::{Task, TaskStatus};
@@ -39,6 +40,13 @@ pub struct Store {
     /// 上限裁剪见 `MAX_NOTIFICATIONS`：全量重写代价 O(通知数)，无界增长 = 写放大事故。
     #[serde(default)]
     pub notifications: Vec<Notification>,
+    /// admin 账户（A1 · M-1）：单账户模型，None = 未初始化（登录端点据实回复）。
+    /// `#[serde(default)]`：旧 store.json 无此段也能读回（同 channel_breakers 口径）。
+    #[serde(default)]
+    pub auth: Option<AuthAccount>,
+    /// 认证审计事件（A1）：登录成功/失败与写操作；cap 裁剪同通知（无界 = 写放大）。
+    #[serde(default)]
+    pub auth_events: Vec<AuthEvent>,
     /// 持久化路径（复验 backlog：store 纯内存是设计错误——重启即蒸发）。
     /// None = 内存态（单测）；Some = 每个 &mut 变更方法尾调 persist()。
     #[serde(skip)]
@@ -114,6 +122,8 @@ impl Default for Store {
             tasks: Vec::new(),
             runs: Vec::new(),
             notifications: Vec::new(),
+            auth: None,
+            auth_events: Vec::new(),
             max_concurrent_runs: default_max_concurrent(),
             max_runs_per_task: default_max_runs_per_task(),
             channel_breakers: Vec::new(),
@@ -577,6 +587,58 @@ impl Store {
             self.persist();
         }
         removed
+    }
+
+    // ---------- 认证（A1 · M-1） ----------
+
+    /// 当前账户（None = 未初始化）。
+    pub fn auth_account(&self) -> Option<&AuthAccount> {
+        self.auth.as_ref()
+    }
+
+    /// 设置/重置 admin 账户（初始化与改密同路）：返回 1 = 落盘，0 = 无变更不落盘。
+    pub fn set_auth_account(
+        &mut self,
+        username: &str,
+        password_hash: &str,
+        role: crate::domain::auth::Role,
+        now_ms: u64,
+    ) -> usize {
+        let new = AuthAccount {
+            username: username.to_string(),
+            password_hash: password_hash.to_string(),
+            role,
+            created_at_ms: now_ms,
+        };
+        if self.auth.as_ref() == Some(&new) {
+            return 0;
+        }
+        self.auth = Some(new);
+        self.persist();
+        1
+    }
+
+    /// 记录一条认证审计事件：id 自增；超上限裁最旧（无已读概念，FIFO）；
+    /// 返回新事件 id。
+    pub fn push_auth_event(&mut self, kind: &str, actor: &str, detail: &str, now_ms: u64) -> u64 {
+        let id = self
+            .auth_events
+            .last()
+            .map(|e| e.id + 1)
+            .unwrap_or(1);
+        self.auth_events.push(AuthEvent {
+            id,
+            kind: kind.to_string(),
+            actor: actor.to_string(),
+            detail: detail.to_string(),
+            at_ms: now_ms,
+        });
+        let overflow = self.auth_events.len().saturating_sub(MAX_AUTH_EVENTS);
+        if overflow > 0 {
+            self.auth_events.drain(0..overflow);
+        }
+        self.persist();
+        id
     }
 
     /// 变更任务的 SOP（P005 跨 SOP 触发：同任务先规划后编码）。

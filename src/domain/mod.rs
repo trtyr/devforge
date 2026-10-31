@@ -3,6 +3,7 @@
 //! 结构：项目 → 任务（绑定 SOP，run 执行实例）→ SOP（内置写死，decisions/002）。
 //! 生命周期与重跑留档语义见 P004 decisions/001-003 与 open-questions Q004。
 
+pub mod auth;
 pub mod project;
 pub mod run;
 pub mod contract;
@@ -11,6 +12,7 @@ pub mod sop;
 pub mod store;
 pub mod task;
 
+pub use auth::{AuthAccount, AuthEvent, Role, MAX_AUTH_EVENTS};
 pub use project::Project;
 pub use run::{Run, RunId, RunStatus};
 pub use runner::{RunControl, RunEngine, RunOutcome};
