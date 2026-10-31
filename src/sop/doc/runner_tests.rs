@@ -230,12 +230,14 @@ fn text_fallback_warns_once_and_still_settles() {
 
 #[test]
 fn review_instruction_puts_verdict_first() {
-    // DR-13：裁决块前置——防思考型输出把协议块挤到截断线外；DR-12：不读码条款
+    // AF-5：交卷工具上位——裁决走 submit_verdict 参数（截断伤不到裁决），文本协议降级；
+    // DR-12：不读码条款
     let ins = doc_review_instruction(std::path::Path::new("/tmp/doc-workspace"), "unit-x", 1);
-    assert!(ins.contains("第一行"), "要强制裁决块前置: {ins}");
-    assert!(ins.contains("<doc-verdict>"), "要带协议块格式: {ins}");
+    assert!(ins.contains("submit_verdict"), "要优先交卷工具: {ins}");
+    assert!(ins.contains("工具参数"), "裁决走参数的说明要在: {ins}");
+    assert!(ins.contains("<doc-verdict>"), "降级文本协议说明要在: {ins}");
     assert!(ins.contains("4000 字"), "要带叙述预算: {ins}");
-    assert!(ins.contains("本轮作废"), "要写明截断后果: {ins}");
+    assert!(ins.contains("stage-verdict"), "双输出禁令要在: {ins}");
     assert!(ins.contains("不读代码"), "DR-12 不读码条款要在: {ins}");
 }
 

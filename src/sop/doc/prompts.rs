@@ -36,7 +36,7 @@ pub fn doc_kickoff(
         "你是文档 Agent：本单元 `{unit}`（档位 `{doc_level}`）。\
 \n目标仓库（只读，除了产出目录）：{}\n产出目录：{DOCS_DIR}/（本单元的所有文档写这里；元数据写 {META_DIR}/）\
 \n{scope_line}\
-\n按你的纪律干（AGENTS.md：写作节奏/事实推断分离/契约与 N/A，以它为唯一权威），交审前自检，完成后交 <doc-complete>{unit}</doc-complete>。",
+\n按你的纪律干（AGENTS.md：写作节奏/事实推断分离/契约与 N/A，以它为唯一权威），交审前自检；完成后调用 submit_unit 工具交卷（unit=`{unit}`），无法调用工具时才在回复末尾单独一行交 <doc-complete>{unit}</doc-complete>。",
         repo.display()
     )
 }
@@ -50,11 +50,11 @@ pub fn doc_review_instruction(repo: &Path, unit: &str, round: usize) -> String {
 \n审查面：覆盖（清单条目 ↔ 文档，按档位集合）、完整性（必填节 / N-A 规则）、真实性（实体存在）、置信度诚实性（标 🟢 必须给得出 path:line）、可跑（Runbook 命令块由引擎审计注入，逐条验收其存在与形状；**实际 boot 执行不在你职责内**——AF-3 审查官是读者+判官不是探索者，以引擎审计为准）。\
 \n引擎审计是确定性事实（覆盖/lint/Runbook 命令块），直接采信并逐条验收，不要重算。\
 \n**不读代码（DR-12）**：你的输入只有单元文档与引擎审计文本——事实以审计为准，不需要也不应该打开源码；文字质量/结构/一致性才是你的职责。\
-\n**输出协议（强制，裁决前置）**：回复的**第一行**就是完整协议块——\
-\n<doc-verdict>PASS|FAIL</doc-verdict> 换行 <route>...</route> 换行 <issues>每行一条</issues>——\
-\n本流程**只用 doc-verdict 协议；禁止输出 stage-verdict**（那是 doc-fix 回注流程的协议，不是本轮的，双输出 = 协议违例）。\
-\n先把裁决交了，再写审查报告正文并落盘。\
-\n叙述从简：探索过程不复述，报告正文控制在 4000 字内；协议块被截断 = 本轮作废。",
+\n**交裁决（AF-5，强制，裁决前置）**：审查完成后**先调用 submit_verdict 工具**交裁决——\
+\nverdict=PASS|FAIL、route（PASS 填 done；FAIL 填回注阶段 phase0/1/2/3）、issues（FAIL 必填，每条一个元素）——\
+\n裁决走工具参数，不靠叙述文本（截断伤不到裁决）；禁止输出 stage-verdict（那是 doc-fix 回注流程的协议，双输出 = 协议违例）。\
+\n交完裁决再写审查报告正文并落盘。\
+\n叙述从简：探索过程不复述，报告正文控制在 4000 字内；无法调用工具时才用文本协议（回复第一行 <doc-verdict>…</doc-verdict> + <route>…</route> + <issues>，被截断 = 本轮作废）。",
         repo.display()
     )
 }
