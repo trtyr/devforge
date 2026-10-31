@@ -233,3 +233,89 @@ async fn logs_query_time_window() {
     assert_eq!(resp.status(), 200);
     assert_eq!(body_json(resp).await["total_matched"].as_u64(), Some(0));
 }
+
+// ---------- 轮转感知（收尾批 2026-11-01） ----------
+
+/// 轮转归并：当前文件 + .1/.2 历史副本按 mtime 旧→新归并，分页跨文件连续；
+/// .gz 压缩副本跳过（读不了，files 列表如实反映）；坏行照旧跳过。
+#[tokio::test]
+async fn logs_query_scans_rotated_files_in_mtime_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = state_with_logs_dir(dir.path(), true);
+    let router = build_router(st.clone());
+    std::fs::create_dir_all(&st.logs_root).unwrap();
+
+    let line = |msg: &str| {
+        serde_json::json!({"timestamp": "2026-10-31T10:00:00.000000Z", "level": "INFO", "fields": {"message": msg}, "target": "t"})
+            .to_string()
+    };
+    // .2（最旧）→ .1 → 当前（最新），写盘顺序保证 mtime 单调
+    let oldest = st.logs_root.join("devforge.log.jsonl.2");
+    let mid = st.logs_root.join("devforge.log.jsonl.1");
+    let cur = crate::logging::log_file_path(&st.logs_root, "devforge");
+    std::fs::write(&oldest, format!("{}\n", line("from-rotated-2"))).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&mid, format!("{}\nbroken-line\n{}\n", line("from-rotated-1"), line("mid-second"))).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&cur, format!("{}\n{}\n", line("from-current-a"), line("from-current-b"))).unwrap();
+    // gz 副本：读不了，必须被跳过（不炸不计入）
+    std::fs::write(st.logs_root.join("devforge.log.jsonl.3.gz"), b"\x1f\x8b garbage").unwrap();
+
+    // 全量：5 条合法行（gz 与 broken-line 不计），旧→新归并
+    let resp = send(&router, "GET", "/api/v1/logs", None).await;
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert_eq!(body["total_matched"].as_u64(), Some(5), "{body}");
+    let msgs: Vec<&str> = body["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["fields"]["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        msgs,
+        vec!["from-rotated-2", "from-rotated-1", "mid-second", "from-current-a", "from-current-b"],
+        "跨文件旧→新归并：{msgs:?}"
+    );
+    // files 列表如实反映扫描范围（无 .gz）
+    let files: Vec<&str> = body["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap())
+        .collect();
+    assert_eq!(files.len(), 3, "gz 不在扫描列表：{files:?}");
+    assert!(!files.iter().any(|f| f.ends_with(".gz")), "{files:?}");
+
+    // 跨文件分页：offset=2&limit=2 → mid-second + from-current-a
+    let resp = send(&router, "GET", "/api/v1/logs?offset=2&limit=2", None).await;
+    let body = body_json(resp).await;
+    assert_eq!(body["total_matched"].as_u64(), Some(5), "total 跨文件累计");
+    let msgs: Vec<&str> = body["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["fields"]["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(msgs, vec!["mid-second", "from-current-a"], "分页跨文件连续：{msgs:?}");
+}
+
+/// 单文件行为不变：无轮转文件时与旧口径一致（files 只含当前文件）。
+#[tokio::test]
+async fn logs_query_single_file_behavior_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = state_with_logs_dir(dir.path(), true);
+    let router = build_router(st.clone());
+    std::fs::create_dir_all(&st.logs_root).unwrap();
+    std::fs::write(
+        crate::logging::log_file_path(&st.logs_root, "devforge"),
+        format!("{}\n", serde_json::json!({"timestamp": "2026-10-31T10:00:00.000000Z", "level": "INFO", "fields": {"message": "only"}, "target": "t"})),
+    )
+    .unwrap();
+
+    let resp = send(&router, "GET", "/api/v1/logs", None).await;
+    let body = body_json(resp).await;
+    assert_eq!(body["total_matched"].as_u64(), Some(1));
+    assert_eq!(body["files"].as_array().unwrap().len(), 1);
+    assert_eq!(body["lines"][0]["fields"]["message"], "only");
+}

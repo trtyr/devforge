@@ -892,22 +892,28 @@ pub(crate) fn log_line_matches(
     true
 }
 
-/// `GET /logs`：引擎事件流查询（`<logs_root>/devforge.log.jsonl`）——
-/// 级别 / 组件 / 关键词 / run_id / 时间窗过滤 + 分页（文件序旧→新）。
+/// `GET /logs`：引擎事件流查询（`<logs_root>/devforge.log.jsonl*`）——
+/// 级别 / 组件 / 关键词 / run_id / 时间窗过滤 + 分页（时间序旧→新）。
 ///
-/// 口径：全文件扫描后过滤（v1；文件轮转归运维后续）；时间窗过滤对无法解析
-/// 时间戳的行放行（宁多勿丢）；弹窗看完整命令与输出 = 本端点（引擎面）+
-/// 既有 `/projects/.../runs/{run}/transcript`（对话面）双源拼装。
+/// 口径：全文件扫描后过滤；时间窗过滤对无法解析时间戳的行放行（宁多勿丢）；
+/// 弹窗看完整命令与输出 = 本端点（引擎面）+ 既有
+/// `/projects/.../runs/{run}/transcript`（对话面）双源拼装。
+/// 收尾批（2026-11-01）：轮转感知——运维轮转（logrotate 形态）留下的
+/// `devforge.log.jsonl.*` 历史文件一并归并扫描（gz 读不了跳过），
+/// 分页语义跨文件连续；响应新增 `files` 列表（实际扫描的文件名）。
 pub async fn logs_query(
     State(st): State<SharedState>,
     Query(q): Query<LogsQuery>,
 ) -> Json<serde_json::Value> {
     let offset = q.offset.unwrap_or(0);
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
-    let path = crate::logging::log_file_path(&st.logs_root, "devforge");
+    let files = rotated_log_files(&st.logs_root);
     let mut matched: Vec<serde_json::Value> = Vec::new();
     let mut total_matched: usize = 0;
-    if let Ok(content) = std::fs::read_to_string(&path) {
+    for path in &files {
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
         for line in content.lines() {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue; // 非法行（半写/损坏）跳过——查询面不做修复
@@ -924,12 +930,43 @@ pub async fn logs_query(
             }
         }
     }
+    let scanned: Vec<String> = files
+        .iter()
+        .filter_map(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+        .collect();
     Json(json!({
         "total_matched": total_matched,
         "offset": offset,
         "limit": limit,
         "lines": matched,
+        "files": scanned,
     }))
+}
+
+/// 轮转感知（收尾批 2026-11-01）：logs_root 下的引擎日志文件清单，按
+/// (mtime, 文件名) 旧→新排序——分页「文件序旧→新」的语义在多文件下保持。
+/// 只收未压缩文本（`devforge.log.jsonl` 及其 `.*` 后缀轮转副本；`.gz` 读不了
+/// 跳过，响应 files 列表如实反映实际扫描范围）。
+fn rotated_log_files(logs_root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(logs_root) else {
+        return Vec::new();
+    };
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            (name == "devforge.log.jsonl" || name.starts_with("devforge.log.jsonl."))
+                && p.is_file()
+                && !name.ends_with(".gz")
+        })
+        .filter_map(|p| {
+            let mtime = p.metadata().and_then(|m| m.modified()).ok()?;
+            Some((mtime, p))
+        })
+        .collect();
+    files.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    files.into_iter().map(|(_, p)| p).collect()
 }
 
 // ---------- 配置：SOP 只读序列化（A9 · P019） ----------
