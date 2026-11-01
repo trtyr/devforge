@@ -62,6 +62,12 @@ pub struct Store {
     /// 启动时选一个；都设时 PG 优先）。serde skip：连接串不进任何持久化文件。
     #[serde(skip)]
     pub persist_pg: Option<String>,
+    /// 最近一次 persist 是否失败（R3-08 裁决②：API 写端点诚实化——置位时写
+    /// 端点返回 500「内存已更新/落盘失败/重启丢失」；engine/run 内部保持
+    /// WARN-continue）。Cell 内部可变性（persist 是 &self）；serde skip：运行时
+    /// 状态不落盘，重启即清。Store 恒在 Mutex 后面，不跨线程共享引用。
+    #[serde(skip, default)]
+    pub last_persist_failed: std::cell::Cell<bool>,
 }
 
 fn default_max_concurrent() -> usize {
@@ -142,6 +148,7 @@ impl Default for Store {
             channel_breakers: Vec::new(),
             persist_path: None,
             persist_pg: None,
+            last_persist_failed: std::cell::Cell::new(false),
         }
     }
 }
@@ -171,27 +178,38 @@ impl Store {
     }
 
     /// 变更落盘（persist_path/persist_pg 均未设则空操作）。失败只 WARN 不阻断
-    /// （可观测优先于强一致）。PG 模式（persist_pg Some）优先且不双写。
+    /// （可观测优先于强一致）；但置位 `last_persist_failed`（R3-08 裁决②：
+    /// API 写端点诚实化——写响应改 500；engine/run 内部不变，WARN 继续）。
+    /// 成功清除标志：flag = 「自上次成功落盘以来有失败」，报告一次即清。
+    /// PG 模式（persist_pg Some）优先且不双写。
     fn persist(&self) {
         if let Some(url) = &self.persist_pg {
-            if let Err(e) = self.save_pg(url) {
-                tracing::warn!(
-                    component = "store",
-                    error = %e,
-                    "store PG 落盘失败（内存态继续，重启将丢自上次成功落盘后的变更）"
-                );
+            match self.save_pg(url) {
+                Ok(()) => self.last_persist_failed.set(false),
+                Err(e) => {
+                    self.last_persist_failed.set(true);
+                    tracing::warn!(
+                        component = "store",
+                        error = %e,
+                        "store PG 落盘失败（内存态继续，重启将丢自上次成功落盘后的变更）"
+                    );
+                }
             }
             return;
         }
-        if let Some(path) = &self.persist_path
-            && let Err(e) = self.save(path)
-        {
-            tracing::warn!(
-                component = "store",
-                path = %path.display(),
-                error = %e,
-                "store 落盘失败（内存态继续，重启将丢自上次成功落盘后的变更）"
-            );
+        if let Some(path) = &self.persist_path {
+            match self.save(path) {
+                Ok(()) => self.last_persist_failed.set(false),
+                Err(e) => {
+                    self.last_persist_failed.set(true);
+                    tracing::warn!(
+                        component = "store",
+                        path = %path.display(),
+                        error = %e,
+                        "store 落盘失败（内存态继续，重启将丢自上次成功落盘后的变更）"
+                    );
+                }
+            }
         }
     }
 

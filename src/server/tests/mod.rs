@@ -270,3 +270,31 @@ mod scheduler;
 mod start;
 mod boundary_entry;
 mod channel_breaker;
+
+/// R3-08 裁决②端到端：persist 失败置位后，写端点 2xx 改写 500（内存已更新/
+/// 落盘失败/重启丢失）；读端点不受影响（诚实化只拦写方法的成功响应）。
+#[tokio::test]
+async fn write_endpoint_reports_500_when_persist_failed() {
+    let f = fixture();
+    let tmp = tempfile::tempdir().unwrap();
+    // persist_path 指向目录 → save 的 tmp+rename 必败
+    let bad = tmp.path().join("not-a-file");
+    std::fs::create_dir_all(&bad).unwrap();
+    f.state.store.lock().unwrap().persist_path = Some(bad);
+
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(serde_json::json!({
+            "name": "persist-probe",
+            "local_path": f._dir.path().to_string_lossy().to_string(),
+        })),
+    )
+    .await;
+    assert_eq!(resp.status(), 500, "persist 失败时写端点必须 500");
+
+    // 内存已生效（诚实化不回滚内存），读端点正常
+    let resp = send(&f.router, "GET", "/api/v1/projects", None).await;
+    assert_eq!(resp.status(), 200);
+}

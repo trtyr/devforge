@@ -1,6 +1,8 @@
 //! HTTP 面（ARC-R2 自 server/mod.rs 迁入）：token 解析（P3：env + CLI 双入口）+ 路由表 + 生产引导。
 
+use axum::extract::State;
 use axum::middleware;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 
@@ -153,6 +155,10 @@ pub fn build_router(state: SharedState) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             handlers::auth_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            persist_honesty_middleware,
         ));
     Router::new()
         .nest("/api/v1", api)
@@ -164,6 +170,50 @@ pub fn build_router(state: SharedState) -> Router {
                 .with_state(state.clone()),
         )
         .with_state(state)
+}
+
+/// R3-08 裁决②：写端点诚实化——persist 失败置位时把 2xx 写响应改写 500。
+/// 内存已更新（本次操作生效）但落盘失败，重启将丢；详情看服务日志的 store
+/// 落盘失败告警。报告一次即清（flag = 「自上次成功落盘以来有失败」）。
+/// 只拦写方法（POST/PATCH/PUT/DELETE）的成功响应；engine/run 内部保持 WARN。
+async fn persist_honesty_middleware(
+    State(st): State<SharedState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let is_write = matches!(
+        *req.method(),
+        axum::http::Method::POST
+            | axum::http::Method::PATCH
+            | axum::http::Method::PUT
+            | axum::http::Method::DELETE
+    );
+    let resp = next.run(req).await;
+    if !is_write || !resp.status().is_success() {
+        return resp;
+    }
+    let failed = {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        let failed = store.last_persist_failed.get();
+        store.last_persist_failed.set(false); // 报告一次即清
+        failed
+    };
+    if !failed {
+        return resp;
+    }
+    tracing::warn!(
+        component = "server",
+        event = "persist_failed_reported",
+        "写操作已生效于内存，但 store 落盘失败——已改写为 500 告知调用方"
+    );
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        axum::Json(serde_json::json!({
+            "error": "内存已更新，但落盘失败——重启后将丢失本次变更（详见服务日志 store 落盘失败告警）",
+            "persist_failed": true,
+        })),
+    )
+        .into_response()
 }
 
 /// 生产引导：绑定地址并常驻服务（main 调用）。

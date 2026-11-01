@@ -874,3 +874,38 @@ fn update_issue_fields_edits_and_locks() {
     assert!(s.update_issue_fields(&i.key, &blank_title, edited.version, "op").is_err());
 }
 
+
+/// R3-08 裁决②：persist 失败置位 last_persist_failed、成功清除（API 写端点
+/// 诚实化的旗标语义：flag = 「自上次成功落盘以来有失败」）。
+#[test]
+fn persist_failure_sets_flag_and_success_clears_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    // persist_path 指向一个**目录**：save 的 tmp+rename 落到目录上必败
+    let bad = tmp.path().join("not-a-file");
+    std::fs::create_dir_all(&bad).unwrap();
+    let mut st = Store::new().with_persist(bad);
+    assert!(!st.last_persist_failed.get());
+
+    st.push_auth_event("login_failure", "a", "d", 1);
+    assert!(
+        st.last_persist_failed.get(),
+        "落盘失败必须置位"
+    );
+
+    // 换回可写路径：成功落盘清除标志
+    st.persist_path = Some(tmp.path().join("store.json"));
+    st.push_auth_event("login_success", "a", "d", 2);
+    assert!(
+        !st.last_persist_failed.get(),
+        "落盘成功必须清除标志"
+    );
+}
+
+/// 内存态（persist_path/pg 均未设）不触发 persist——flag 恒 false（单测大量
+/// 无落盘变更不应误伤诚实化）。
+#[test]
+fn in_memory_store_never_sets_persist_flag() {
+    let mut st = Store::new();
+    st.push_auth_event("login_failure", "a", "d", 1);
+    assert!(!st.last_persist_failed.get());
+}
