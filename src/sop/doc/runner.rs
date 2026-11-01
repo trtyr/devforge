@@ -78,7 +78,9 @@ fn spawn_review_worker<F>(
                     let mut f = factory.lock().unwrap_or_else(|e| e.into_inner());
                     f.open()?
                 };
-                match session.review(&instruction) {
+                // R6-P59：审查走墙钟（对齐 fix.rs 已修形态）——doc SOP 默认无失活
+                // 收割，审查实例挂死 = run 永挂并占住流水线在途槽。
+                match session.review_with_deadline(&instruction, crate::sop::review_gate::review_deadline()) {
                     Ok(t) if !t.trim().is_empty() => {
                         // AF-5：裁决正道 = submit_verdict 工具参数（结构化比对，截断=参数校验失败重试）；
                         // 文本协议 = 降级回退（审查会话每轮新实例，WARN 天然每轮至多一次）。

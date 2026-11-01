@@ -557,7 +557,8 @@ fn final_review_with_retry<F: crate::sop::planning::ReviewSessionFactory>(
     let max = crate::sop::doc::protocol::MAX_DOC_PROTOCOL_VIOLATIONS;
     for attempt in 0..max {
         let mut session = factory.open()?;
-        let text = session.review(instruction)?;
+        // R6-P59：审查走墙钟（对齐 fix.rs 已修形态）——挂死的终审实例由墙钟收割
+        let text = session.review_with_deadline(instruction, crate::sop::review_gate::review_deadline())?;
         // R6-P57：工具裁决优先（与单审 worker 同口径）——终审不再 100% 忽略
         // submit_verdict 工具裁决；无工具提交才按文本协议降级。
         let verdict = match session

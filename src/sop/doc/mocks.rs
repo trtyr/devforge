@@ -82,6 +82,7 @@ pub fn pipe_factory(replies: &[&str]) -> PipeReviewFactory {
         opens: Arc::new(Mutex::new(0)),
         gates: no_gates(),
         submissions: Arc::new(Mutex::new(Default::default())),
+        deadlines: Arc::new(Mutex::new(Vec::new())),
     }
 }
 
@@ -99,6 +100,7 @@ pub fn pipe_factory_with_submissions(
         opens: Arc::new(Mutex::new(0)),
         gates: no_gates(),
         submissions: Arc::new(Mutex::new(submissions.into())),
+        deadlines: Arc::new(Mutex::new(Vec::new())),
     }
 }
 
@@ -166,6 +168,9 @@ pub struct PipeReviewFactory {
     pub gates: Arc<Mutex<VecDeque<std::sync::mpsc::Receiver<()>>>>,
     /// R6-P66：审查侧工具提交脚本（按会话开启序分配；空 = 该会话无提交 → 文本降级）。
     pub submissions: Arc<Mutex<VecDeque<Vec<ToolSubmission>>>>,
+    /// R6-P59：每次 review_with_deadline 传入的墙钟（None = 传了 None——
+    /// 用例断言「显式墙钟已传入」用；不记录 = 墙钟路径没走到）。
+    pub deadlines: Arc<Mutex<Vec<Option<std::time::Instant>>>>,
 }
 impl ReviewSessionFactory for PipeReviewFactory {
     fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
@@ -175,6 +180,7 @@ impl ReviewSessionFactory for PipeReviewFactory {
             instructions: self.instructions.clone(),
             gate: self.gates.clone(),
             submissions: self.submissions.clone(),
+            deadlines: self.deadlines.clone(),
         }))
     }
 }
@@ -183,6 +189,7 @@ struct PipeReviewSession {
     instructions: Arc<Mutex<Vec<String>>>,
     gate: Arc<Mutex<VecDeque<std::sync::mpsc::Receiver<()>>>>,
     submissions: Arc<Mutex<VecDeque<Vec<ToolSubmission>>>>,
+    deadlines: Arc<Mutex<Vec<Option<std::time::Instant>>>>,
 }
 impl ReviewSession for PipeReviewSession {
     fn review(&mut self, instruction: &str) -> Result<String> {
@@ -204,6 +211,17 @@ impl ReviewSession for PipeReviewSession {
             .unwrap()
             .pop_front()
             .unwrap_or_default()
+    }
+
+    /// R6-P59：记录传入的墙钟并按文本路径出结果（脚本替身无阻塞语义，但
+    /// 「墙钟确实被传入」这件事要用例可断言）。
+    fn review_with_deadline(
+        &mut self,
+        instruction: &str,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<String> {
+        self.deadlines.lock().unwrap().push(deadline);
+        self.review(instruction)
     }
 }
 

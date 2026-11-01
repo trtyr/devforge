@@ -35,6 +35,7 @@ fn final_review_retries_protocol_violation() {
         instructions: Arc::new(Mutex::new(Vec::new())),
         opens: Arc::new(Mutex::new(0)),
         gates: crate::sop::doc::mocks::no_gates(),
+        deadlines: Arc::new(Mutex::new(Vec::new())),
         submissions: Arc::new(Mutex::new(Default::default())),
     };
     let v = super::final_review_with_retry(&mut factory, "审").unwrap();
@@ -62,6 +63,7 @@ fn final_review_exhausts_violations_returns_last() {
         instructions: Arc::new(Mutex::new(Vec::new())),
         opens: Arc::new(Mutex::new(0)),
         gates: crate::sop::doc::mocks::no_gates(),
+        deadlines: Arc::new(Mutex::new(Vec::new())),
         submissions: Arc::new(Mutex::new(Default::default())),
     };
     let v = super::final_review_with_retry(&mut factory, "审").unwrap();
@@ -86,6 +88,7 @@ fn final_review_reads_tool_submission() {
         instructions: Arc::new(Mutex::new(Vec::new())),
         opens: Arc::new(Mutex::new(0)),
         gates: crate::sop::doc::mocks::no_gates(),
+        deadlines: Arc::new(Mutex::new(Vec::new())),
         submissions: Arc::new(Mutex::new(VecDeque::from(vec![vec![
             crate::sop::doc::mocks::submit_verdict("PASS", &[]),
         ]]))),

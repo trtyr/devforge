@@ -279,6 +279,7 @@ fn pipeline_runs_units_with_overlapped_reviews() {
         instructions: Arc::new(Mutex::new(Vec::new())),
         opens: Arc::new(Mutex::new(0)),
         gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1]))),
+        deadlines: Arc::new(Mutex::new(Vec::new())),
         submissions: Arc::new(Mutex::new(Default::default())),
     };
     drive_gates(
@@ -337,6 +338,7 @@ fn pipeline_fix_round_requeues_failed_unit() {
         instructions: instructions.clone(),
         opens: Arc::new(Mutex::new(0)),
         gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1, rx2, rx3]))),
+        deadlines: Arc::new(Mutex::new(Vec::new())),
         submissions: Arc::new(Mutex::new(Default::default())),
     };
     drive_gates(
@@ -411,6 +413,7 @@ fn pipeline_breaker_stops_after_two_consecutive_fails() {
         instructions: Arc::new(Mutex::new(Vec::new())),
         opens: Arc::new(Mutex::new(0)),
         gates: no_gates(),
+        deadlines: Arc::new(Mutex::new(Vec::new())),
         submissions: Arc::new(Mutex::new(Default::default())),
     };
     let err = run_pipeline(
@@ -696,6 +699,7 @@ fn pass_uses_own_units_snapshot_not_latest() {
         instructions: Arc::new(Mutex::new(Vec::new())),
         opens: Arc::new(Mutex::new(0)),
         gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1]))),
+        deadlines: Arc::new(Mutex::new(Vec::new())),
         submissions: Arc::new(Mutex::new(Default::default())),
     };
     drive_gates(
@@ -799,11 +803,20 @@ fn tool_verdict_pass_is_consumed_structurally() {
         &["正文没有裁决块。"], // 文本协议下必 FAIL——工具 PASS 若被文本再解析此处即红
         vec![vec![submit_verdict("PASS", &[])]],
     );
+    // deadlines 的 Arc 先 clone（run_pipe! 会 move f）
+    let deadlines = f.deadlines.clone();
     let rep = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
     assert_eq!(
         rep.units_done,
         vec!["unit-a-01".to_string()],
         "工具 PASS 必须结构化生效（不被文本再解析覆盖）"
+    );
+    // R6-P59：审查必须带显式墙钟（review_with_deadline 传入 Some(deadline)）——
+    // 旧口径裸 review() 绕过统一墙钟，审查实例挂死 = run 永挂。
+    let deadlines = deadlines.lock().unwrap();
+    assert!(
+        deadlines.iter().all(|d| d.is_some()),
+        "每次 review 都必须传入墙钟（None = 裸调用）：{deadlines:?}"
     );
 }
 
