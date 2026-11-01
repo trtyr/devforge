@@ -1088,7 +1088,7 @@ pub async fn get_integration_settings(State(st): State<SharedState>) -> Json<ser
     let settings = crate::integration::settings::load(&crate::integration::settings::settings_path(
         &st.plans_root,
     ));
-    Json(serde_json::to_value(&settings).unwrap_or(serde_json::Value::Null))
+    Json(serde_json::to_value(settings).unwrap_or(serde_json::Value::Null))
 }
 
 /// `PUT /integrations/settings`：集成开关写面——原子写（tmp + rename），
@@ -1121,7 +1121,7 @@ pub async fn put_integration_settings(
             settings.auto_integrate_enabled, settings.gates.clippy, settings.gates.doc_lint
         ),
     );
-    Ok(Json(serde_json::to_value(&settings).unwrap_or(serde_json::Value::Null)))
+    Ok(Json(serde_json::to_value(settings).unwrap_or(serde_json::Value::Null)))
 }
 
 /// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。

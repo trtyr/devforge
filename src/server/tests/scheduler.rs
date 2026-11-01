@@ -924,6 +924,8 @@ async fn the_status_endpoint_keeps_its_top_level_field_set() {
             "blocked",
             "channel_breakers",
             "effective_max_concurrent",
+            // gap-E：自动集成面（开关态 + 窗口态 + 目标 ref + 可选门）
+            "integration",
             "max_concurrent_runs",
             "queue",
             "runnable",
@@ -1054,4 +1056,83 @@ impl tracing::Subscriber for EventCapture {
     }
     fn enter(&self, _span: &tracing::span::Id) {}
     fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+// ── 2026-10-31（autonomy-gaps gap-E）：集成窗口与开关面 ──
+
+/// 集成窗口期：不派新 run、只记 `blocked{integration_window}`、**不改任务状态**。
+///
+/// 错实现形态：窗口期照常派工（窗口旁路漏了）→ 派工断言红；
+/// 或窗口期把任务置 Blocked（拿状态当开关用）→ 状态断言红。
+#[tokio::test]
+async fn integration_window_blocks_dispatch_without_touching_task_status() {
+    let f = fixture();
+    make_task(&f, "devforge", "win-task", TaskDeps::default());
+    let cfg = SchedulerConfig::default();
+    let before = status_of(&f, "devforge", "win-task");
+    assert_ne!(before, TaskStatus::Blocked, "前置：任务应是 Pending");
+
+    let report = crate::server::scheduler::tick_with_integration_window(&f.state, &cfg, true);
+    assert!(
+        report.dispatched.is_empty(),
+        "集成窗口期不得派工：{report:?}"
+    );
+    let entry = report
+        .blocked
+        .iter()
+        .find(|(t, _)| t == "devforge/win-task")
+        .expect("窗口期任务应被阻塞");
+    assert_eq!(entry.1, "integration_window");
+    assert_eq!(
+        status_of(&f, "devforge", "win-task"),
+        before,
+        "窗口期不得改任务状态（瞬态现象不写进 store）"
+    );
+}
+
+/// 对照组：窗口关掉 → 同一个任务恢复派工（证明上条的阻塞确实来自窗口）。
+///
+/// 错实现形态：窗口判定写死成「永远阻塞」→ 本用例红。
+#[tokio::test]
+async fn dispatch_resumes_when_integration_window_is_closed() {
+    let f = fixture();
+    make_task(&f, "devforge", "win-open", TaskDeps::default());
+    let cfg = SchedulerConfig::default();
+
+    let report = crate::server::scheduler::tick_with_integration_window(&f.state, &cfg, false);
+    assert!(
+        report
+            .dispatched
+            .iter()
+            .any(|(p, t)| p == "devforge" && t == "win-open"),
+        "窗口关时照常派工：{report:?}"
+    );
+}
+
+/// 开关面与窗口面在 `scheduler/status` 里同源可见：缺省关、改文件即开。
+///
+/// 错实现形态：status 读的是进程内缓存（改了文件仍报旧值）→ 第三段断言红。
+#[tokio::test]
+async fn scheduler_status_reports_integration_switch_and_window_state() {
+    let f = fixture();
+    let resp = send(&f.router, "GET", "/api/v1/scheduler/status", None).await;
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["integration"]["auto_integrate_enabled"], false,
+        "缺省开关必须关（自主合并需显式授权）：{body}"
+    );
+    assert_eq!(body["integration"]["window_in_flight"], false);
+    assert_eq!(body["integration"]["target_ref"], "refs/heads/master");
+
+    // 写设置文件 → status 立刻看到开关开（热生效，与消费循环同一份口径）
+    let settings_path = f.state.plans_root.join("integrations").join("settings.json");
+    std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    std::fs::write(&settings_path, r#"{"auto_integrate_enabled": true}"#).unwrap();
+    let resp = send(&f.router, "GET", "/api/v1/scheduler/status", None).await;
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["integration"]["auto_integrate_enabled"], true,
+        "改文件即生效（每轮重读）：{body}"
+    );
 }

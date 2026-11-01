@@ -51,7 +51,7 @@ fn serialized_shape_matches_ui9_schema() {
         auto_integrate_enabled: true,
         gates: IntegrationGates { clippy: true, doc_lint: true },
     };
-    let v = serde_json::to_value(&s).unwrap();
+    let v = serde_json::to_value(s).unwrap();
     assert_eq!(v["auto_integrate_enabled"], true);
     assert_eq!(v["gates"]["clippy"], true);
     assert_eq!(v["gates"]["doc_lint"], true);

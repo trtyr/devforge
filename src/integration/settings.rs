@@ -13,16 +13,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Context as _, Result};
 
+/// 集成目标 ref（gap-E 前置裁决②）：**本地 master**，不自动 push origin（git 节奏仍归用户）。
+/// 固定常量而非配置项：运营开关文件只承载「总开关 + 两道可选门」，
+/// ref 可配置会引入「配置写错 → 合到错分支」的新失败面。
+pub const TARGET_REF: &str = "refs/heads/master";
+
 /// gates 子结构：集成验证的门开关（auto-integrate 的后验门）。
 /// Default（derive）= 双 false，与「缺省全 off」口径一致。
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// Copy：全 bool 值对象（消费闭包按值捕获一份，不借用外层状态）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct IntegrationGates {
     pub clippy: bool,
     pub doc_lint: bool,
 }
 
 /// 集成开关集（文件缺失/损坏 = 全 off 缺省——「文件不存在 = 功能不存在」）。
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+/// Copy：全 bool 值对象（消费循环内层闭包按值捕获）。
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct IntegrationSettings {
     pub auto_integrate_enabled: bool,
     #[serde(default)]

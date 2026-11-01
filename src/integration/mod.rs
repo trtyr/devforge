@@ -3,6 +3,18 @@
 //! 设计文档：`docs/plantree/plans/012-parallel-dev-base/topics/04-integration-queue.md`
 //! （流程图/CAS 语义/证据重建规则/实施落点速记）。核心不变量：**迟到者不能覆盖新目标**
 //! ——目标 ref 更新走 `git update-ref <ref> <new> <expect>` 三参 CAS，expect 不符即重排。
+//!
+//! 2026-10-31（autonomy-gaps gap-E）：队列**有了生产消费方**——三个子模块：
+//! - [`settings`]：总开关与可选门（`<plans_root>/integrations/settings.json`；
+//!   缺省关、读坏了 fail-closed、每次决策前重读 → 改文件即热生效）；
+//! - [`gate`]：验证门（全量 `cargo test` 硬门 + 可选 clippy / doc-lint；
+//!   逐步超时且超时杀进程组；Quality / System 归因二分）；
+//! - [`consumer`]：自动消费（settled 候选 → enqueue → integrate → 验证 → Integrated / NeedsRepair 终态）。
+//!
+//! 失败归因口径（前置裁决④，**两者副作用不同**）：
+//! - Quality（断言红 / 编译失败 / 合并冲突 / 候选失联）→ 写产物 + `NeedsRepair` + 产物路径进 `evidence_paths`；
+//! - System（cargo 起不来 / 构建目录不可写 / 超时被杀）→ **不动队列、不置状态、不落产物**，
+//!   交消费者记一次重试（否则每次基础设施抖动都写一份假质量记录）。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -259,6 +271,7 @@ impl<'a> Integrator<'a> {
                 &cand,
                 &serde_json::json!({
                     "kind": kind,
+                    "attribution": "quality",
                     "base_rev": cand.base_rev,
                     "target": expect_before,
                     "candidate": cand.frozen_sha,
@@ -266,6 +279,9 @@ impl<'a> Integrator<'a> {
                     "stderr": stderr,
                 }),
             )?;
+            queue.candidates[idx]
+                .evidence_paths
+                .push(artifact.to_string_lossy().to_string());
             queue.candidates[idx].status = CandidateStatus::NeedsRepair {
                 reason: reason.clone(),
             };
@@ -288,17 +304,38 @@ impl<'a> Integrator<'a> {
         // 组合验证（注入管线；失败产物含验证输出）
         if let Err(e) = (self.validate)(&iw_path) {
             drop(guard);
+            // 归因二分（前置裁决④）：Quality = 候选自身问题（写产物 + 修复队列）；
+            // System = 基础设施故障（**不写队列、不置状态、不落产物**，交消费者记一次重试）。
+            // 只把 Quality 记成质量账——否则每次基础设施抖动都写一份假质量记录。
+            if !matches!(e.root_cause(), DevforgeError::Quality(_)) {
+                tracing::error!(
+                    component = "integration",
+                    event = "integration.validation.infra",
+                    project = %queue.project,
+                    task_id = %cand.task_id,
+                    error = %e,
+                    "组合验证基础设施失败（候选保持 Pending 等重试）"
+                );
+                return Err(DevforgeError::System(format!(
+                    "集成组合验证基础设施失败（task {}）：{e}",
+                    cand.task_id
+                )));
+            }
             let artifact = self.write_artifact(
                 &queue.project,
                 &cand,
                 &serde_json::json!({
                     "kind": "validation_failed",
+                    "attribution": "quality",
                     "base_rev": cand.base_rev,
                     "target": expect_before,
                     "candidate": cand.frozen_sha,
                     "error": e.to_string(),
                 }),
             )?;
+            queue.candidates[idx]
+                .evidence_paths
+                .push(artifact.to_string_lossy().to_string());
             queue.candidates[idx].status = CandidateStatus::NeedsRepair {
                 reason: format!("组合验证失败：{e}"),
             };
@@ -392,7 +429,10 @@ impl<'a> Integrator<'a> {
 
     /// 冲突/失败产物：`{plans_root}/integrations/{project}/artifacts/{task_id}-{n}.json`。
     /// 全仓审计 #9：按项目分目录（旧实现恒 `_global`，多项目产物混放，检索与清理边界模糊）。
-    fn write_artifact(
+    ///
+    /// `pub(crate)`：自动消费方（[`consumer`]）在「基础设施重试耗尽」时复用同一产物口径
+    /// （同名 + 同序号规则），不另开一套命名。
+    pub(crate) fn write_artifact(
         &self,
         project: &str,
         cand: &Candidate,
@@ -427,6 +467,23 @@ struct IwCleanup {
 impl Drop for IwCleanup {
     fn drop(&mut self) {
         let _ = git(&self.repo, &["worktree", "remove", "--force", &self.path.to_string_lossy()]);
+    }
+}
+
+ /// NeedsRebase 候选放回 Pending 重验（终态不停滞）——消费循环每轮开头调用。
+pub(crate) fn rearm_needs_rebase(project: &str, queue: &mut MergeQueue) {
+    for c in queue.candidates.iter_mut() {
+        if let CandidateStatus::NeedsRebase { target_moved_to } = &c.status {
+            tracing::warn!(
+                component = "integration",
+                event = "integration.needs_rebase.rearm",
+                project = %project,
+                task = %c.task_id,
+                target = %target_moved_to,
+                "NeedsRebase 候选放回 Pending 重验（终态不停滞）"
+            );
+            c.status = CandidateStatus::Pending;
+        }
     }
 }
 
@@ -491,4 +548,6 @@ fn git_out(cwd: &Path, args: &[&str]) -> Result<String> {
 
 #[cfg(test)]
 mod tests;
+pub mod consumer;
+pub mod gate;
 pub mod settings;

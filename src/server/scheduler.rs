@@ -4,11 +4,18 @@
 //! ① 超预算熔断（cancel 置位，引擎按失败收尾）；
 //! ② Settled 且带契约的任务自动入集成队列（M3 MergeQueue，闭环自动化）；
 //! ③ 就绪判定（depends_on 全 Completed）→ 准入（并发上限/独占窗口）→ 派工计划；
-//! ④ blocked 语义：capacity / exclusive_window / dependency_failed，恢复联动自动迁出。
+//! ④ blocked 语义：capacity / exclusive_window / dependency_failed / integration_window，
+//!    恢复联动自动迁出。
 //!
 //! 派工决策（tick，纯函数可测）与派工执行（`launch`，async：渲染闸门等待）分离。
+//!
+//! 2026-10-31（autonomy-gaps gap-E）：集成队列**有了生产消费方**——`scheduler_loop` 另拉起
+//! 一个常驻的集成消费循环（周期 30s，开关每轮重读 → 改文件即热生效）：
+//! ⑤ 自动集成消费（settled 候选 → integrate → 验证 → 终态）；集成窗口期内**不派新 run**
+//!    （错峰：验证与 run 派发争同一台机，验证被自家并发 run 拖成 flaky 就没人敢开开关）。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -197,6 +204,20 @@ fn load_kick() -> bool {
     KICK.swap(false, Ordering::Relaxed)
 }
 
+/// 自动集成消费循环的周期（秒）——开关每轮重读，改文件即热生效。
+const INTEGRATION_PERIOD: Duration = Duration::from_secs(30);
+
+/// 集成窗口（进程级）：自动集成验证进行中 → tick 不派新 run（错峰口径）。
+///
+/// 进程级而非项目级：集成 worktree 名按仓名派生（`_integration` 固定名独占），
+/// 同一台机上的集成本来就是全局串行的。
+static INTEGRATION_WINDOW: AtomicBool = AtomicBool::new(false);
+
+/// 集成窗口态（tick 与 `status()` 读同一份，单一事实源）。
+pub fn integration_window_in_flight() -> bool {
+    INTEGRATION_WINDOW.load(Ordering::Relaxed)
+}
+
 /// 单次调度（纯决策：改状态/入队/发事件；launch 由调用方执行）。
 /// 已熔断过的 run id（自审 minor 227：重复熔断 = 重复 SIGKILL + 重复事件）。
 ///
@@ -373,6 +394,20 @@ fn reason_summary(reason: &str) -> String {
 }
 
 pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
+    // 集成窗口读进程级原子（与 `status()` 同一事实源）。
+    tick_with_integration_window(st, cfg, integration_window_in_flight())
+}
+
+/// 单次调度（**显式注入**集成窗口态）。
+///
+/// 显式入参的理由：进程级原子在 `cargo test` 并行下会互相污染（一个用例置位、另一个用例
+/// 断言派工）——显式入参让「集成窗口期不派工」可确定性断言，不产生变化期断言。
+/// 既有 `tick(&state, &cfg)` 调用点零改动。
+pub fn tick_with_integration_window(
+    st: &SharedState,
+    cfg: &SchedulerConfig,
+    integration_in_flight: bool,
+) -> TickReport {
     let mut report = TickReport::default();
 
     // ① 超预算熔断：Running 且 started_at + budget < now → cancel 置位 + 台账强杀。
@@ -678,18 +713,8 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
             if swept_this_tick.insert(project.clone()) {
                 // 全仓审计 #2：NeedsRebase 不是终态——rebase 到新目标后重验；
                 // NeedsRepair 保持终态（修复 = 新候选带新证据 = 新 frozen_sha）。
-                for c in queue.candidates.iter_mut() {
-                    if let CandidateStatus::NeedsRebase { target_moved_to } = &c.status {
-                        tracing::warn!(
-                            component = "scheduler",
-                            project = %project,
-                            task = %c.task_id,
-                            target = %target_moved_to,
-                            "NeedsRebase 候选放回 Pending 重验（终态不停滞）"
-                        );
-                        c.status = CandidateStatus::Pending;
-                    }
-                }
+                // 单一事实源：与自动消费方（consumer）共用 rearm，两处口径不许漂移。
+                crate::integration::rearm_needs_rebase(&project, queue);
             }
             // 去重口径（全仓审计 #2）：Pending/Integrated = 本任务已在队或已合入；
             // NeedsRepair 只在 frozen_sha 未变时跳过；任务重跑产生新 frozen_sha
@@ -787,6 +812,13 @@ pub fn tick(st: &SharedState, cfg: &SchedulerConfig) -> TickReport {
     let mut exclusive_dispatched_this_tick = false;
     for (project, task_id, status, deps, exclusive, sop) in snapshot {
         if !matches!(status, TaskStatus::Pending | TaskStatus::Blocked) {
+            continue;
+        }
+        // **不改任务状态**（窗口是瞬态的，改状态会造成状态抖动；下次 tick 窗口关了再正常判）。
+        if integration_in_flight {
+            report
+                .blocked
+                .push((format!("{project}/{task_id}"), "integration_window".into()));
             continue;
         }
         // 依赖判定：任一 Failed → blocked{dependency_failed}；任一未完成 → 继续等。
@@ -960,6 +992,12 @@ pub async fn scheduler_loop(st: SharedState, cfg: SchedulerConfig) {
     // 并发上限在**进程启动期**已解析并回写 store（`apply_startup_concurrency`：
     // DEVFORGE_MAX_CONCURRENT > store 持久值 > 缺省 2）。本循环只读 store，
     // 不再做「只抬不压」的启动同步，也不持有第二份并发事实源。
+    // 自动集成消费循环（gap-E）：独立常驻任务——不能塞进 tick（tick 是纯决策且被
+    // spawn_blocking 包着跑，全量 cargo test 是分钟级，塞进去会把超预算熔断一起冻住）。
+    {
+        let st_int = st.clone();
+        tokio::spawn(async move { integration_loop(st_int).await });
+    }
     let mut last = std::time::Instant::now() - Duration::from_secs(60);
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1022,6 +1060,153 @@ type StatusSnapshot = (
     Vec<serde_json::Value>, // channel_breakers（渠道熔断段）
 );
 
+/// 自动集成消费循环（gap-E）：周期 30s，**开关每轮重读**（改文件即热生效、无需重启）。
+///
+/// 口径：
+/// - 开关关（缺省）→ 本轮零动作（连队列都不读）；
+/// - 开关开 → 逐项目消费（每项目每轮最多 1 个候选），集成窗口期不派新 run；
+/// - git / cargo 全在**锁外**跑（锁内只做快照——与 `status()` 的既有纪律一致）。
+///
+/// 集成在 `spawn_blocking` 里跑：全量 `cargo test` 是分钟级，不能占住 async 运行线程。
+async fn integration_loop(st: SharedState) {
+    loop {
+        tokio::time::sleep(INTEGRATION_PERIOD).await;
+        // 每轮重读开关（fail-closed：读不到 / 读坏了 = 全关）。
+        let settings = crate::integration::settings::load(&crate::integration::settings::settings_path(
+            &st.plans_root,
+        ));
+        if !settings.auto_integrate_enabled {
+            continue;
+        }
+        // 项目列表（锁内快照，锁外消费）。
+        let projects: Vec<String> = {
+            let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+            store.projects.iter().map(|p| p.name.clone()).collect()
+        };
+        for project in projects {
+            // 仓库路径：任务工作区 = 项目登记路径（锁内快照）。
+            let repos: HashMap<String, PathBuf> = {
+                let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+                store
+                    .tasks
+                    .iter()
+                    .filter(|t| t.project == project)
+                    .map(|t| (t.id.clone(), t.workspace.clone()))
+                    .collect()
+            };
+            let plans_root = st.plans_root.clone();
+            let project_for_gate = project.clone();
+            // 窗口置位：集成期间不派新 run（错峰）。
+            INTEGRATION_WINDOW.store(true, Ordering::Relaxed);
+            let result = tokio::task::spawn_blocking(move || {
+                let target_dir = plans_root
+                    .join("integrations")
+                    .join(&project_for_gate)
+                    .join("cargo-target");
+                crate::integration::consumer::drain_project(
+                    &settings,
+                    &project_for_gate,
+                    &repos,
+                    &plans_root,
+                    |iw: &std::path::Path| {
+                        // `IntegrationSettings` 是 Copy：内层闭包按值捕获一份（不借用外层状态）。
+                        let gate_settings = settings;
+                        let spec = crate::integration::gate::GateSpec::production(&gate_settings);
+                        spec.run(iw, Some(target_dir.as_path())).map(|_report| ())
+                    },
+                )
+            })
+            .await;
+            // 窗口清零（panic / 出错也必须清——否则 tick 永久停派）。
+            INTEGRATION_WINDOW.store(false, Ordering::Relaxed);
+            match result {
+                Ok(Ok(report)) => emit_integration_events(&st, &project, report),
+                Ok(Err(e)) => {
+                    tracing::error!(
+                        component = "scheduler",
+                        event = "integration.drain.failed",
+                        project = %project,
+                        error = %e,
+                        "自动集成消费失败（队列状态未动）"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        component = "scheduler",
+                        event = "integration.drain.panic",
+                        project = %project,
+                        panic = %err,
+                        "自动集成消费任务异常结束（队列状态未动）"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// 自动集成事件（事件名落在既有 `integration.*` 族里——前端按前缀过滤不许漏）。
+fn emit_integration_events(
+    st: &SharedState,
+    project: &str,
+    report: crate::integration::consumer::DrainReport,
+) {
+    let Some(consumed) = report.consumed else {
+        return;
+    };
+    use crate::integration::consumer::Consumed;
+    match consumed {
+        Consumed::Integrated {
+            task_id,
+            merged_sha,
+        } => st.emit(serde_json::json!({
+            "type": "integration.integrated",
+            "project": project,
+            "task": task_id,
+            "merged_sha": merged_sha,
+        })),
+        Consumed::AlreadyIntegrated {
+            task_id,
+            integrated_sha,
+        } => st.emit(serde_json::json!({
+            "type": "integration.already_integrated",
+            "project": project,
+            "task": task_id,
+            "integrated_sha": integrated_sha,
+        })),
+        Consumed::NeedsRepair {
+            task_id,
+            reason,
+            artifact,
+        } => st.emit(serde_json::json!({
+            "type": "integration.needs_repair",
+            "project": project,
+            "task": task_id,
+            "reason": reason,
+            "artifact": artifact.to_string_lossy(),
+        })),
+        Consumed::InfraRetry {
+            task_id,
+            reason,
+            infra_failures,
+        } => st.emit(serde_json::json!({
+            "type": "integration.infra_retry",
+            "project": project,
+            "task": task_id,
+            "reason": reason,
+            "infra_failures": infra_failures,
+        })),
+        Consumed::NeedsRebase {
+            task_id,
+            target_moved_to,
+        } => st.emit(serde_json::json!({
+            "type": "integration.needs_rebase",
+            "project": project,
+            "task": task_id,
+            "target_moved_to": target_moved_to,
+        })),
+    }
+}
+
 /// M5 · T5.1：调度态只读快照（GET /scheduler/status）——
 /// 不登机器纯 API 回答「现在几个 worktree 在飞、各自卡在哪、队列多长、冲突了没有」。
 /// 判定逻辑与 tick 同款但零副作用（不置状态不派工）。
@@ -1030,6 +1215,12 @@ type StatusSnapshot = (
 /// （同一把锁内读出的同一个数：store 的 `max_concurrent_runs`，0 视为 1）。
 /// `ServerState.effective_max_concurrent` 已废弃——调度器不再读写它。
 pub fn status(st: &SharedState) -> serde_json::Value {
+    // 集成窗口态（进程级原子——与 tick 同一事实源）。
+    let integration_in_flight = integration_window_in_flight();
+    // 自动集成开关（读配置面——与消费循环同一份、同一重读口径）。
+    let integration_settings = crate::integration::settings::load(&crate::integration::settings::settings_path(
+        &st.plans_root,
+    ));
     // 渠道派生映射（清单 → sop/agent → 渠道）在进 store 锁**之前**算好：
     // 锁内再取 manifest 就是「store → manifest」反向嵌套，与 PUT /config/manifest
     // （先锁 manifest）构成锁序环（风险 R5）。锁内只查算好的快照。
@@ -1081,6 +1272,7 @@ pub fn status(st: &SharedState) -> serde_json::Value {
                 t,
                 exclusive_running,
                 capacity_full,
+                integration_in_flight,
                 &channel_index,
                 now,
             );
@@ -1164,6 +1356,16 @@ pub fn status(st: &SharedState) -> serde_json::Value {
         "max_concurrent_runs": effective_cap,
         "effective_max_concurrent": effective_cap,
         "channel_breakers": channel_breakers,
+        // 自动集成面（gap-E）：开关态 + 窗口态——运营面要能回答「开关开了吗 / 现在在集成吗」。
+        "integration": {
+            "auto_integrate_enabled": integration_settings.auto_integrate_enabled,
+            "window_in_flight": integration_in_flight,
+            "target_ref": crate::integration::settings::TARGET_REF,
+            "gates": {
+                "clippy": integration_settings.gates.clippy,
+                "doc_lint": integration_settings.gates.doc_lint,
+            },
+        },
     })
 }
 
@@ -1418,16 +1620,22 @@ pub(crate) fn remaining_secs(remaining_ms: u64) -> u64 {
 /// （`dependency_failed` / `dependency_pending` / `exclusive_window` / `capacity`
 /// 已被 status 与 UI 当词表用）。
 ///
-/// 判定顺序与 tick 的闸门顺序同源：依赖 → 渠道冷却 → 独占 → 容量。
+/// 判定顺序与 tick 的闸门顺序同源：集成窗口 → 依赖 → 渠道冷却 → 独占 → 容量。
+///
+/// 集成窗口优先级最高（与 tick 的窗口旁路同位置）：窗口期一律不派工，
+/// 任务状态不变（瞬态现象不写进 store）——窗口关掉后下轮 tick 恢复细粒度理由。
 fn block_reason(
     store: &crate::domain::store::Store,
     t: &crate::domain::task::Task,
     exclusive_running: bool,
     capacity_full: bool,
+    integration_in_flight: bool,
     channels: &ChannelIndex,
     now_ms: u64,
 ) -> Option<String> {
-    if deps_failed(store, t) {
+    if integration_in_flight {
+        Some("integration_window".into())
+    } else if deps_failed(store, t) {
         Some("dependency_failed".into())
     } else if !deps_ready(store, t) {
         // 缺依赖但未失败：等待中（tick 静默等；status 也要显式报出来，不许隐形）
