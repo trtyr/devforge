@@ -7,12 +7,14 @@ pub mod auth;
 pub mod project;
 pub mod run;
 pub mod contract;
+pub mod issue;
 pub mod runner;
 pub mod sop;
 pub mod store;
 pub mod task;
-
+ 
 pub use auth::{AuthAccount, AuthEvent, Role, MAX_AUTH_EVENTS};
+pub use issue::{Issue, IssueCategory, IssueSeverity, IssueSource, IssueStatus, TimelineEntry};
 pub use project::Project;
 pub use run::{Run, RunId, RunStatus};
 pub use runner::{RunControl, RunEngine, RunOutcome};

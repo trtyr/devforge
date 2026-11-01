@@ -55,6 +55,10 @@ pub struct Task {
     /// 独占窗口（P012 M4）：运行期间冻结其他含冲突文件任务的派工（首批简化：运行中冻结全部其他派工）。
     #[serde(default)]
     pub exclusive: bool,
+    /// 源 issue key（P020 反馈系统）：issue → task 转化时写入（如 `DEVFORGE-3`），
+    /// run 收尾驱动 issue 状态联动；老数据缺省 None。
+    #[serde(default)]
+    pub issue_ref: Option<String>,
 }
 
 /// 创建时的依赖图声明（P012 T4.1）：依赖边 + 独占标记，校验后落入 Task。
@@ -85,6 +89,7 @@ impl Task {
             contract: None,
             depends_on: Vec::new(),
             exclusive: false,
+            issue_ref: None,
         }
     }
 

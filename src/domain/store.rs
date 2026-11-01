@@ -23,6 +23,12 @@ pub struct Store {
     pub projects: Vec<Project>,
     pub tasks: Vec<Task>,
     pub runs: Vec<Run>,
+    /// P020 反馈系统：第三实体（persist 单点自动获得 PG/JSON 双形态）。
+    #[serde(default)]
+    pub issues: Vec<crate::domain::Issue>,
+    /// key 分配器：<PROJECT>-<n> 项目前缀序（拍板 2026-11-01），项目内自增。
+    #[serde(default)]
+    pub issue_seq: std::collections::HashMap<String, u64>,
     /// 并发 run 上限（P012 M4）：默认 1 = decisions/003 串行兼容；调度器/worktree 模式下调高。
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_runs: usize,
@@ -126,6 +132,8 @@ impl Default for Store {
             projects: Vec::new(),
             tasks: Vec::new(),
             runs: Vec::new(),
+            issues: Vec::new(),
+            issue_seq: std::collections::HashMap::new(),
             notifications: Vec::new(),
             auth: None,
             auth_events: Vec::new(),
@@ -846,6 +854,158 @@ impl Store {
             .iter()
             .filter(|r| r.status == RunStatus::Running)
             .count()
+    }
+
+    // ---------- P020 反馈系统：issues 第三实体 ----------
+
+    /// key 分配：`<PROJECT>-<n>` 项目前缀序（拍板 2026-11-01），项目内自增。
+    fn next_issue_key(&mut self, project: &str) -> String {
+        let n = self.issue_seq.entry(project.to_string()).or_insert(0);
+        *n += 1;
+        format!("{}-{}", project.to_uppercase(), n)
+    }
+
+    /// 创建 issue（项目必须存在——refs 锚不可悬空）。key 由本项目序分配。
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_issue(
+        &mut self,
+        project: &str,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        source: crate::domain::IssueSource,
+        severity: crate::domain::IssueSeverity,
+        category: crate::domain::IssueCategory,
+        run_refs: Vec<String>,
+        evidence: Vec<String>,
+    ) -> Result<crate::domain::Issue> {
+        if self.get_project(project).is_none() {
+            return Err(DevforgeError::Store(format!(
+                "项目 `{project}` 不存在，无法创建 issue"
+            )));
+        }
+        let key = self.next_issue_key(project);
+        let mut issue = crate::domain::Issue::new(
+            key, project, title, body, source, severity, category, run_refs, now_ms(),
+        );
+        issue.evidence = evidence;
+        self.issues.push(issue.clone());
+        self.persist();
+        Ok(issue)
+    }
+
+    pub fn get_issue(&self, key: &str) -> Option<&crate::domain::Issue> {
+        self.issues.iter().find(|i| i.key == key)
+    }
+
+    /// 人工状态转移（PATCH 通道）：乐观锁 + can_transition 领域校验 + timeline。
+    /// 引擎联动通道（auto_resolve/auto_reopen）不在此——Queued → Resolved 人工不可手标。
+    pub fn transition_issue(
+        &mut self,
+        key: &str,
+        to: crate::domain::IssueStatus,
+        expected_version: u64,
+        actor: &str,
+    ) -> Result<crate::domain::Issue> {
+        let issue = self
+            .issues
+            .iter_mut()
+            .find(|i| i.key == key)
+            .ok_or_else(|| DevforgeError::Store(format!("issue `{key}` 不存在")))?;
+        if issue.version != expected_version {
+            return Err(DevforgeError::Store(format!(
+                "issue `{key}` 版本冲突（期望 v{expected_version}，当前 v{}）——刷新后重试",
+                issue.version
+            )));
+        }
+        if !issue.can_transition(to) {
+            return Err(DevforgeError::Store(format!(
+                "issue `{key}` 非法状态转移：{:?} → {to:?}",
+                issue.status
+            )));
+        }
+        let from = issue.status;
+        issue.status = to;
+        issue.note(actor, "transitioned", format!("{from:?} → {to:?}"), now_ms());
+        issue.version += 1;
+        let snap = issue.clone();
+        self.persist();
+        Ok(snap)
+    }
+
+    /// 引擎专用（run Settled 联动）：Queued → Resolved。非 Queued 幂等不动。
+    pub fn auto_resolve_issue(&mut self, key: &str, run_id: &str) -> Result<()> {
+        let Some(issue) = self.issues.iter_mut().find(|i| i.key == key) else {
+            return Ok(());
+        };
+        if issue.status != crate::domain::IssueStatus::Queued {
+            return Ok(());
+        }
+        issue.status = crate::domain::IssueStatus::Resolved;
+        issue.note(
+            "system",
+            "auto_resolved",
+            format!("task 收尾联动（run {run_id}）"),
+            now_ms(),
+        );
+        issue.version += 1;
+        self.persist();
+        Ok(())
+    }
+
+    /// 引擎专用（run Failed 联动）：Queued → Open 回炉。非 Queued 幂等不动。
+    pub fn auto_reopen_issue(&mut self, key: &str, run_id: &str, reason: &str) -> Result<()> {
+        let Some(issue) = self.issues.iter_mut().find(|i| i.key == key) else {
+            return Ok(());
+        };
+        if issue.status != crate::domain::IssueStatus::Queued {
+            return Ok(());
+        }
+        issue.status = crate::domain::IssueStatus::Open;
+        issue.note(
+            "system",
+            "reopened",
+            format!("task 失败回炉（run {run_id}）：{reason}"),
+            now_ms(),
+        );
+        issue.version += 1;
+        self.persist();
+        Ok(())
+    }
+
+    /// 转化落账：task 创建后绑 issue（issue_ref + Queued + timeline converted）。
+    /// 只接受 Triaged（人工确认后才可转）——Open 的 agent 上报不直接进流水线。
+    pub fn link_issue_task(&mut self, key: &str, task_id: &str, actor: &str) -> Result<crate::domain::Issue> {
+        let issue = self
+            .issues
+            .iter_mut()
+            .find(|i| i.key == key)
+            .ok_or_else(|| DevforgeError::Store(format!("issue `{key}` 不存在")))?;
+        if issue.status != crate::domain::IssueStatus::Triaged {
+            return Err(DevforgeError::Store(format!(
+                "issue `{key}` 状态 {:?} 不可转化——先 Triaged 再转 task",
+                issue.status
+            )));
+        }
+        issue.task_ref = Some(task_id.to_string());
+        issue.status = crate::domain::IssueStatus::Queued;
+        issue.note(actor, "converted", format!("task {task_id}"), now_ms());
+        issue.version += 1;
+        let snap = issue.clone();
+        self.persist();
+        Ok(snap)
+    }
+
+    /// evidence 追加（创建后自动附上下文的入口；时间线同步记一笔）。
+    pub fn append_issue_evidence(&mut self, key: &str, lines: Vec<String>) -> Result<()> {
+        let issue = self
+            .issues
+            .iter_mut()
+            .find(|i| i.key == key)
+            .ok_or_else(|| DevforgeError::Store(format!("issue `{key}` 不存在")))?;
+        issue.evidence.extend(lines);
+        issue.note("system", "note", "evidence appended", now_ms());
+        self.persist();
+        Ok(())
     }
 
     /// 发起 run：守卫（并发上限 + 任务状态机）通过后创建新 run 并挂到任务上。

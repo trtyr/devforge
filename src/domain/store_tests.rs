@@ -567,3 +567,169 @@ fn trim_prefers_evicting_oldest_read_notifications() {
     );
 }
 
+// ---------------- P020 反馈系统：issues 第三实体 ----------------
+
+#[test]
+fn issue_key_prefix_increments_per_project() {
+    let mut s = setup();
+    let i1 = s
+        .create_issue(
+            "devforge",
+            "t1",
+            "b",
+            crate::domain::IssueSource::Operator,
+            crate::domain::IssueSeverity::Minor,
+            crate::domain::IssueCategory::Bug,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+    let i2 = s
+        .create_issue(
+            "devforge",
+            "t2",
+            "b",
+            crate::domain::IssueSource::Agent,
+            crate::domain::IssueSeverity::Major,
+            crate::domain::IssueCategory::Flow,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+    assert_eq!(i1.key, "DEVFORGE-1");
+    assert_eq!(i2.key, "DEVFORGE-2");
+
+    // 另一项目独立计数
+    s.create_project(Project::new(
+        "myapp",
+        std::path::PathBuf::from("/home/me/myapp"),
+        1,
+    ))
+    .unwrap();
+    let i3 = s
+        .create_issue(
+            "myapp",
+            "t3",
+            "b",
+            crate::domain::IssueSource::Operator,
+            crate::domain::IssueSeverity::Info,
+            crate::domain::IssueCategory::Feature,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+    assert_eq!(i3.key, "MYAPP-1", "项目内自增，互不干扰");
+}
+
+#[test]
+fn create_issue_requires_existing_project() {
+    let mut s = setup();
+    let err = s
+        .create_issue(
+            "ghost",
+            "t",
+            "b",
+            crate::domain::IssueSource::Operator,
+            crate::domain::IssueSeverity::Minor,
+            crate::domain::IssueCategory::Bug,
+            vec![],
+            vec![],
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("不存在"));
+}
+
+#[test]
+fn triage_convert_auto_resolve_reopen_chain() {
+    let mut s = setup();
+    let i = s
+        .create_issue(
+            "devforge",
+            "t",
+            "b",
+            crate::domain::IssueSource::Agent,
+            crate::domain::IssueSeverity::Major,
+            crate::domain::IssueCategory::Bug,
+            vec!["run-9".into()],
+            vec!["失败原因指针".into()],
+        )
+        .unwrap();
+    let key = i.key.clone();
+
+    // Open 直接转化被拒（agent 上报不直进流水线）
+    assert!(s.link_issue_task(&key, "mvp", "operator").is_err());
+
+    // Open → Triaged → 转化 → Queued + task_ref
+    let v1 = s.get_issue(&key).unwrap().version;
+    s.transition_issue(&key, crate::domain::IssueStatus::Triaged, v1, "operator")
+        .unwrap();
+    let linked = s.link_issue_task(&key, "mvp", "operator").unwrap();
+    assert_eq!(linked.status, crate::domain::IssueStatus::Queued);
+    assert_eq!(linked.task_ref.as_deref(), Some("mvp"));
+
+    // 人工手标 Resolved 被拒（只能由 run 联动）
+    let v = s.get_issue(&key).unwrap().version;
+    assert!(s
+        .transition_issue(&key, crate::domain::IssueStatus::Resolved, v, "operator")
+        .is_err());
+
+    // run Settled 联动 → Resolved；随后 Failed 回炉幂等（非 Queued 不动）
+    s.auto_resolve_issue(&key, "run-42").unwrap();
+    assert_eq!(
+        s.get_issue(&key).unwrap().status,
+        crate::domain::IssueStatus::Resolved
+    );
+    s.auto_reopen_issue(&key, "run-43", "不应生效").unwrap();
+    assert_eq!(
+        s.get_issue(&key).unwrap().status,
+        crate::domain::IssueStatus::Resolved,
+        "非 Queued 幂等不动"
+    );
+
+    // 回炉链：重开 → Triaged → 转化 → run Failed → 回 Open 带原因
+    s.transition_issue(
+        &key,
+        crate::domain::IssueStatus::Open,
+        s.get_issue(&key).unwrap().version,
+        "operator",
+    )
+    .unwrap();
+    let v = s.get_issue(&key).unwrap().version;
+    s.transition_issue(&key, crate::domain::IssueStatus::Triaged, v, "operator")
+        .unwrap();
+    s.link_issue_task(&key, "mvp", "operator").unwrap();
+    s.auto_reopen_issue(&key, "run-44", "回归又红了").unwrap();
+    let back = s.get_issue(&key).unwrap();
+    assert_eq!(back.status, crate::domain::IssueStatus::Open);
+    assert!(back
+        .timeline
+        .iter()
+        .any(|t| t.action == "reopened" && t.detail.contains("run-44")));
+}
+
+#[test]
+fn transition_version_conflict_is_409_shaped() {
+    let mut s = setup();
+    let i = s
+        .create_issue(
+            "devforge",
+            "t",
+            "b",
+            crate::domain::IssueSource::Operator,
+            crate::domain::IssueSeverity::Minor,
+            crate::domain::IssueCategory::Bug,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+    let err = s
+        .transition_issue(
+            &i.key,
+            crate::domain::IssueStatus::Triaged,
+            999,
+            "operator",
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("版本冲突"));
+}
+
