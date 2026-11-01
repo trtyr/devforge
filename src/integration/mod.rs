@@ -259,9 +259,21 @@ impl<'a> Integrator<'a> {
         let cand = queue.candidates[idx].clone();
         let expect_before = self.target_sha()?;
 
-        // 集成工作树：独立目录 checkout 目标最新（M1 路径约定，`_integration` 固定名独占）
-        let iw_path = Self::integration_path(self.repo);
-        let _ = std::fs::remove_dir_all(&iw_path); // 上一次的残骸清掉再建
+        // 集成工作树：独立目录 checkout 目标最新（路径按项目消歧，R4-P38）
+        let iw_path = Self::integration_path(self.repo, &queue.project);
+        // R4-P38：清残骸失败必须留痕（残留路径可从日志重建，不静默丢弃）；
+        // NotFound 是首次集成的正常路径，静默。
+        if let Err(e) = std::fs::remove_dir_all(&iw_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                component = "integration",
+                event = "iw_residue_clean_failed",
+                path = %iw_path.display(),
+                error = %e,
+                "上次集成工作树残骸清理失败（残留路径见上，后续 worktree prune 会摘注册）"
+            );
+        }
         // 2026-10-27 自审 major：崩溃残留的 worktree 注册（目录已删但 .git/worktrees
         // 还挂着）会让 add 被永久拒绝，整个队列再也无法消费——目录清掉后同步 prune 摘注册。
         git(self.repo, &["worktree", "prune"])?;
@@ -593,8 +605,10 @@ impl<'a> Integrator<'a> {
         }
     }
 
-    /// 集成工作树路径（固定名独占——集成串行）。
-    fn integration_path(repo: &Path) -> PathBuf {
+    /// 集成工作树路径（按项目消歧——R4-P38：同机两项目 basename 相同（/srv/a/app
+    /// 与 /srv/b/app）时固定名 _integration 会落到同一物理路径互相删除对方的
+    /// 集成工作树；project 已过 safe_segment，拼进路径安全）。
+    fn integration_path(repo: &Path, project: &str) -> PathBuf {
         let name = repo
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -602,7 +616,7 @@ impl<'a> Integrator<'a> {
         repo.parent()
             .unwrap_or(Path::new("."))
             .join(format!("{name}-worktrees"))
-            .join("_integration")
+            .join(format!("_integration-{project}"))
     }
 
     /// 冲突/失败产物：`{plans_root}/integrations/{project}/artifacts/{task_id}-{n}.json`。

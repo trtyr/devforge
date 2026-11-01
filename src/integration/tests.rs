@@ -405,3 +405,21 @@ fn integrated_candidates_are_pruned_to_bound() {
         "最老的先死"
     );
 }
+
+/// R4-P38：同 basename 两项目（/a/app 与 /b/app）→ 两条不同的集成 worktree
+/// 路径互不撞车；同项目重复调用稳定（幂等路径）。
+#[test]
+fn integration_path_disambiguates_same_basename_projects() {
+    let a = std::path::Path::new("/srv/a/app");
+    let b = std::path::Path::new("/srv/b/app");
+    let pa = super::Integrator::integration_path(a, "proj-one");
+    let pb = super::Integrator::integration_path(b, "proj-two");
+    assert_ne!(pa, pb, "同 basename 不同项目必须不同路径：{pa:?} vs {pb:?}");
+    assert!(pa.to_string_lossy().ends_with("_integration-proj-one"), "{pa:?}");
+    assert!(pb.to_string_lossy().ends_with("_integration-proj-two"), "{pb:?}");
+    assert_eq!(
+        pa,
+        super::Integrator::integration_path(a, "proj-one"),
+        "同项目路径幂等"
+    );
+}
