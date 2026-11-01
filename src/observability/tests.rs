@@ -207,3 +207,24 @@ fn prune_observability_dir_drops_oldest_over_cap() {
         .collect();
     assert_eq!(dirs.len(), 2, "目录态同样裁到 cap：{}", dirs.len());
 }
+
+/// R5-P54：run 观测根读写同源——begin 捕获的根（可与实例 root 不同）优先；
+/// end 后未登记（回退实例根由调用方处理）。
+#[test]
+fn run_root_follows_begin_capture_not_instance_root() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    // 实例根设为 A；run 用 B 开跑（错位场景：fixture/多实例）
+    super::set_root(dir_a.path());
+    let rid = "obs-root-align-t";
+    super::begin_run_in(dir_b.path().to_path_buf(), rid, "coding");
+    assert_eq!(
+        super::run_root(rid).as_deref(),
+        Some(dir_b.path()),
+        "读侧必须拿到开跑捕获的根（写侧同源），而非实例根"
+    );
+    super::end_run(rid);
+    assert_eq!(super::run_root(rid), None, "收尾后未登记（调用方回退实例根）");
+    // 复位实例根，不污染其它测试
+    super::set_root(dir_a.path());
+}

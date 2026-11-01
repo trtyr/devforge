@@ -276,8 +276,9 @@ fn roots() -> &'static Mutex<HashMap<String, PathBuf>> {
     ROOTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 某 run 的观测根（未登记 = 该 run 不存在）。
-fn run_root(run_id: &str) -> Option<PathBuf> {
+/// 某 run 的观测根（未登记 = 该 run 不存在）。R5-P54 提为 crate 可见：
+/// run 详情的心跳读取与写侧同源（开跑时捕获的根），不再回退实例根。
+pub(crate) fn run_root(run_id: &str) -> Option<PathBuf> {
     roots().lock().unwrap_or_else(|e| e.into_inner()).get(run_id).cloned()
 }
 

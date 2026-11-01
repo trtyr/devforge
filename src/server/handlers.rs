@@ -2200,8 +2200,10 @@ pub async fn get_run_detail(
     } else {
         serde_json::Value::Null
     };
-    // 心跳（run 活性）
-    let hb = crate::observability::heartbeat::read(&obs_root_of(&st), &run_id).ok();
+    // 心跳（run 活性）——R5-P54：读侧与写侧同源：优先 run 开跑时捕获的观测根
+    // （多实例/fixture 错位时与心跳写侧一致），未登记（已收尾 run）回退实例根
+    let hb_root = crate::observability::run_root(&run_id).unwrap_or_else(|| obs_root_of(&st));
+    let hb = crate::observability::heartbeat::read(&hb_root, &run_id).ok();
     let heartbeat = match &hb {
         Some(h) => json!({
             "phase": h.phase,
