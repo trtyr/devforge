@@ -52,6 +52,20 @@ pub enum DevforgeError {
     #[error("存储错误: {0}")]
     Store(String),
 
+    /// 资源不存在（2026-11-01 审计补丁：issue 域先行；HTTP → 404）。
+    /// 与 Store(String) + 中文关键词的旧口径并存，逐步迁变体优先。
+    #[error("不存在: {0}")]
+    NotFound(String),
+
+    /// 乐观锁/并发冲突（HTTP → 409）。
+    #[error("冲突: {0}")]
+    Conflict(String),
+
+    /// 客户端输入校验失败（HTTP → 400；与 Config 的区别：Config 是清单/配置面，
+    /// InvalidInput 是单次请求的载荷校验）。
+    #[error("非法输入: {0}")]
+    InvalidInput(String),
+
     /// RPC 协议错误（记录损坏、意外 EOF、响应缺失等）。
     #[error("RPC 协议错误: {0}")]
     RpcProtocol(String),
@@ -139,6 +153,9 @@ impl DevforgeError {
             Self::Quality(_) => "quality",
             Self::Config(_) => "config",
             Self::Store(_) => "store",
+            Self::NotFound(_) => "not_found",
+            Self::Conflict(_) => "conflict",
+            Self::InvalidInput(_) => "invalid_input",
             Self::RpcProtocol(_) => "rpc",
             Self::Io(_) => "io",
             Self::Json(_) => "json",

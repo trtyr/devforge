@@ -110,6 +110,10 @@ impl From<crate::error::DevforgeError> for ApiError {
         // 基础设施故障反被判成 404。变体是确定性事实，关键词只在 Store 内细化状态码。
         match e.root_cause() {
             crate::error::DevforgeError::Config(_) => return Self::bad_request(msg),
+            // 2026-11-01 审计补丁（R3-15）：结构化 HTTP 语义变体——不再靠中文关键词猜
+            crate::error::DevforgeError::NotFound(_) => return Self::not_found(msg),
+            crate::error::DevforgeError::Conflict(_) => return Self::conflict(msg),
+            crate::error::DevforgeError::InvalidInput(_) => return Self::bad_request(msg),
             // 自审 ref 144：错误码进响应体（机器可读），消费方不必嗅探中文措辞
             // 请求体/数据 JSON 错 = 客户端输入问题
             crate::error::DevforgeError::Json(_) => return Self::bad_request(msg),
@@ -1125,18 +1129,8 @@ pub async fn put_integration_settings(
 }
 
 // ---------- P020 反馈系统：issues ----------
-
-/// store 错误 → HTTP：项目/issue 不存在 = 404，乐观锁 = 409，其余 = 400。
-fn issue_err(e: crate::error::DevforgeError) -> ApiError {
-    let msg = e.to_string();
-    if msg.contains("不存在") {
-        ApiError::not_found(msg)
-    } else if msg.contains("版本冲突") {
-        ApiError::conflict(msg)
-    } else {
-        ApiError::bad_request(msg)
-    }
-}
+// 2026-11-01 审计补丁（R3-15）：issue_err（中文关键词猜状态码）已退役——
+// store 的 issue 域改投 NotFound/Conflict/InvalidInput 变体，ApiError::from 变体优先直映射。
 
 #[derive(Deserialize)]
 pub struct CreateIssueReq {
@@ -1171,7 +1165,7 @@ pub async fn create_issue(
                 req.run_refs,
                 req.evidence,
             )
-            .map_err(issue_err)?
+            ?
     };
     user.audit_write(&st, "create_issue", &format!("{project}/{}", issue.key));
     // SSE：issue.created（前端按 issue. 前缀订阅）
@@ -1288,7 +1282,7 @@ pub async fn patch_issue(
         let mut current = match req.status {
             Some(to) => store
                 .transition_issue(&key, to, req.version, &user.username)
-                .map_err(issue_err)?,
+                ?,
             None => store
                 .get_issue(&key)
                 .cloned()
@@ -1299,7 +1293,7 @@ pub async fn patch_issue(
             let expected = if req.status.is_some() { current.version } else { req.version };
             current = store
                 .update_issue_fields(&key, &patch, expected, &user.username)
-                .map_err(issue_err)?;
+                ?;
         }
         current
     };
@@ -1363,6 +1357,40 @@ pub async fn convert_issue(
     let sop = req
         .sop
         .unwrap_or_else(|| crate::change::state::CHANGE_SOP.to_string());
+    // 2026-11-01 审计批次一（EX-1）：workspace 覆盖与项目注册同防线——门 0 会在无 .git
+    // 的目录 git init + add -A 建基线，任意目录不可经 convert 绕过校验。
+    if let Some(ws) = &req.workspace {
+        validate_local_path(std::path::Path::new(ws)).map_err(ApiError::bad_request)?;
+    }
+    // （R2-10）base_rev 预检对齐 create_task：探测目录 = workspace 覆盖后的最终仓
+    if let Some(contract) = &req.contract
+        && let Some(base_rev) = &contract.base_rev
+    {
+        let probe_dir = match &req.workspace {
+            Some(ws) => Some(std::path::PathBuf::from(ws)),
+            None => {
+                let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+                store.get_project(&project).map(|p| p.local_path.clone())
+            }
+        }
+        .ok_or_else(|| ApiError::not_found(format!("项目 `{project}` 不存在")))?;
+        let probe = std::process::Command::new("git")
+            .args([
+                "-C",
+                &probe_dir.to_string_lossy(),
+                "cat-file",
+                "-e",
+                &format!("{base_rev}^{{commit}}"),
+            ])
+            .output();
+        let ok = matches!(probe, Ok(o) if o.status.success());
+        if !ok {
+            return Err(ApiError::bad_request(format!(
+                "contract.base_rev `{base_rev}` 不是仓库 `{}` 里的合法 commit",
+                probe_dir.display()
+            )));
+        }
+    }
     let created = {
         let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         let registry = st.registry.clone();
@@ -1371,6 +1399,13 @@ pub async fn convert_issue(
             depends_on: req.depends_on.clone(),
             exclusive: req.exclusive,
         };
+        // （EX-2 前置）非 Triaged 在 create_task 之前拒——最常见的失败面不再产生孤儿
+        let issue_status = store.get_issue(&key).map(|i| i.status);
+        if issue_status != Some(crate::domain::IssueStatus::Triaged) {
+            return Err(ApiError::bad_request(format!(
+                "issue `{key}` 非 Triaged（当前 {issue_status:?}）——先分诊再转化"
+            )));
+        }
         store
             .create_task(
                 &registry,
@@ -1379,8 +1414,7 @@ pub async fn convert_issue(
                 &sop,
                 contract,
                 deps,
-            )
-            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+            )?;
         // 可选 workspace 覆盖（create_task 快照项目路径后的补充指定）
         if let Some(ws) = &req.workspace
             && let Some(t) = store
@@ -1390,9 +1424,11 @@ pub async fn convert_issue(
         {
             t.workspace = std::path::PathBuf::from(ws);
         }
-        store
-            .link_issue_task(&key, &task_id, &user.username)
-            .map_err(issue_err)?;
+        // （EX-2 兑底）link 失败回滚：删掉刚建的任务，不留孤儿
+        if let Err(e) = store.link_issue_task(&key, &task_id, &user.username) {
+            store.remove_task(&project, &task_id);
+            return Err(e.into());
+        }
         // link 之后再取：task.issue_ref 已回填（返回值带完整引用关系）
         store
             .get_task(&project, &task_id)

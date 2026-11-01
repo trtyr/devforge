@@ -440,6 +440,97 @@ async fn auto_report_run_failure_creates_and_dedupes() {
 }
 
 #[tokio::test]
+async fn convert_rejects_unsafe_workspace() {
+    // EX-1：workspace 非空非 git 目录 → 400（validate_local_path），不产生任务
+    let (dir, _state, router, _bus) = fixture();
+    let resp = send(&router, "POST", "/api/v1/projects/devforge/issues", Some(issue_body("major"))).await;
+    let key = body_json(resp).await["key"].as_str().unwrap().to_string();
+    send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/issues/{key}"),
+        Some(serde_json::json!({"status": "triaged", "version": 1})),
+    )
+    .await;
+
+    // 造一个非空非 git 目录（门 0 会对它 git init + add -A，必须拒收）
+    let dirty = dir.path().join("ws-dirty");
+    std::fs::create_dir_all(&dirty).unwrap();
+    std::fs::write(dirty.join("x.txt"), "dirty").unwrap();
+
+    let resp = send(
+        &router,
+        "POST",
+        &format!("/api/v1/issues/{key}/convert"),
+        Some(serde_json::json!({"workspace": dirty.to_string_lossy()})),
+    )
+    .await;
+    assert_eq!(resp.status(), 400, "非空非 git workspace 必须拒收");
+    let list = body_json(send(&router, "GET", "/api/v1/projects/devforge/tasks", None).await).await;
+    assert_eq!(
+        list["tasks"].as_array().unwrap().len(),
+        0,
+        "拒收时不得残留任务"
+    );
+}
+
+#[tokio::test]
+async fn convert_open_issue_leaves_no_orphan_task() {
+    // EX-2：Open 态 convert → 400（前置拒）且无孤儿任务（空洞断言修复：验证不残留）
+    let (_dir, _state, router, _bus) = fixture();
+    let resp = send(&router, "POST", "/api/v1/projects/devforge/issues", Some(issue_body("major"))).await;
+    let key = body_json(resp).await["key"].as_str().unwrap().to_string();
+
+    let resp = send(
+        &router,
+        "POST",
+        &format!("/api/v1/issues/{key}/convert"),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let list = body_json(send(&router, "GET", "/api/v1/projects/devforge/tasks", None).await).await;
+    assert_eq!(
+        list["tasks"].as_array().unwrap().len(),
+        0,
+        "Open 拒转化后不得残留孤儿任务"
+    );
+    // issue 自身状态未变
+    let body = body_json(send(&router, "GET", &format!("/api/v1/issues/{key}"), None).await).await;
+    assert_eq!(body["status"], "open");
+}
+
+#[tokio::test]
+async fn convert_rejects_fake_base_rev() {
+    // R2-10：convert 的 contract.base_rev 预检对齐 create_task——假 rev 拒收不白跑
+    let (_dir, _state, router, _bus) = fixture();
+    let resp = send(&router, "POST", "/api/v1/projects/devforge/issues", Some(issue_body("major"))).await;
+    let key = body_json(resp).await["key"].as_str().unwrap().to_string();
+    send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/issues/{key}"),
+        Some(serde_json::json!({"status": "triaged", "version": 1})),
+    )
+    .await;
+
+    let resp = send(
+        &router,
+        "POST",
+        &format!("/api/v1/issues/{key}/convert"),
+        Some(serde_json::json!({
+            "contract": {
+                "owned_paths": [],
+                "isolation": "none",
+                "base_rev": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(resp.status(), 400, "假 base_rev 必须入口拒收");
+}
+
+#[tokio::test]
 async fn patch_issue_edits_fields_with_optimistic_lock() {
     let (_dir, _state, router, bus) = fixture();
     let mut rx = bus.subscribe();

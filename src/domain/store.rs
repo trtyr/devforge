@@ -456,6 +456,19 @@ impl Store {
             .ok_or_else(|| DevforgeError::Store("任务登记失败（内部不变量）".into()))
     }
 
+    /// 删除任务（2026-11-01 审计批次一：convert 的 link 失败回滚专用；
+    /// 正常流程无删任务面）。返回是否真的删了（不存在 = false，静默）。
+    pub fn remove_task(&mut self, project: &str, task_id: &str) -> bool {
+        let before = self.tasks.len();
+        self.tasks
+            .retain(|t| !(t.project == project && t.id == task_id));
+        let removed = self.tasks.len() != before;
+        if removed {
+            self.persist();
+        }
+        removed
+    }
+
     /// 环检测（T4.1）：假设 `new_id` 带 `depends_on` 建入后，项目图不得有环。
     ///
     /// 实现是 **Kahn 拓扑排序**（入度归零计数），不是 DFS 三色标记——2026-10-27 自审
@@ -879,7 +892,7 @@ impl Store {
         evidence: Vec<String>,
     ) -> Result<crate::domain::Issue> {
         if self.get_project(project).is_none() {
-            return Err(DevforgeError::Store(format!(
+            return Err(DevforgeError::NotFound(format!(
                 "项目 `{project}` 不存在，无法创建 issue"
             )));
         }
@@ -910,15 +923,15 @@ impl Store {
             .issues
             .iter_mut()
             .find(|i| i.key == key)
-            .ok_or_else(|| DevforgeError::Store(format!("issue `{key}` 不存在")))?;
+            .ok_or_else(|| DevforgeError::NotFound(format!("issue `{key}` 不存在")))?;
         if issue.version != expected_version {
-            return Err(DevforgeError::Store(format!(
+            return Err(DevforgeError::Conflict(format!(
                 "issue `{key}` 版本冲突（期望 v{expected_version}，当前 v{}）——刷新后重试",
                 issue.version
             )));
         }
         if !issue.can_transition(to) {
-            return Err(DevforgeError::Store(format!(
+            return Err(DevforgeError::InvalidInput(format!(
                 "issue `{key}` 非法状态转移：{:?} → {to:?}",
                 issue.status
             )));
@@ -943,7 +956,7 @@ impl Store {
         actor: &str,
     ) -> Result<crate::domain::Issue> {
         if patch.is_empty() {
-            return Err(DevforgeError::Store(format!(
+            return Err(DevforgeError::InvalidInput(format!(
                 "issue `{key}` 字段编辑补丁为空（无 title/body/severity/category）"
             )));
         }
@@ -951,9 +964,9 @@ impl Store {
             .issues
             .iter_mut()
             .find(|i| i.key == key)
-            .ok_or_else(|| DevforgeError::Store(format!("issue `{key}` 不存在")))?;
+            .ok_or_else(|| DevforgeError::NotFound(format!("issue `{key}` 不存在")))?;
         if issue.version != expected_version {
-            return Err(DevforgeError::Store(format!(
+            return Err(DevforgeError::Conflict(format!(
                 "issue `{key}` 版本冲突（期望 v{expected_version}，当前 v{}）——刷新后重试",
                 issue.version
             )));
@@ -962,7 +975,7 @@ impl Store {
         if let Some(title) = &patch.title {
             let title = title.trim();
             if title.is_empty() {
-                return Err(DevforgeError::Store(format!("issue `{key}` title 不可为空")));
+                return Err(DevforgeError::InvalidInput(format!("issue `{key}` title 不可为空")));
             }
             issue.title = title.to_string();
             touched.push("title");
@@ -1040,7 +1053,7 @@ impl Store {
         reason: &str,
     ) -> Result<Option<crate::domain::Issue>> {
         if !self.projects.iter().any(|p| p.name == project) {
-            return Err(DevforgeError::Store(format!(
+            return Err(DevforgeError::NotFound(format!(
                 "项目 `{project}` 不存在，无法自动上报 issue"
             )));
         }
@@ -1081,9 +1094,9 @@ impl Store {
             .issues
             .iter_mut()
             .find(|i| i.key == key)
-            .ok_or_else(|| DevforgeError::Store(format!("issue `{key}` 不存在")))?;
+            .ok_or_else(|| DevforgeError::NotFound(format!("issue `{key}` 不存在")))?;
         if issue.status != crate::domain::IssueStatus::Triaged {
-            return Err(DevforgeError::Store(format!(
+            return Err(DevforgeError::InvalidInput(format!(
                 "issue `{key}` 状态 {:?} 不可转化——先 Triaged 再转 task",
                 issue.status
             )));
@@ -1111,7 +1124,7 @@ impl Store {
             .issues
             .iter_mut()
             .find(|i| i.key == key)
-            .ok_or_else(|| DevforgeError::Store(format!("issue `{key}` 不存在")))?;
+            .ok_or_else(|| DevforgeError::NotFound(format!("issue `{key}` 不存在")))?;
         issue.evidence.extend(lines);
         issue.note("system", "note", "evidence appended", now_ms());
         self.persist();
