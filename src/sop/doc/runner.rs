@@ -128,7 +128,18 @@ fn spawn_review_worker<F>(
                 }
             }
         })();
-        let _ = tx.send((unit, round, result));
+        // R6-P65：主循环早退/终止时接收端已 drop——裁决不再静默丢弃，留痕可查
+        if let Err(std::sync::mpsc::SendError((unit, round, result))) =
+            tx.send((unit, round, result))
+        {
+            tracing::warn!(
+                component = "doc-engine",
+                unit = %unit,
+                round = round,
+                verdict_ok = result.is_ok(),
+                "审查裁决回传失败（主循环已收场）——裁决丢弃留痕"
+            );
+        }
     });
 }
 
