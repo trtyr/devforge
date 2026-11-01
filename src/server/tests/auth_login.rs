@@ -16,6 +16,8 @@ use http_body_util::BodyExt;
 use std::sync::Arc;
 use tower::ServiceExt;
 
+use super::with_loopback;
+
 struct AuthFixture {
     router: axum::Router,
     state: Arc<ServerState>,
@@ -78,7 +80,7 @@ async fn send_with(
             .unwrap(),
         None => builder.body(Body::empty()).unwrap(),
     };
-    router.clone().oneshot(req).await.unwrap()
+    router.clone().oneshot(with_loopback(req)).await.unwrap()
 }
 
 async fn status_of(resp: &axum::response::Response) -> u16 {
@@ -436,4 +438,68 @@ async fn observer_role_can_login_and_pass_gate() {
     )
     .await;
     assert_eq!(status_of(&resp).await, 200, "observer 登录态放行读");
+}
+
+/// R4-EX-3 端到端：连败达阈值后锁定——正确口令也 429 + Retry-After 头。
+/// （预置连败 4 次：真实退避窗累计 15s+ 不适合端到端跑；阈值语义由单测全覆盖。）
+#[tokio::test]
+async fn login_rate_limit_locks_after_repeated_failures() {
+    let f = fixture_auth(true, None);
+    {
+        let mut th = f.state.login_throttle.write().unwrap();
+        th.consecutive_failures = 4;
+    }
+    // 第 5 次失败 → 锁定（本次自身仍 401）
+    let resp = send_with(
+        &f.router,
+        "POST",
+        "/auth/login",
+        &[],
+        Some(serde_json::json!({"username": "admin", "password": "nope"})),
+    )
+    .await;
+    assert_eq!(status_of(&resp).await, 401);
+    // 锁定期：正确口令 → 429 + Retry-After
+    let resp = send_with(
+        &f.router,
+        "POST",
+        "/auth/login",
+        &[],
+        Some(serde_json::json!({"username": "admin", "password": "s3cret"})),
+    )
+    .await;
+    assert_eq!(status_of(&resp).await, 429, "锁定期正确口令也必须拒");
+    assert!(
+        resp.headers().get("retry-after").is_some(),
+        "429 必须带 Retry-After 头"
+    );
+}
+
+/// R3-05 裁决③端到端：Observer 会话写操作 403（中间件拒，不触达 handler）、读放行。
+#[tokio::test]
+async fn observer_write_is_403_but_read_ok() {
+    let f = fixture_auth(true, None);
+    // auth-init 只建 Admin——Observer 会话层直接注入测试态
+    f.state.auth_sessions.write().unwrap().insert(
+        "obs-token".into(),
+        crate::server::auth::AuthSession {
+            username: "watcher".into(),
+            role: Role::Observer,
+            expires_at_ms: crate::domain::now_ms() + SESSION_TTL_MS,
+        },
+    );
+    let cookie = [("cookie", "devforge_session=obs-token")];
+    // 读：放行
+    let resp = send_with(&f.router, "GET", "/api/v1/projects", &cookie, None).await;
+    assert_eq!(status_of(&resp).await, 200);
+    // 写：403
+    let resp = send_with(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        &cookie,
+        Some(serde_json::json!({"name": "nope"})),
+    )
+    .await;
+    assert_eq!(status_of(&resp).await, 403, "Observer 写操作必须 403");
 }

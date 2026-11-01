@@ -434,6 +434,10 @@ pub struct ServerState {
     /// A1 回环豁免（knobs::auth_loopback_exempt 注入；缺省 true = 本机免鉴权）。
     /// AtomicBool：Arc 共享后测试仍可翻转（守门中间件每次无锁读）。
     pub auth_loopback_exempt: std::sync::atomic::AtomicBool,
+    /// 登录限速状态（R4-EX-3：失败指数退避 + 连败锁定；单账户全局一枚）。
+    pub login_throttle: std::sync::RwLock<crate::server::auth::LoginThrottle>,
+    /// 绑定地址是否非回环（serve 注入；cookie Secure 条件附加的判定源，R4-EX-11）。
+    pub bind_non_loopback: std::sync::atomic::AtomicBool,
     /// 进程启动时刻（A7 运维信息带的 uptime 口径；unix ms UTC）。
     pub started_at_ms: u64,
     /// 日志目录（A8 查询端点的数据源；main 注入 <root>/logs，测试注入 tempdir）。
@@ -483,6 +487,8 @@ impl ServerState {
             token: None,
             auth_sessions: std::sync::RwLock::new(HashMap::new()),
             auth_loopback_exempt: std::sync::atomic::AtomicBool::new(true),
+            login_throttle: std::sync::RwLock::new(crate::server::auth::LoginThrottle::default()),
+            bind_non_loopback: std::sync::atomic::AtomicBool::new(false),
             started_at_ms: crate::domain::now_ms(),
             logs_root: PathBuf::new(),
             dependency_probe: Arc::new(dependencies::RealProbe),

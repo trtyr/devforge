@@ -230,6 +230,11 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::anyhow!("用法: devforge auth-init <口令> [--force]（口令不可为空）")
             })?;
         let force = args.iter().any(|a| a == "--force");
+        // R4-EX-14/R2-16：口令经 argv 传入 = ps / shell 历史可见——告警对齐
+        // 「拒绝腺奔启动」的同类口径（不阻断：单机自用场景 argv 是常态用法）。
+        eprintln!(
+            "⚠ admin 口令经命令行传入（ps / shell 历史可见）；机器多人共用时请注意清理历史"
+        );
         // P018 Phase 1：--pg <url> → admin 写进 PG（load_pg 返回的 store 自带
         // persist_pg，set_auth_account 尾调 persist() 自动落 PG，无需显式 save）。
         let pg_flag = devforge::server::http::parse_cli_flag(&args, "--pg")

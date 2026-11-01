@@ -168,6 +168,10 @@ pub fn build_router(state: SharedState) -> Router {
 
 /// 生产引导：绑定地址并常驻服务（main 调用）。
 pub async fn serve(state: SharedState, addr: std::net::SocketAddr) -> std::io::Result<()> {
+    // R4-EX-11：绑定姿态落 state（cookie Secure 条件附加的判定源）——非回环绑定 → Secure
+    state
+        .bind_non_loopback
+        .store(!addr.ip().is_loopback(), std::sync::atomic::Ordering::Relaxed);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     // 自审 minor（217）：启动期关键状态迁移落事件——鉴权姿态（是否启用、来源）与调度器启动。
     // 「就绪」在 bind 成功、即将 accept 时打点（不再是 bind 之前）。

@@ -137,7 +137,7 @@ async fn sse_last_event_id_replays_missed_events() {
         .header("last-event-id", "1")
         .body(Body::empty())
         .unwrap();
-    let resp = f.router.clone().oneshot(req).await.unwrap();
+    let resp = f.router.clone().oneshot(with_loopback(req)).await.unwrap();
     assert_eq!(resp.status(), 200);
     let mut stream = resp.into_body().into_data_stream();
     let mut got = String::new();

@@ -40,6 +40,9 @@ pub enum LoginError {
     UnknownUser,
     /// 密码错误。
     BadPassword,
+    /// 登录限速中（R4-EX-3：冷却/锁定期内直接拒，不跑哈希——拒绝面与提交的
+    /// 用户名/密码无关，无侧信道增益）；带建议重试等待毫秒数。
+    Throttled { retry_after_ms: u64 },
 }
 
 impl LoginError {
@@ -48,6 +51,7 @@ impl LoginError {
             LoginError::NotInitialized => "尚未初始化 admin 账户（devforge auth-init <口令>）",
             LoginError::UnknownUser => "用户名或密码不匹配",
             LoginError::BadPassword => "用户名或密码不匹配",
+            LoginError::Throttled { .. } => "尝试过于频繁，请稍后再试",
         }
     }
 
@@ -57,7 +61,71 @@ impl LoginError {
             LoginError::NotInitialized => "账户未初始化",
             LoginError::UnknownUser => "用户名不匹配",
             LoginError::BadPassword => "密码错误",
+            LoginError::Throttled { .. } => "登录限速中（冷却/锁定期拒绝）",
         }
+    }
+}
+
+/// 登录限速常数（R4-EX-3/R2-04/R3-06：失败指数退避 + 连败锁定）。
+pub const LOGIN_BACKOFF_BASE_MS: u64 = 500;
+pub const LOGIN_BACKOFF_CAP_MS: u64 = 30 * 1000;
+pub const LOGIN_LOCK_THRESHOLD: u32 = 5;
+pub const LOGIN_LOCK_MS: u64 = 15 * 60 * 1000;
+
+/// 失败后的冷却窗：500ms × 2^(n-1)，封顶 30s（n = 当前连败数）。
+fn login_backoff_ms(failures: u32) -> u64 {
+    let shift = failures.saturating_sub(1).min(16);
+    LOGIN_BACKOFF_BASE_MS
+        .saturating_mul(1u64 << shift)
+        .min(LOGIN_BACKOFF_CAP_MS)
+}
+
+/// 登录限速状态（进程内；单账户模型 → 全局一枚，按 IP 计数可被伪造头绕过）。
+#[derive(Debug, Default, Clone)]
+pub struct LoginThrottle {
+    /// 连续失败次数（成功登录清零）。
+    pub consecutive_failures: u32,
+    /// 冷却截止：此前的尝试直接拒（指数退避窗）。
+    pub cooldown_until_ms: u64,
+    /// 锁定截止：连败达阈值后的长窗口（重置 = 锁定期满后成功登录）。
+    pub locked_until_ms: u64,
+}
+
+/// 限速检查：锁定/冷却中返回 `Some(剩余毫秒)`（直接拒，不跑哈希）。
+fn throttle_gate(state: &crate::server::ServerState, now_ms: u64) -> Option<u64> {
+    let mut th = state
+        .login_throttle
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    if now_ms < th.locked_until_ms {
+        return Some(th.locked_until_ms - now_ms);
+    }
+    if now_ms < th.cooldown_until_ms {
+        return Some(th.cooldown_until_ms - now_ms);
+    }
+    th.cooldown_until_ms = 0; // 冷却已过，出冷却
+    None
+}
+
+/// 失败记账：连败 +1 → 达阈值进锁定窗，否则进指数退避冷却窗。
+fn record_login_failure(state: &crate::server::ServerState, now_ms: u64) {
+    let mut th = state
+        .login_throttle
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    th.consecutive_failures = th.consecutive_failures.saturating_add(1);
+    if th.consecutive_failures >= LOGIN_LOCK_THRESHOLD {
+        th.locked_until_ms = now_ms.saturating_add(LOGIN_LOCK_MS);
+        th.cooldown_until_ms = 0;
+        tracing::warn!(
+            component = "auth",
+            event = "login.locked",
+            failures = th.consecutive_failures,
+            lock_ms = LOGIN_LOCK_MS,
+            "连续登录失败达阈值，账户锁定 15 分钟（进程内状态，重启即重置）"
+        );
+    } else {
+        th.cooldown_until_ms = now_ms.saturating_add(login_backoff_ms(th.consecutive_failures));
     }
 }
 
@@ -69,6 +137,11 @@ pub fn login(
     password: &str,
     now_ms: u64,
 ) -> Result<(String, crate::domain::auth::Role), LoginError> {
+    // 限速前置（R4-EX-3）：锁定/冷却中直接拒——不跑哈希，拒绝面与提交的
+    // 用户名/密码无关，爆破者从拒绝得不到任何口令侧信息。
+    if let Some(retry_after_ms) = throttle_gate(state, now_ms) {
+        return Err(LoginError::Throttled { retry_after_ms });
+    }
     let account = {
         let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
         match store.auth_account() {
@@ -76,11 +149,24 @@ pub fn login(
             Some(acc) => acc.clone(),
         }
     };
+    // 时序侧信道死（R3-06）：无论用户名对错**先跑**口令校验（成本恒定），
+    // 用户名存在性不再可从响应时间探测。
+    let password_ok = crate::domain::auth::verify_password(password, &account.password_hash);
     if account.username != username {
+        record_login_failure(state, now_ms);
         return Err(LoginError::UnknownUser);
     }
-    if !crate::domain::auth::verify_password(password, &account.password_hash) {
+    if !password_ok {
+        record_login_failure(state, now_ms);
         return Err(LoginError::BadPassword);
+    }
+    {
+        // 成功登录：限速状态清零（锁定期满后的成功 = 重置）
+        let mut th = state
+            .login_throttle
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        *th = LoginThrottle::default();
     }
     let token = crate::domain::auth::new_session_token();
     let session = AuthSession {
@@ -141,24 +227,29 @@ pub fn token_from_cookie(cookie_header: &str) -> Option<String> {
 }
 
 /// 组 Set-Cookie 值（HttpOnly + SameSite=Lax + Path=/ + Max-Age 与 TTL 同步）。
-pub fn session_cookie_value(token: &str) -> String {
+/// R4-EX-11/R2-14/R3-13：`secure` = 绑定非回环地址时附加 `Secure`
+/// （无条件附加会弄坏本机 http 登录——浏览器拒收回环 https-only cookie）。
+pub fn session_cookie_value(token: &str, secure: bool) -> String {
+    let secure_flag = if secure { "; Secure" } else { "" };
     format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
+        "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}{secure_flag}",
         SESSION_TTL_MS / 1000
     )
 }
 
 /// 登出的 Set-Cookie（同形清值 + 立即过期）。
-pub fn cleared_cookie_value() -> String {
-    format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+pub fn cleared_cookie_value(secure: bool) -> String {
+    let secure_flag = if secure { "; Secure" } else { "" };
+    format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0{secure_flag}")
 }
 
-/// 回环判定：ConnectInfo 缺席（进程内 oneshot 测试）视作回环——测试即本机；
-/// 生产链路 axum 恒带 ConnectInfo，以真实对端为准。
+/// 回环判定：ConnectInfo 缺席（oneshot 测试不注入）**不豁免**（R4-EX-12/R2-15
+/// fail-closed：无对端信息 = 无法证明本机）；生产链路 axum 恒带 ConnectInfo，
+/// 测试模拟本机请求须显式插入回环 ConnectInfo。
 pub fn is_loopback_peer(addr: Option<SocketAddr>) -> bool {
     match addr {
         Some(a) => a.ip().is_loopback(),
-        None => true,
+        None => false,
     }
 }
 

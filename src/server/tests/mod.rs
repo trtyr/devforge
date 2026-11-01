@@ -223,7 +223,19 @@ async fn send(
             .unwrap(),
         None => builder.body(Body::empty()).unwrap(),
     };
-    router.clone().oneshot(req).await.unwrap()
+    router.clone().oneshot(with_loopback(req)).await.unwrap()
+}
+
+
+/// 给 oneshot 请求插本机 ConnectInfo——R4-EX-12 fail-closed 后无对端信息不豁免，
+/// 测试模拟本机请求必须显式声明对端（127.0.0.1）。
+pub(crate) fn with_loopback(
+    mut req: axum::http::Request<Body>,
+) -> axum::http::Request<Body> {
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:11111".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    req
 }
 
 async fn body_json(resp: axum::response::Response) -> Value {

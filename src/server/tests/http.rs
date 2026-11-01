@@ -24,7 +24,7 @@ async fn auth_token_enforced_when_configured() {
         .header("x-devforge-token", "secret")
         .body(Body::empty())
         .unwrap();
-    let resp = f.router.clone().oneshot(req).await.unwrap();
+    let resp = f.router.clone().oneshot(with_loopback(req)).await.unwrap();
     assert_eq!(resp.status(), 200);
 }
 

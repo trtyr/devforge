@@ -197,43 +197,82 @@ pub async fn auth_middleware(
     next: Next,
 ) -> Response {
     // 真实对端地址（into_make_service_with_connect_info 注入 extensions；
-    // oneshot 测试无此层 → None，按本机处理）。不从签名提取——Option<ConnectInfo>
-    // 不满足 from_fn 的 extractor bound。
+    // oneshot 测试不注入 → None，fail-closed 不豁免——模拟本机须显式插回环对端）。
+    // 不从签名提取——Option<ConnectInfo> 不满足 from_fn 的 extractor bound。
     let peer = req
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|c| c.0);
+    let mut authed: Option<AuthedUser> = None;
     // ① 服务间 token 通道
-    if let Some(expected) = &st.token {
+    if authed.is_none()
+        && let Some(expected) = &st.token
+    {
         let got = req.headers().get("x-devforge-token").and_then(|v| v.to_str().ok());
-        // 全仓审计 #6：常量时间比较（旧写法 `got != Some(expected)` 按字节早退，
-        // 泄露 token 前缀的计时信号）
-        if token_matches(got, expected) {
-            req.extensions_mut().insert(AuthedUser::anonymous("token"));
-            return next.run(req).await;
-        }
+            // 全仓审计 #6：常量时间比较（旧写法 `got != Some(expected)` 按字节早退，
+            // 泄露 token 前缀的计时信号）
+            if token_matches(got, expected) {
+                authed = Some(AuthedUser::anonymous("token"));
+            }
     }
     // ② 会话 cookie 通道（携带真实身份——写操作审计的 actor 来源）
-    if let Some(cookie) = req.headers().get(axum::http::header::COOKIE).and_then(|v| v.to_str().ok())
+    if authed.is_none()
+        && let Some(cookie) = req.headers().get(axum::http::header::COOKIE).and_then(|v| v.to_str().ok())
         && let Some(token) = crate::server::auth::token_from_cookie(cookie)
         && let Some((username, role)) =
             crate::server::auth::validate_session(&st, &token, crate::domain::now_ms())
     {
-        req.extensions_mut().insert(AuthedUser {
+        authed = Some(AuthedUser {
             username,
             role,
             via: "session",
         });
-        return next.run(req).await;
     }
-    // ③ 回环豁免通道（oneshot 测试无 ConnectInfo = None 视作本机）
-    if st.auth_loopback_exempt.load(std::sync::atomic::Ordering::Relaxed)
+    // ③ 回环豁免通道（fail-closed：无对端信息不豁免——R4-EX-12/R2-15）
+    if authed.is_none()
+        && st.auth_loopback_exempt.load(std::sync::atomic::Ordering::Relaxed)
         && crate::server::auth::is_loopback_peer(peer)
     {
-        req.extensions_mut().insert(AuthedUser::anonymous("loopback"));
-        return next.run(req).await;
+        authed = Some(AuthedUser::anonymous("loopback"));
     }
-    (StatusCode::UNAUTHORIZED, Json(json!({"error": "未认证（登录或携带 token）"}))).into_response()
+    let Some(user) = authed else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "未认证（登录或携带 token）"})),
+        )
+            .into_response();
+    };
+    // Observer 写操作降权（R3-05 裁决③落地：假 RBAC 变真）——login/logout 挂在
+    // 守门之外不经此处；GET/SSE 只读放行。
+    if user.role == crate::domain::auth::Role::Observer && is_write_method(req.method()) {
+        tracing::warn!(
+            component = "auth",
+            event = "observer_write_forbidden",
+            user = %user.username,
+            via = %user.via,
+            method = %req.method(),
+            path = %req.uri().path(),
+            "Observer 角色发起写操作，已拒绝（403）"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Observer 为只读角色，无写权限"})),
+        )
+            .into_response();
+    }
+    req.extensions_mut().insert(user);
+    next.run(req).await
+}
+
+/// 写操作判定（HTTP 动词面——POST/PATCH/PUT/DELETE）。
+fn is_write_method(method: &axum::http::Method) -> bool {
+    matches!(
+        *method,
+        axum::http::Method::POST
+            | axum::http::Method::PATCH
+            | axum::http::Method::PUT
+            | axum::http::Method::DELETE
+    )
 }
 
 /// `POST /auth/login`：校验口令签发会话 cookie。审计：成功/失败都落
@@ -256,16 +295,34 @@ pub async fn auth_login(
     match crate::server::auth::login(&st, &req.username, &req.password, now) {
         Ok((token, role)) => {
             audit("login_success", "登录成功");
+            // R4-EX-11：绑定非回环时附 Secure（判定源 = serve 注入的绑定姿态）
+            let secure = st.bind_non_loopback.load(std::sync::atomic::Ordering::Relaxed);
             (
                 StatusCode::OK,
                 [(
                     axum::http::header::SET_COOKIE,
-                    crate::server::auth::session_cookie_value(&token),
+                    crate::server::auth::session_cookie_value(&token, secure),
                 )],
                 Json(json!({
                     "ok": true,
                     "username": req.username,
                     "role": role,
+                })),
+            )
+                .into_response()
+        }
+        // R4-EX-3：限速中 → 429 + Retry-After（秒，向上取整）
+        Err(e @ crate::server::auth::LoginError::Throttled { retry_after_ms }) => {
+            audit("login_failure", e.detail());
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(
+                    axum::http::header::RETRY_AFTER,
+                    retry_after_ms.div_ceil(1000).to_string(),
+                )],
+                Json(json!({
+                    "error": e.message(),
+                    "retry_after_ms": retry_after_ms,
                 })),
             )
                 .into_response()
@@ -287,11 +344,12 @@ pub async fn auth_logout(
     {
         crate::server::auth::logout(&st, &token);
     }
+    let secure = st.bind_non_loopback.load(std::sync::atomic::Ordering::Relaxed);
     (
         StatusCode::OK,
         [(
             axum::http::header::SET_COOKIE,
-            crate::server::auth::cleared_cookie_value(),
+            crate::server::auth::cleared_cookie_value(secure),
         )],
         Json(json!({"ok": true})),
     )
