@@ -126,8 +126,8 @@ fn builtin_has_eleven_agents_and_four_base_packages() {
     assert_eq!(m.base_packages, BASE_PACKAGES.iter().map(|s| s.to_string()).collect::<Vec<_>>());
     assert_eq!(
         m.agents.len(),
-        16,
-        "规划双 + 编码双 + 测试双 + 文档三 + 变更规划双 + 变更编码双 + 变更测试双 + 审计单（P007/P008/P009/P013）"
+        17,
+        "规划双 + 编码双 + 测试双 + 文档四（R6-P61 doc-review 拆双）+ 变更规划双 + 变更编码双 + 变更测试双 + 审计单（P007/P008/P009/P013）"
     );
     // 差异化包仅 Plan Agent
     let pa = m.get_agent("plan-agent").unwrap();
@@ -279,7 +279,7 @@ fn coding_discipline_skill_goes_to_exactly_the_four_coding_agents() {
             "{name} 不该拿 coding-discipline skill"
         );
     }
-    assert_eq!(m.agents.len(), 16, "4 正 + 12 负 = 16（code-review 不带 coding-discipline，P013）");
+    assert_eq!(m.agents.len(), 17, "4 正 + 13 负 = 17（code-review 不带 coding-discipline，P013）");
 }
 
 #[test]
@@ -453,10 +453,15 @@ fn testing_prompts_carry_protocol_and_discipline() {
     assert!(DOC_FIX_PROMPT.contains("第三方"));
     assert!(DOC_FIX_PROMPT.contains("Runbook"));
     assert!(DOC_FIX_PROMPT.contains("findings"));
-    assert!(DOC_REVIEW_PROMPT.contains("plan tree"));
-    assert!(DOC_REVIEW_PROMPT.contains("Runbook"));
-    assert!(DOC_REVIEW_PROMPT.contains("findings"));
-    assert!(DOC_REVIEW_PROMPT.contains("<stage-verdict>"));
+    // R6-P61 拆双：doc-fix 语境的四条归 DOC_REVIEW_FIX_PROMPT（stage-verdict 协议）
+    assert!(DOC_REVIEW_FIX_PROMPT.contains("plan tree"));
+    assert!(DOC_REVIEW_FIX_PROMPT.contains("Runbook"));
+    assert!(DOC_REVIEW_FIX_PROMPT.contains("findings"));
+    assert!(DOC_REVIEW_FIX_PROMPT.contains("<stage-verdict>"));
+    // doc-from-zero 审查（submit_verdict 正道）的锚点
+    assert!(DOC_REVIEW_PROMPT.contains("submit_verdict"), "doc-from-zero 审查正道 = 工具交卷");
+    assert!(DOC_REVIEW_PROMPT.contains("Runbook"), "Runbook 审查面在 doc-from-zero 侧同样在");
+    assert!(!DOC_REVIEW_PROMPT.contains("<stage-verdict>"), "doc-from-zero 侧禁止 stage-verdict（AF-5 双输出 = 违例）");
 }
 
 #[test]
@@ -508,7 +513,8 @@ fn only_review_agents_declare_tool_allowlists() {
         "doc-review 工具面必须是 read+write+submit_verdict 白名单（交卷工具不能被剥夺误伤）"
     );
     for a in &m.agents {
-        if a.name == "doc-review" {
+        if a.name == "doc-review" || a.name == "doc-review-fix" {
+            // 两个审查角色都声明工具白名单（AF-3 剥夺到 read+write；doc-review 另带 submit_verdict）
             continue;
         }
         assert!(a.tools.is_none(), "{} 不应被剥夺工具面（AF-3 只针对审查官）", a.name);

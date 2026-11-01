@@ -88,8 +88,13 @@ pub const DOC_FIX_PROMPT: &str = include_str!("../../assets/prompts/doc-fix.md")
 /// Doc Agent 提示词（P008 D009/D010/D016/D020）——doc-from-zero 的干活方。
 pub const DOC_AGENT_PROMPT: &str = include_str!("../../assets/prompts/doc-agent.md");
 
-/// Doc Review 提示词（P007 T001 正稿；D004/D008 一致性审查落地，勿手改——改决策先改 plan tree）。
+/// Doc Review 提示词（P007 T001 正稿；R6-P61 拆双后专供 doc-from-zero——
+/// submit_verdict 工具交卷正道，勿手改——改决策先改 plan tree）。
 pub const DOC_REVIEW_PROMPT: &str = include_str!("../../assets/prompts/doc-review.md");
+
+/// Doc Review (doc-fix) 提示词（R6-P61 拆双：doc-fix 回注流程专用——
+/// <stage-verdict> 文本协议首行，与 doc-from-zero 的 submit_verdict 互斥共存）。
+pub const DOC_REVIEW_FIX_PROMPT: &str = include_str!("../../assets/prompts/doc-review-fix.md");
 
 /// Code Review Agent 提示词（P013 全量代码审计：批次审查官，六视角综合 + 结构化发现协议）。
 pub const CODE_REVIEW_AGENT_PROMPT: &str = include_str!("../../assets/prompts/code-review-agent.md");
@@ -539,6 +544,8 @@ impl ConfigManifest {
                     extensions: vec!["submit-unit".into()],
                 },
                 AgentManifest {
+                    // R6-P61 拆双：本 profile 专供 doc-from-zero（submit_verdict 正道）；
+                    // doc-fix 回注流程走 doc-review-fix（stage-verdict 文本协议）。
                     name: "doc-review".into(),
                     role_prompt: DOC_REVIEW_PROMPT.into(),
                     extra_packages: vec![],
@@ -556,6 +563,20 @@ impl ConfigManifest {
                     // defaultTools 白名单含 submit_verdict——AF-5 的交卷工具不能被 AF-3 的剥夺误伤
                     tools: Some(vec!["read".into(), "write".into(), "submit_verdict".into()]),
                     extensions: vec!["submit-verdict".into()],
+                },
+                AgentManifest {
+                    // R6-P61 拆双：doc-fix 回注流程的审查官——stage-verdict 文本协议
+                    // 不需要 submit_verdict 工具（工具面剥夺到 read + write）。
+                    name: "doc-review-fix".into(),
+                    role_prompt: DOC_REVIEW_FIX_PROMPT.into(),
+                    extra_packages: vec![],
+                    model: "grok-4.7".into(),
+                    skills: vec!["doc-contract".into()],
+                    mcp: vec![],
+                    thinking_level: Some("medium".into()),
+                    path_permissions: None,
+                    tools: Some(vec!["read".into(), "write".into()]),
+                    extensions: vec![],
                 },
                 // P009：变更 SOP 规划双 Agent。与 MVP 的 plan 双 Agent 平行：
                 // 工具多一层 codegraph（把需求落到文件与符号上），技能仍是 plan-tree。

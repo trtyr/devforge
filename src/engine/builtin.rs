@@ -578,7 +578,7 @@ impl BuiltinRpcEngine {
                             let docfix_agent = RpcPlanSession::new(docfix_client);
                             let doc_review_factory = RpcReviewFactory::per_round_in(
                                 doc_review_profile.clone(),
-                                "doc-review",
+                                "doc-review-fix",
                                 doc_review_sessions.clone(),
                                 blackboard.clone(),
                                 ledger_path_in_scope.clone(),
@@ -655,8 +655,8 @@ impl BuiltinRpcEngine {
         )?;
         let agent = RpcPlanSession::new(agent_client);
         let factory = RpcReviewFactory::per_round_in(
-            self.profile_root.join("doc-review"),
-            "doc-review",
+            self.profile_root.join("doc-review-fix"),
+            "doc-review-fix",
             sessions.join("doc-reviews"),
             blackboard,
             self.plans_root
