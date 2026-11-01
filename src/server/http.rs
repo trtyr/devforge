@@ -252,30 +252,106 @@ pub async fn serve(state: SharedState, addr: std::net::SocketAddr) -> std::io::R
             );
         }
     });
-    // 自审 minor（218）：常驻服务要有优雅停机——旧口径 SIGINT 直接终结进程，SSE 长连接被
-    // 硬断且不留停机日志，运维无法区分「主动停」与「崩了」。
+    // 自审 minor（218）：常驻服务要有优雅停机。R5-EX-4/R2-06：SIGTERM（systemd restart）
+    // 与 SIGINT（Ctrl-C）共用同一条路径——旧口径只听 ctrl_c，TERM 直接终结进程，
+    // 在跑 pi 子进程继续写目标仓。
     // A1：ConnectInfo 注入——中间件用真实对端地址判回环豁免（oneshot 测试无此层，
     // Option<ConnectInfo> = None 视作本机）。
     axum::serve(
         listener,
-        build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        build_router(state.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-            tracing::info!(
-                component = "server",
-                event = "server.shutdown",
-                reason = "SIGINT",
-                "收到 SIGINT，开始优雅停机（停止接受新连接，等在途请求收尾）"
-            );
-        })
-        .await?;
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
+    // HTTP 面已关：停机清场——协作取消在跑 run，有限窗口等待收尾，兑底 SIGTERM 自家遗留子进程
+    drain_on_shutdown(&state).await;
     tracing::info!(
         component = "server",
         event = "server.stopped",
         "devforge API 已停机"
     );
     Ok(())
+}
+
+/// 停机信号源：SIGTERM（systemd restart）与 SIGINT（Ctrl-C）共用同一条优雅停机路径。
+async fn shutdown_signal() {
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            // 注册失败（非 unix/资源限）：不参与 select，避免误触发
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    let reason = tokio::select! {
+        _ = tokio::signal::ctrl_c() => "SIGINT",
+        _ = term => "SIGTERM",
+    };
+    tracing::info!(
+        component = "server",
+        event = "server.shutdown",
+        reason,
+        "收到停机信号，开始优雅停机（停止接受新连接，等在途请求收尾）"
+    );
+}
+
+/// 停机清场（EX-4）：①协作取消全部在跑 run（sop loop 收尾落盘）；②有限窗口轮询
+/// runs_control 排空（run 收尾后句柄自 map 移除）；③兑底 reconcile——空活动集 = 自家
+/// 遗留子进程一律 SIGTERM（DEVFORGE_MANAGED 标记面，Foreign 绝不动）。
+async fn drain_on_shutdown(state: &SharedState) {
+    {
+        let controls = state.runs_control.lock().unwrap_or_else(|e| e.into_inner());
+        let n = controls.len();
+        for rc in controls.values() {
+            rc.cancel();
+        }
+        if n > 0 {
+            tracing::info!(
+                component = "server",
+                event = "shutdown.drain",
+                runs = n,
+                "优雅停机：已请求全部在跑 run 收尾"
+            );
+        }
+    }
+    // 有限窗口：每 500ms 查一次排空（run 收尾后句柄自 map 移除），最多 10s
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let remaining = state
+            .runs_control
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        if remaining == 0 {
+            break;
+        }
+    }
+    let remaining = state
+        .runs_control
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .len();
+    if remaining > 0 {
+        tracing::warn!(
+            component = "server",
+            event = "shutdown.drain_timeout",
+            runs = remaining,
+            "优雅停机窗口（10s）内仍有 run 未收尾——交由 reconcile 兑底 SIGTERM 自家遗留子进程"
+        );
+    }
+    let report = crate::engine::ledger::reconcile_all(
+        &state.plans_root,
+        &std::collections::BTreeSet::new(),
+        true,
+    );
+    tracing::info!(
+        component = "server",
+        event = "shutdown.reconcile",
+        killed = report.killed,
+        cleared = report.cleared,
+        "停机清场完成（自家遗留子进程已 SIGTERM，Foreign 不动）"
+    );
 }
 
 #[cfg(test)]
