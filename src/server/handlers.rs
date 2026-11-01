@@ -979,18 +979,33 @@ pub async fn logs_query(
 ) -> Json<serde_json::Value> {
     let offset = q.offset.unwrap_or(0);
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
-    let files = rotated_log_files(&st.logs_root);
+    let all_files = rotated_log_files(&st.logs_root);
+    // R5-EX-7/8：文件个数上限——轮转副本无限累积时不再全量扫（保留最新 N 个，
+    // 响应如实标记截断）。旧→新排序下截最旧。
+    const LOG_SCAN_MAX_FILES: usize = 32;
+    let files_truncated = all_files.len() > LOG_SCAN_MAX_FILES;
+    let files: Vec<_> = if files_truncated {
+        all_files[all_files.len() - LOG_SCAN_MAX_FILES..].to_vec()
+    } else {
+        all_files
+    };
     let mut matched: Vec<serde_json::Value> = Vec::new();
     let mut total_matched: usize = 0;
     for path in &files {
-        let Ok(content) = std::fs::read_to_string(path) else {
+        // R5-EX-7/8：惰性行迭代（BufReader）替代整文件 read_to_string——
+        // 大文件不再整体入内存，内存从 O(文件) 降到 O(行)
+        let Ok(file) = std::fs::File::open(path) else {
             continue;
         };
-        for line in content.lines() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        let reader = std::io::BufReader::new(file);
+        for line in std::io::BufRead::lines(reader) {
+            let Ok(line) = line else {
+                continue; // 读取错误行跳过（同损坏行口径）
+            };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
                 continue; // 非法行（半写/损坏）跳过——查询面不做修复
             };
-            if log_line_matches(&v, line, &q, q.since_ms, q.until_ms) {
+            if log_line_matches(&v, &line, &q, q.since_ms, q.until_ms) {
                 total_matched += 1;
                 if total_matched > offset && matched.len() < limit {
                     let mut row = v;
@@ -1012,6 +1027,7 @@ pub async fn logs_query(
         "limit": limit,
         "lines": matched,
         "files": scanned,
+        "files_truncated": files_truncated,
     }))
 }
 

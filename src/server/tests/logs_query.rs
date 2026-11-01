@@ -319,3 +319,37 @@ async fn logs_query_single_file_behavior_unchanged() {
     assert_eq!(body["files"].as_array().unwrap().len(), 1);
     assert_eq!(body["lines"][0]["fields"]["message"], "only");
 }
+
+/// R5-EX-7/8：文件个数上限——>32 个轮转副本时只扫最新 32 个，
+/// files_truncated 如实标记；分页语义在截断窗口内保持。
+#[tokio::test]
+async fn logs_query_caps_scanned_files_and_marks_truncation() {
+    let dir = tempfile::tempdir().unwrap();
+    let st = state_with_logs_dir(dir.path(), true);
+    let router = build_router(st.clone());
+    std::fs::create_dir_all(&st.logs_root).unwrap();
+    // 灌 34 个轮转副本（mtime 依次递增）
+    for i in 0..34 {
+        std::fs::write(
+            st.logs_root.join(format!("devforge.log.jsonl.rot{i}")),
+            format!(
+                "{}\n",
+                serde_json::json!({"timestamp": "2026-10-31T10:00:00.000000Z", "level": "INFO", "fields": {"message": format!("m{i}")}, "target": "t"})
+            ),
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let resp = send(&router, "GET", "/api/v1/logs?limit=1000", None).await;
+    let body = body_json(resp).await;
+    assert_eq!(body["files_truncated"], serde_json::json!(true), ">32 文件必须标记截断");
+    let files = body["files"].as_array().unwrap();
+    assert_eq!(files.len(), 32, "只扫最新 32 个：{}", files.len());
+    assert_eq!(body["total_matched"].as_u64(), Some(32), "截断窗口内的匹配数");
+    assert!(
+        !files
+            .iter()
+            .any(|f| f.as_str().unwrap().contains("rot0")),
+        "最旧的 rot0 应被截掉"
+    );
+}
