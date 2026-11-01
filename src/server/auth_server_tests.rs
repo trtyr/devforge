@@ -69,21 +69,31 @@ fn login_issues_session_and_rejects_bad_credentials() {
     );
 }
 
-/// 滑动续期：验证即续；过期条目被清扫（不续、不可用）。
+/// 滑动续期（R3-14 降频语义）：续期窗外的验证纯读不推过期点；窗内（最后
+/// TTL/2）验证才续到 now+TTL；过期条目被清扫（不续、不可用）。
 #[test]
 fn sessions_slide_and_expire() {
     let st = state_with_account("pw");
     let (t1, _) = login(&st, "admin", "pw", 1_000).unwrap();
     let (t2, _) = login(&st, "admin", "pw", 2_000).unwrap();
-    // t1 在 1_000+TTL 到期；在 999_000 验证 → 续到 999_000+TTL
-    assert!(validate_session(&st, &t1, 999_000).is_some(), "续期成功");
-    // 再过 TTL-1s：t1 刚续过 → 活着（注意 retain 是全表清扫，先验存活再验清扫）
-    let late = 1_000_000 + SESSION_TTL_MS;
-    assert!(
-        validate_session(&st, &t1, late - 1_001).is_some(),
-        "t1 的续期到期 = 999_000+TTL，在其前一秒仍活"
+    // 续期窗外（expires = 1_000+TTL；now+TTL/2 远未追上）→ 纯读，过期点不前推
+    assert!(validate_session(&st, &t1, 999_000).is_some(), "存活验证成功");
+    assert_eq!(
+        st.auth_sessions.read().unwrap().get(&t1).unwrap().expires_at_ms,
+        1_000 + SESSION_TTL_MS,
+        "续期窗外的验证不得前推过期点"
     );
-    assert!(validate_session(&st, &t2, late).is_none(), "t2 未续已过期被清扫");
+    // 续期窗内（最后 TTL/2）：走慢路径续期到 now+TTL
+    let near_expiry = 1_000 + SESSION_TTL_MS - 1_000; // 距过期 1s
+    assert!(validate_session(&st, &t1, near_expiry).is_some(), "窗内续期成功");
+    assert_eq!(
+        st.auth_sessions.read().unwrap().get(&t1).unwrap().expires_at_ms,
+        near_expiry + SESSION_TTL_MS,
+        "续期窗内过期点前推到 now+TTL"
+    );
+    // t2 从未续期：过期后被清扫（慢路径 retain）
+    let t2_expired = 2_000 + SESSION_TTL_MS + 1;
+    assert!(validate_session(&st, &t2, t2_expired).is_none(), "t2 未续已过期被清扫");
     // 未知 token → None
     assert!(validate_session(&st, "nope", 1_000).is_none());
 }
@@ -190,4 +200,49 @@ fn unknown_user_failures_count_into_throttle() {
         login(&st, "root", "x", 1_100),
         Err(LoginError::Throttled { .. })
     ));
+}
+
+/// R3-14：并发验证读写分离——多线程同 token 并发 validate 全部成功
+/// （快路径读锁互不阻塞、不误判失效）；续期窗外的验证不推进过期。
+#[test]
+fn concurrent_validate_reads_are_all_successful() {
+    let st = state_with_account("pw");
+    let (token, _) = login(&st, "admin", "pw", 1_000).unwrap();
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let st = st.clone();
+            let token = token.clone();
+            std::thread::spawn(move || {
+                for n in 0..50i64 {
+                    // 全部落在续期窗外（expires = 1_000+TTL；now≈5_800 远未到
+                    // TTL/2 续期点）→ 走纯读快路径
+                    let now = 5_000 + i * 10 + n;
+                    assert!(
+                        super::validate_session(&st, &token, now as u64).is_some(),
+                        "并发读不得误判失效（now={now}）"
+                    );
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+}
+
+/// R3-14 续期语义保持：接近过期点（TTL/2 内）的验证走慢路径续期
+/// （expires 前推），离续期点远的验证不推。
+#[test]
+fn validate_renews_only_near_expiry() {
+    let st = state_with_account("pw");
+    let (token, _) = login(&st, "admin", "pw", 1_000).unwrap();
+    // 续期窗外：expires 不前推（仍在 1_000+TTL 附近）
+    assert!(super::validate_session(&st, &token, 2_000).is_some());
+    // 续期窗内（now+TTL/2 >= expires）：走慢路径续期到 now+TTL
+    let near_expiry = 1_000 + SESSION_TTL_MS - 1_000; // 距过期 1s（< TTL/2）
+    assert!(super::validate_session(&st, &token, near_expiry).is_some());
+    // 续期后过期点 = near_expiry + TTL：远晚于旧点
+    let st2 = st.auth_sessions.read().unwrap();
+    let expires = st2.get(&token).unwrap().expires_at_ms;
+    assert_eq!(expires, near_expiry + SESSION_TTL_MS, "续期窗内必须前推");
 }

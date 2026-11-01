@@ -182,21 +182,41 @@ pub fn login(
     Ok((token, account.role))
 }
 
-/// 验证会话（滑动续期）：token 有效且未过期 → Some((username, role))；
-/// 过期条目顺手清掉（不为此单独起清扫线程）。
+/// 滑动续期降频阈值（R3-14）：距过期点超过 TTL/2 的验证走纯读路径——绝大多数
+/// 验证不拿写锁，写锁只服务真正需要推进过期/清扫的会话。
+const SESSION_RENEW_INTERVAL_MS: u64 = SESSION_TTL_MS / 2;
+
+/// 验证会话（读写分离 + 续期降频，R3-14）：token 有效且未过期 → Some((username, role))。
+/// 快路径：读锁验证 + 距过期点超过 TTL/2 → 纯读返回（并发读互不阻塞）；
+/// 慢路径：接近续期点才拿写锁（续期 + 顺手清扫过期条目，不再每次验证都扫全表）。
 pub fn validate_session(
     state: &crate::server::ServerState,
     token: &str,
     now_ms: u64,
 ) -> Option<(String, crate::domain::auth::Role)> {
+    // 快路径：读锁。会话存在且远未到续期点 → 纯读返回
+    {
+        let sessions = state
+            .auth_sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        match sessions.get(token) {
+            Some(s) if s.expires_at_ms > now_ms
+                && now_ms + SESSION_RENEW_INTERVAL_MS < s.expires_at_ms =>
+            {
+                return Some((s.username.clone(), s.role));
+            }
+            None => return None,
+            _ => {} // 在续期窗内（或已过期）→ 慢路径
+        }
+    }
+    // 慢路径：写锁续期 + 顺手清扫过期（读/写间隙可能已被登出或过期——重验）
     let mut sessions = state
         .auth_sessions
         .write()
         .unwrap_or_else(|e| e.into_inner());
-    // 顺手清扫：过期的全清（会话量级 = 人数量级，O(n) 无压力）
     sessions.retain(|_, s| s.expires_at_ms > now_ms);
     let session = sessions.get_mut(token)?;
-    // 滑动续期
     session.expires_at_ms = now_ms + SESSION_TTL_MS;
     Some((session.username.clone(), session.role))
 }
