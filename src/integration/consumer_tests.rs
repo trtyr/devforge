@@ -666,3 +666,56 @@ fn orphan_head_consumes_selected_not_first_pending() {
         "孤儿本轮只能被跳过，不得被错位消费或改状态"
     );
 }
+
+#[test]
+fn boundary_violation_blocks_merge_from_master() {
+    // R4-P30 回归：候选改动越出 owned_paths → NeedsRepair（boundary_violation 产物）
+    // 且 master 不前进（CAS 未做）。错位形态：注释声称复核但代码零读取 → 集成成功。
+    let (repo, base) = repo_with_base();
+    let plans = tempfile::tempdir().unwrap();
+    // 手工造候选：owned 只声明 only.txt，实际还提交了 sneaky.txt
+    let spec = crate::workspace::WorkspaceSpec {
+        repo: repo.path().to_path_buf(),
+        task_id: "task-boundary".into(),
+        base_rev: base.clone(),
+    };
+    let ws = crate::workspace::Workspace::create(&spec).unwrap();
+    std::fs::write(ws.path.join("only.txt"), "owned\n").unwrap();
+    std::fs::write(ws.path.join("sneaky.txt"), "violation\n").unwrap();
+    git(&ws.path, &["add", "-A"]).unwrap();
+    git(&ws.path, &[
+        "-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "b",
+    ])
+    .unwrap();
+    let frozen = ws.freeze().unwrap();
+    ws.remove(repo.path()).unwrap();
+    enqueue(
+        plans.path(),
+        Candidate {
+            task_id: "task-boundary".into(),
+            frozen_sha: frozen,
+            base_rev: base.clone(),
+            owned_paths: vec!["only.txt".into()],
+            status: CandidateStatus::Pending,
+            evidence_paths: vec![],
+        },
+    );
+    let repos_map = repos(repo.path(), "task-boundary");
+    let before = target_sha(repo.path());
+
+    let report =
+        drain_project(&settings(true), "p", &repos_map, plans.path(), |_| Ok(())).unwrap();
+    let Some(Consumed::NeedsRepair { reason, .. }) = report.consumed else {
+        panic!("越界候选应转修复队列：{report:?}");
+    };
+    assert!(reason.contains("越界"), "归因要点名越界：{reason}");
+    assert!(reason.contains("sneaky.txt"), "归因要点名越界文件：{reason}");
+
+    match candidate_status(plans.path(), "task-boundary") {
+        CandidateStatus::NeedsRepair { reason: r } => {
+            assert!(r.contains("sneaky.txt"), "队列状态带同款归因：{r}");
+        }
+        other => panic!("候选应 NeedsRepair：{other:?}"),
+    }
+    assert_eq!(target_sha(repo.path()), before, "越界不得推进 master（CAS 未做）");
+}

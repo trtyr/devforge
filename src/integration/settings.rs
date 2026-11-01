@@ -31,6 +31,10 @@ pub struct IntegrationGates {
 /// Copy：全 bool 值对象（消费循环内层闭包按值捕获）。
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct IntegrationSettings {
+    /// 自动集成总开关：**缺省关**。打开 = 运营者授权机器在验证通过后**直接改写目标
+    /// 分支**（git update-ref，无逐条人工批准环节——R4-P29 裁决 2026-11-01：开关
+    /// 本身就是批准动作，「开它 = 授权机器直改 master」）。关闭时消费循环零动作
+    /// （连队列都不读，不产生任何集成 worktree）。
     pub auto_integrate_enabled: bool,
     #[serde(default)]
     pub gates: IntegrationGates,

@@ -45,8 +45,9 @@ impl WorkItemContract {
     }
 }
 
-/// 单条目匹配（`WorkItemContract::covers` 的实现细节）。
-fn path_covered_by(path: &str, pattern: &str) -> bool {
+/// 单条目匹配（`WorkItemContract::covers` 与集成链边界复核共用的实现细节）。
+/// R4-P30：集成链复核必须与收口门同一套匹配语义——提升可见性零复制，不给语义漂移留缝。
+pub(crate) fn path_covered_by(path: &str, pattern: &str) -> bool {
     if pattern == "**" {
         // 裸 `**` = 一切路径（gitignore 语义；与插件 match.ts 同步，样例集驱动）
         return true;

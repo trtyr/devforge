@@ -313,6 +313,45 @@ impl<'a> Integrator<'a> {
             });
         }
 
+        // R4-P30：契约边界复核（真落地）——收口门只看工作区，集成链是合入前的最后
+        // 防线：merge 已做、CAS 未做，改动集越出候选 owned_paths 就打回，不碰目标 ref。
+        // 越界 = Quality 归因（候选自身问题）→ NeedsRepair + 产物；diff 取不到 = System。
+        if let Some(reason) = self.boundary_violation(&iw_path, &cand)? {
+            drop(guard);
+            let artifact = self.write_artifact(
+                &queue.project,
+                &cand,
+                &serde_json::json!({
+                    "kind": "boundary_violation",
+                    "attribution": "quality",
+                    "base_rev": cand.base_rev,
+                    "target": expect_before,
+                    "candidate": cand.frozen_sha,
+                    "error": reason,
+                }),
+            )?;
+            queue.candidates[idx]
+                .evidence_paths
+                .push(artifact.to_string_lossy().to_string());
+            queue.candidates[idx].status = CandidateStatus::NeedsRepair {
+                reason: reason.clone(),
+            };
+            queue.save()?;
+            tracing::warn!(
+                component = "integration",
+                event = "integration.needs_repair",
+                project = %queue.project,
+                task_id = %cand.task_id,
+                kind = "boundary_violation",
+                "候选改动越出契约 owned_paths，集成转入修复队列"
+            );
+            return Ok(IntegrationOutcome::NeedsRepair {
+                task_id: cand.task_id,
+                reason,
+                artifact,
+            });
+        }
+
         // 组合验证（注入管线；失败产物含验证输出）
         if let Err(e) = (self.validate)(&iw_path) {
             drop(guard);
@@ -370,6 +409,9 @@ impl<'a> Integrator<'a> {
         let merged_sha = git_out(&iw_path, &["rev-parse", "HEAD"])?.trim().to_string();
         drop(guard);
 
+        // R4-P41：CAS 前探测目标 ref 是否被工作树检出（命中只留痕不拒绝）
+        self.warn_if_target_checked_out();
+
         // CAS：期望旧值 = 集成开始时的目标（期间被别的候选推进 → expect 不符 → 重排）
         let cas = Command::new("git")
             .arg("-C")
@@ -425,6 +467,90 @@ impl<'a> Integrator<'a> {
         Ok(git_out(self.repo, &["rev-parse", &self.target_ref])?
             .trim()
             .to_string())
+    }
+
+    /// 候选改动集 vs 候选 owned_paths（R4-P30 真落地）。
+    ///
+    /// 改动集 = `git diff --name-only {base_rev}..{frozen_sha}`（在集成 worktree 里求——
+    /// checkout 目标后两 sha 均可达）。匹配语义复用 domain 的 `path_covered_by`
+    /// （与收口门 `Contract::covers` 同一套，零复制不给语义漂移留缝）。
+    /// 无 base_rev（空串 = M0 无基准无法机械 diff）→ 放行，与收口门同口径；
+    /// diff 失败/base 形状非法 = System（门不能 fail-open）。`Some(描述)` = 越界。
+    fn boundary_violation(&self, iw: &Path, cand: &Candidate) -> Result<Option<String>> {
+        use crate::domain::contract::path_covered_by;
+        let base = cand.base_rev.trim();
+        if base.is_empty() {
+            return Ok(None); // 无基准（M0）：机械 diff 不可得，与收口门同口径放行
+        }
+        let sha_ok = (7..=40).contains(&base.len())
+            && base.chars().all(|c| c.is_ascii_hexdigit());
+        if !sha_ok {
+            return Err(DevforgeError::System(format!(
+                "集成边界复核拒绝盲跑：候选 base_rev 形状非法 `{base}`（须 7..=40 位十六进制）"
+            )));
+        }
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(iw)
+            .args(["diff", "--name-only", &format!("{base}..{}", cand.frozen_sha)])
+            .output()
+            .ctx("git 可执行")?;
+        if !out.status.success() {
+            return Err(DevforgeError::System(format!(
+                "集成边界复核无法取 diff（git 非零退出）：{}",
+                first_line(&String::from_utf8_lossy(&out.stderr))
+            )));
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let violations: Vec<&str> = stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .filter(|f| !cand.owned_paths.iter().any(|pat| path_covered_by(f, pat)))
+            .collect();
+        if violations.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "越界改动：{} 个文件超出候选 owned_paths（base {base}）：{}",
+            violations.len(),
+            violations.join(", ")
+        )))
+    }
+
+    /// R4-P41：目标 ref 正被某个工作树检出时留痕点名——改写 ref 后那些树会显示
+    /// 「假脏」（索引仍停旧快照）。只留痕不拒绝：主工作树检出目标分支是常态布局，
+    /// 拒绝 = 自动集成对缺省布局永不可用；运营者按日志决定是否 checkout 重置。
+    fn warn_if_target_checked_out(&self) {
+        let Ok(list) = Command::new("git")
+            .arg("-C")
+            .arg(self.repo)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+        else {
+            return; // 探测本身失败不阻断集成（CAS 自己会失败并归因）
+        };
+        if !list.status.success() {
+            return;
+        }
+        let mut current_wt = String::new();
+        let mut checked_out: Vec<String> = Vec::new();
+        for line in String::from_utf8_lossy(&list.stdout).lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                current_wt = p.to_string();
+            } else if line.strip_prefix("branch ") == Some(self.target_ref.as_str()) {
+                checked_out.push(current_wt.clone());
+            }
+        }
+        if !checked_out.is_empty() {
+            tracing::warn!(
+                component = "integration",
+                event = "integration.target_checked_out",
+                target_ref = %self.target_ref,
+                worktrees = ?checked_out,
+                "目标 ref 正被工作树检出（改写后这些树将显示脏）——如需干净工作树请人工 checkout 重置"
+            );
+        }
     }
 
     /// 集成工作树路径（固定名独占——集成串行）。
