@@ -394,3 +394,55 @@ fn the_baseline_gate_does_not_accept_a_fenced_pair() {
     let err = crate::change::coding_gate::parse_baseline_log(text).unwrap_err();
     assert!(err.to_string().contains("缺退出码"), "{err}");
 }
+
+/// R4-P49 裁决落地：可执行/源码形态（.rs/.sh/.py）落在 docs/evidence 下照判
+/// 越界；纯文档照旧豁免；tests/ 段全豁免不变（T208 口径不回潮）。
+#[test]
+fn exempt_path_executables_under_docs_evidence_are_not_exempt() {
+    use super::{is_exempt_path, is_source_like};
+    // 可执行/源码形态：docs/evidence 下不再豁免
+    assert!(!is_exempt_path("docs/hack.rs"), "docs 下 .rs 照判越界");
+    assert!(!is_exempt_path("evidence/tool.sh"), "evidence 下 .sh 照判越界");
+    assert!(!is_exempt_path("docs/scripts/probe.py"), "docs 下 .py 照判越界");
+    assert!(is_source_like("docs/hack.rs") && is_source_like("evidence/tool.sh"));
+    // 纯文档形态：照旧豁免
+    assert!(is_exempt_path("docs/report.md"), "纯文档豁免");
+    assert!(is_exempt_path("evidence/shot.png"), "图片豁免");
+    // tests/ 段全豁免不变（含源码形态——T208）
+    assert!(is_exempt_path("src/server/tests/foo.rs"), "tests 下 .rs 合法产物");
+    // tests 之外的源码照旧判越界
+    assert!(!is_exempt_path("src/lib.rs"));
+}
+
+/// R4-P45：git add 产物不再假 Quality——untracked 产物入口被当噪音跳过
+/// （不进 before），出口用同一套过滤器（is_exempt_or_junk）也不再算新增。
+#[test]
+fn added_artifact_no_longer_fake_quality() {
+    use super::check_no_product_code_edits;
+    let empty = std::collections::BTreeSet::new();
+    // 旧口径错位形态：html 报告 untracked（入口跳过）→ git add 后进出口快照
+    let after = std::collections::BTreeSet::from([
+        "evidence/report.html".to_string(),
+        "evidence/report.log".to_string(),
+    ]);
+    assert!(
+        check_no_product_code_edits(&empty, &after).is_ok(),
+        "测试产物（非源码/豁免目录）不得产出假 Quality"
+    );
+    // 真越界仍判：源码文件新增
+    let after_src = std::collections::BTreeSet::from(["src/lib.rs".to_string()]);
+    assert!(check_no_product_code_edits(&empty, &after_src).is_err());
+}
+
+/// R4-P45 出口收紧后的反向：docs 下 .rs 新增经 is_exempt_or_junk 也判越界
+/// （豁免收紧在出口方向生效）。
+#[test]
+fn docs_source_new_edit_is_quality_after_symmetry() {
+    use super::check_no_product_code_edits;
+    let empty = std::collections::BTreeSet::new();
+    let after = std::collections::BTreeSet::from(["docs/hack.rs".to_string()]);
+    assert!(
+        check_no_product_code_edits(&empty, &after).is_err(),
+        "docs 下 .rs 新增 = 越界（P49 收紧在出口方向生效）"
+    );
+}

@@ -230,12 +230,28 @@ pub fn snapshot_tracked_changes(
 ///
 /// 段级判定而非前缀判定：`src/foo/tests.rs` ✅、`src/foo/tests/x.rs` ✅、
 /// `src/foo/tests_helpers.rs` ❌（段名不等于 tests，不是目录段）。
-pub(crate) const EXEMPT_DIR_SEGMENTS: [&str; 3] = ["tests", "docs", "evidence"];
+/// 可执行/源码形态判定（R4-P49）：SOURCE_EXTENSIONS 21 条 + shell 脚本。
+pub(crate) fn is_source_like(path: &str) -> bool {
+    path.ends_with(".sh")
+        || crate::docgen::inventory::SOURCE_EXTENSIONS
+            .iter()
+            .any(|(e, _)| path.ends_with(&format!(".{e}")))
+}
 
 /// 路径是否落在豁免目录下（任意层级的 tests/docs/evidence 目录段）。
+///
+/// R4-P49 裁决（2026-11-01 用户授权自定）：**可执行产物不豁免**——`.rs`/`.sh`/`.py`
+/// 等可执行/源码形态落在 docs/、evidence/ 下照判越界（门禁「只准写测试」对可执行
+/// 内容无条件生效，文档目录里出现可写脚本本身就是异常信号）；纯文档形态
+/// （`.md`/图片/文本数据）照旧豁免。tests/ 段全豁免不变（T208 口径：测试代码
+/// 本来就是合法产物，不回潮）。旧的 EXEMPT_DIR_SEGMENTS 常量随分段豁免逻辑
+/// 退役（收紧后三分支语义不再共享一张表）。
 pub(crate) fn is_exempt_path(path: &str) -> bool {
-    path.split('/')
-        .any(|seg| EXEMPT_DIR_SEGMENTS.contains(&seg))
+    let segs: Vec<&str> = path.split('/').collect();
+    if segs.contains(&"tests") {
+        return true;
+    }
+    (segs.contains(&"docs") || segs.contains(&"evidence")) && !is_source_like(path)
 }
 
 /// 豁免目录段（任意层级的 tests/ docs/ evidence/）+ 常见构建/缓存产物目录。
@@ -269,9 +285,12 @@ pub fn check_no_product_code_edits(
     before: &std::collections::BTreeSet<String>,
     after: &std::collections::BTreeSet<String>,
 ) -> Result<()> {
+    // R4-P45：出口过滤与入口 untracked 段同口径（is_exempt_or_junk）——旧口径
+    // 只过 is_exempt_path，同一产物入口被当噪音跳过、出口算新增产品代码
+    // → git add 一下测试产物就产出假 Quality 终态。
     let new_edits: Vec<&String> = after
         .difference(before)
-        .filter(|f| !is_exempt_path(f))
+        .filter(|f| !is_exempt_or_junk(f))
         .collect();
     if !new_edits.is_empty() {
         return Err(DevforgeError::Quality(format!(
@@ -287,7 +306,7 @@ pub fn check_no_product_code_edits(
     // coding 的成果 checkout 回基线/删掉。旧口径只看「新增项」，回退完全隐形。
     let vanished: Vec<&String> = before
         .difference(after)
-        .filter(|f| !is_exempt_path(f))
+        .filter(|f| !is_exempt_or_junk(f))
         .collect();
     if !vanished.is_empty() {
         return Err(DevforgeError::Quality(format!(
