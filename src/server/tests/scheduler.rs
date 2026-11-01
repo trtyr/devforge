@@ -223,7 +223,7 @@ async fn settled_contract_task_auto_enqueues() {
     // frozen-commit.txt（M1 产物）落盘
     let frozen_dir = plans_root.join("devforge").join("auto-int");
     std::fs::create_dir_all(&frozen_dir).unwrap();
-    std::fs::write(frozen_dir.join("frozen-commit.txt"), "cafebabe\n").unwrap();
+    std::fs::write(frozen_dir.join("frozen-commit.txt"), "cafebabe00000000000000000000000000000000\n").unwrap();
 
     let report = tick(&f.state, &SchedulerConfig::default());
     assert!(
@@ -239,7 +239,7 @@ async fn settled_contract_task_auto_enqueues() {
         .iter()
         .find(|c| c.task_id == "auto-int")
         .expect("候选应在队列");
-    assert_eq!(cand.frozen_sha, "cafebabe");
+    assert_eq!(cand.frozen_sha, "cafebabe00000000000000000000000000000000");
     assert_eq!(cand.base_rev, "deadbeef");
     assert_eq!(cand.owned_paths, vec!["src/**".to_string()]);
 }
@@ -440,13 +440,13 @@ fn settled_contract_task(f: &super::Fixture, task: &str, frozen_sha: &str) {
 async fn needs_rebase_candidate_is_rearmed_and_not_stuck() {
     let f = fixture();
     let plans_root = f.state.plans_root.clone();
-    settled_contract_task(&f, "rebased", "cafebabe");
+    settled_contract_task(&f, "rebased", "cafebabe00000000000000000000000000000000");
 
     // 先入队，再模拟 CAS 失败后的状态
     let mut queue = crate::integration::MergeQueue::load(&plans_root, "devforge").unwrap();
     queue.enqueue(crate::integration::Candidate {
         task_id: "rebased".into(),
-        frozen_sha: "cafebabe".into(),
+        frozen_sha: "cafebabe00000000000000000000000000000000".into(),
         base_rev: "deadbeef".into(),
         owned_paths: vec!["src/**".into()],
         status: crate::integration::CandidateStatus::NeedsRebase {
@@ -478,12 +478,12 @@ async fn needs_rebase_candidate_is_rearmed_and_not_stuck() {
 async fn needs_repair_allows_reentry_with_new_frozen_commit() {
     let f = fixture();
     let plans_root = f.state.plans_root.clone();
-    settled_contract_task(&f, "repaired", "old111");
+    settled_contract_task(&f, "repaired", "1111111111111111111111111111111111111111");
 
     let mut queue = crate::integration::MergeQueue::load(&plans_root, "devforge").unwrap();
     queue.enqueue(crate::integration::Candidate {
         task_id: "repaired".into(),
-        frozen_sha: "old111".into(),
+        frozen_sha: "1111111111111111111111111111111111111111".into(),
         base_rev: "deadbeef".into(),
         owned_paths: vec!["src/**".into()],
         status: crate::integration::CandidateStatus::NeedsRepair {
@@ -505,7 +505,7 @@ async fn needs_repair_allows_reentry_with_new_frozen_commit() {
     // 修复后重跑 → 新 frozen_sha → 允许再入队
     std::fs::write(
         plans_root.join("devforge").join("repaired").join("frozen-commit.txt"),
-        "new222\n",
+        "2222222222222222222222222222222222222222\n",
     )
     .unwrap();
     tick(&f.state, &SchedulerConfig::default());
@@ -517,7 +517,7 @@ async fn needs_repair_allows_reentry_with_new_frozen_commit() {
         .map(|c| c.frozen_sha.clone())
         .collect();
     assert!(
-        shas.contains(&"new222".to_string()),
+        shas.contains(&"2222222222222222222222222222222222222222".to_string()),
         "新证据应允许再入队：{shas:?}"
     );
 }
@@ -1163,5 +1163,70 @@ fn seen_set_cap_folds_when_over_limit() {
         set.contains("cap-test-0") || set.len() > cap / 3,
         "对折应保留约一半条目：{}",
         set.len()
+    );
+}
+
+/// R4-P39：自动入队拒脏 frozen sha（非 40 位 hex）与缺 base_rev 契约——
+/// 脏值不再静默入队后被归因为「候选自身缺陷」。
+#[tokio::test]
+async fn auto_enqueue_rejects_dirty_frozen_and_missing_base_rev() {
+    let f = fixture();
+    let plans_root = f.state.plans_root.clone();
+    // ① 脏 frozen sha：公共前置后覆写为非 40 位 hex
+    settled_contract_task(&f, "dirty-sha", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    std::fs::write(
+        plans_root
+            .join("devforge")
+            .join("dirty-sha")
+            .join("frozen-commit.txt"),
+        "not-a-valid-sha\n",
+    )
+    .unwrap();
+    // ② 缺 base_rev：契约 base_rev = None
+    {
+        let mut store = f.state.store.lock().unwrap();
+        store
+            .create_task(
+                &SopRegistry::builtin(),
+                "devforge",
+                "no-base",
+                "planning",
+                Some(crate::domain::contract::WorkItemContract {
+                    owned_paths: vec!["src/**".into()],
+                    forbidden_paths: vec![],
+                    base_rev: None,
+                    isolation: crate::domain::contract::Isolation::None,
+                }),
+                TaskDeps::default(),
+            )
+            .unwrap();
+        let run = store.begin_run("devforge", "no-base").unwrap();
+        store.finish_run(&run.id, FinishOutcome::Completed).unwrap();
+    }
+    std::fs::create_dir_all(plans_root.join("devforge").join("no-base")).unwrap();
+    std::fs::write(
+        plans_root
+            .join("devforge")
+            .join("no-base")
+            .join("frozen-commit.txt"),
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+    )
+    .unwrap();
+
+    let report = tick(&f.state, &SchedulerConfig::default());
+    assert!(
+        !report
+            .auto_enqueued
+            .iter()
+            .any(|e| e.contains("dirty-sha") || e.contains("no-base")),
+        "脏 sha 与缺 base_rev 都不得入队：{report:?}"
+    );
+    let queue = crate::integration::MergeQueue::load(&plans_root, "devforge").unwrap();
+    assert!(
+        !queue
+            .candidates
+            .iter()
+            .any(|c| c.task_id == "dirty-sha" || c.task_id == "no-base"),
+        "两个候选都不得出现在队列"
     );
 }

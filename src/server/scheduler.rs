@@ -747,6 +747,20 @@ pub fn tick_with_integration_window(
         if sha.is_empty() {
             continue;
         }
+        // R4-P39：形状校验对齐同格式消费方（workspace normalize_candidate / API 入队端点
+        // 均要求恰 40 位 ASCII hex）——脏值不再静默入队后被归因为「候选自身缺陷」
+        // （classify_merge_failure 判 CandidateUnreachable），点名台账文件留痕。
+        if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            tracing::warn!(
+                component = "scheduler",
+                project = %project,
+                task = %task_id,
+                frozen_path = %frozen_path.display(),
+                raw = %sha,
+                "自动入队拒绝：frozen-commit.txt 非 40 位十六进制（台账文件损坏，修复后下个 tick 重试）"
+            );
+            continue;
+        }
         let contract = {
             let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
             store
@@ -754,6 +768,17 @@ pub fn tick_with_integration_window(
                 .and_then(|t| t.contract.clone())
         };
         let Some(contract) = contract else { continue };
+        // R4-P39：缺 base_rev 不再写空串入队——无基准的候选让集成链边界复核
+        // （机械 diff 需要 base）静默放行，留痕跳过（补基准后下个 tick 重试）。
+        if contract.base_rev.as_deref().map(str::trim).unwrap_or("").is_empty() {
+            tracing::warn!(
+                component = "scheduler",
+                project = %project,
+                task = %task_id,
+                "自动入队跳过：契约缺 base_rev（无基准无法机械复核边界），不入队"
+            );
+            continue;
+        }
         // 自审 major：入队走锁定读-改-写（rearm + 去重 + enqueue 同一把锁）——
         // 旧口径无锁 load→save，与 API 入队并发时互相覆写（丢候选）。
         let enqueued = MergeQueue::mutate(&st.plans_root, &project, |queue| {
@@ -783,7 +808,7 @@ pub fn tick_with_integration_window(
             queue.enqueue(Candidate {
                 task_id: task_id.clone(),
                 frozen_sha: sha.clone(),
-                base_rev: contract.base_rev.clone().unwrap_or_default(),
+                base_rev: contract.base_rev.clone().unwrap_or_default(), // 上方已拦空，此处不可能是空串
                 owned_paths: contract.owned_paths.clone(),
                 status: CandidateStatus::Pending,
                 evidence_paths: vec![],
