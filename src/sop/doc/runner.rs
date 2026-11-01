@@ -24,7 +24,7 @@ type PendingReview = (
     usize,
     String,
     u32,
-    std::sync::mpsc::Receiver<(String, u32, Result<String, DevforgeError>)>,
+    std::sync::mpsc::Receiver<(String, u32, Result<DocReviewReport, DevforgeError>)>,
 );
 
 use crate::error::{DevforgeError, Result};
@@ -38,8 +38,9 @@ use crate::sop::doc::state::{
     add_issues, bump_review, data_obj, done_units, issues_total, mark_done, review_rounds,
 };
 use crate::sop::doc::protocol::{
-    MAX_DOC_CONTINUE_NUDGES, MAX_DOC_EMPTY_REPLIES, MAX_DOC_PROTOCOL_VIOLATIONS,
-    MAX_DOC_REVIEW_RETRIES, DocVerdict, parse_doc_complete, parse_doc_review, parse_tool_verdict,
+    DocReviewReport, DocVerdict, MAX_DOC_CONTINUE_NUDGES, MAX_DOC_EMPTY_REPLIES,
+    MAX_DOC_PROTOCOL_VIOLATIONS, MAX_DOC_REVIEW_RETRIES, parse_doc_complete, parse_doc_review,
+    parse_tool_verdict,
 };
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
 
@@ -60,7 +61,7 @@ fn spawn_review_worker<F>(
     unit: &str,
     round: u32,
     instruction: &str,
-    tx: std::sync::mpsc::Sender<(String, u32, Result<String, DevforgeError>)>,
+    tx: std::sync::mpsc::Sender<(String, u32, Result<DocReviewReport, DevforgeError>)>,
 ) where
     F: ReviewSessionFactory + Send + 'static,
 {
@@ -68,7 +69,7 @@ fn spawn_review_worker<F>(
     let unit = unit.to_string();
     let instruction = instruction.to_string();
     std::thread::spawn(move || {
-        let result = (|| -> Result<String> {
+        let result = (|| -> Result<DocReviewReport> {
             let mut retries = 0usize;
             // 协议违例独立计数（原串行 runner 口径：与空回复/异常重试分开）
             let mut violations = 0usize;
@@ -95,7 +96,9 @@ fn spawn_review_worker<F>(
                             }
                         };
                         if !report.protocol_violation {
-                            return Ok(t);
+                            // R6-P56：结构化回传——解析出的 report 直接上送，
+                            // 主循环不再按文本协议二次解析（工具裁决不被覆盖）
+                            return Ok(report);
                         }
                         violations += 1;
                         if violations > MAX_DOC_PROTOCOL_VIOLATIONS {
@@ -409,15 +412,16 @@ where
         // ── A. 非阻塞清账：在途裁决到了就处理 ──
         if let Some((idx, unit, round, rx)) = pending.take() {
             match rx.try_recv() {
-                Ok((u, round, text)) => {
-                    let text = text.map_err(|e| {
+                Ok((u, round, report)) => {
+                    // R6-P56：worker 已解析（工具优先/文本降级都在 worker 内完成），
+                    // 主循环直接消费结构化报告
+                    let report = report.map_err(|e| {
                         if e.is_quality_failure() {
                             e
                         } else {
                             DevforgeError::System(format!("审查重试耗尽：{e}"))
                         }
                     })?;
-                    let report = parse_doc_review(&text)?;
                     process_verdict!(u, report, round);
                     let _ = (idx, round);
                     spawn_queued_review!();
@@ -449,17 +453,17 @@ where
             } else {
                 // 写超前已满 → 等在途裁决落地（可能回填 fix 队列），回循环头重新决定
                 let (_, _, _, rx) = pending.take().expect("pending 已判存在");
-                let (vu, vround, vtext) = rx
+                let (vu, vround, vreport) = rx
                     .recv()
                     .map_err(|_| DevforgeError::System("审查线程失联".into()))?;
-                let vtext = vtext.map_err(|e| {
+                // R6-P56：结构化直用（worker 内已完成工具优先/文本降级解析）
+                let report = vreport.map_err(|e| {
                     if e.is_quality_failure() {
                         e
                     } else {
                         DevforgeError::System(format!("审查重试耗尽：{e}"))
                     }
                 })?;
-                let report = parse_doc_review(&vtext)?;
                 process_verdict!(vu, report, vround);
                 let _ = vround;
                 spawn_queued_review!();
@@ -468,17 +472,17 @@ where
         } else if let Some((_, _, _, rx)) = pending.take() {
             // 无新活但审查在途 → 等它（可能产生 fix 或补派排队审查）；
             // 终止由循环头收敛：裁决清完 + 队列空 + fix 空 → else break
-            let (vunit, vround, vtext) = rx
+            let (vunit, vround, vreport) = rx
                 .recv()
                 .map_err(|_| DevforgeError::System("审查线程失联".into()))?;
-            let vtext = vtext.map_err(|e| {
+            // R6-P56：结构化直用（worker 内已完成工具优先/文本降级解析）
+            let report = vreport.map_err(|e| {
                 if e.is_quality_failure() {
                     e
                 } else {
                     DevforgeError::System(format!("审查重试耗尽：{e}"))
                 }
             })?;
-            let report = parse_doc_review(&vtext)?;
             process_verdict!(vunit, report, vround);
             spawn_queued_review!();
             continue;

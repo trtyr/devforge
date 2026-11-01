@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::sop::doc::mocks::{
     MockAgent, NoUser, PipeAgent, PipeReviewFactory, drive_gates, gate_pair, no_gates,
-    pipe_factory, state_path, submit_unit,
+    pipe_factory, pipe_factory_with_submissions, state_path, submit_unit, submit_verdict,
 };
 use crate::sop::doc::prompts::{doc_kickoff, doc_review_instruction};
 use crate::sop::doc::runner::run_pipeline;
@@ -279,6 +279,7 @@ fn pipeline_runs_units_with_overlapped_reviews() {
         instructions: Arc::new(Mutex::new(Vec::new())),
         opens: Arc::new(Mutex::new(0)),
         gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1]))),
+        submissions: Arc::new(Mutex::new(Default::default())),
     };
     drive_gates(
         vec![(
@@ -336,6 +337,7 @@ fn pipeline_fix_round_requeues_failed_unit() {
         instructions: instructions.clone(),
         opens: Arc::new(Mutex::new(0)),
         gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1, rx2, rx3]))),
+        submissions: Arc::new(Mutex::new(Default::default())),
     };
     drive_gates(
         vec![
@@ -409,6 +411,7 @@ fn pipeline_breaker_stops_after_two_consecutive_fails() {
         instructions: Arc::new(Mutex::new(Vec::new())),
         opens: Arc::new(Mutex::new(0)),
         gates: no_gates(),
+        submissions: Arc::new(Mutex::new(Default::default())),
     };
     let err = run_pipeline(
         agent,
@@ -693,6 +696,7 @@ fn pass_uses_own_units_snapshot_not_latest() {
         instructions: Arc::new(Mutex::new(Vec::new())),
         opens: Arc::new(Mutex::new(0)),
         gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1]))),
+        submissions: Arc::new(Mutex::new(Default::default())),
     };
     drive_gates(
         vec![(
@@ -781,4 +785,44 @@ fn unit_pass_commits_docs_per_unit_in_git_repo() {
     );
     let count = log.lines().filter(|l| l.contains("doc-from-zero")).count();
     assert_eq!(count, 2, "两单元应正好两条自动提交：{log}");
+}
+
+/// R6-P56/P66：工具交卷路径端到端——审查会话只交 submit_verdict 工具参数
+/// （正文无任何 <doc-verdict> 块），工具 PASS 必须被结构化消费。
+/// 旧口径（P56）：worker 解析出工具裁决却只回传文本，主循环按文本再解析
+/// → 「工具 PASS」被读成「文本 FAIL」（protocol_violation）进 fix 队列。
+#[test]
+fn tool_verdict_pass_is_consumed_structurally() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = MockAgent::new(&["写完 A\n<doc-complete>unit-a-01</doc-complete>"]);
+    let f = pipe_factory_with_submissions(
+        &["正文没有裁决块。"], // 文本协议下必 FAIL——工具 PASS 若被文本再解析此处即红
+        vec![vec![submit_verdict("PASS", &[])]],
+    );
+    let rep = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
+    assert_eq!(
+        rep.units_done,
+        vec!["unit-a-01".to_string()],
+        "工具 PASS 必须结构化生效（不被文本再解析覆盖）"
+    );
+}
+
+/// R6-P56：工具 FAIL 同样结构化生效——issues 回注 fix 队列（不是 protocol_violation）。
+#[test]
+fn tool_verdict_fail_feeds_fix_queue() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = MockAgent::new(&[
+        "写 A\n<doc-complete>unit-a-01</doc-complete>",
+        "修 A\n<doc-complete>unit-a-01</doc-complete>",
+    ]);
+    let f = pipe_factory_with_submissions(
+        &["正文没有裁决块。", "正文没有裁决块。"],
+        vec![
+            vec![submit_verdict("FAIL", &["覆盖缺失：unit-a-01"])],
+            vec![submit_verdict("PASS", &[])],
+        ],
+    );
+    let rep = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
+    assert_eq!(rep.units_done, vec!["unit-a-01".to_string()], "FAIL 修复后 PASS 收官");
+    assert!(rep.issues_total >= 1, "工具 FAIL 的 issues 应入账");
 }

@@ -63,6 +63,15 @@ pub fn submit_unit(unit: &str) -> ToolSubmission {
     }
 }
 
+/// R6-P56/P66 测试用：构造一条 submit_verdict 裁决提交（args 形状与
+/// protocol::parse_tool_verdict 对齐——PASS 无需 issues，FAIL 必须非空）。
+pub fn submit_verdict(verdict: &str, issues: &[&str]) -> ToolSubmission {
+    ToolSubmission {
+        tool: "submit_verdict".into(),
+        args: serde_json::json!({ "verdict": verdict, "issues": issues }),
+    }
+}
+
 /// 无闸门审查工厂：裁决立即返回（行为类测试用）
 pub fn pipe_factory(replies: &[&str]) -> PipeReviewFactory {
     PipeReviewFactory {
@@ -72,6 +81,24 @@ pub fn pipe_factory(replies: &[&str]) -> PipeReviewFactory {
         instructions: Arc::new(Mutex::new(Vec::new())),
         opens: Arc::new(Mutex::new(0)),
         gates: no_gates(),
+        submissions: Arc::new(Mutex::new(Default::default())),
+    }
+}
+
+/// R6-P56/P66：带审查侧工具提交脚本的工厂——第 N 次开会话的会话拿到第 N 条
+/// 提交脚本（该会话每次 take_tool_submissions 吐出同一条脚本的全部提交）。
+pub fn pipe_factory_with_submissions(
+    replies: &[&str],
+    submissions: Vec<Vec<ToolSubmission>>,
+) -> PipeReviewFactory {
+    PipeReviewFactory {
+        replies: Arc::new(Mutex::new(
+            replies.iter().map(|s| s.to_string()).collect(),
+        )),
+        instructions: Arc::new(Mutex::new(Vec::new())),
+        opens: Arc::new(Mutex::new(0)),
+        gates: no_gates(),
+        submissions: Arc::new(Mutex::new(submissions.into())),
     }
 }
 
@@ -137,6 +164,8 @@ pub struct PipeReviewFactory {
     pub opens: Arc<Mutex<usize>>,
     // 闸门：每个审查会话开庭后等放行再出裁决（模拟真实审查耗时，测试才能确定性断言重叠）
     pub gates: Arc<Mutex<VecDeque<std::sync::mpsc::Receiver<()>>>>,
+    /// R6-P66：审查侧工具提交脚本（按会话开启序分配；空 = 该会话无提交 → 文本降级）。
+    pub submissions: Arc<Mutex<VecDeque<Vec<ToolSubmission>>>>,
 }
 impl ReviewSessionFactory for PipeReviewFactory {
     fn open(&mut self) -> Result<Box<dyn ReviewSession>> {
@@ -145,6 +174,7 @@ impl ReviewSessionFactory for PipeReviewFactory {
             replies: self.replies.clone(),
             instructions: self.instructions.clone(),
             gate: self.gates.clone(),
+            submissions: self.submissions.clone(),
         }))
     }
 }
@@ -152,6 +182,7 @@ struct PipeReviewSession {
     replies: Arc<Mutex<VecDeque<String>>>,
     instructions: Arc<Mutex<Vec<String>>>,
     gate: Arc<Mutex<VecDeque<std::sync::mpsc::Receiver<()>>>>,
+    submissions: Arc<Mutex<VecDeque<Vec<ToolSubmission>>>>,
 }
 impl ReviewSession for PipeReviewSession {
     fn review(&mut self, instruction: &str) -> Result<String> {
@@ -165,6 +196,14 @@ impl ReviewSession for PipeReviewSession {
             .unwrap()
             .pop_front()
             .unwrap_or_default())
+    }
+
+    fn take_tool_submissions(&mut self) -> Vec<crate::engine::client::ToolSubmission> {
+        self.submissions
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_default()
     }
 }
 
