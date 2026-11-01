@@ -412,17 +412,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 并发上限：进程启动期解析一次并回写 store（并发的唯一运行时真相源）——
-    // 优先级链 config.json `max_concurrent` > `store.max_concurrent_runs` > 缺省 2
+    // 优先级链 config.json `max_concurrent` > `store.max_concurrent_runs` > 缺省 1
     // （解析与留痕在 `scheduler::apply_startup_concurrency`；F14 后显式值载体 =
     // knobs 单点，仅 file/cli 覆盖时 Some，缺省时放行 store/缺省链）。
     //
     // 位置约束：**必须在 store 移入 ServerState 之前**（apply 拿不到 store_path，
     // 落盘由本段在生效值变化时显式 save）。序依赖不被打乱：并发落地只改
     // `max_concurrent_runs`、不碰 runs → 「Running 快照 → 清僵尸 → 杀对账」不变。
-    let concurrency_env = devforge::config::knobs::max_concurrent_set().map(|n| n.to_string());
+    let concurrency_explicit = devforge::config::knobs::max_concurrent_set().map(|n| n.to_string());
     let concurrency = devforge::server::scheduler::apply_startup_concurrency(
         &mut store,
-        concurrency_env.as_deref(),
+        concurrency_explicit.as_deref(),
         store_trusted,
     );
     // 只有生效值变了才落盘（避免每次启动无谓重写 store.json）。

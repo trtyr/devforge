@@ -32,10 +32,10 @@ use crate::server::{run_in_background, SharedState};
 /// 准入配置（topic 06 准入表）。
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
-    /// 链末位缺省：并发 mutation 上限（2）。
+    /// 链末位缺省：并发 mutation 上限（1——与 store serde 缺省统一，decisions/003 串行兼容）。
     ///
     /// **本字段不再是并发上限的来源**：生效值在进程启动期按优先级链解析并回写
-    /// `store.max_concurrent_runs`（`DEVFORGE_MAX_CONCURRENT` > 持久值 > 本字段，
+    /// `store.max_concurrent_runs`（config.json/CLI 显式值 > 持久值 > 本字段，
     /// 见 `apply_startup_concurrency`）。本字段只剩一个消费点——解析函数的 fallback 实参。
     pub max_concurrent_mutation: usize,
     /// 每 work item 墙钟预算分钟，超限熔断（0 = 不限）。
@@ -45,7 +45,7 @@ pub struct SchedulerConfig {
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
-            max_concurrent_mutation: 2,
+            max_concurrent_mutation: 1,
             budget_wall_minutes: 240,
         }
     }
@@ -54,8 +54,8 @@ impl Default for SchedulerConfig {
 /// 并发生效值的来源（优先级链的判据——留痕与事后复盘都靠它）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConcurrencySource {
-    /// 环境变量 `DEVFORGE_MAX_CONCURRENT`（最高优先）。
-    Env,
+    /// config.json/CLI 的显式值（最高优先）。
+    Config,
     /// store 的持久值（次优先）。
     Store,
     /// 链末位缺省（`SchedulerConfig::default().max_concurrent_mutation`）。
@@ -66,7 +66,7 @@ impl ConcurrencySource {
     /// 留痕口径（小写字面量：日志与 status 用同一套词）。
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Env => "env",
+            Self::Config => "config",
             Self::Store => "store",
             Self::Default => "default",
         }
@@ -83,15 +83,15 @@ pub struct ConcurrencyResolution {
     pub value: usize,
     /// 生效值来源。
     pub source: ConcurrencySource,
-    /// 被判非法的 env 原值（None = env 未设或合法）。
-    pub ignored_env: Option<String>,
+    /// 被判非法的显式值原串（None = 未显式设置或合法）。
+    pub ignored_explicit: Option<String>,
     /// 落地前的 store 值（归一化口径：0 视为 1）——与 `value` 相同即「值未变」。
     pub previous: usize,
 }
 
-/// 并发优先级链（纯函数）：`DEVFORGE_MAX_CONCURRENT` > store 持久值 > 缺省。
+/// 并发优先级链（纯函数）：config.json/CLI 显式值 > store 持久值 > 缺省。
 ///
-/// - `env_raw`：env 原串（**原样**，不 trim）——非法时原值进 `ignored_env` 供留痕。
+/// - `explicit_raw`：显式值原串（config.json/CLI，**原样**不 trim）——非法时原值进 `ignored_explicit` 供留痕。
 ///   合法口径：trim 后能解析成 ≥ 1 的 usize（空串/纯空白/0/负数/非数字均非法）。
 /// - `persisted`：可信的持久值；`None` = 没有可信持久值（首启 / 坏文件已隔离）→ 取缺省。
 ///   0 按 1 处理（与 `Store::begin_run` 的 cap 逐字同口径）。
@@ -99,17 +99,18 @@ pub struct ConcurrencyResolution {
 ///
 /// 不读进程 env：env 原串由调用方传入（单测因此不与并行用例串味）。
 pub fn resolve_max_concurrent(
-    env_raw: Option<&str>,
+    explicit_raw: Option<&str>,
     persisted: Option<usize>,
     fallback: usize,
 ) -> ConcurrencyResolution {
     let previous = persisted.map(|p| p.max(1)).unwrap_or(1);
-    let env_value = env_raw.and_then(|raw| raw.trim().parse::<usize>().ok().filter(|v| *v >= 1));
-    match env_value {
+    let explicit_value =
+        explicit_raw.and_then(|raw| raw.trim().parse::<usize>().ok().filter(|v| *v >= 1));
+    match explicit_value {
         Some(value) => ConcurrencyResolution {
             value,
-            source: ConcurrencySource::Env,
-            ignored_env: None,
+            source: ConcurrencySource::Config,
+            ignored_explicit: None,
             previous,
         },
         None => {
@@ -120,7 +121,7 @@ pub fn resolve_max_concurrent(
             ConcurrencyResolution {
                 value,
                 source,
-                ignored_env: env_raw.map(|raw| raw.to_string()),
+                ignored_explicit: explicit_raw.map(|raw| raw.to_string()),
                 previous,
             }
         }
@@ -132,7 +133,7 @@ pub fn resolve_max_concurrent(
 /// **必须在 store 移入 `ServerState` 之前调用**——本函数拿不到 `store_path`，
 /// 落盘由调用方在生效值变化时显式 `Store::save`（`previous != value` 才写）。
 ///
-/// - `env_raw`：`DEVFORGE_MAX_CONCURRENT` 原串（不读进程 env——由调用方传入）。
+/// - `explicit_raw`：config.json/CLI 显式值原串（由调用方传入，不读进程 env）。
 /// - `store_trusted`：store 是否可信加载（`false` = 首启 / 坏文件已隔离 → 持久值不可信，
 ///   按未配置取缺省）。
 ///
@@ -140,7 +141,7 @@ pub fn resolve_max_concurrent(
 /// （`event = "scheduler.max_concurrent_env_invalid"`，带原值与最终采用的 source）。
 pub fn apply_startup_concurrency(
     store: &mut Store,
-    env_raw: Option<&str>,
+    explicit_raw: Option<&str>,
     store_trusted: bool,
 ) -> ConcurrencyResolution {
     let persisted = if store_trusted {
@@ -149,7 +150,7 @@ pub fn apply_startup_concurrency(
         None
     };
     let mut resolution = resolve_max_concurrent(
-        env_raw,
+        explicit_raw,
         persisted,
         SchedulerConfig::default().max_concurrent_mutation,
     );
@@ -163,16 +164,16 @@ pub fn apply_startup_concurrency(
         resolved = resolution.value,
         source = resolution.source.as_str(),
         previous = resolution.previous,
-        "并发生效值已解析（DEVFORGE_MAX_CONCURRENT > store 持久值 > 缺省）"
+        "并发生效值已解析（config/CLI 显式值 > store 持久值 > 缺省）"
     );
-    if let Some(raw) = resolution.ignored_env.as_deref() {
+    if let Some(raw) = resolution.ignored_explicit.as_deref() {
         tracing::warn!(
             component = "scheduler",
-            event = "scheduler.max_concurrent_env_invalid",
-            invalid_env = raw,
+            event = "scheduler.max_concurrent_explicit_invalid",
+            invalid_explicit = raw,
             resolved = resolution.value,
             source = resolution.source.as_str(),
-            "DEVFORGE_MAX_CONCURRENT 取值非法（已回退下一优先级）"
+            "config/CLI 显式并发值非法（已回退下一优先级）"
         );
     }
     resolution
@@ -968,7 +969,7 @@ pub fn tick_with_integration_window(
         // 容量：running + 本 tick 已派工（预留）< store 的生效并发值（单一事实源）——
         // begin_run 发生在后台线程，tick 内 running_run_count 不变，必须本地预留。
         // 生效值在进程启动期已按优先级链解析并回写 store（`apply_startup_concurrency`：
-        // DEVFORGE_MAX_CONCURRENT > store 持久值 > 缺省 2），本处只读 store。
+        // config/CLI 显式值 > store 持久值 > 缺省 1），本处只读 store。
         let capacity_ok = {
             let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
             store.running_run_count() + dispatched_this_tick < store.max_concurrent_runs.max(1)
@@ -1071,7 +1072,7 @@ pub async fn launch(st: &SharedState, project: &str, task_id: &str) {
 /// 调度循环：1s 心跳看 kick，30s 周期全量 tick（serve 时 spawn；测试可直接调 tick）。
 pub async fn scheduler_loop(st: SharedState, cfg: SchedulerConfig) {
     // 并发上限在**进程启动期**已解析并回写 store（`apply_startup_concurrency`：
-    // DEVFORGE_MAX_CONCURRENT > store 持久值 > 缺省 2）。本循环只读 store，
+    // config/CLI 显式值 > store 持久值 > 缺省 1）。本循环只读 store，
     // 不再做「只抬不压」的启动同步，也不持有第二份并发事实源。
     // 自动集成消费循环（gap-E）：独立常驻任务——不能塞进 tick（tick 是纯决策且被
     // spawn_blocking 包着跑，全量 cargo test 是分钟级，塞进去会把超预算熔断一起冻住）。

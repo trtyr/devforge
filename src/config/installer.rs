@@ -153,7 +153,7 @@ fn run_with_timeout(mut cmd: Command, pkg: &str) -> Result<std::process::Output>
                     let _ = stdout_thread.join();
                     let _ = stderr_thread.join();
                     return Err(DevforgeError::System(format!(
-                        "pi install {pkg} 超时（{timeout_ms}ms，DEVFORGE_INSTALL_TIMEOUT_MS 可调，0=不限）——进程已强杀"
+                        "pi install {pkg} 超时（{timeout_ms}ms，install_timeout_ms 可调（config.json），0=不限）——进程已强杀"
                     )));
                 }
                 std::thread::sleep(Duration::from_millis(100));

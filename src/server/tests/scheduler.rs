@@ -524,62 +524,62 @@ async fn needs_repair_allows_reentry_with_new_frozen_commit() {
 
 // ================= 并发优先级链（F13） =================
 
-/// 需求1：env 合法值最高优先（`DEVFORGE_MAX_CONCURRENT=4` 压过持久值 2）。
+/// 需求1：显式值（config.json/CLI）最高优先（显式 4 压过持久值 2）。
 /// 错实现 A（持久值优先）→ 这条红。
 #[test]
-fn an_env_value_wins_over_the_persisted_value() {
+fn an_explicit_value_wins_over_the_persisted_value() {
     let r = resolve_max_concurrent(Some("4"), Some(2), 2);
     assert_eq!(r.value, 4);
-    assert_eq!(r.source, ConcurrencySource::Env);
-    assert_eq!(r.ignored_env, None);
+    assert_eq!(r.source, ConcurrencySource::Config);
+    assert_eq!(r.ignored_explicit, None);
 }
 
-/// 需求1/2：env 可以**压低**持久值——串行（1）由此真实可达。
-/// 错实现 A'（env 只能抬高）→ 这条红。
+/// 需求1/2：显式值可以**压低**持久值——串行（1）由此真实可达。
+/// 错实现 A'（显式值只能抬高）→ 这条红。
 #[test]
-fn an_env_value_can_lower_the_persisted_value() {
+fn an_explicit_value_can_lower_the_persisted_value() {
     let r = resolve_max_concurrent(Some("1"), Some(4), 2);
     assert_eq!(r.value, 1);
-    assert_eq!(r.source, ConcurrencySource::Env);
+    assert_eq!(r.source, ConcurrencySource::Config);
 }
 
-/// 需求1：env 值 trim 后合法即采用（" 3 " → 3）。
+/// 需求1：显式值 trim 后合法即采用（" 3 " → 3）。
 /// 错实现 B'（不 trim → 解析失败回退）→ 这条红。
 #[test]
-fn an_env_value_is_trimmed_before_parsing() {
+fn an_explicit_value_is_trimmed_before_parsing() {
     let r = resolve_max_concurrent(Some(" 3 "), Some(4), 2);
     assert_eq!(r.value, 3);
-    assert_eq!(r.source, ConcurrencySource::Env);
+    assert_eq!(r.source, ConcurrencySource::Config);
 }
 
-/// 需求1：非法 env（0 / 负数 / 非数字）回退下一优先级，原值留痕。
-/// 错实现 C'（非法 env 直接拒启动 / 静默采用）→ 这条红。
+/// 需求1：非法显式值（0 / 负数 / 非数字）回退下一优先级，原值留痕。
+/// 错实现 C'（非法显式值直接拒启动 / 静默采用）→ 这条红。
 #[test]
-fn an_illegal_env_value_falls_back_and_keeps_the_raw_value() {
+fn an_illegal_explicit_value_falls_back_and_keeps_the_raw_value() {
     for raw in ["0", "-2", "abc"] {
         let r = resolve_max_concurrent(Some(raw), Some(4), 2);
-        assert_eq!(r.value, 4, "非法 env 应回退持久值：{raw:?}");
+        assert_eq!(r.value, 4, "非法显式值应回退持久值：{raw:?}");
         assert_eq!(
             r.source,
             ConcurrencySource::Store,
-            "非法 env 应回退持久值：{raw:?}"
+            "非法显式值应回退持久值：{raw:?}"
         );
         assert_eq!(
-            r.ignored_env.as_deref(),
+            r.ignored_explicit.as_deref(),
             Some(raw),
-            "非法 env 原值须留痕（WARN 的触发条件）：{raw:?}"
+            "非法显式值原值须留痕（WARN 的触发条件）：{raw:?}"
         );
     }
 }
 
-/// 需求1：空串与纯空白同样非法（触发 WARN 条件），原样留痕。
+/// 需求1：空串与纯空白显式值同样非法（触发 WARN 条件），原样留痕。
 #[test]
-fn a_blank_env_value_is_illegal_and_keeps_the_raw_value() {
+fn a_blank_explicit_value_is_illegal_and_keeps_the_raw_value() {
     for raw in ["", "   "] {
         let r = resolve_max_concurrent(Some(raw), Some(4), 2);
         assert_eq!(r.value, 4);
         assert_eq!(r.source, ConcurrencySource::Store);
-        assert_eq!(r.ignored_env.as_deref(), Some(raw));
+        assert_eq!(r.ignored_explicit.as_deref(), Some(raw));
     }
 }
 
@@ -610,20 +610,20 @@ fn without_any_configuration_the_default_is_used() {
     assert_eq!(r.source, ConcurrencySource::Default);
 }
 
-/// 需求1：缺省常量仍是 2（`SchedulerConfig::default()` 是链末位）。
-/// 错实现 D'（把缺省改成 1）→ 这条红。
+/// 需求1：链末位缺省 = 1（R4-P33 与 store serde 缺省统一——decisions/003 串行兼容；
+/// 两套缺省口径并存时首启会静默取 scheduler 的 2）。
 #[test]
-fn the_default_config_still_provides_the_fallback_of_two() {
-    assert_eq!(SchedulerConfig::default().max_concurrent_mutation, 2);
+fn the_default_config_fallback_is_one() {
+    assert_eq!(SchedulerConfig::default().max_concurrent_mutation, 1);
 }
 
-/// 需求1/4：首启（无可信持久值）且未设 env → 取缺省 2 并回写 store。
+/// 需求1/4：首启（无可信持久值）且未显式设置 → 取缺省 1 并回写 store。
 #[test]
-fn a_first_boot_without_an_env_value_falls_back_to_two() {
+fn a_first_boot_without_an_explicit_value_falls_back_to_one() {
     let mut store = Store::new();
     let r = apply_startup_concurrency(&mut store, None, false);
-    assert_eq!(store.max_concurrent_runs, 2);
-    assert_eq!(r.value, 2);
+    assert_eq!(store.max_concurrent_runs, 1);
+    assert_eq!(r.value, 1);
     assert_eq!(r.source, ConcurrencySource::Default);
 }
 
@@ -637,16 +637,16 @@ fn a_trusted_persisted_value_is_neither_raised_nor_lowered() {
     assert_eq!(r.source, ConcurrencySource::Store);
 }
 
-/// 需求1/4：env 覆盖持久值并回写 store（用户裁决：回写生效值）。
-/// 错实现 E'（env 不回写 → store 仍是旧值）→ 这条红。
+/// 需求1/4：显式值覆盖持久值并回写 store（用户裁决：回写生效值）。
+/// 错实现 E'（显式值不回写 → store 仍是旧值）→ 这条红。
 #[test]
-fn an_env_value_overrides_the_persisted_value_and_is_written_back() {
+fn an_explicit_value_overrides_the_persisted_value_and_is_written_back() {
     let mut store = Store::new();
     store.max_concurrent_runs = 4;
     let r = apply_startup_concurrency(&mut store, Some("1"), true);
     assert_eq!(store.max_concurrent_runs, 1);
     assert_eq!(r.value, 1);
-    assert_eq!(r.source, ConcurrencySource::Env);
+    assert_eq!(r.source, ConcurrencySource::Config);
 }
 
 /// 需求1/4：可信持久串行值不被抬高。
@@ -659,13 +659,13 @@ fn a_trusted_serial_value_is_not_raised() {
     assert_eq!(r.source, ConcurrencySource::Store);
 }
 
-/// 需求1/4：首启也能靠 env 定值。
+/// 需求1/4：首启也能靠显式值定值。
 #[test]
-fn an_env_value_sets_the_value_on_a_first_boot() {
+fn an_explicit_value_sets_the_value_on_a_first_boot() {
     let mut store = Store::new();
     let r = apply_startup_concurrency(&mut store, Some("3"), false);
     assert_eq!(store.max_concurrent_runs, 3);
-    assert_eq!(r.source, ConcurrencySource::Env);
+    assert_eq!(r.source, ConcurrencySource::Config);
 }
 
 /// 需求1/4：老 `store.json` 缺 `max_concurrent_runs` 字段（serde 缺省 1）→ 生效 1。
@@ -726,14 +726,14 @@ fn the_startup_resolution_is_logged_with_value_source_and_previous() {
         .event_named("scheduler.max_concurrent_resolved")
         .expect("落地必须落一条 INFO");
     assert_eq!(field(&fields, "resolved"), Some("1"));
-    assert_eq!(field(&fields, "source"), Some("env"));
+    assert_eq!(field(&fields, "source"), Some("config"));
     assert_eq!(field(&fields, "previous"), Some("4"));
 }
 
-/// 需求1/6.6：env 非法 → WARN（`scheduler.max_concurrent_env_invalid`）带原值与 source。
-/// 错实现 H'（非法 env 静默回退、不留痕）→ 这条红。
+/// 需求1/6.6：显式值非法 → WARN（`scheduler.max_concurrent_explicit_invalid`）带原值与 source。
+/// 错实现 H'（非法显式值静默回退、不留痕）→ 这条红。
 #[test]
-fn an_illegal_env_value_is_logged_as_a_warning_with_the_raw_value() {
+fn an_illegal_explicit_value_is_logged_as_a_warning_with_the_raw_value() {
     let mut store = Store::new();
     store.max_concurrent_runs = 4;
     let capture = EventCapture::default();
@@ -742,11 +742,11 @@ fn an_illegal_env_value_is_logged_as_a_warning_with_the_raw_value() {
         apply_startup_concurrency(&mut store, Some("0"), true)
     });
     assert_eq!(r.value, 4);
-    assert_eq!(r.ignored_env.as_deref(), Some("0"));
+    assert_eq!(r.ignored_explicit.as_deref(), Some("0"));
     let fields = capture
-        .event_named("scheduler.max_concurrent_env_invalid")
-        .expect("非法 env 必须落一条 WARN");
-    assert_eq!(field(&fields, "invalid_env"), Some("0"));
+        .event_named("scheduler.max_concurrent_explicit_invalid")
+        .expect("非法显式值必须落一条 WARN");
+    assert_eq!(field(&fields, "invalid_explicit"), Some("0"));
     assert_eq!(field(&fields, "source"), Some("store"));
 }
 
@@ -993,7 +993,10 @@ fn the_scheduler_source_carries_no_stale_concurrency_wording() {
         "原子并发字段必须零读写（代码行里只剩 JSON 键）：{src}"
     );
     // 优先级链的三级必须在注释里写明（谁提供生效值）。
-    assert!(src.contains("DEVFORGE_MAX_CONCURRENT"), "注释须点名 env 键");
+    assert!(
+        src.contains("config.json/CLI 显式值"),
+        "注释须点名显式值载体（config.json/CLI——env 键已退役）"
+    );
     assert!(src.contains("store.max_concurrent_runs"), "注释须点名 store 真相源");
     // status 注释须写明「两字段同报生效值」与「原子字段已废弃」（计划 6.4 的缓解口径）。
     assert!(
