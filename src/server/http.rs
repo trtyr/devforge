@@ -130,6 +130,10 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/logs", get(handlers::logs_query))
         .route("/sops", get(handlers::sops_list))
         .route("/dependencies", get(handlers::dependencies_list))
+ .route(
+ "/dependencies/{agent}/re-render",
+ post(handlers::dependency_rerender),
+ )
         .route(
             "/integrations/settings",
             get(handlers::get_integration_settings).put(handlers::put_integration_settings),

@@ -1007,6 +1007,78 @@ pub async fn dependencies_list(State(st): State<SharedState>) -> Json<serde_json
     Json(json!({ "dependencies": deps }))
 }
 
+/// `POST /dependencies/{agent}/re-render`（A4 写面 · 2026-11-01 拍板）：
+/// profile 依赖修复——**人显式点的按钮**（A1 审计留痕），引擎只执行确定性的
+/// 重渲染（与 P019「无 AI 自动修复」不冲突）。
+///
+/// 复用 put_manifest 的后台渲染管线：render_gate 单飞 + 合并 + panic 守卫 +
+/// 幂等跳过（rendered_fingerprint）+ 双记录对账 + pi install 补装；完成/失败
+/// 走 SSE `config.rendered` / `config.render_failed`。`{agent}` 用于存在性
+/// 校验与审计语义；渲染走全量幂等管线——完好的 profile 自动跳过，只修红的。
+/// 外部二进制（pi/codegraph/git）的升级不做：安装方式耦合，归运维/部署期。
+pub async fn dependency_rerender(
+    State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
+    axum::extract::Path(agent): axum::extract::Path<String>,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    // 打错名的修复按钮 = 404（不是静默全量渲染）
+    let known = st
+        .manifest
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .agents
+        .iter()
+        .any(|a| a.name == agent);
+    if !known {
+        return Err(ApiError::not_found(format!(
+            "agent `{agent}` 不在清单里，无法触发 profile 重渲染"
+        )));
+    }
+    // 渲染全局单飞：在途时合并（与 put_manifest 同款语义——在跑轮末自动重渲最新清单）
+    if !st.render_gate.try_begin_or_coalesce() {
+        tracing::info!(
+            component = "server",
+            event = "dependency.rerender.coalesced",
+            agent = %agent,
+            "渲染已在途——修复请求合并进在跑那一轮"
+        );
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({"ok": true, "async": true, "coalesced": true})),
+        ));
+    }
+    let st2 = st.clone();
+    std::thread::spawn(move || {
+        let mut guard = RenderInFlightGuard {
+            st: st2.clone(),
+            finished: false,
+        };
+        loop {
+            let st3 = st2.clone();
+            render_body_without_guard(st2.clone(), move |v| st3.emit(v));
+            if !st2.render_gate.finish_round_or_continue() {
+                guard.finished = true;
+                break;
+            }
+        }
+    });
+    user.audit_write(
+        &st,
+        "dependency_rerender",
+        &format!("profile 依赖修复触发（agent={agent}）"),
+    );
+    tracing::info!(
+        component = "server",
+        event = "dependency.rerender",
+        agent = %agent,
+        "profile 依赖修复：后台重渲染开始"
+    );
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({"ok": true, "async": true, "agent": agent})),
+    ))
+}
+
 // ---------- 配置：集成开关读写（A10 · P019） ----------
 
 /// `GET /integrations/settings`：集成开关读面——文件缺失/损坏回落全 off

@@ -26,6 +26,91 @@ impl DependencyProbe for FakeProbe {
     }
 }
 
+/// A4 写面：re-render 触发后台渲染，产物与直接渲染一致（幂等管线同一出口）；
+/// 未知 agent = 404；回环豁免注入 loopback 身份（审计走写通道）。
+#[tokio::test]
+async fn rerender_produces_same_artifacts_as_direct_render() {
+    let dir = tempfile::tempdir().unwrap();
+    let ref_dir = tempfile::tempdir().unwrap();
+    let bus = Arc::new(EventBus::new());
+    let ui = Arc::new(UiRelay::new(bus.clone()));
+    let manifest = ConfigManifest::builtin();
+    let agent = manifest.agents[0].name.clone();
+    let mut st = ServerState::new(
+        crate::domain::store::Store::new(),
+        SopRegistry::builtin(),
+        manifest.clone(),
+        Box::new(|| -> Box<dyn crate::domain::RunEngine + Send> {
+            unreachable!("re-render 单测不触发引擎")
+        }),
+        bus,
+        ui,
+        Arc::new(FakeInstaller),
+        dir.path().join("profiles"),
+        dir.path().join("plans"),
+        dir.path().join("sessions"),
+    );
+    let _ = Arc::get_mut(&mut st).expect("路由构建前应独占");
+    let state: Arc<ServerState> = st;
+    let router = build_router(state.clone());
+
+    // 未知 agent = 404（不静默全量渲染）
+    let resp = send(
+        &router,
+        "POST",
+        "/api/v1/dependencies/ghost-agent/re-render",
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+
+    // 触发：202 异步受理
+    let resp = send(
+        &router,
+        "POST",
+        &format!("/api/v1/dependencies/{agent}/re-render"),
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), 202);
+    let body = body_json(resp).await;
+    assert_eq!(body["async"], true);
+
+    // 等渲染完成：marker 出现（FakeInstaller 秒级；超时 5s）
+    let marker = dir
+        .path()
+        .join("profiles")
+        .join(&agent)
+        .join(crate::config::render::RENDER_READY_MARKER);
+    let mut done = false;
+    for _ in 0..100 {
+        if marker.exists() {
+            done = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(done, "渲染完成标记未出现：{}", marker.display());
+
+    // 参照：同一清单直接 render_agent，产物逐字节一致
+    let fake = FakeInstaller;
+    let renderer = crate::config::Renderer {
+        manifest: &manifest,
+        installer: &fake,
+        skills_source: None,
+    };
+    renderer
+        .render_agent(ref_dir.path(), &agent)
+        .unwrap();
+    for f in ["AGENTS.md", "settings.json"] {
+        let a = std::fs::read_to_string(dir.path().join("profiles").join(&agent).join(f))
+            .unwrap_or_else(|e| panic!("读产物 {f}：{e}"));
+        let b = std::fs::read_to_string(ref_dir.path().join(&agent).join(f))
+            .unwrap_or_else(|e| panic!("读参照 {f}：{e}"));
+        assert_eq!(a, b, "{f} 产物应与直接渲染一致");
+    }
+}
+
 /// 端点照出全清单：alive 依赖带版本、dead 带 probe_error、无写操作字段。
 #[tokio::test]
 async fn dependencies_endpoint_lists_with_probe_outcomes() {
