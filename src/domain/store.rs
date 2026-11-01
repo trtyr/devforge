@@ -18,12 +18,34 @@ use crate::domain::task::{Task, TaskStatus};
 use crate::domain::{now_ms, Project};
 use crate::error::{Context as _, DevforgeError, Result};
 
+/// PG 长连接句柄槽（R2-05/R3-09）。手写 Debug/PartialEq：postgres::Client 不实现
+/// 两者，而连接句柄是运行时资源——不参与 store 相等语义（数据字段才比），
+/// 调试只输出连接状态不输出句柄本体。
+#[derive(Clone, Default)]
+pub struct PgConnSlot(pub(crate) std::sync::Arc<std::sync::Mutex<Option<postgres::Client>>>);
+impl std::fmt::Debug for PgConnSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = if self.0.lock().map(|s| s.is_some()).unwrap_or(false) {
+            "connected"
+        } else {
+            "idle"
+        };
+        write!(f, "PgConnSlot({state})")
+    }
+}
+impl PartialEq for PgConnSlot {
+    fn eq(&self, _other: &Self) -> bool {
+        true // 连接句柄不参与 store 相等语义
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Store {
     pub projects: Vec<Project>,
     pub tasks: Vec<Task>,
     pub runs: Vec<Run>,
-    /// P020 反馈系统：第三实体（persist 单点自动获得 PG/JSON 双形态）。
+
+/// P020 反馈系统：第三实体（persist 单点自动获得 PG/JSON 双形态）。
     #[serde(default)]
     pub issues: Vec<crate::domain::Issue>,
     /// key 分配器：<PROJECT>-<n> 项目前缀序（拍板 2026-11-01），项目内自增。
@@ -62,6 +84,11 @@ pub struct Store {
     /// 启动时选一个；都设时 PG 优先）。serde skip：连接串不进任何持久化文件。
     #[serde(skip)]
     pub persist_pg: Option<String>,
+    /// PG 长连接缓存（R2-05/R3-09：每次 persist 新建连接 + CREATE TABLE 是写放大
+    /// ——复用单连接，schema 建连时一次化；写失败清缓存下次重建）。Arc 内壳：
+    /// Store 是 Clone（快照语义），连接句柄共享同一份；Mutex 提供 &self 可变性。
+    #[serde(skip, default)]
+    pub pg_conn: PgConnSlot,
     /// 最近一次 persist 是否失败（R3-08 裁决②：API 写端点诚实化——置位时写
     /// 端点返回 500「内存已更新/落盘失败/重启丢失」；engine/run 内部保持
     /// WARN-continue）。Cell 内部可变性（persist 是 &self）；serde skip：运行时
@@ -148,6 +175,7 @@ impl Default for Store {
             channel_breakers: Vec::new(),
             persist_path: None,
             persist_pg: None,
+            pg_conn: PgConnSlot::default(),
             last_persist_failed: std::cell::Cell::new(false),
         }
     }
@@ -233,24 +261,41 @@ impl Store {
     }
 
     /// P018 Phase 1：全量写 PG（store_state 单行 JSONB，单语句原子）。
+    /// R2-05/R3-09：长连接复用——旧口径每次 persist 新建连接 + CREATE TABLE
+    /// （store 全局锁下的写放大）；现在连接缓存到 pg_conn（Arc<Mutex<Option>>），
+    /// schema 建连时一次化；写失败清缓存（连接可能已失效），下次重建。
     fn save_pg(&self, url: &str) -> Result<()> {
         let url = url.to_string();
         let data = serde_json::to_string(self)
             .map_err(|e| DevforgeError::System(format!("序列化 store（PG）失败：{e}")));
+        let conn_slot = self.pg_conn.clone();
         Self::run_pg_blocking(move || {
             let data = data?;
-            let mut conn = postgres::Client::connect(&url, postgres::NoTls)
-                .map_err(|e| DevforgeError::System(format!("连 PG 失败：{e}")))?;
-            Self::ensure_pg_schema(&mut conn)?;
+            let mut slot = conn_slot.0.lock().unwrap_or_else(|e| e.into_inner());
+            // 无连接则建连 + schema 一次化（连接生命周期内 schema 已保证）
+            if slot.is_none() {
+                let mut conn = postgres::Client::connect(&url, postgres::NoTls)
+                    .map_err(|e| DevforgeError::System(format!("连 PG 失败：{e}")))?;
+                Self::ensure_pg_schema(&mut conn)?;
+                *slot = Some(conn);
+            }
+            let conn = slot.as_mut().expect("上方已确保连接存在");
             // TEXT 参数 + ::text::jsonb cast——postgres crate 的 serde_json feature 不依赖，
             // 序列化字符串直接 cast（PG 校验 JSON 合法性，语义等同）
-            conn.execute(
+            match conn.execute(
                 "INSERT INTO store_state (id, data) VALUES (1, $1::text::jsonb) \
                  ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
                 &[&data],
-            )
-            .map_err(|e| DevforgeError::System(format!("写 store_state 失败：{e}")))?;
-            Ok(())
+            ) {
+                Ok(_) => Ok(()),
+                // 连接可能已失效（断连/超时）：清缓存下次重建，本次如实报错
+                Err(e) => {
+                    *slot = None;
+                    Err(DevforgeError::System(format!(
+                        "写 store_state 失败（连接已重置，下次重建）：{e}"
+                    )))
+                }
+            }
         })
     }
 

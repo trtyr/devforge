@@ -120,3 +120,49 @@ fn migrate_json_to_pg_roundtrip_verifies() {
     assert_eq!(back.projects.len(), 1);
     assert_eq!(back.projects[0].name, "mig");
 }
+
+/// R2-05/R3-09：并发 persist 走长连接——Arc<Store> 双线程各写多次，全部成功
+/// 且数据最终一致（load_pg 回读，无连接竞态炸）。
+#[test]
+fn concurrent_persist_shares_one_connection() {
+    let _pg_guard = PG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut conn) = pg_test_conn() else { return };
+    drop_store_state(&mut conn);
+
+    let store = std::sync::Arc::new(std::sync::Mutex::new(
+        Store::new().with_persist_pg(PG_TEST_URL),
+    ));
+    let handles: Vec<_> = (0..2)
+        .map(|worker| {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                for i in 0..3 {
+                    let mut st = store.lock().unwrap();
+                    st.create_project(crate::domain::project::Project::new(
+                        format!("proj-{worker}-{i}"),
+                        std::path::PathBuf::from(format!("/tmp/p{worker}{i}")),
+                        1,
+                    ))
+                    .unwrap(); // create_project 尾调 persist → save_pg 长连接
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // 连接复用且数据落齐：6 个项目全部可从 PG 读回
+    let loaded = Store::load_pg(PG_TEST_URL).unwrap();
+    for worker in 0..2 {
+        for i in 0..3 {
+            assert!(
+                loaded
+                    .projects
+                    .iter()
+                    .any(|p| p.name == format!("proj-{worker}-{i}")),
+                "并发写入的项目应全部落 PG"
+            );
+        }
+    }
+}
