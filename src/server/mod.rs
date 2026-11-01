@@ -641,6 +641,54 @@ pub fn submit_agent_issue(st: &SharedState, report: crate::domain::issue::AgentI
     }
 }
 
+/// P020-k6：M3 自动上报——run 终判失败建 issue（同项目同 category 未关去重只追加
+/// timeline）。cancel 不报（用户自己知道为什么取消，报了就是噪声）。
+/// 新建才发事件；去重追加只落 timeline 静默。
+pub fn auto_report_run_failure(
+    st: &SharedState,
+    project: &str,
+    task_id: &str,
+    run_id: &str,
+    reason: &str,
+) {
+    let created = {
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.auto_report_issue(project, task_id, run_id, reason)
+    };
+    match created {
+        Ok(Some(issue)) => {
+            tracing::info!(
+                component = "server",
+                event = "issue.auto_reported",
+                project = %project,
+                task = %task_id,
+                run_id = %run_id,
+                key = %issue.key,
+                "run 终判失败已自动建 issue（System/Flow/Major）"
+            );
+            issue_created_side_effects(st, project, &issue);
+        }
+        Ok(None) => {
+            tracing::info!(
+                component = "server",
+                event = "issue.auto_report_deduped",
+                project = %project,
+                task = %task_id,
+                run_id = %run_id,
+                "同项目同 category 已有未关 issue——仅追加 timeline 不新建"
+            );
+        }
+        Err(e) => tracing::warn!(
+            component = "server",
+            event = "issue.auto_report_failed",
+            project = %project,
+            task = %task_id,
+            error = %e,
+            "M3 自动上报失败（run 已终态，不受影响）"
+        ),
+    }
+}
+
 /// issue.created 的公共侧效应（SSE + critical A2 通知）——endpoint 与 agent 上报共用，
 /// 形状只在一处定义（防两路事件漂移）。
 pub(crate) fn issue_created_side_effects(
@@ -927,6 +975,10 @@ pub fn run_in_background(
         issue_settled,
         &issue_reason,
     );
+    // P020-k6：M3 自动上报——终判失败建 issue（cancel 排除：用户自己知道为什么取消）
+    if !issue_settled && !control.is_cancelled() {
+        auto_report_run_failure(&state, &run.task_project, &task_id, &run.id.0, &issue_reason);
+    }
     let completed = ok && matches!(outcome, Ok(RunOutcome::Completed));
     // 自审 minor（225）：run 终态此前只活在事件总线的内存环形缓冲里，日志侧没有记录
     // （boundary.ok 也只有事件没有日志）。日志必须能独立回溯「这次 run 怎么收的场」。

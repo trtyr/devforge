@@ -407,3 +407,34 @@ async fn agent_submit_issue_lands_open_with_evidence_and_event() {
     assert_eq!(ev["source"], "agent");
     assert_eq!(ev["key"], "DEVFORGE-1");
 }
+
+#[tokio::test]
+async fn auto_report_run_failure_creates_and_dedupes() {
+    let (_dir, state, router, bus) = fixture();
+    let mut rx = bus.subscribe();
+
+    // 终判失败上报：新建 System/Flow/Major + issue.created 事件
+    crate::server::auto_report_run_failure(&state, "devforge", "t1", "run-1", "修复耗尽");
+    let body = body_json(send(&router, "GET", "/api/v1/issues/DEVFORGE-1", None).await).await;
+    assert_eq!(body["source"], "system");
+    assert_eq!(body["category"], "flow");
+    assert_eq!(body["severity"], "major");
+    assert_eq!(body["run_refs"][0], "run-1");
+    let (_, raw) = rx.recv().await.unwrap();
+    let ev: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(ev["type"], "issue.created");
+    assert_eq!(ev["source"], "system");
+
+    // 去重闸：再报不新建，只追加 timeline（created + auto_report = 2 条）
+    crate::server::auto_report_run_failure(&state, "devforge", "t2", "run-2", "又红");
+    let body = body_json(send(&router, "GET", "/api/v1/issues/DEVFORGE-1", None).await).await;
+    let timeline = body["timeline"].as_array().unwrap();
+    assert_eq!(timeline.len(), 2, "只追加 timeline 不新建");
+    assert_eq!(timeline[1]["action"], "auto_report");
+    assert!(timeline[1]["detail"].as_str().unwrap().contains("run-2"));
+    let list = body_json(
+        send(&router, "GET", "/api/v1/projects/devforge/issues", None).await,
+    )
+    .await;
+    assert_eq!(list["total"], 1, "去重后仍只有一条未关 issue");
+}

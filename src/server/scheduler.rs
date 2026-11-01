@@ -510,6 +510,8 @@ pub fn tick_with_integration_window(
                     false,
                     "超预算熔断升级结案",
                 );
+                // P020-k6：熔断升级也是终判失败——自动上报（无 cancel 面，去重闸兑底）
+                crate::server::auto_report_run_failure(st, project, task, run_id, "超预算熔断升级结案");
             }
         }
         report.fused.push(format!("{project}/{task}"));

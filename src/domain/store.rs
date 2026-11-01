@@ -974,6 +974,51 @@ impl Store {
         Ok(true)
     }
 
+    /// 引擎专用（M3 自动上报）：run 终判失败 → 建 issue（去重闸：同项目同
+    /// category 未关存在时只追加 timeline，不新建——防连环失败刷屏）。
+    /// 返回 Some(issue) = 新建（调用方发事件）；None = 去重追加留痕，静默。
+    pub fn auto_report_issue(
+        &mut self,
+        project: &str,
+        task_id: &str,
+        run_id: &str,
+        reason: &str,
+    ) -> Result<Option<crate::domain::Issue>> {
+        if !self.projects.iter().any(|p| p.name == project) {
+            return Err(DevforgeError::Store(format!(
+                "项目 `{project}` 不存在，无法自动上报 issue"
+            )));
+        }
+        let detail = format!("run {run_id} 终判失败：{reason}");
+        let open_same_category = self.issues.iter_mut().find(|i| {
+            i.project == project
+                && i.category == crate::domain::IssueCategory::Flow
+                && matches!(
+                    i.status,
+                    crate::domain::IssueStatus::Open
+                        | crate::domain::IssueStatus::Triaged
+                        | crate::domain::IssueStatus::Queued
+                )
+        });
+        if let Some(issue) = open_same_category {
+            // 去重：不新建，只往既有未关 issue 的 timeline 追加证据
+            issue.note("system", "auto_report", detail, now_ms());
+            issue.version += 1;
+            self.persist();
+            return Ok(None);
+        }
+        let issue = self.create_issue(
+            project,
+            format!("run 终判失败：{task_id}"),
+            format!("调度器/收尾面自动上报。\n\n终判原因：{reason}\n\n关联 run：{run_id}（evidence 含 task/run 锚）"),
+            crate::domain::IssueSource::System,
+            crate::domain::IssueSeverity::Major,
+            crate::domain::IssueCategory::Flow,
+            vec![run_id.to_string()],
+            vec![format!("{task_id}/{run_id}")],
+        )?;
+        Ok(Some(issue))
+    }
     /// 转化落账：task 创建后绑 issue（issue_ref + Queued + timeline converted）。
     /// 只接受 Triaged（人工确认后才可转）——Open 的 agent 上报不直接进流水线。
     pub fn link_issue_task(&mut self, key: &str, task_id: &str, actor: &str) -> Result<crate::domain::Issue> {

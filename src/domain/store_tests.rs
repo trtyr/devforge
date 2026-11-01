@@ -733,3 +733,96 @@ fn transition_version_conflict_is_409_shaped() {
     assert!(err.to_string().contains("版本冲突"));
 }
 
+#[test]
+fn auto_report_creates_system_issue_on_terminal_failure() {
+    // P020-k6：终判失败 → System/Flow/Major issue，run/task 证据自动附
+    let mut s = setup();
+    let created = s
+        .auto_report_issue("devforge", "t1", "run-1", "修复耗尽终判失败")
+        .unwrap();
+    assert!(created.is_some(), "首次失败应新建");
+    let issue = s
+        .issues
+        .iter()
+        .find(|i| i.project == "devforge")
+        .unwrap();
+    assert_eq!(issue.source, crate::domain::IssueSource::System);
+    assert_eq!(issue.category, crate::domain::IssueCategory::Flow);
+    assert_eq!(issue.severity, crate::domain::IssueSeverity::Major);
+    assert_eq!(issue.status, crate::domain::IssueStatus::Open);
+    assert!(issue.title.contains("t1"));
+    assert_eq!(issue.run_refs, vec!["run-1".to_string()]);
+    assert_eq!(issue.evidence, vec!["t1/run-1".to_string()]);
+}
+
+#[test]
+fn auto_report_dedupes_same_project_same_category_unresolved() {
+    // P020-k6 去重闸：同项目同 category 未关存在 → 不新建只追加 timeline
+    let mut s = setup();
+    assert!(s.auto_report_issue("devforge", "t1", "run-1", "第一次失败").unwrap().is_some());
+    let count_before = s.issues.len();
+    let timeline_before = s.issues[0].timeline.len();
+
+    assert!(s.auto_report_issue("devforge", "t2", "run-2", "第二次失败").unwrap().is_none());
+    assert_eq!(s.issues.len(), count_before, "不新建");
+    assert_eq!(
+        s.issues[0].timeline.len(),
+        timeline_before + 1,
+        "只追加 timeline"
+    );
+    let last = s.issues[0].timeline.last().unwrap();
+    assert_eq!(last.action, "auto_report");
+    assert!(last.detail.contains("run-2"), "留痕带新 run 锚");
+
+    // 连环失败：依旧只追加，不新建
+    assert!(s.auto_report_issue("devforge", "t3", "run-3", "第三次失败").unwrap().is_none());
+    assert_eq!(s.issues.len(), count_before);
+    assert_eq!(s.issues[0].timeline.len(), timeline_before + 2);
+}
+
+#[test]
+fn auto_report_creates_fresh_when_all_resolved_or_other_category() {
+    // 全关（Resolved）不拦新建；未关但 category 不同也不拦
+    let mut s = setup();
+    assert!(s.auto_report_issue("devforge", "t1", "run-1", "第一次").unwrap().is_some());
+    // 关掉它（引擎通道：Queued → Resolved）
+    let key = s.issues[0].key.clone();
+    s.transition_issue(&key, crate::domain::IssueStatus::Triaged, s.issues[0].version, "op")
+        .unwrap();
+    s.link_issue_task(&key, "t1-fix", "op").unwrap();
+    s.auto_resolve_issue(&key, "run-2").unwrap();
+
+    assert!(s.auto_report_issue("devforge", "t1", "run-3", "复发新失败").unwrap().is_some(), "全关后应新建");
+    assert_eq!(s.issues.len(), 2);
+
+    // 未关但 category=Bug 不拦 Flow 新建：先关掉未关 Flow，再放一条未关 Bug
+    let key2 = s.issues[1].key.clone();
+    s.transition_issue(&key2, crate::domain::IssueStatus::Triaged, s.issues[1].version, "op")
+        .unwrap();
+    s.link_issue_task(&key2, "t3-fix", "op").unwrap();
+    s.auto_resolve_issue(&key2, "run-x").unwrap();
+    let _bug = s
+        .create_issue(
+            "devforge",
+            "缺陷上报",
+            "b".to_string(),
+            crate::domain::IssueSource::Operator,
+            crate::domain::IssueSeverity::Minor,
+            crate::domain::IssueCategory::Bug,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+    assert!(
+        s.auto_report_issue("devforge", "t1", "run-4", "再来").unwrap().is_some(),
+        "未关 Bug 不拦 Flow 新建"
+    );
+    assert_eq!(s.issues.len(), 4);
+}
+
+#[test]
+fn auto_report_requires_existing_project() {
+    let mut s = setup();
+    assert!(s.auto_report_issue("ghost", "t", "r", "x").is_err());
+}
+
