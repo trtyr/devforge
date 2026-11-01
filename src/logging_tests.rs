@@ -41,3 +41,55 @@ fn jsonl_file_receives_structured_events() {
     assert!(content.contains("engine"), "缺结构化字段: {content}");
     assert!(content.contains("r-1"), "缺 run_id 字段: {content}");
 }
+
+/// R5-P51：未超限不轮转（原文件保持追加）。
+#[test]
+fn small_log_is_not_rotated() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = open_log_file(dir.path(), "devforge").unwrap();
+    use std::io::Write;
+    writeln!(f, "{{\"line\":1}}").unwrap();
+    drop(f);
+    assert!(dir.path().join("devforge.log.jsonl").exists());
+    assert!(
+        !dir.path().join("devforge.log.jsonl.1").exists(),
+        "未超限不得产生副本"
+    );
+}
+
+/// R5-P51：超限滚动一代——副本承载旧内容、新文件为空追加面。
+#[test]
+fn oversized_log_rotates_to_one_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("devforge.log.jsonl");
+    std::fs::write(&path, vec![b'x'; (LOG_ROTATE_BYTES + 1024) as usize]).unwrap();
+
+    let f = open_log_file(dir.path(), "devforge").unwrap();
+    drop(f);
+
+    let rotated = dir.path().join("devforge.log.jsonl.1");
+    assert!(rotated.exists(), "超限必须产出 .1 副本");
+    assert_eq!(
+        std::fs::metadata(&rotated).unwrap().len(),
+        LOG_ROTATE_BYTES + 1024,
+        "副本承载旧内容"
+    );
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "新文件为空追加面");
+}
+
+/// R5-P51：固定一代——再次轮转覆盖旧副本，磁盘面有界（2 × 阈值）。
+#[test]
+fn second_rotation_overwrites_old_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("devforge.log.jsonl");
+    std::fs::write(&path, vec![b'a'; (LOG_ROTATE_BYTES + 10) as usize]).unwrap();
+    let _ = open_log_file(dir.path(), "devforge").unwrap();
+    std::fs::write(&path, vec![b'b'; (LOG_ROTATE_BYTES + 10) as usize]).unwrap();
+    let _ = open_log_file(dir.path(), "devforge").unwrap();
+    let rotated = dir.path().join("devforge.log.jsonl.1");
+    assert_eq!(
+        std::fs::metadata(&rotated).unwrap().len(),
+        LOG_ROTATE_BYTES + 10,
+        "旧副本被新内容覆盖（固定一代）"
+    );
+}

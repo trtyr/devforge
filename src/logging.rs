@@ -17,9 +17,37 @@ pub fn log_file_path(log_dir: &Path, component: &str) -> PathBuf {
 }
 
 /// 打开（或创建）追加模式的 JSONL 日志文件。
+/// R5-P51：打开前检查大小，超限滚动一代（`.log.jsonl` → `.log.jsonl.1`，
+/// 已有旧代覆盖——磁盘面有界 = 2 × LOG_ROTATE_BYTES）；读侧 rotated_log_files
+/// 自动归并带后缀副本，轮转后旧文件可读。
+pub(crate) const LOG_ROTATE_BYTES: u64 = 16 * 1024 * 1024;
 pub fn open_log_file(log_dir: &Path, component: &str) -> Result<std::fs::File> {
     std::fs::create_dir_all(log_dir).ctx("创建日志目录")?;
     let path = log_file_path(log_dir, component);
+    if let Ok(meta) = std::fs::metadata(&path)
+        && meta.len() > LOG_ROTATE_BYTES
+    {
+        let rotated = log_dir.join(format!("{component}.log.jsonl.1"));
+        // 固定一代：旧副本直接覆盖（保持磁盘面有界）
+        let _ = std::fs::remove_file(&rotated);
+        match std::fs::rename(&path, &rotated) {
+            Ok(()) => tracing::info!(
+                component = "logging",
+                event = "log.rotated",
+                from = %path.display(),
+                to = %rotated.display(),
+                size = meta.len(),
+                "日志文件超限，已滚动一代（读侧自动归并）"
+            ),
+            Err(e) => tracing::warn!(
+                component = "logging",
+                event = "log.rotate_failed",
+                path = %path.display(),
+                error = %e,
+                "日志轮转失败（继续追加写原文件）"
+            ),
+        }
+    }
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -57,3 +85,4 @@ pub fn init(log_dir: &Path, component: &str) -> Result<()> {
 #[cfg(test)]
 #[path = "logging_tests.rs"]
 mod tests;
+
