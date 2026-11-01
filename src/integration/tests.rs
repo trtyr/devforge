@@ -97,14 +97,19 @@ fn serial_integration_advances_target_and_second_sees_moved_target() {
     assert_eq!(t1, "task-a");
     let sel = first_pending(&q);
     let r2 = it.integrate_selected(&mut q, sel).unwrap();
-    let IntegrationOutcome::Integrated { task_id: t2, .. } = r2 else {
+    let IntegrationOutcome::Integrated { task_id: t2, merged_sha: m2 } = r2 else {
         panic!("第二个候选应集成成功（串行下 expect 始终最新）：{r2:?}");
     };
     assert_eq!(t2, "task-b");
-    // 目标历史：两个候选的 merge commit 都在
+    // 目标历史：两个候选的 merge commit 都在。R4-P37：旧断言 `|| m1.len() >= 7`
+    // 右半对任何 40 位 sha 恒真（断言永过，没验证它声称的性质）——改为祖先判定
+    // 真验证（改坏即红）。
     let log = git_out(dir.path(), &["log", "--oneline", "refs/heads/main"]).unwrap();
     assert!(log.contains("task-a") && log.contains("task-b"), "{log}");
-    assert!(log.contains(&m1[..7.min(m1.len())]) || m1.len() >= 7);
+    git(dir.path(), &["merge-base", "--is-ancestor", &m1, "refs/heads/main"])
+        .expect("第一个候选的 merge commit 必须在目标历史里");
+    git(dir.path(), &["merge-base", "--is-ancestor", &m2, "refs/heads/main"])
+        .expect("第二个候选的 merge commit 必须在目标历史里");
 }
 
 #[test]
