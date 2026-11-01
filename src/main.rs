@@ -909,8 +909,10 @@ mod acceptance_tests_extra {
             block.join("\n")
         };
 
-        let root_block = comment_block_before("let root = resolve_runtime_root(");
-        let obs_block = comment_block_before("let obs_root = devforge::observability::root()");
+        // 锚 = 口径注释块正下方的首行代码（旧锚 let root = ... 上方插了 explicit_root 行，紧邻假设已破）
+        let root_block = comment_block_before("let explicit_root = home_cli.clone()");
+        // F14 去环境变量后观测根的写法：main 直接 set_root 注入（旧锚 obs_root = root() 已不存在）
+        let obs_block = comment_block_before("devforge::observability::set_root(");
 
         for (label, block) in [
             ("运行根注释", root_block.as_str()),
@@ -959,17 +961,18 @@ mod acceptance_tests_extra {
         );
         let listing = String::from_utf8_lossy(&out.stdout).to_string();
         for name in [
-            "tests::devforge_home_alone_resolves_without_reading_home",
-            "tests::devforge_home_wins_over_home",
+            // 实际用例名（2026-11-01 对准：根解析重构后 explicit_root 家族 + carriers 措辞）
+            "tests::explicit_root_alone_resolves_without_reading_home",
+            "tests::explicit_root_wins_over_home",
             "tests::home_is_the_fallback_root",
-            "tests::blank_devforge_home_falls_back_to_home",
-            "tests::missing_both_fails_fast_naming_both_vars",
-            "acceptance_tests::ac01_devforge_home_alone_resolves_without_home",
-            "acceptance_tests::ac02_devforge_home_wins_over_home",
+            "tests::blank_explicit_root_falls_back_to_home",
+            "tests::missing_both_fails_fast_naming_both_carriers",
+            "acceptance_tests::ac01_explicit_root_alone_resolves_without_home",
+            "acceptance_tests::ac02_explicit_root_wins_over_home",
             "acceptance_tests::ac03_home_only_resolves_to_home_dot_devforge",
-            "acceptance_tests::ac04_blank_devforge_home_falls_back_to_home",
-            "acceptance_tests::ac05_blank_devforge_home_without_home_fails_naming_both_vars",
-            "acceptance_tests::ac06_both_missing_fails_naming_both_vars",
+            "acceptance_tests::ac04_blank_explicit_root_falls_back_to_home",
+            "acceptance_tests::ac05_blank_explicit_root_without_home_fails_naming_both_carriers",
+            "acceptance_tests::ac06_both_missing_fails_naming_both_carriers",
             "acceptance_tests::ac07_all_landing_points_derive_from_one_root",
             "acceptance_tests::ac08_no_unconditional_home_read_in_root_resolution",
             "acceptance_tests::ac09_root_resolution_comments_match_the_contract",
