@@ -826,3 +826,30 @@ fn tool_verdict_fail_feeds_fix_queue() {
     assert_eq!(rep.units_done, vec!["unit-a-01".to_string()], "FAIL 修复后 PASS 收官");
     assert!(rep.issues_total >= 1, "工具 FAIL 的 issues 应入账");
 }
+
+/// R6-P66 补充维度：工具 FAIL 无 issues = 协议违例（parse_tool_verdict 拒收）
+/// → 有界重试后换合规工具 PASS 收官——violation 重试链在工具形态下同样工作。
+#[test]
+fn tool_verdict_fail_without_issues_is_violation_then_retry_recovers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = MockAgent::new(&[
+        "写 A\n<doc-complete>unit-a-01</doc-complete>",
+        "修 A\n<doc-complete>unit-a-01</doc-complete>",
+    ]);
+    let f = pipe_factory_with_submissions(
+        &["正文没有裁决块。", "正文没有裁决块。"],
+        vec![
+            vec![submit_verdict("FAIL", &[])], // FAIL 无 issues = 协议违例（拒收重试）
+            vec![submit_verdict("PASS", &[])], // 重试后合规 PASS
+        ],
+    );
+    let rep = run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
+    assert_eq!(
+        rep.units_done,
+        vec!["unit-a-01".to_string()],
+        "违例重试后应恢复并收官"
+    );
+    // 违例在 worker 内消化（violations 计数，不上送）——主循环只见到合规 PASS，
+    // 裁决轮数 = 1（正确行为：违例不占裁决轮，断路器只数真裁决）
+    assert_eq!(rep.review_rounds, 1, "违例不占裁决轮（worker 内消化）");
+}
