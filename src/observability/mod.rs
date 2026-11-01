@@ -149,6 +149,8 @@ fn begin_run_in_ctx(root: PathBuf, run_id: &str, phase: &str) {
     // 地基批次 #2：新 run 开跑前清掉同 id 的旧 agent 事件戳（按 run 分槽后每槽归本 run）
     agent_events().lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
     phase_logs().lock().unwrap_or_else(|e| e.into_inner()).insert(run_id.to_string(), Vec::new());
+    // R2-08：run 级条目也无界（end_run 不摘是设计——结束后仍可查），begin 增长点检查容量
+    cap_phase_logs();
     roots()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -177,6 +179,39 @@ pub struct PhaseSpan {
 const MAX_PHASE_SPANS: usize = 256;
 
 static PHASE_LOGS: OnceLock<Mutex<HashMap<String, Vec<PhaseSpan>>>> = OnceLock::new();
+
+/// 进程内保留阶段历史的 run 条目上限（R2-08：end_run 不摘是设计——结束后仍可查
+/// 阶段边界；但 run 条目数无界 = 长跑内存增长）。超限按「最近活动时间」裁掉最老
+/// 一半（刚结束/活跃 run 不受影响）。
+const MAX_PHASE_RUN_ENTRIES: usize = 1024;
+
+fn cap_phase_logs() {
+    let mut map = phase_logs().lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() <= MAX_PHASE_RUN_ENTRIES {
+        return;
+    }
+    let mut by_recent: Vec<(String, u64)> = map
+        .iter()
+        .map(|(k, spans)| (k.clone(), spans.last().map(|s| s.at_ms).unwrap_or(0)))
+        .collect();
+    by_recent.sort_by_key(|(_, at)| *at); // 最老在前
+    let drop_n = map.len() / 2;
+    let dropped: Vec<String> = by_recent
+        .into_iter()
+        .take(drop_n)
+        .map(|(k, _)| k)
+        .collect();
+    for k in &dropped {
+        map.remove(k);
+    }
+    tracing::warn!(
+        component = "observability",
+        event = "phase_logs_capped",
+        dropped = dropped.len(),
+        cap = MAX_PHASE_RUN_ENTRIES,
+        "阶段历史 run 条目超限，已裁掉最老一半"
+    );
+}
 
 fn phase_logs() -> &'static Mutex<HashMap<String, Vec<PhaseSpan>>> {
     PHASE_LOGS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -263,6 +298,8 @@ pub fn set_phase(phase: &str) {
             from,
             to: phase.to_string(),
         });
+        // R2-08：run 级条目同样无界（同上）——push 后检查；cap 要重锁，
+        // 先放锁再调（k4 教训：Mutex 不可重入）
         // 自审 minor（165）：状态迁移自身也落事件（此前只有调用方自觉补 phase.change，
         // audit SOP 的阶段序列无法从日志重建）。
         tracing::debug!(
@@ -272,6 +309,12 @@ pub fn set_phase(phase: &str) {
             phase = %phase,
             "run 阶段转换"
         );
+        // 容量检查在 push 后（needs_cap 读 table2 需 spans 借用已结束）
+        let needs_cap = table2.len() > MAX_PHASE_RUN_ENTRIES;
+        drop(table2);
+        if needs_cap {
+            cap_phase_logs();
+        }
     }
     if let Err(e) = write_heartbeat(&run_id) {
         tracing::debug!(component = "observability", error = %e, "周期心跳落盘失败（下个 tick 重试）");

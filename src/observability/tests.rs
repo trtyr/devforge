@@ -140,3 +140,37 @@ fn quality_error_chain_has_the_top_level_text() {
     assert!(chain.contains("协议违例达上限"), "{chain}");
     assert!(!chain.is_empty());
 }
+
+/// R2-08：阶段历史 run 条目超限对折——最老一半被裁、最新保留；测后自清理
+/// 不污染进程级表。
+#[test]
+fn phase_logs_cap_drops_oldest_half() {
+    let prefix = "cap-test-";
+    for i in 0..(super::MAX_PHASE_RUN_ENTRIES + 10) {
+        super::phase_logs().lock().unwrap().insert(
+            format!("{prefix}run-{i}"),
+            vec![super::PhaseSpan {
+                at_ms: i as u64,
+                from: "a".into(),
+                to: "b".into(),
+            }],
+        );
+    }
+    super::cap_phase_logs();
+    {
+        let map = super::phase_logs().lock().unwrap();
+        assert!(
+            !map.contains_key(&format!("{prefix}run-0")),
+            "最老条目应被裁"
+        );
+        assert!(
+            map.contains_key(&format!("{prefix}run-{}", super::MAX_PHASE_RUN_ENTRIES + 9)),
+            "最新条目应保留"
+        );
+    }
+    // 自清理：只摘本测试灌的条目
+    super::phase_logs()
+        .lock()
+        .unwrap()
+        .retain(|k, _| !k.starts_with(prefix));
+}
