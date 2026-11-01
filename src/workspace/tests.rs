@@ -1370,3 +1370,35 @@ mod acceptance {
         );
     }
 }
+
+/// R2-09：record_read 对损坏 JSON 按未注册处理（None，行为面与缺失一致）但
+/// 留 error 痕（台账不可信可查）；record_remove 幂等（NotFound 静默）。
+#[test]
+fn record_read_corrupt_json_yields_none_and_remove_is_idempotent() {
+    let repo = tempfile::tempdir().unwrap();
+    let rec = super::WorkspaceRecord {
+        task_id: "t1".into(),
+        path: repo.path().join("wt"),
+        branch: "task/t1".into(),
+        base_rev: "abc".into(),
+        created_at_ms: 1,
+    };
+    super::record_write(repo.path(), &rec).unwrap();
+    assert!(super::record_read(repo.path(), "t1").is_some());
+
+    // 手工写坏 JSON → None（损坏路径留痕由日志承载，行为面 None）
+    std::fs::write(
+        super::registry_dir(repo.path()).join("t1.json"),
+        b"{not json",
+    )
+    .unwrap();
+    assert!(super::record_read(repo.path(), "t1").is_none());
+
+    // 缺失 → None
+    assert!(super::record_read(repo.path(), "never-was").is_none());
+
+    // remove 幂等：有则删、无则静默
+    super::record_remove(repo.path(), "t1");
+    assert!(super::record_read(repo.path(), "t1").is_none());
+    super::record_remove(repo.path(), "t1");
+}

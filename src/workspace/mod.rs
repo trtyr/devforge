@@ -481,12 +481,38 @@ fn record_write(repo: &Path, rec: &WorkspaceRecord) -> Result<()> {
 }
 
 fn record_remove(repo: &Path, task_id: &str) {
-    let _ = std::fs::remove_file(registry_dir(repo).join(format!("{task_id}.json")));
+    // R2-09：删除失败必须留痕（残骸仍在盘上，扫描/重入语义受影响）；
+    // NotFound 是幂等删除的正常路径，静默。
+    if let Err(e) = std::fs::remove_file(registry_dir(repo).join(format!("{task_id}.json")))
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            component = "workspace",
+            task_id = %task_id,
+            error = %e,
+            "workspace 注册表记录删除失败（残骸仍在盘上）"
+        );
+    }
 }
 
+/// 读记录：文件缺失 = None（未注册语义）；**存在但损坏 = 留痕 + None**。
+/// R2-09：旧口径两者同 None——损坏记录让 worktree 静默失联，后续操作报
+/// 「不存在」的误导错误（实际是台账损坏）；至少留痕可查。
 fn record_read(repo: &Path, task_id: &str) -> Option<WorkspaceRecord> {
     let bytes = std::fs::read(registry_dir(repo).join(format!("{task_id}.json"))).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    match serde_json::from_slice(&bytes) {
+        Ok(rec) => Some(rec),
+        Err(e) => {
+            tracing::error!(
+                component = "workspace",
+                task_id = %task_id,
+                error = %e,
+                path = %registry_dir(repo).display(),
+                "workspace 注册表记录损坏（JSON 无法解析）——按未注册处理，但台账已不可信，建议人工检查"
+            );
+            None
+        }
+    }
 }
 
 fn records(repo: &Path) -> Vec<WorkspaceRecord> {

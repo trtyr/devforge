@@ -298,3 +298,31 @@ async fn write_endpoint_reports_500_when_persist_failed() {
     let resp = send(&f.router, "GET", "/api/v1/projects", None).await;
     assert_eq!(resp.status(), 200);
 }
+
+/// R3-12 端到端：local_path 指向既有文件（目录必建不成）→ 400 且 store 无
+/// 半注册残留（目录先行——注册根本没发生）。
+#[tokio::test]
+async fn create_project_with_unusable_local_path_leaves_no_registration() {
+    let f = fixture();
+    let tmp = tempfile::tempdir().unwrap();
+    let occupied = tmp.path().join("occupied");
+    std::fs::write(&occupied, "x").unwrap();
+
+    let resp = send(
+        &f.router,
+        "POST",
+        "/api/v1/projects",
+        Some(serde_json::json!({
+            "name": "half-registered",
+            "local_path": occupied.to_string_lossy().to_string(),
+        })),
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+
+    let store = f.state.store.lock().unwrap();
+    assert!(
+        store.get_project("half-registered").is_none(),
+        "目录先行失败时 store 必须无半注册残留"
+    );
+}

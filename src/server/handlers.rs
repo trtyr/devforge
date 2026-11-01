@@ -384,17 +384,15 @@ pub async fn create_project(
         )));
     }
     let project = Project::new(req.name, req.local_path.into(), crate::domain::now_ms());
+    // R3-12（审计批次二）：目录先行——store 注册前本地目录必须已就绪。
+    // 旧序（注册→建目录→失败回滚）在 persist 后崩溃时会留半注册项目
+    // （store.json 有、目录无，重启后误导性残留）；目录先行后 store 注册不再
+    // 有失败路径，注册失败时留下的只是空目录（幂等重入确认即过，无害）。
+    project.ensure_local_dir().map_err(ApiError::from)?;
     let created = {
         let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
         store.create_project(project).cloned()?
     };
-    // 本地关系落地：从 0 = 建目录；已有 = 幂等确认（decisions/001）
-    // P1-ISSUE-01 修复：目录落地失败时回滚 store 插入，不留半注册项目
-    if let Err(e) = created.ensure_local_dir() {
-        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-        store.remove_project(&created.name);
-        return Err(ApiError::from(e));
-    }
     // P012 M1 · T1.3：接管清理——注册项目时扫描该仓孤儿 worktree（重启后首个 POST 即钩子；
     // 注册时不可能有活 run：run 需要 task，task 需要项目）
     match crate::workspace::scan_orphans(&created.local_path) {
