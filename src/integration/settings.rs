@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Context as _, Result};
 
-/// 集成目标 ref（gap-E 前置裁决②）：**本地 master**，不自动 push origin（git 节奏仍归用户）。
-/// 固定常量而非配置项：运营开关文件只承载「总开关 + 两道可选门」，
-/// ref 可配置会引入「配置写错 → 合到错分支」的新失败面。
-pub const TARGET_REF: &str = "refs/heads/master";
+// 集成目标 ref：**由消费时探测**（`consumer::resolve_target_ref`——目标仓当前
+// 检出分支，2026-11-01 裁决①）。旧的硬编码 `refs/heads/master` 常量已删
+// （R3-07：main 缺省仓恒失败）；仍不自动 push origin（git 节奏仍归用户），
+// 也不做配置化（配置写错 → 合到错分支的新失败面，原裁决理由维持）。
 
 /// gates 子结构：集成验证的门开关（auto-integrate 的后验门）。
 /// Default（derive）= 双 false，与「缺省全 off」口径一致。

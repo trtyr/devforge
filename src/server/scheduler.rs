@@ -1409,7 +1409,8 @@ pub fn status(st: &SharedState) -> serde_json::Value {
         "integration": {
             "auto_integrate_enabled": integration_settings.auto_integrate_enabled,
             "window_in_flight": integration_in_flight,
-            "target_ref": crate::integration::settings::TARGET_REF,
+            // 2026-11-01 裁决①：目标 ref 消费时探测（目标仓当前检出分支），不再有静态值
+            "target_ref": "detected-per-repo-at-consume-time",
             "gates": {
                 "clippy": integration_settings.gates.clippy,
                 "doc_lint": integration_settings.gates.doc_lint,

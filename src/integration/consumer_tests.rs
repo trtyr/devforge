@@ -525,7 +525,7 @@ fn unreadable_target_ref_falls_into_the_same_infra_retry_path() {
         serde_json::from_str(&std::fs::read_to_string(&artifact).unwrap()).unwrap();
     assert_eq!(body["kind"], "validation_infra", "{body}");
     assert_eq!(body["attribution"], "system", "{body}");
-    assert_eq!(body["stage"], "merge_base", "产物应点名失败环节：{body}");
+    assert_eq!(body["stage"], "target_probe", "产物应点名失败环节（裁决①后探测先行）：{body}");
     assert!(
         matches!(
             candidate_status(plans.path(), "task-noref"),
@@ -591,4 +591,39 @@ fn switch_toggled_at_runtime_takes_effect_on_next_drain() {
         matches!(second.consumed, Some(Consumed::Integrated { .. })),
         "开关切开后下一轮必须消费：{second:?}"
     );
+}
+
+#[test]
+fn resolve_target_ref_follows_checked_out_branch_main() {
+    // 裁决①（R3-07）：main 缺省仓不再恒失败——探测取当前检出分支
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q", "-b", "main"]).unwrap();
+    std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+    git(dir.path(), &["add", "-A"]).unwrap();
+    git(dir.path(), &[
+        "-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "a",
+    ])
+    .unwrap();
+    assert_eq!(
+        resolve_target_ref(dir.path()).unwrap(),
+        "refs/heads/main",
+        "main 检出仓的目标 ref 必须是 refs/heads/main"
+    );
+}
+
+#[test]
+fn resolve_target_ref_rejects_non_git_dir() {
+    // 非 git 目录探测失败才 System——这类仓本就不该跑自动集成
+    let dir = tempfile::tempdir().unwrap();
+    let err = resolve_target_ref(dir.path()).unwrap_err();
+    assert!(err.to_string().contains("探测失败"), "{err}");
+}
+
+#[test]
+fn resolve_target_ref_rejects_detached_head() {
+    // 分离 HEAD 无法确定主开发线——拒绝比合错分支便宜
+    let (dir, sha) = repo_with_base();
+    git(dir.path(), &["checkout", "-q", "--detach", &sha]).unwrap();
+    let err = resolve_target_ref(dir.path()).unwrap_err();
+    assert!(err.to_string().contains("分离 HEAD"), "{err}");
 }

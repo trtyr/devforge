@@ -1125,7 +1125,11 @@ async fn scheduler_status_reports_integration_switch_and_window_state() {
         "缺省开关必须关（自主合并需显式授权）：{body}"
     );
     assert_eq!(body["integration"]["window_in_flight"], false);
-    assert_eq!(body["integration"]["target_ref"], "refs/heads/master");
+    // 2026-11-01 裁决①：目标 ref 消费时探测（目标仓当前检出分支），status 无静态值
+    assert_eq!(
+        body["integration"]["target_ref"],
+        "detected-per-repo-at-consume-time"
+    );
 
     // 写设置文件 → status 立刻看到开关开（热生效，与消费循环同一份口径）
     let settings_path = f.state.plans_root.join("integrations").join("settings.json");

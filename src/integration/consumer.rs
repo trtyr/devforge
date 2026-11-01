@@ -31,8 +31,36 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Context as _, DevforgeError, Result};
 
-use super::settings::{IntegrationSettings, TARGET_REF};
+use super::settings::IntegrationSettings;
 use super::{Candidate, CandidateStatus, Integrator, IntegrationOutcome, MergeQueue};
+
+/// 集成目标 ref 探测（2026-11-01 裁决①：硬编码 master 在 main 缺省仓恒失败——
+/// R3-07）。取目标仓**当前检出分支**：集成语义是「合回主开发线」，HEAD 所在
+/// 分支即答案。探测失败（非 git 仓）或分离 HEAD（无法确定主开发线）才 System
+/// ——这类仓本就不该跑自动集成，拒收比合错分支便宜。
+pub(crate) fn resolve_target_ref(repo: &std::path::Path) -> Result<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ctx("git 可执行")?;
+    if !out.status.success() {
+        return Err(DevforgeError::System(format!(
+            "集成目标分支探测失败（{}）：{}",
+            repo.display(),
+            super::first_line(&String::from_utf8_lossy(&out.stderr))
+        )));
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if name.is_empty() || name == "HEAD" {
+        return Err(DevforgeError::System(format!(
+            "集成目标分支探测到分离 HEAD（{}）——无法确定主开发线，拒绝自动集成",
+            repo.display()
+        )));
+    }
+    Ok(format!("refs/heads/{name}"))
+}
 
 /// 一轮 drain 的结构化结果（server 层据此发事件）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -143,15 +171,24 @@ where
     };
 
     // ⑤ 集成器（merge → 验证 → CAS；已集成判定与它共用同一目标 ref 口径）。
+    // 目标 ref 探测（裁决①：硬编码 master 在 main 缺省仓恒失败，R3-07）。探测失败
+    // 与已集成判定失败**同一条 infra retry 收敛路径**——仓短暂无 HEAD 也给重试机会。
+    let probed = resolve_target_ref(repo);
+    let probe_stage: &'static str = if probed.is_ok() { "merge_base" } else { "target_probe" };
     let mut integrator = Integrator {
         repo,
-        target_ref: TARGET_REF.to_string(),
+        target_ref: probed.as_ref().map_or_else(|_| String::new(), |r| r.clone()),
         plans_root,
         validate: Box::new(validate),
     };
 
-    // ④ 已集成判定（merge-base 命中 = CAS 已成功但队列未落盘）。
-    match already_integrated(repo, &cand.frozen_sha) {
+    // ④ 已集成判定（merge-base 命中 = CAS 已成功但队列未落盘）；探测失败沿用同路径。
+    let already = match &probed {
+        Ok(r) => already_integrated(repo, &cand.frozen_sha, r),
+        // 探测错误本来就是 System——文案直穿，归因不变
+        Err(e) => Err(DevforgeError::System(e.to_string())),
+    };
+    match already {
         Ok(true) => {
             queue.candidates[idx].status = CandidateStatus::Integrated {
                 integrated_sha: cand.frozen_sha.clone(),
@@ -185,7 +222,7 @@ where
                 idx,
                 cand: &cand,
                 err: &e,
-                stage: "merge_base",
+                stage: probe_stage,
                 rearmed,
                 integrator: &integrator,
             };
@@ -386,19 +423,19 @@ fn next_consumable<'a>(
 /// 已集成判定：`git merge-base --is-ancestor <候选 sha> <目标 ref>`。
 ///
 /// 退出码 0 = 是祖先；1 = 不是祖先；其余 = 目标 ref 不可读等错误 → System
-/// （目标项目默认分支不是 master 时会走到这里——两次后才落 NeedsRepair）。
-fn already_integrated(repo: &Path, frozen_sha: &str) -> Result<bool> {
+/// （目标项目检出分支非 master 时同样走到这里——两次后才落 NeedsRepair）。
+fn already_integrated(repo: &Path, frozen_sha: &str, target_ref: &str) -> Result<bool> {
     let out = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["merge-base", "--is-ancestor", frozen_sha, TARGET_REF])
+        .args(["merge-base", "--is-ancestor", frozen_sha, target_ref])
         .output()
         .ctx("git 可执行")?;
     match out.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
         _ => Err(DevforgeError::System(format!(
-            "git merge-base 判定失败（目标 ref {TARGET_REF} 不可读）：{}",
+            "git merge-base 判定失败（目标 ref {target_ref} 不可读）：{}",
             super::first_line(&String::from_utf8_lossy(&out.stderr))
         ))),
     }
