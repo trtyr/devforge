@@ -558,9 +558,26 @@ fn final_review_with_retry<F: crate::sop::planning::ReviewSessionFactory>(
     for attempt in 0..max {
         let mut session = factory.open()?;
         let text = session.review(instruction)?;
+        // R6-P57：工具裁决优先（与单审 worker 同口径）——终审不再 100% 忽略
+        // submit_verdict 工具裁决；无工具提交才按文本协议降级。
+        let verdict = match session
+            .take_tool_submissions()
+            .iter()
+            .rev()
+            .find(|s| s.tool == "submit_verdict")
+        {
+            Some(s) => crate::sop::doc::protocol::parse_tool_verdict(&s.args),
+            None => {
+                tracing::warn!(
+                    component = "doc-engine",
+                    attempt = attempt + 1,
+                    "终审无 submit_verdict 工具提交，按文本协议解析（降级）——检查 profile 是否重渲（AF-5 扩展分发）"
+                );
+                crate::sop::doc::protocol::parse_doc_review(&text)?
+            }
+        };
         drop(session);
         let last_attempt = attempt == max - 1;
-        let verdict = crate::sop::doc::protocol::parse_doc_review(&text)?;
         if !verdict.protocol_violation {
             return Ok(verdict);
         }

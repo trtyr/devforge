@@ -61,6 +61,7 @@ pub fn doc_review_instruction(repo: &Path, unit: &str, round: usize) -> String {
 
 /// 终审指令（同一 doc-review profile，全新实例）：
 /// 跨模块重复、总览/汇编引用一致性、全量 lint 与覆盖——单元审看不到的东西只在这里查。
+/// R6-P57：裁决正道与单审同口径——先 submit_verdict 工具交裁决，文本协议降级。
 pub fn doc_final_instruction(audit: &str) -> String {
     format!(
         "你是文档审查 Agent（**终审轮**，全库范围）。\
@@ -69,6 +70,9 @@ pub fn doc_final_instruction(audit: &str) -> String {
 \n2. **汇编层引用**：总览/架构/数据流里的每个引用是否指向存在的叶子文档；上层断言能否溯源到叶子证据。\
 \n3. **全量 lint 与覆盖**：引擎审计已给退出码与缺口清单，逐条验收（禁止重算）。\
 \n4. **置信度诚实性抽样**：抽 3 条标 🟢 的断言，看能不能真给 path:line。\
-\n## 引擎审计（确定性，勿质疑）\n\n{audit}\n\n写 {META_DIR}/../_meta/reviews/final.md，然后输出协议块：<doc-verdict>PASS|FAIL</doc-verdict> + <route>...</route> + <issues>...</issues>。"
+\n**交裁决（AF-5，强制，裁决前置）**：审查完成后**先调用 submit_verdict 工具**交裁决——\
+\nverdict=PASS|FAIL、issues（FAIL 必填，每条一个元素）——裁决走工具参数，不靠叙述文本。\
+\n交完裁决再写终审报告正文并落盘。\
+\n## 引擎审计（确定性，勿质疑）\n\n{audit}\n\n写 {META_DIR}/../_meta/reviews/final.md，然后输出协议块：<doc-verdict>PASS|FAIL</doc-verdict> + <route>...</route> + <issues>...</issues>（无法调用工具时的降级文本协议）。"
     )
 }

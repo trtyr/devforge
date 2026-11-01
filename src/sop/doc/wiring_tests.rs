@@ -72,3 +72,28 @@ fn final_review_exhausts_violations_returns_last() {
         "上限 3 次后不得继续重试"
     );
 }
+
+/// R6-P57：终审读工具提交——审查会话只交 submit_verdict 工具参数（正文无
+/// 协议块），工具 PASS 必须被结构化消费（不被文本再解析读成 FAIL）。
+#[test]
+fn final_review_reads_tool_submission() {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    let mut factory = crate::sop::doc::mocks::PipeReviewFactory {
+        replies: Arc::new(Mutex::new(VecDeque::from(vec![
+            "我看了看，挺好的".to_string(), // 正文无协议块——文本解析必 violation
+        ]))),
+        instructions: Arc::new(Mutex::new(Vec::new())),
+        opens: Arc::new(Mutex::new(0)),
+        gates: crate::sop::doc::mocks::no_gates(),
+        submissions: Arc::new(Mutex::new(VecDeque::from(vec![vec![
+            crate::sop::doc::mocks::submit_verdict("PASS", &[]),
+        ]]))),
+    };
+    let v = super::final_review_with_retry(&mut factory, "审").unwrap();
+    assert!(!v.protocol_violation, "工具裁决应结构化生效：{v:?}");
+    assert!(matches!(
+        v.verdict,
+        crate::sop::doc::protocol::DocVerdict::Pass
+    ));
+}
