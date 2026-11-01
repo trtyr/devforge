@@ -102,6 +102,44 @@ impl MergeQueue {
     /// 入队（追加到尾部——串行集成的公平语义）。
     pub fn enqueue(&mut self, cand: Candidate) {
         self.candidates.push(cand);
+        self.prune_integrated();
+    }
+
+    /// 终态候选裁剪（R4-P36）：Integrated 候选超保留数时删最老（Vec 头部序 ≈
+    /// 入队序）。证据三处冗余：目标 ref 历史（merge commit）、integration.* 事件流、
+    /// 产物文件——主队列不再永久滞留被 tick/status/查询端点反复全量反序列化。
+    /// NeedsRepair 是活单不裁（人工处理语义）。
+    const MAX_INTEGRATED_KEPT: usize = 50;
+    pub fn prune_integrated(&mut self) {
+        let integrated: Vec<usize> = self
+            .candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| matches!(c.status, CandidateStatus::Integrated { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        if integrated.len() <= Self::MAX_INTEGRATED_KEPT {
+            return;
+        }
+        let drop_set: std::collections::HashSet<usize> = integrated
+            [..integrated.len() - Self::MAX_INTEGRATED_KEPT]
+            .iter()
+            .copied()
+            .collect();
+        let before = self.candidates.len();
+        let mut i = 0usize;
+        self.candidates.retain(|_| {
+            let keep = !drop_set.contains(&i);
+            i += 1;
+            keep
+        });
+        tracing::info!(
+            component = "integration",
+            event = "queue.integrated_pruned",
+            before,
+            after = self.candidates.len(),
+            "Integrated 候选超保留数，已裁最老（证据在目标 ref 历史/事件流/产物）"
+        );
     }
 
     /// 落盘（自审 major：原子写——半截 queue.json 会让下一次 load 判损坏静默清空）。
@@ -428,6 +466,8 @@ impl<'a> Integrator<'a> {
             queue.candidates[idx].status = CandidateStatus::Integrated {
                 integrated_sha: merged_sha.clone(),
             };
+            // R4-P36：终态收敛点也裁（enqueue 之外的另一增长面）；裁后再落盘
+            queue.prune_integrated();
             queue.save()?;
             tracing::info!(
                 component = "integration",

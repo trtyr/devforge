@@ -359,3 +359,49 @@ fn traversal_project_and_task_id_are_rejected() {
     // 越界目录不得存在
     assert!(!plans.path().join("evil").exists(), "不得写出 plans_root 之外");
 }
+
+/// R4-P36：Integrated 候选超保留数裁最老——主队列有界；NeedsRepair 活单不裁。
+#[test]
+fn integrated_candidates_are_pruned_to_bound() {
+    let plans = tempfile::tempdir().unwrap();
+    let mut q = MergeQueue::load(plans.path(), "p").unwrap();
+    for i in 0..55 {
+        q.enqueue(Candidate {
+            task_id: format!("t{i}"),
+            frozen_sha: format!("{:040x}", i),
+            base_rev: format!("{:040x}", i),
+            owned_paths: vec![],
+            status: CandidateStatus::Integrated {
+                integrated_sha: format!("{:040x}", i),
+            },
+            evidence_paths: vec![],
+        });
+    }
+    q.enqueue(Candidate {
+        task_id: "t-need".into(),
+        frozen_sha: format!("{:040x}", 999),
+        base_rev: format!("{:040x}", 999),
+        owned_paths: vec![],
+        status: CandidateStatus::NeedsRepair { reason: "live".into() },
+        evidence_paths: vec![],
+    });
+
+    let integrated = q
+        .candidates
+        .iter()
+        .filter(|c| matches!(c.status, CandidateStatus::Integrated { .. }))
+        .count();
+    assert_eq!(integrated, 50, "55 个 Integrated 必须裁到保留数 50");
+    assert!(
+        q.candidates.iter().any(|c| c.task_id == "t-need"),
+        "NeedsRepair 活单不裁"
+    );
+    assert!(
+        q.candidates.iter().any(|c| c.task_id == "t54"),
+        "最新的 Integrated 保留"
+    );
+    assert!(
+        !q.candidates.iter().any(|c| c.task_id == "t0"),
+        "最老的先死"
+    );
+}
