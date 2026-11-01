@@ -473,25 +473,43 @@ pub fn tick_with_integration_window(
         // （占着并发槽）。升级为直接落终态，否则槽位永久泄漏。
         if killed == 0 && st.runs_control.lock().unwrap_or_else(|e| e.into_inner()).get(&format!("{project}/{task}")).is_none() {
             let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-            match store.finish_run(
+            let finish_ok = match store.finish_run(
                 &crate::domain::run::RunId(run_id.clone()),
                 crate::domain::store::FinishOutcome::Failed {
                     reason: format!("超预算 {} 分钟且无存活进程可杀（调度器升级结案）", cfg.budget_wall_minutes),
                 },
             ) {
-                Ok(()) => tracing::error!(
-                    component = "scheduler",
-                    project = %project,
-                    task = %task,
-                    run_id = %run_id,
-                    "熔断升级：无进程可杀且无控制句柄，直接结案释放并发槽"
-                ),
-                Err(e) => tracing::error!(
-                    component = "scheduler",
-                    run_id = %run_id,
-                    error = %e,
-                    "熔断升级失败：run 仍占并发槽"
-                ),
+                Ok(()) => {
+                    tracing::error!(
+                        component = "scheduler",
+                        project = %project,
+                        task = %task,
+                        run_id = %run_id,
+                        "熔断升级：无进程可杀且无控制句柄，直接结案释放并发槽"
+                    );
+                    true
+                }
+                Err(e) => {
+                    tracing::error!(
+                        component = "scheduler",
+                        run_id = %run_id,
+                        error = %e,
+                        "熔断升级失败：run 仍占并发槽"
+                    );
+                    false
+                }
+            };
+            drop(store);
+            // P020：issue 联动（熔断失败回炉）——必须在 store 锁作用域外（Mutex 不可重入）
+            if finish_ok {
+                crate::server::issue_run_outcome_linkage(
+                    st,
+                    project,
+                    task,
+                    run_id,
+                    false,
+                    "超预算熔断升级结案",
+                );
             }
         }
         report.fused.push(format!("{project}/{task}"));

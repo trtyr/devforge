@@ -287,3 +287,93 @@ async fn status_endpoint_counts_open_issues_by_severity() {
     let body = body_json(send(&router, "GET", "/api/v1/scheduler/status", None).await).await;
     assert_eq!(body["issues"]["open"], 1);
 }
+
+#[tokio::test]
+async fn run_outcome_linkage_drives_issue_states() {
+    let (_dir, state, router, bus) = fixture();
+    let mut rx = bus.subscribe();
+
+    // 建 issue → Triaged → convert（Queued，task = devforge-1-fix）
+    let resp = send(&router, "POST", "/api/v1/projects/devforge/issues", Some(issue_body("major"))).await;
+    let key = body_json(resp).await["key"].as_str().unwrap().to_string();
+    send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/issues/{key}"),
+        Some(serde_json::json!({"status": "triaged", "version": 1})),
+    )
+    .await;
+    send(
+        &router,
+        "POST",
+        &format!("/api/v1/issues/{key}/convert"),
+        Some(serde_json::json!({})),
+    )
+    .await;
+
+    // run Settled 联动 → Resolved + issue.resolved 事件
+    crate::server::issue_run_outcome_linkage(&state, "devforge", "devforge-1-fix", "run-42", true, "");
+    let body = body_json(send(&router, "GET", &format!("/api/v1/issues/{key}"), None).await).await;
+    assert_eq!(body["status"], "resolved");
+    let mut got_resolved = false;
+    for _ in 0..4 {
+        let (_, raw) = rx.recv().await.unwrap();
+        let ev: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        if ev["type"] == "issue.resolved" {
+            assert_eq!(ev["key"], key);
+            assert_eq!(ev["run"], "run-42");
+            got_resolved = true;
+            break;
+        }
+    }
+    assert!(got_resolved, "Settled 联动应发 issue.resolved");
+
+    // 幂等：再 settled 一次（已 Resolved 非 Queued）→ 不再发事件
+    crate::server::issue_run_outcome_linkage(&state, "devforge", "devforge-1-fix", "run-43", true, "");
+    assert!(
+        rx.try_recv().is_err(),
+        "幂等不动不应发事件（防重放刷屏）"
+    );
+
+    // 回炉链：重开 → Triaged → 转化 → Failed 联动 → Open（不误标 Resolved）
+    let v = body["version"].as_u64().unwrap();
+    send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/issues/{key}"),
+        Some(serde_json::json!({"status": "open", "version": v})),
+    )
+    .await;
+    let v = body_json(send(&router, "GET", &format!("/api/v1/issues/{key}"), None).await).await
+        ["version"]
+        .as_u64()
+        .unwrap();
+    send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/issues/{key}"),
+        Some(serde_json::json!({"status": "triaged", "version": v})),
+    )
+    .await;
+    send(
+        &router,
+        "POST",
+        &format!("/api/v1/issues/{key}/convert"),
+        Some(serde_json::json!({"task_id": "devforge-1-fix-2"})),
+    )
+    .await;
+    // 取消/失败同语义：都回 Open，绝不误标 Resolved
+    crate::server::issue_run_outcome_linkage(
+        &state,
+        "devforge",
+        "devforge-1-fix-2",
+        "run-44",
+        false,
+        "取消或失败：回炉等重新处理",
+    );
+    let body = body_json(send(&router, "GET", &format!("/api/v1/issues/{key}"), None).await).await;
+    assert_eq!(body["status"], "open", "取消/失败回 Open，不误标 Resolved");
+    assert!(body["timeline"].as_array().unwrap().iter().any(|t| {
+        t["action"] == "reopened" && t["detail"].as_str().unwrap().contains("run-44")
+    }));
+}

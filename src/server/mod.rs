@@ -540,6 +540,66 @@ pub type EngineBox = Box<dyn RunEngine + Send>;
 /// 这里只收下那个 `Arc` 并在收尾时摘除——旧口径在线程体里登记，导致「紧跟 start
 /// 的 cancel」打在一个还没登记的控制对象上（404 当前无运行中的 run），
 /// 而 run 实际上已经准入在跑：取消点了却没生效。
+/// P020：run 收尾 → issue 状态联动（task.issue_ref 锚）+ 事件。
+///
+/// 数据转移走 store.auto_resolve/auto_reopen（domain 权威，非 Queued 幂等不动），
+/// 本函数只组合「查锚 → 联动 → emit」；三处 run 收尾调用方（主收尾/start 前置
+/// 回滚/预算熔断结案）各自调用，zombie 重启对账登记不联动。
+/// 取消/失败语义：cancel 收尾也是 Failed ——回 Open 等重新处理，不误标 Resolved。
+pub fn issue_run_outcome_linkage(
+    st: &SharedState,
+    project: &str,
+    task_id: &str,
+    run_id: &str,
+    settled: bool,
+    reason: &str,
+) {
+    let keys: Vec<String> = {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .issues
+            .iter()
+            .filter(|i| {
+                i.project == project
+                    && i.status == crate::domain::IssueStatus::Queued
+                    && i.task_ref.as_deref() == Some(task_id)
+            })
+            .map(|i| i.key.clone())
+            .collect()
+    };
+    for key in keys {
+        let changed = {
+            let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+            if settled {
+                store.auto_resolve_issue(&key, run_id).unwrap_or(false)
+            } else {
+                store
+                    .auto_reopen_issue(&key, run_id, reason)
+                    .unwrap_or(false)
+            }
+        };
+        if !changed {
+            continue; // 幂等不动（非 Queued）不发事件——防重放刷屏
+        }
+        if settled {
+            st.emit(json!({
+                "type": "issue.resolved",
+                "key": key,
+                "task": task_id,
+                "run": run_id,
+            }));
+        } else {
+            st.emit(json!({
+                "type": "issue.reopened",
+                "key": key,
+                "task": task_id,
+                "run": run_id,
+                "reason": reason,
+            }));
+        }
+    }
+}
+
 /// A2 通知：统一落库 + 广播入口（通知不落库就是转发，落库不广播就是 deaf）。
 ///
 /// 事件源只调本函数，不直接摸 store/bus——通知的形状（字段/裁剪/持久化）
@@ -716,6 +776,20 @@ pub fn run_in_background(
             }
         }
     };
+    // P020：issue 状态联动（task.issue_ref 锚；cancel/失败都回 Open，不误标 Resolved）
+    let (issue_settled, issue_reason) = match &outcome {
+        Ok(RunOutcome::Completed) => (true, String::new()),
+        Ok(RunOutcome::Failed { reason }) => (false, reason.clone()),
+        Err(e) => (false, e.to_string()),
+    };
+    issue_run_outcome_linkage(
+        &state,
+        &run.task_project,
+        &task_id,
+        &run.id.0,
+        issue_settled,
+        &issue_reason,
+    );
     let completed = ok && matches!(outcome, Ok(RunOutcome::Completed));
     // 自审 minor（225）：run 终态此前只活在事件总线的内存环形缓冲里，日志侧没有记录
     // （boundary.ok 也只有事件没有日志）。日志必须能独立回溯「这次 run 怎么收的场」。

@@ -933,12 +933,13 @@ impl Store {
     }
 
     /// 引擎专用（run Settled 联动）：Queued → Resolved。非 Queued 幂等不动。
-    pub fn auto_resolve_issue(&mut self, key: &str, run_id: &str) -> Result<()> {
+    /// 返回是否真的发生了流转（事件 emit 只在真变时发）。
+    pub fn auto_resolve_issue(&mut self, key: &str, run_id: &str) -> Result<bool> {
         let Some(issue) = self.issues.iter_mut().find(|i| i.key == key) else {
-            return Ok(());
+            return Ok(false);
         };
         if issue.status != crate::domain::IssueStatus::Queued {
-            return Ok(());
+            return Ok(false);
         }
         issue.status = crate::domain::IssueStatus::Resolved;
         issue.note(
@@ -949,16 +950,17 @@ impl Store {
         );
         issue.version += 1;
         self.persist();
-        Ok(())
+        Ok(true)
     }
 
     /// 引擎专用（run Failed 联动）：Queued → Open 回炉。非 Queued 幂等不动。
-    pub fn auto_reopen_issue(&mut self, key: &str, run_id: &str, reason: &str) -> Result<()> {
+    /// 返回是否真的发生了流转（事件 emit 只在真变时发）。
+    pub fn auto_reopen_issue(&mut self, key: &str, run_id: &str, reason: &str) -> Result<bool> {
         let Some(issue) = self.issues.iter_mut().find(|i| i.key == key) else {
-            return Ok(());
+            return Ok(false);
         };
         if issue.status != crate::domain::IssueStatus::Queued {
-            return Ok(());
+            return Ok(false);
         }
         issue.status = crate::domain::IssueStatus::Open;
         issue.note(
@@ -969,7 +971,7 @@ impl Store {
         );
         issue.version += 1;
         self.persist();
-        Ok(())
+        Ok(true)
     }
 
     /// 转化落账：task 创建后绑 issue（issue_ref + Queued + timeline converted）。

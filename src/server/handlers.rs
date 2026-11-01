@@ -1694,6 +1694,16 @@ pub async fn start_task(
                     "续跑门失败后回滚 SOP 覆盖失败——任务身份可能已被改写"
                 );
             }
+            drop(store);
+            // P020：issue 联动（Failed 回炉）——放 store 作用域后，避免 Mutex 重入
+            crate::server::issue_run_outcome_linkage(
+                &st,
+                &project,
+                &task,
+                &run.id.0,
+                false,
+                &e.to_string(),
+            );
             tracing::warn!(
                 component = "server",
                 event = "start.rejected",
@@ -1733,6 +1743,15 @@ pub async fn start_task(
                     );
                 }
             }
+            // P020：issue 联动（Failed 回炉）
+            crate::server::issue_run_outcome_linkage(
+                &st,
+                &project,
+                &task,
+                &run.id.0,
+                false,
+                &format!("清空 change 黑板失败：{e}"),
+            );
             tracing::warn!(
                 component = "server",
                 event = "start.rejected",
