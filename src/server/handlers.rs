@@ -367,6 +367,7 @@ pub struct CreateProjectReq {
 
 pub async fn create_project(
     State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
     Json(req): Json<CreateProjectReq>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     // 全仓审计 #5：local_path 注册前置校验——门 0 会在无 .git 的目录上 git init +
@@ -429,6 +430,8 @@ pub async fn create_project(
         }
     }
     st.emit(json!({"type": "project.created", "project": created.name}));
+    // R3-16/EX-13 审计系统化：创建项目是高价值写操作，必须有 actor 可追
+    user.audit_write(&st, "create_project", &created.name);
     // 自审 minor（14）：不回显主机绝对路径（created 仍按全量落库，只对外收口）
     Ok((StatusCode::CREATED, Json(created.public_view())))
 }
@@ -548,25 +551,34 @@ pub async fn list_notifications(
 /// 返回 `{"marked": n, "unread": 余量}`。
 pub async fn read_notifications(
     State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-    let marked = if body.get("all").and_then(|v| v.as_bool()).unwrap_or(false) {
-        store.mark_all_notifications_read()
-    } else {
-        body.get("ids")
-            .and_then(|v| v.as_array())
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|v| v.as_u64())
-                    .filter(|&id| store.mark_notification_read(id))
-                    .count()
-            })
-            .unwrap_or(0)
+    // guard 块化：audit_write 内部会重锁 store——Mutex 不可重入（k4 死锁教训），
+    // 计算与审计必须分域
+    let (marked, unread) = {
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        let marked = if body.get("all").and_then(|v| v.as_bool()).unwrap_or(false) {
+            store.mark_all_notifications_read()
+        } else {
+            body.get("ids")
+                .and_then(|v| v.as_array())
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|v| v.as_u64())
+                        .filter(|&id| store.mark_notification_read(id))
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+        let unread = store.unread_notification_count();
+        (marked, unread)
     };
+    // R3-16/EX-13 审计系统化：通知已读是写操作（状态变更）——guard 已释放
+    user.audit_write(&st, "read_notifications", &format!("marked={marked}"));
     Json(serde_json::json!({
         "marked": marked,
-        "unread": store.unread_notification_count(),
+        "unread": unread,
     }))
 }
 
@@ -2622,6 +2634,7 @@ pub struct EnqueueCandidateReq {
 /// `integrate_next`；本端点只负责登记与可见性）。
 pub async fn enqueue_candidate(
     State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
     Path(project): Path<String>,
     Json(req): Json<EnqueueCandidateReq>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
@@ -2679,6 +2692,12 @@ pub async fn enqueue_candidate(
         "project": project,
         "task": req.task_id,
     }));
+    // R3-16/EX-13 审计系统化：手动入队直接通向自动合并链，必须有 actor 可追
+    user.audit_write(
+        &st,
+        "enqueue_candidate",
+        &format!("{project}/{} @ {}", req.task_id, &req.frozen_sha[..8.min(req.frozen_sha.len())]),
+    );
     Ok((
         StatusCode::CREATED,
         Json(json!({"queued": true, "depth": depth})),

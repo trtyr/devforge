@@ -503,3 +503,52 @@ async fn observer_write_is_403_but_read_ok() {
     .await;
     assert_eq!(status_of(&resp).await, 403, "Observer 写操作必须 403");
 }
+
+/// R3-16/EX-13 审计系统化的结构性门：全部写路由（POST/PATCH/PUT/DELETE 挂载的
+/// handler）必须在签名内消费 `Extension<AuthedUser>`（审计 actor 来源）——
+/// 新写路由漏审计会直接红。豁免：/auth/* 两端点自带 login_success/failure 审计。
+#[test]
+fn every_write_route_carries_authed_user_for_audit() {
+    let http = include_str!("../http.rs");
+    let handlers_src = include_str!("../handlers.rs");
+
+    let mut write_handlers: Vec<String> = Vec::new();
+    for verb in ["post", "put", "patch", "delete"] {
+        let needle = format!("{verb}(handlers::");
+        let mut search = 0;
+        while let Some(rel) = http[search..].find(&needle) {
+            let start = search + rel + needle.len();
+            let end = http[start..].find(')').expect("路由挂载必有闭括号");
+            write_handlers.push(http[start..start + end].to_string());
+            search = start + end;
+        }
+    }
+    assert!(
+        write_handlers.len() >= 15,
+        "写路由清点异常（应 ≥15 条，实际 {}）——路由表结构变了，请同步本测试",
+        write_handlers.len()
+    );
+
+    let exempted = ["auth_login", "auth_logout"];
+    let mut checked = 0;
+    for name in &write_handlers {
+        if exempted.contains(&name.as_str()) {
+            continue;
+        }
+        let anchor = format!("pub async fn {name}(");
+        let pos = handlers_src.find(&anchor).unwrap_or_else(|| {
+            panic!("handler {name} 应在 handlers.rs 中存在");
+        });
+        let mut end = (pos + 700).min(handlers_src.len());
+        while end < handlers_src.len() && !handlers_src.is_char_boundary(end) {
+            end += 1; // 中文注释多字节：对齐到字符边界再切片
+        }
+        let region = &handlers_src[pos..end];
+        assert!(
+            region.contains("AuthedUser"),
+            "写路由 {name} 必须消费 Extension<AuthedUser>（审计 actor 来源，R3-16）"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 13, "实际检查的写 handler 数异常：{checked}");
+}
