@@ -17,30 +17,18 @@ pub fn build_install_command(profile_dir: &Path, package: &str) -> Command {
     cmd
 }
 
-/// 包来源形状校验（自审 minor 34）。
+/// 包来源形状校验（自审 minor 34；R5-P50：旧文档块整段重复两遍且口径不一致
+/// ——前段只列 name/@scope 并禁传输协议，与实现（放行 npm:/git:）相左——
+/// 删过时段，保留与代码一致的一份）。
 ///
 /// 边界事实：清单可经 HTTP API 改写，而 `pi install` 会真实执行包的 postinstall 脚本——
-/// 即「改清单」等价于「以 devforge 进程身份跑任意代码」。旧口径对来源零校验。
-///
-/// 规则（只放行 npm 注册表安全子集）：
-/// - `name` / `name@version` / `@scope/name` / `@scope/name@version`；
-/// - 字符集限 `[A-Za-z0-9._@/-]`（不允空白/控制符/引号/元字符）；
-/// - 拒本地与相对绝对路径（`/`、`./`、`../`、`~`）、传输协议前缀（`git+`、`file:`、
-///   `http(s):`、`npm:` 等）与选项形态（`-` 开头，防被当成 pi 自己的参数）。
-///
-/// 包来源形状校验（自审 minor 34）。
-///
-/// 边界事实：清单可经 HTTP API 改写，而 `pi install` 会真实执行包的 postinstall 脚本。
-/// 旧口径对来源零校验——一个被改写的清单就能把本地任意目录/脚本拉进来执行，
-/// 或者把参数写成 `--flag` 让 pi 当成自己的选项。
+/// 即「改清单」等价于「以 devforge 进程身份跑任意代码」；本函数只堵「把安装面变成
+/// 任意本地路径执行」（远程包自己的 postinstall 是 admin 信任模型下的既定行为）。
 ///
 /// 放行口径（与仓内内置清单一致）：`name` / `name@ver` / `@scope/name` /
 /// `npm:<name>` / `git:host/path`。拒收：本地与相对/绝对路径（`file:`、`link:`、
 /// `/abs`、`./`、`../`、`~`）、`http(s):`/`ssh:` URL、选项形态（`-` 开头）、
 /// 以及含空白/控制字符/引号/元字符的串。
-///
-/// 注：远程包（npm/git）自己的 postinstall 仍会执行——那是 admin 信任模型下的既定行为；
-/// 本函数只堵「把安装面变成任意本地路径执行」。
 pub fn validate_package_source(pkg: &str) -> Result<()> {
     fn bad(pkg: &str, why: &str) -> DevforgeError {
         DevforgeError::Config(format!(
@@ -161,6 +149,9 @@ fn run_with_timeout(mut cmd: Command, pkg: &str) -> Result<std::process::Output>
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
+                    // 泵线程在子进程死后读到 EOF 自然退出——join 收尾不遗留
+                    let _ = stdout_thread.join();
+                    let _ = stderr_thread.join();
                     return Err(DevforgeError::System(format!(
                         "pi install {pkg} 超时（{timeout_ms}ms，DEVFORGE_INSTALL_TIMEOUT_MS 可调，0=不限）——进程已强杀"
                     )));
@@ -168,6 +159,19 @@ fn run_with_timeout(mut cmd: Command, pkg: &str) -> Result<std::process::Output>
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(e) => {
+                // R5-P50：等待失败也不能遗留子进程与泵线程——kill + 收尸 + join
+                let _ = child.kill();
+                let _ = child.wait();
+                let stdout = stdout_thread.join().unwrap_or_default();
+                let stderr = stderr_thread.join().unwrap_or_default();
+                tracing::warn!(
+                    component = "installer",
+                    pkg,
+                    error = %e,
+                    stdout_len = stdout.len(),
+                    stderr_len = stderr.len(),
+                    "pi install 等待失败（子进程已强杀，泵线程已收）"
+                );
                 return Err(DevforgeError::System(format!(
                     "pi install {pkg} 等待失败：{e}"
                 )));
