@@ -13,6 +13,12 @@ use crate::domain::runner::RunControl;
 /// 2026-10-27 自审 major：任一监视目录不可读（或未提供任何目录）= **不可观测**
 /// → 返回 None。旧口径读失败直接 return（指纹停在 FNV 基准值且永不变化）→
 /// 「无进展」误判 → 活着的 run 被失活收割。不可观测即不判定——宁可漏杀不可误杀。
+/// 指纹遍历安全上限（R5-P47）：递归无上限 + 跟随软链 = 一行软链环即可让栈溢出
+/// （abort，catch_unwind 收不住）杀死整个服务。深度/条目双上限把最坏情况变成
+/// 有限工作；超限按不可观测处理（整体不判定，宁漏杀不误杀）。
+const FINGERPRINT_MAX_DEPTH: usize = 24;
+const FINGERPRINT_MAX_ENTRIES: usize = 200_000;
+
 fn session_fingerprint(dirs: &[PathBuf]) -> Option<u64> {
     // 2026-10-27 自审 minor（171/172）：收集→排序→再哈希。旧口径按 read_dir 产出顺序
     // 递推混合（顺序敏感 = 目录内容不变也可能算出不同指纹 → 假进展），且条目不含
@@ -20,7 +26,13 @@ fn session_fingerprint(dirs: &[PathBuf]) -> Option<u64> {
     // (路径, 长度, mtime) 全收上来再排序，并按路径+元数据一起哈希。
     // 符号链接目录用 fs::metadata 跟随（旧口径 DirEntry::metadata 不跟随，
     // 链接出去的会话子目录永远不计入进展 → 假平线 → 活 run 被误收割）。
-    fn walk(dir: &Path, acc: &mut Vec<(String, u64, u128)>) -> bool {
+    // R5-P47：跟随语义保留，但受深度/条目双上限约束——软链环不再能无限递归。
+    fn walk(dir: &Path, depth: usize, acc: &mut Vec<(String, u64, u128)>) -> bool {
+        if depth > FINGERPRINT_MAX_DEPTH || acc.len() > FINGERPRINT_MAX_ENTRIES {
+            // 超限 = 该子树不可观测（链环/异常嵌套/超大目录）→ 整体不判定
+            // （宁漏杀不误杀，与「不可观测即不判定」既有口径一致）。
+            return false;
+        }
         let Ok(entries) = std::fs::read_dir(dir) else {
             return false;
         };
@@ -31,7 +43,7 @@ fn session_fingerprint(dirs: &[PathBuf]) -> Option<u64> {
                 continue;
             };
             if meta.is_dir() {
-                if !walk(&path, acc) {
+                if !walk(&path, depth + 1, acc) {
                     return false;
                 }
             } else {
@@ -51,7 +63,7 @@ fn session_fingerprint(dirs: &[PathBuf]) -> Option<u64> {
     }
     let mut acc: Vec<(String, u64, u128)> = Vec::new();
     for d in dirs {
-        if !walk(d, &mut acc) {
+        if !walk(d, 0, &mut acc) {
             return None;
         }
     }

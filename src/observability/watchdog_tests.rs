@@ -314,3 +314,39 @@ fn after_harvest_cancel_is_still_monitored() {
         "收割后取消监测必须仍在岗（hook#2 由 cancel 触发）；实际 {n}"
     );
 }
+
+/// R5-P47：软链环不得栈溢出（abort 杀服务）——有限展开后按不可观测处理（None）。
+/// 断言的本质是「在有限时间返回」。
+#[test]
+fn fingerprint_symlink_loop_terminates_without_overflow() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "x").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
+    // 环展开到深度上限后被截断 → 不可观测 None；关键是调用返回（不炸不挂）
+    let r = super::session_fingerprint(&[dir.path().to_path_buf()]);
+    assert_eq!(r, None, "软链环应按不可观测处理（深度截断）");
+}
+
+/// R5-P47：深嵌套（超过深度上限）同样有限返回 None。
+#[test]
+fn fingerprint_deep_nesting_is_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cur = dir.path().to_path_buf();
+    for i in 0..(super::FINGERPRINT_MAX_DEPTH + 8) {
+        cur = cur.join(format!("d{i}"));
+    }
+    std::fs::create_dir_all(&cur).unwrap();
+    std::fs::write(cur.join("deep.txt"), "x").unwrap();
+    let r = super::session_fingerprint(&[dir.path().to_path_buf()]);
+    assert_eq!(r, None, "超深嵌套应按不可观测处理（深度截断）");
+}
+
+/// 正常浅目录不受上限影响：指纹照常产出。
+#[test]
+fn fingerprint_normal_dir_still_works() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("f.txt"), "x").unwrap();
+    let r = super::session_fingerprint(&[dir.path().to_path_buf()]);
+    assert!(r.is_some(), "正常目录应有指纹");
+}
