@@ -475,3 +475,58 @@ fn src_only_whitelist_does_not_require_inventory() {
     let a = audit(&plan, r.path());
     assert!(a.is_clean(), "纯 src 白名单不该要求盘点节：{:?}", a.issues);
 }
+
+// ---------------- F11：引用卫生机械门（2026-11-01） ----------------
+
+#[test]
+fn glob_whitelist_is_rejected() {
+    // 错实现形态：白名单混入 glob（c6 场审查员揭卫生烧轮）→ 机械门前置拦截
+    let r = repo();
+    let plan = plan_with_whitelist("`src/a.rs`
+`src/*.rs`", None);
+    let a = audit(&plan, r.path());
+    assert!(
+        a.issues.iter().any(|i| i.contains("不得使用 glob") && i.contains("src/*.rs")),
+        "白名单 glob 必须被打回：{:?}",
+        a.issues
+    );
+}
+
+#[test]
+fn bare_filename_in_impact_is_flagged() {
+    // 错实现形态：影响面给裸文件名不给 ：line（行号漂移无从对账）→ 机械门拦截；
+    // 举例性提及（文件不存在）不误伤：用 repo() 里不存在的 src/ghost.rs。
+    let r = repo();
+    let plan = String::from(
+        "# 变更计划\n\n\
+         ## 1 需求复述\n改 a。\n\n\
+         ## 2 影响面\n- 直接命中：`src/a.rs`（裸文件名）\n- 另涉 `src/ghost.rs`（不存在，不报）\n\n\
+         ## 3 要改的\n| 文件 | 理由 |\n| --- | --- |\n| `src/a.rs` | 需求点 |\n\n\
+         ## 4 白名单\n`src/a.rs`\n\n\
+         ## 5 验收标准\n- 给定 x=1 → 返回 2\n\n\
+         ## 6 风险\n- 无\n",
+    );
+    let a = audit(&plan, r.path());
+    assert!(
+        a.issues.iter().any(|i| i.contains("src/a.rs") && i.contains("缺 `:line` 行号定位")),
+        "裸文件名必须被打回：{:?}",
+        a.issues
+    );
+    assert!(
+        !a.issues.iter().any(|i| i.contains("src/ghost.rs")),
+        "不存在的文件（举例性提及）不误伤：{:?}",
+        a.issues
+    );
+}
+
+#[test]
+fn path_line_impact_references_pass_the_hygiene_gate() {
+    // 合法引用不误伤：good_plan 影响面全带 ：line，白名单无 glob → 无 F11 issue。
+    let r = repo();
+    let a = audit(&good_plan(), r.path());
+    assert!(
+        !a.issues.iter().any(|i| i.contains("（F11）")),
+        "合法计划不应被引用卫生门误伤：{:?}",
+        a.issues
+    );
+}

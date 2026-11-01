@@ -328,6 +328,11 @@ pub fn ref_resolves(repo: &Path, refs: &[(String, u32)]) -> Result<(), String> {
     Ok(())
 }
 
+/// F11：token 是否含 glob 元字符（白名单/要改的禁用——对账逐文件精确匹配）。
+fn has_glob_meta(p: &str) -> bool {
+    p.contains('*') || p.contains('?') || p.contains('[')
+}
+
 fn audit_inner_roots(plan: &str, repo: &Path, plantree: Option<&Path>) -> PlanAudit {
     let mut a = PlanAudit::default();
 
@@ -357,6 +362,27 @@ fn audit_inner_roots(plan: &str, repo: &Path, plantree: Option<&Path>) -> PlanAu
     // 逼成「先建空文件再规划」或「越界申报」的绕行。
     let whitelist = section_paths(plan, "白名单");
     let modify = section_paths(plan, "要改的");
+    // F11（selfhost 台账 2026-11-01）：引用卫生下沉机械门——审查员语义揭卫生烧审查轮
+    // （c6 场 3 轮打满、工作全绿却流程终判 Quality），这里前置成确定性判定：
+    // 不过 = 打回修复回路（确定性审计硬门），不烧审查轮次。
+    // ① 白名单/要改的禁 glob：对账是逐文件精确匹配，glob 永远对不上具体文件。
+    for f in whitelist.iter().chain(modify.iter()) {
+        if has_glob_meta(f) {
+            a.issues.push(format!(
+                "白名单/要改的不得使用 glob（`{f}`）——对账逐文件精确匹配，请列出真实路径（F11）"
+            ));
+        }
+    }
+    // ② 影响面裸文件名：section_paths 的 looks_like_file 恰好拒收 `path:line` 形态
+    // （尾段非扩展名），命中这里的全是「有文件名、无行号」的裸引用；真实存在的才报
+    // （举例性提及不误伤）。
+    for tok in section_paths(plan, "影响面") {
+        if repo.join(&tok).is_file() {
+            a.issues.push(format!(
+                "影响面引用 `{tok}` 缺 `:line` 行号定位（引用规范：path:line，行号以当前 HEAD 为准）（F11）"
+            ));
+        }
+    }
     for f in &modify {
         if !resolves(repo, plantree, f) {
             a.issues.push(format!("要改的文件不存在：{f}"));
