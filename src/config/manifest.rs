@@ -422,7 +422,7 @@ impl ConfigManifest {
                     thinking_level: None,
                     path_permissions: None,
                     tools: None,
-                    extensions: vec![],
+                    extensions: vec!["submit-issue".into()],
                 },
                 AgentManifest {
                     name: "plan-review".into(),
@@ -455,7 +455,7 @@ impl ConfigManifest {
                     thinking_level: None,
                     path_permissions: None,
                     tools: None,
-                    extensions: vec![],
+                    extensions: vec!["submit-issue".into()],
                 },
                 AgentManifest {
                     name: "coding-review".into(),
@@ -487,7 +487,7 @@ impl ConfigManifest {
                     thinking_level: None,
                     path_permissions: None,
                     tools: None,
-                    extensions: vec![],
+                    extensions: vec!["submit-issue".into()],
                 },
                 AgentManifest {
                     name: "test-review".into(),
@@ -572,7 +572,7 @@ impl ConfigManifest {
                     thinking_level: Some("high".into()),
                     path_permissions: None,
                     tools: None,
-                    extensions: vec![],
+                    extensions: vec!["submit-issue".into()],
                 },
                 AgentManifest {
                     name: "change-plan-review".into(),
@@ -605,7 +605,7 @@ impl ConfigManifest {
                     thinking_level: Some("high".into()),
                     path_permissions: None,
                     tools: None,
-                    extensions: vec![],
+                    extensions: vec!["submit-issue".into()],
                 },
                 AgentManifest {
                     name: "change-coding-review".into(),
@@ -635,7 +635,7 @@ impl ConfigManifest {
                     thinking_level: Some("high".into()),
                     path_permissions: None,
                     tools: None,
-                    extensions: vec![],
+                    extensions: vec!["submit-issue".into()],
                 },
                 AgentManifest {
                     name: "change-test-review".into(),

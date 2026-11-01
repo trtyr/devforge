@@ -971,7 +971,13 @@ pub async fn launch(st: &SharedState, project: &str, task_id: &str) {
     st.render_gate
         .wait_for_profiles(&st.profiles_root, required)
         .await;
-    let engine = (st.engine_factory)();
+    let mut engine = (st.engine_factory)();
+    // P020-k5：agent 上报面注入 + issue 快照写黑板（调度器派发与 start 端点同口径）
+    engine.set_issue_sink(Some(std::sync::Arc::new({
+        let st_sink = st.clone();
+        move |rep| crate::server::submit_agent_issue(&st_sink, rep)
+    })));
+    crate::server::write_issue_snapshot(st, project, task_id);
     // 准入在派发线程之前完成（与 start_task 同口径：202/派发不得早于 begin_run）；
     // 失败只打日志——调度器没有请求方可以回错了。
     let run = {

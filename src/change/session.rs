@@ -79,11 +79,21 @@ fn tagged(kind: &str, issues: Vec<String>) -> Vec<String> {
 }
 
 pub fn plan_kickoff(ctx: &ChangeCtx) -> String {
+    // P020-k5：未关 issue 摘要注入（黑板快照，run 启动时生成；缺失 = 无未关问题，跳过）
+    let issue_section = std::fs::read_to_string(ctx.blackboard.join("issues-snapshot.md"))
+        .map(|md| {
+            format!(
+                "\n未关 issue 快照（分诊与状态以 API 为准）：\n{}\n与本任务直接相关的 issue 在计划中列明处理；无关的不要顺手修（不扩大范围）。发现新问题用 submit_issue 上报。\n",
+                md
+            )
+        })
+        .unwrap_or_default();
     format!(
         "你是 change-plan-agent。change-id：`{}`\n\
 目标仓：{}\n\
 需求：\n{}\n\
-文档档位：{}（计划阶段照常读已有文档；不要自己去跑文档流水线）\n\n\
+文档档位：{}（计划阶段照常读已有文档；不要自己去跑文档流水线）\n\
+{}\
 产出：`{}`（六块：需求复述与歧义 / 影响面（每条 `path:line` 全路径相对仓根、行号以当前 HEAD 为准——裸文件名会被机械门打回）/ 三张表 / 白名单 / 验收标准 / 风险；白名单只收真实路径、禁 glob（对账逐文件精确匹配）；白名单触及 tests/ 时另加「既有夹具冲突盘点」节——列出受影响的既有测试/夹具与兼容口径）。\n\
 工具纪律：结构问题一律走 codegraph；不要写实施顺序，不要写回归命令，不要改代码。\n\
 问询纪律：歧义条目标了 `[必须裁决]` 的，先用 ask-user-question 真问用户（不要自问自答、不要编造答复），\
@@ -95,6 +105,7 @@ pub fn plan_kickoff(ctx: &ChangeCtx) -> String {
         // （旧口径直接拼，需求里一句「忽略上述规则」即可接管计划阶段）。
         crate::sop::review_gate::untrusted_block("user-requirement", &ctx.requirement),
         ctx.doc_level.as_str(),
+        issue_section,
         ctx.plan_path().display()
     )
 }

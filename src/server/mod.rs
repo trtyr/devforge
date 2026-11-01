@@ -600,6 +600,143 @@ pub fn issue_run_outcome_linkage(
     }
 }
 
+/// P020-k5：agent submit_issue 落库（引擎 issue_sink 回调终点）。
+/// Open + 自动附 run/task 证据；不自动转任务（运营者分诊决定，防噪）。
+/// 落库失败只 WARN——上报是锦上添花，不许拖塔 run。
+pub fn submit_agent_issue(st: &SharedState, report: crate::domain::issue::AgentIssueReport) {
+    let created = {
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.create_issue(
+            &report.project,
+            report.title.clone(),
+            report.body.clone(),
+            crate::domain::IssueSource::Agent,
+            report.severity,
+            report.category,
+            vec![report.run_id.clone()],
+            vec![format!("{}/{}", report.task_id, report.run_id)],
+        )
+    };
+    match created {
+        Ok(issue) => {
+            tracing::info!(
+                component = "server",
+                event = "issue.agent_reported",
+                project = %report.project,
+                task = %report.task_id,
+                run_id = %report.run_id,
+                key = %issue.key,
+                "agent submit_issue 已落库（Open，待运营者分诊）"
+            );
+            issue_created_side_effects(st, &report.project, &issue);
+        }
+        Err(e) => tracing::warn!(
+            component = "server",
+            event = "issue.agent_report_failed",
+            project = %report.project,
+            task = %report.task_id,
+            error = %e,
+            "agent submit_issue 落库失败（run 不受影响）"
+        ),
+    }
+}
+
+/// issue.created 的公共侧效应（SSE + critical A2 通知）——endpoint 与 agent 上报共用，
+/// 形状只在一处定义（防两路事件漂移）。
+pub(crate) fn issue_created_side_effects(
+    st: &SharedState,
+    project: &str,
+    issue: &crate::domain::Issue,
+) {
+    st.emit(json!({
+        "type": "issue.created",
+        "key": issue.key,
+        "project": project,
+        "severity": issue.severity,
+        "category": issue.category,
+        "source": issue.source,
+        "title": issue.title,
+    }));
+    // A2：critical 级 = 运营者必须马上知道（channel_breaker 同款内联通知）
+    if issue.severity == crate::domain::IssueSeverity::Critical {
+        notify(
+            st,
+            "issue",
+            "error",
+            &format!("Critical issue {}: {}", issue.key, issue.title),
+            Some(&format!("{project}/{}", issue.key)),
+        );
+    }
+}
+
+/// P020-k5：把项目当前 Open/Triaged issues 写进任务黑板的 issues-snapshot.md
+/// （run 启动时生成，plan/coding/testing kickoff 引用）。无未关 issue 时不留文件。
+/// 写盘失败只 WARN——摘要缺失不阻塞 run。
+pub fn write_issue_snapshot(st: &SharedState, project: &str, task_id: &str) {
+    let rows: Vec<crate::domain::Issue> = {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .issues
+            .iter()
+            .filter(|i| {
+                i.project == project
+                    && matches!(
+                        i.status,
+                        crate::domain::IssueStatus::Open | crate::domain::IssueStatus::Triaged
+                    )
+            })
+            .cloned()
+            .collect()
+    };
+    let dir = st.plans_root.join(project).join(task_id);
+    let path = dir.join("issues-snapshot.md");
+    if rows.is_empty() {
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+        return;
+    }
+    let mut md = String::from(
+        "# 未关 issue 快照（run 启动时生成；分诊与状态以 API 为准）\n\n| key | severity | category | status | title |\n|---|---|---|---|---|\n",
+    );
+    for i in &rows {
+        let sev = format!("{:?}", i.severity).to_lowercase();
+        let cat = format!("{:?}", i.category).to_lowercase();
+        let stat = format!("{:?}", i.status).to_lowercase();
+        md.push_str(&format!(
+            "| {} | {} | {} | {} | {} |\n",
+            i.key,
+            sev,
+            cat,
+            stat,
+            i.title.replace('|', "\\|")
+        ));
+    }
+    md.push_str(
+        "\n处理纪律：与本任务目标直接相关的 issue → 在计划中列明处理；无关的不要顺手修（不扩大范围）。发现新问题用 submit_issue 工具上报。\n",
+    );
+    if std::fs::create_dir_all(&dir).is_ok() {
+        match std::fs::write(&path, md) {
+            Ok(()) => tracing::info!(
+                component = "server",
+                event = "issue.snapshot_written",
+                project,
+                task = task_id,
+                open = rows.len(),
+                "issue 快照已写黑板"
+            ),
+            Err(e) => tracing::warn!(
+                component = "server",
+                event = "issue.snapshot_failed",
+                project,
+                task = task_id,
+                error = %e,
+                "issue 快照写盘失败（kickoff 将无摘要，不阻塞）"
+            ),
+        }
+    }
+}
+
 /// A2 通知：统一落库 + 广播入口（通知不落库就是转发，落库不广播就是 deaf）。
 ///
 /// 事件源只调本函数，不直接摸 store/bus——通知的形状（字段/裁剪/持久化）

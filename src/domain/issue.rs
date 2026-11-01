@@ -178,6 +178,58 @@ impl Issue {
     }
 }
 
+// ---------- P020-k5：agent submit_issue 交卷载荷 ----------
+
+/// agent submit_issue 落库回调（server 注入；引擎事件流捕获，免 API 鉴权——
+/// agent 子进程没有 token，引擎持有 store，解析后的载荷经此回调进第三实体）。
+pub type IssueSink = std::sync::Arc<dyn Fn(AgentIssueReport) + Send + Sync>;
+
+/// submit_issue 工具参数的结构化载荷（project/task/run 由引擎侧补齐）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentIssueReport {
+    pub project: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub title: String,
+    pub body: String,
+    pub severity: IssueSeverity,
+    pub category: IssueCategory,
+}
+
+impl AgentIssueReport {
+    /// 工具 args → 载荷。校验失败（缺 title/body、枚举越界）返回 None，调用方
+    /// WARN 跳过——宁丢单条上报不炸 run。
+    pub fn parse_args(
+        args: &serde_json::Value,
+        project: &str,
+        task_id: &str,
+        run_id: &str,
+    ) -> Option<Self> {
+        #[derive(Deserialize)]
+        struct Args {
+            title: String,
+            #[serde(default)]
+            body: String,
+            severity: IssueSeverity,
+            category: IssueCategory,
+        }
+        let a: Args = serde_json::from_value(args.clone()).ok()?;
+        let title = a.title.trim().to_string();
+        if title.is_empty() {
+            return None;
+        }
+        Some(Self {
+            project: project.into(),
+            task_id: task_id.into(),
+            run_id: run_id.into(),
+            title,
+            body: a.body,
+            severity: a.severity,
+            category: a.category,
+        })
+    }
+}
+
 #[cfg(test)]
 #[path = "issue_tests.rs"]
 mod tests;

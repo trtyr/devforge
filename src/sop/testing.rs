@@ -31,7 +31,7 @@ pub fn testing_kickoff(workspace: &Path, project: &str, task: &str) -> String {
 \n当前目录是共享黑板（任务目录）：读这里的 plan tree 与 coding/docs/ 伴写文档，按你的提示词开工。\
 \n代码工作区（被测系统与 tests/ 落点，decisions/D010）：{}\n\
 先通读文档、再自划分测试阶段（写 testing/stages.md），然后逐阶段写测、自起被测系统、自跑自收。\
-findings 写 testing/findings/，追溯矩阵写 testing/coverage-matrix.md。",
+findings 写 testing/findings/，追溯矩阵写 testing/coverage-matrix.md。\n若黑板有 issues-snapshot.md：与本任务直接相关的 issue 在计划中列明验证；发现新问题用 submit_issue 上报（继续当前工作，不要自行扩大修复范围）。",
         workspace.display()
     )
 }

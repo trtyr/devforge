@@ -18,6 +18,8 @@ pub const CODING_DISCIPLINE_SKILL_MD: &str =
 pub const SUBMIT_UNIT_EXTENSION_TS: &str = include_str!("../../assets/extensions/submit-unit.ts");
 pub const SUBMIT_VERDICT_EXTENSION_TS: &str =
     include_str!("../../assets/extensions/submit-verdict.ts");
+pub const SUBMIT_ISSUE_EXTENSION_TS: &str =
+    include_str!("../../assets/extensions/submit-issue.ts");
 
 /// 返回内置 extension 的清单（相对 extensions/ 目录的文件名 → 内容）。
 /// 未收录的名字返回 None（配置错误，调用方 WARN 可观测）。
@@ -25,6 +27,7 @@ pub fn builtin_extension_files(extension: &str) -> Option<Vec<(&'static str, &'s
     match extension {
         "submit-unit" => Some(vec![("submit-unit.ts", SUBMIT_UNIT_EXTENSION_TS)]),
         "submit-verdict" => Some(vec![("submit-verdict.ts", SUBMIT_VERDICT_EXTENSION_TS)]),
+        "submit-issue" => Some(vec![("submit-issue.ts", SUBMIT_ISSUE_EXTENSION_TS)]),
         other => {
             // 同 skill.unknown 口径：名字写错是配置错误，静默折叠 = 扩展丢失 =
             // 引擎永远走文本降级，必须可观测。

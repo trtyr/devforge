@@ -1767,7 +1767,13 @@ pub async fn start_task(
             )));
         }
     }
-    let engine = (st.engine_factory)();
+    let mut engine = (st.engine_factory)();
+    // P020-k5：agent 上报面注入（引擎捕获 submit_issue → store，免 API 鉴权）+ issue 快照写黑板
+    engine.set_issue_sink(Some(std::sync::Arc::new({
+        let st_sink = st.clone();
+        move |rep| crate::server::submit_agent_issue(&st_sink, rep)
+    })));
+    crate::server::write_issue_snapshot(&st, &project, &task);
     let run_id = run.id.0.clone();
     // 自审 minor（223）：干预面在**返回 202 之前**同步登记（与准入同口径）——
     // 旧口径由后台线程登记，紧跟 start 的 cancel 会打在一个尚未登记的控制对象上（404），

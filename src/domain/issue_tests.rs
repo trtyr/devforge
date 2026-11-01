@@ -101,3 +101,52 @@ fn key_shape_follows_project_prefix_ruling() {
     i.key = "DEVFORGE-4".into(); // 编译期无不可变保证，纪律断言：key 仅供展示/引用
     assert_eq!(i.key, "DEVFORGE-4");
 }
+
+#[test]
+fn agent_report_parse_args_validates() {
+    // P020-k5：工具 args → 载荷的校验面
+    let ok = super::AgentIssueReport::parse_args(
+        &serde_json::json!({"title": " t ", "body": "b", "severity": "critical", "category": "flow"}),
+        "devforge",
+        "t1",
+        "run-1",
+    )
+    .expect("合法参数应解析");
+    assert_eq!(ok.title, "t", "title 要 trim");
+    assert_eq!(ok.severity, super::IssueSeverity::Critical);
+    assert_eq!(ok.category, super::IssueCategory::Flow);
+    assert_eq!(ok.project, "devforge");
+    assert_eq!(ok.task_id, "t1");
+    assert_eq!(ok.run_id, "run-1");
+
+    assert!(
+        super::AgentIssueReport::parse_args(
+            &serde_json::json!({"body": "x", "severity": "info", "category": "bug"}),
+            "p",
+            "t",
+            "r"
+        )
+        .is_none(),
+        "缺 title 拒收"
+    );
+    assert!(
+        super::AgentIssueReport::parse_args(
+            &serde_json::json!({"title": "t", "severity": "urgent", "category": "bug"}),
+            "p",
+            "t",
+            "r"
+        )
+        .is_none(),
+        "severity 枚举越界拒收"
+    );
+    assert!(
+        super::AgentIssueReport::parse_args(
+            &serde_json::json!({"title": "   ", "body": "", "severity": "info", "category": "bug"}),
+            "p",
+            "t",
+            "r"
+        )
+        .is_none(),
+        "纯空白 title 拒收"
+    );
+}

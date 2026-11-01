@@ -377,3 +377,33 @@ async fn run_outcome_linkage_drives_issue_states() {
         t["action"] == "reopened" && t["detail"].as_str().unwrap().contains("run-44")
     }));
 }
+
+#[tokio::test]
+async fn agent_submit_issue_lands_open_with_evidence_and_event() {
+    let (_dir, state, router, bus) = fixture();
+    let mut rx = bus.subscribe();
+    // P020-k5：引擎 issue_sink 终点——agent 上报落 Open，自动附 run/task 证据，不发事件外的副作用
+    crate::server::submit_agent_issue(
+        &state,
+        crate::domain::issue::AgentIssueReport {
+            project: "devforge".into(),
+            task_id: "t1".into(),
+            run_id: "run-9".into(),
+            title: "编码黑板上报".into(),
+            body: "证据：src/x.rs:1".into(),
+            severity: crate::domain::IssueSeverity::Major,
+            category: crate::domain::IssueCategory::Flow,
+        },
+    );
+    let body = body_json(send(&router, "GET", "/api/v1/issues/DEVFORGE-1", None).await).await;
+    assert_eq!(body["source"], "agent", "agent 上报 source=Agent");
+    assert_eq!(body["status"], "open", "落 Open 待分诊");
+    assert_eq!(body["severity"], "major");
+    assert_eq!(body["run_refs"][0], "run-9");
+    assert_eq!(body["evidence"][0], "t1/run-9", "证据自动附 task/run");
+    let (_, raw) = rx.recv().await.unwrap();
+    let ev: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(ev["type"], "issue.created");
+    assert_eq!(ev["source"], "agent");
+    assert_eq!(ev["key"], "DEVFORGE-1");
+}

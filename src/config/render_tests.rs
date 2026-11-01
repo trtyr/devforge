@@ -470,6 +470,21 @@ fn declared_extensions_are_distributed_into_profile() {
         "doc-agent 不该拿到审查官的裁决扩展"
     );
 
+    // P020-k5：干活角色分发 submit-issue 上报扩展（plan/coding/test + change 三角色同清单）
+    let coding = renderer(&manifest)
+        .render_agent(root.path(), "coding-agent")
+        .unwrap();
+    let issue_ext = coding.join("extensions").join("submit-issue.ts");
+    assert!(
+        issue_ext.exists(),
+        "coding-agent 应分发 submit-issue 扩展（P020-k5）"
+    );
+    let issue_body = fs::read_to_string(&issue_ext).unwrap();
+    assert!(
+        issue_body.contains("pi.registerTool") && issue_body.contains("submit_issue"),
+        "扩展正文应是 submit_issue 上报工具: {issue_body}"
+    );
+
     let review = renderer(&manifest)
         .render_agent(root.path(), "doc-review")
         .unwrap();
@@ -478,7 +493,8 @@ fn declared_extensions_are_distributed_into_profile() {
         "doc-review 应分发 submit-verdict 扩展"
     );
 
-    let worker = renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
+    // P020-k5 后 plan-review 无 extensions 声明（干活角色才有 submit-issue）
+    let worker = renderer(&manifest).render_agent(root.path(), "plan-review").unwrap();
     assert!(
         !worker.join("extensions").exists() || fs::read_dir(worker.join("extensions")).unwrap().next().is_none(),
         "未声明的 agent 不分发扩展"
@@ -946,12 +962,12 @@ fn path_permissions_distribute_plugin_files_matching_embedded_assets() {
 
 #[test]
 fn agents_without_path_permissions_get_no_plugin_dir() {
-    // None：不分发（零痕迹）
+    // None：不分发（零痕迹）。plan-review 无 extensions 声明（P020-k5 后干活角色才有 submit-issue）
     let manifest = ConfigManifest::builtin();
     let root = tempfile::tempdir().unwrap();
-    renderer(&manifest).render_agent(root.path(), "plan-agent").unwrap();
+    renderer(&manifest).render_agent(root.path(), "plan-review").unwrap();
     assert!(
-        !root.path().join("plan-agent").join("extensions").exists(),
+        !root.path().join("plan-review").join("extensions").exists(),
         "无声明不应创建 extensions 目录"
     );
 }

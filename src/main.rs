@@ -341,6 +341,7 @@ async fn main() -> anyhow::Result<()> {
             ui: engine_ui.clone(),
             codegraph_bin: std::path::PathBuf::from("codegraph"),
             idle_ms,
+            issue_sink: None,
         })
     });
 

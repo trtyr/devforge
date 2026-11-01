@@ -71,6 +71,10 @@ pub trait RunEngine {
     /// 执行一次 run。Err = 技术故障（如子进程无法启动）；Ok(Failed) = 剧本内失败。
     /// control：取消/超时干预面（引擎应周期性检查；阻塞读类引擎配合 watchdog 杀进程）。
     fn execute(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome>;
+
+    /// P020-k5：注入 agent submit_issue 落库回调。默认空（mock/老链路无上报面）；
+    /// spawn 点由 server 调用（Box<dyn RunEngine> 后经本方法注入，免向下转型）。
+    fn set_issue_sink(&mut self, _sink: Option<crate::domain::issue::IssueSink>) {}
 }
 
 #[derive(Debug, Clone, PartialEq)]

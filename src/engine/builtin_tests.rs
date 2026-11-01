@@ -42,6 +42,7 @@ fn preflight_skips_when_index_exists() {
 fn dispatch_routes_change_to_its_engine() {
     // 注册表与引擎同步：change 已接线，不应再落到「未接线」分支
     let mut engine = BuiltinRpcEngine {
+        issue_sink: None,
         profile_root: PathBuf::from("/tmp/devforge-nonexistent-profiles"),
         session_root: PathBuf::from("/tmp"),
         plans_root: PathBuf::from("/tmp"),
@@ -74,6 +75,7 @@ fn change_without_requirement_file_is_a_config_error() {
     }
     let plans = dir.path().join("plans");
     let mut engine = BuiltinRpcEngine {
+        issue_sink: None,
         profile_root: profiles,
         session_root: dir.path().join("sessions"),
         plans_root: plans,
@@ -118,6 +120,7 @@ fn change_run_preflights_codegraph_before_plan() {
     }
     let plans = dir.path().join("plans");
     let mut engine = BuiltinRpcEngine {
+        issue_sink: None,
         profile_root: profiles,
         session_root: dir.path().join("sessions"),
         plans_root: plans.clone(),
@@ -144,6 +147,7 @@ fn change_run_preflights_codegraph_before_plan() {
 fn dispatch_rejects_unwired_sop() {
     // 注册表与引擎同步性：未知/未接线 SOP 在 execute 入口即拒，不 spawn 任何进程
     let mut engine = BuiltinRpcEngine {
+        issue_sink: None,
         profile_root: PathBuf::from("/tmp"),
         session_root: PathBuf::from("/tmp"),
         plans_root: PathBuf::from("/tmp"),
@@ -162,6 +166,7 @@ fn dispatch_rejects_unwired_sop() {
 
 fn f1_engine(profile_root: std::path::PathBuf, plans_root: std::path::PathBuf) -> BuiltinRpcEngine {
     BuiltinRpcEngine {
+        issue_sink: None,
         profile_root,
         session_root: PathBuf::from("/tmp"),
         plans_root,

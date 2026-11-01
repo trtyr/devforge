@@ -41,8 +41,9 @@ pub struct ToolSubmission {
 }
 
 /// 交卷工具名单（AF-5）：出现在事件流即被捕获。与 assets/extensions/ 下的
-/// 扩展注册名一一对应（submit-unit.ts / submit-verdict.ts）。
-pub const SUBMIT_TOOL_NAMES: [&str; 2] = ["submit_unit", "submit_verdict"];
+/// 扩展注册名一一对应（submit-unit.ts / submit-verdict.ts / submit-issue.ts）。
+/// submit_issue（P020-k5）：agent 结构化上报，载荷经 issue_sink 落库。
+pub const SUBMIT_TOOL_NAMES: [&str; 3] = ["submit_unit", "submit_verdict", "submit_issue"];
 
 /// extension_ui_request 是否为 dialog 类（阻塞等应答）。
 /// dialog：select/confirm/input/editor；fire-and-forget：notify/setStatus/setWidget/setTitle/set_editor_text。

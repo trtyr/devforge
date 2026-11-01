@@ -355,6 +355,15 @@ impl BuiltinRpcEngine {
             },
         );
 
+        // P020-k5：change 三干活会话的 submit_issue 上报落库（会话仍活着，统一扫尾）
+        if let Some(sink) = self.issue_sink.as_ref() {
+            let mut subs = Vec::new();
+            subs.extend(session.plan_agent.take_tool_submissions());
+            subs.extend(session.coding_agent.take_tool_submissions());
+            subs.extend(session.test_agent.take_tool_submissions());
+            crate::engine::builtin::flush_agent_issues(sink, &task.project, &task.id, &run_id, &subs);
+        }
+
         match sop_result {
             Ok(mut outcome) => {
                 // 报告落点演进：①旧口径写 worktree → ws_guard 的 Drop 连目录删（自审

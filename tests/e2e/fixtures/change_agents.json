@@ -22,7 +22,10 @@
         }
       }
     ],
-    "thinking_level": "high"
+    "thinking_level": "high",
+    "extensions": [
+      "submit-issue"
+    ]
   },
   {
     "name": "change-plan-review",
@@ -84,7 +87,10 @@
         ]
       }
     ],
-    "thinking_level": "high"
+    "thinking_level": "high",
+    "extensions": [
+      "submit-issue"
+    ]
   },
   {
     "name": "change-coding-review",
@@ -121,7 +127,10 @@
     "skills": [
       "python-best-practices"
     ],
-    "thinking_level": "high"
+    "thinking_level": "high",
+    "extensions": [
+      "submit-issue"
+    ]
   },
   {
     "name": "change-test-review",

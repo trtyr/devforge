@@ -236,6 +236,30 @@ fn plan_kickoff_carries_the_ask_contract() {
     assert!(kick.contains("用户裁决"), "开工语要含留痕字段锚点：{kick}");
 }
 
+#[test]
+fn plan_kickoff_injects_open_issue_snapshot() {
+    // P020-k5：黑板有 issues-snapshot.md → 摘要进开工语；无快照 → 不注入空段落
+    let f = fixture(false);
+    std::fs::write(
+        f.ctx.blackboard.join("issues-snapshot.md"),
+        "| DEVFORGE-1 | major | bug | open | 编码 SOP 修复回路会回滚夹具 |\n",
+    )
+    .unwrap();
+    let kick = plan_kickoff(&f.ctx);
+    assert!(kick.contains("DEVFORGE-1"), "开工语要注入未关 issue 摘要：{kick}");
+    assert!(
+        kick.contains("未关 issue 快照") && kick.contains("submit_issue"),
+        "注入段要带来源标注与上报指引：{kick}"
+    );
+
+    let f2 = fixture(false);
+    let kick2 = plan_kickoff(&f2.ctx);
+    assert!(
+        !kick2.contains("未关 issue 快照"),
+        "无快照不应注入空段落：{kick2}"
+    );
+}
+
 
 #[test]
 fn coding_kickoff_without_context_has_no_failure_block() {

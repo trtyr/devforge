@@ -17,6 +17,8 @@ use crate::server::{RelayUserLink, UiRelay};
 use crate::sop::coding::CodingSopLoop;
 use crate::sop::doc::fix::DocFixSopLoop;
 use crate::sop::planning::PlanningLoop;
+// P020-k5：take_tool_submissions 是 trait 方法，需在作用域
+use crate::sop::planning::PlanAgentSession as _;
 use crate::sop::rpc_bridge::{RpcPlanSession, RpcReviewFactory};
 use crate::sop::testing::{TestingOutcome, TestingSopLoop};
 
@@ -97,9 +99,40 @@ pub struct BuiltinRpcEngine {
     /// 失活收割阈值 ms（None = 不做活性收割，永不自动杀——零硬限制哲学；
     /// DEVFORGE_RUN_IDLE_MS 显式开启）。006 decisions/002：墙钟超时与失活收割分离。
     pub idle_ms: Option<u64>,
+    /// P020-k5：agent submit_issue 落库回调（spawn 点由 server 注入；None = 无上报面）。
+    pub issue_sink: Option<crate::domain::issue::IssueSink>,
+}
+
+/// P020-k5：扫交卷工具提交里的 submit_issue，解析经 sink 落库。
+/// 解析失败（缺 title/枚举越界）只 WARN 跳过——宁丢单条上报不炸 run。
+pub(crate) fn flush_agent_issues(
+    sink: &crate::domain::issue::IssueSink,
+    project: &str,
+    task_id: &str,
+    run_id: &str,
+    submissions: &[crate::engine::client::ToolSubmission],
+) {
+    for s in submissions.iter().filter(|s| s.tool == "submit_issue") {
+        match crate::domain::issue::AgentIssueReport::parse_args(&s.args, project, task_id, run_id) {
+            Some(report) => sink(report),
+            None => tracing::warn!(
+                component = "engine",
+                event = "issue.report_invalid",
+                project,
+                task = task_id,
+                run_id,
+                "submit_issue 参数不合法（缺 title/body 或枚举越界），已丢弃"
+            ),
+        }
+    }
 }
 
 impl RunEngine for BuiltinRpcEngine {
+
+    /// P020-k5：spawn 点注入（server 侧拿 SharedState 造 sink 传入）。
+    fn set_issue_sink(&mut self, sink: Option<crate::domain::issue::IssueSink>) {
+        self.issue_sink = sink;
+    }
 
     fn execute(&mut self, task: &Task, run: &Run, control: &RunControl) -> Result<RunOutcome> {
         match task.sop.as_str() {
@@ -272,6 +305,7 @@ impl BuiltinRpcEngine {
         // 第 18/19/20 三试 verdict 后挂起的真因）。
         let run_id = run.id.0.clone();
         let ledger = self.plans_root.join(&task.project).join("spawn-ledger.json");
+        let issue_sink = self.issue_sink.clone();
         let sop_result = run_with_watchdog(
             control,
             run_id.clone(),
@@ -281,7 +315,13 @@ impl BuiltinRpcEngine {
             Some(self.unblock_hook()),
             || {
                 let mut sop_loop = PlanningLoop::new(plan, factory);
-                sop_loop.run(&mut user)
+                let outcome = sop_loop.run(&mut user);
+                // P020-k5：规划会话的 submit_issue 上报落库（会话还活着，先取再丢）
+                if let Some(sink) = issue_sink.as_ref() {
+                    let subs = sop_loop.plan.take_tool_submissions();
+                    flush_agent_issues(sink, &task.project, &task.id, &run.id.0, &subs);
+                }
+                outcome
             },
         );
 
@@ -356,6 +396,7 @@ impl BuiltinRpcEngine {
         let project = task.project.clone();
         let task_id = task.id.clone();
         let ledger = self.plans_root.join(&task.project).join("spawn-ledger.json");
+        let issue_sink = self.issue_sink.clone();
         let sop_result = run_with_watchdog(
             control,
             run_id,
@@ -365,7 +406,13 @@ impl BuiltinRpcEngine {
             Some(self.unblock_hook()),
             || {
                 let mut sop_loop = CodingSopLoop::new(agent, factory);
-                sop_loop.run(&mut user, &workspace, &project, &task_id)
+                let outcome = sop_loop.run(&mut user, &workspace, &project, &task_id);
+                // P020-k5：编码会话的 submit_issue 上报落库（会话还活着，先取再丢）
+                if let Some(sink) = issue_sink.as_ref() {
+                    let subs = sop_loop.agent.take_tool_submissions();
+                    flush_agent_issues(sink, &project, &task_id, &run.id.0, &subs);
+                }
+                outcome
             },
         );
 
@@ -462,6 +509,9 @@ impl BuiltinRpcEngine {
             .plans_root
             .join(&task.project)
             .join("spawn-ledger.json");
+        let issue_sink = self.issue_sink.clone();
+        let task_project_for_issues = task.project.clone();
+        let task_id_for_issues = task.id.clone();
 
         let sop_result = run_with_watchdog(
             control,
@@ -473,6 +523,11 @@ impl BuiltinRpcEngine {
             move || {
                 let mut sop_loop = TestingSopLoop::new(agent, test_review_factory);
                 let mut outcome = sop_loop.run(&mut user, &workspace, &project, &task_id)?;
+                // P020-k5：测试会话的 submit_issue 上报落库（会话还活着，先取再丢）
+                if let Some(sink) = issue_sink.as_ref() {
+                    let subs = sop_loop.agent.take_tool_submissions();
+                    flush_agent_issues(sink, &task_project_for_issues, &task_id_for_issues, &run_id, &subs);
+                }
                 loop {
                     match outcome {
                         TestingOutcome::Completed(final_report) => return Ok(final_report),
@@ -636,4 +691,67 @@ impl BuiltinRpcEngine {
     }
 
 // 干预性死亡映射（map_intervention）已收敛至 engine/policy.rs（ARC-R5 横切策略单点化）
+}
+
+#[cfg(test)]
+mod issue_flush_tests {
+    use super::flush_agent_issues;
+    use crate::domain::issue::AgentIssueReport;
+    use crate::engine::client::ToolSubmission;
+    use std::sync::{Arc, Mutex};
+
+    fn sub(args: serde_json::Value) -> ToolSubmission {
+        ToolSubmission {
+            tool: "submit_issue".into(),
+            args,
+        }
+    }
+
+    #[test]
+    fn flush_parses_and_delivers_reports() {
+        let got: Arc<Mutex<Vec<AgentIssueReport>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink: crate::domain::issue::IssueSink = {
+            let got = got.clone();
+            Arc::new(move |r| got.lock().unwrap().push(r))
+        };
+        flush_agent_issues(
+            &sink,
+            "devforge",
+            "t1",
+            "run-1",
+            &[
+                sub(serde_json::json!({"title": "夹具回滚", "body": "证据", "severity": "major", "category": "bug"})),
+                // 非上报工具：不进 sink
+                ToolSubmission { tool: "submit_unit".into(), args: serde_json::json!({"unit": "u1"}) },
+            ],
+        );
+        let g = got.lock().unwrap();
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].project, "devforge");
+        assert_eq!(g[0].title, "夹具回滚");
+        assert_eq!(g[0].severity, crate::domain::IssueSeverity::Major);
+        assert_eq!(g[0].category, crate::domain::IssueCategory::Bug);
+        assert_eq!(g[0].run_id, "run-1");
+    }
+
+    #[test]
+    fn flush_skips_invalid_args_without_panicking() {
+        let got: Arc<Mutex<Vec<AgentIssueReport>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink: crate::domain::issue::IssueSink = {
+            let g2 = got.clone();
+            Arc::new(move |r| g2.lock().unwrap().push(r))
+        };
+        flush_agent_issues(
+            &sink,
+            "p",
+            "t",
+            "r",
+            &[
+                sub(serde_json::json!({"body": "缺 title", "severity": "major", "category": "bug"})),
+                sub(serde_json::json!({"title": "非法枚举", "body": "", "severity": "urgent", "category": "bug"})),
+                sub(serde_json::json!({"title": "   ", "body": "", "severity": "info", "category": "bug"})),
+            ],
+        );
+        assert!(got.lock().unwrap().is_empty(), "非法载荷应跳过不炸");
+    }
 }

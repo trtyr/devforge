@@ -34,7 +34,7 @@ pub fn coding_kickoff(workspace: &Path, project: &str, task: &str) -> String {
         "你是编码 Agent：项目 `{project}` / 任务 `{task}`。\
 \n当前目录是共享黑板（任务目录）：读这里的 plan tree，按你的提示词开工。\
 \n代码工作区（项目登记地址，decisions/001）：{}\n\
-先勘察、再分阶段、然后逐阶段开发。文档写 coding/docs/，阶段划分写 coding/stages.md，todo 写 coding/todo.md。",
+先勘察、再分阶段、然后逐阶段开发。文档写 coding/docs/，阶段划分写 coding/stages.md，todo 写 coding/todo.md。\n若黑板有 issues-snapshot.md：与本任务直接相关的 issue 在计划中列明处理；发现新问题用 submit_issue 上报（继续当前工作，不要自行扩大修复范围）。",
         workspace.display()
     )
 }

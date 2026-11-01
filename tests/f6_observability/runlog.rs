@@ -333,6 +333,7 @@ pub(super) fn a_missing_profile_fails_the_run_explicitly_without_a_restart() {
     // → 本用例必须变红
     let dir = tempfile::tempdir().expect("临时目录");
     let mut engine = devforge::engine::builtin::BuiltinRpcEngine {
+        issue_sink: None,
         profile_root: dir.path().join("profiles"),
         session_root: dir.path().join("sessions"),
         plans_root: dir.path().join("plans"),
@@ -361,6 +362,7 @@ pub(super) fn a_missing_profile_is_a_config_error_and_is_not_an_infrastructure_f
     // → 本用例必须变红
     let dir = tempfile::tempdir().expect("临时目录");
     let mut engine = devforge::engine::builtin::BuiltinRpcEngine {
+        issue_sink: None,
         profile_root: dir.path().join("profiles"),
         session_root: dir.path().join("sessions"),
         plans_root: dir.path().join("plans"),
