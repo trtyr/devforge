@@ -1247,10 +1247,21 @@ pub async fn get_issue(
         .ok_or_else(|| ApiError::not_found(format!("issue `{key}` 不存在")))
 }
 
-/// `PATCH /issues/{key}`：状态流转（乐观锁；Queued→Resolved 人工不可手标——由 run 联动）。
+/// `PATCH /issues/{key}`：状态流转 + 字段编辑（双半边，乐观锁）。
+/// status 与 title/body/severity/category 可任选（同传 = 先流转后编辑，version 链式推进）；
+/// Queued→Resolved 人工不可手标——由 run 联动（k4）。
 #[derive(Deserialize)]
 pub struct PatchIssueReq {
-    pub status: crate::domain::IssueStatus,
+    #[serde(default)]
+    pub status: Option<crate::domain::IssueStatus>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub severity: Option<crate::domain::IssueSeverity>,
+    #[serde(default)]
+    pub category: Option<crate::domain::IssueCategory>,
     pub version: u64,
 }
 
@@ -1260,19 +1271,55 @@ pub async fn patch_issue(
     Path(key): Path<String>,
     Json(req): Json<PatchIssueReq>,
 ) -> ApiResult<Json<crate::domain::Issue>> {
+    let patch = crate::domain::issue::IssueFieldPatch {
+        title: req.title.clone(),
+        body: req.body.clone(),
+        severity: req.severity,
+        category: req.category,
+    };
+    if req.status.is_none() && patch.is_empty() {
+        return Err(ApiError::bad_request(
+            "PATCH 补丁为空：需要 status 或 title/body/severity/category 至少一项".to_string(),
+        ));
+    }
     let issue = {
         let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
-        store
-            .transition_issue(&key, req.status, req.version, &user.username)
-            .map_err(issue_err)?
+        // ① 流转半边（可选）：校验与 version bump 都在 store
+        let mut current = match req.status {
+            Some(to) => store
+                .transition_issue(&key, to, req.version, &user.username)
+                .map_err(issue_err)?,
+            None => store
+                .get_issue(&key)
+                .cloned()
+                .ok_or_else(|| ApiError::not_found(format!("issue `{key}` 不存在")))?,
+        };
+        // ② 字段编辑半边（可选）：无流转时用 req.version 做乐观锁校验
+        if !patch.is_empty() {
+            let expected = if req.status.is_some() { current.version } else { req.version };
+            current = store
+                .update_issue_fields(&key, &patch, expected, &user.username)
+                .map_err(issue_err)?;
+        }
+        current
     };
-    user.audit_write(&st, "patch_issue", &format!("{key} → {:?}", req.status));
-    st.emit(json!({
-        "type": "issue.transitioned",
-        "key": key,
-        "to": req.status,
-        "version": issue.version,
-    }));
+    if let Some(to) = req.status {
+        user.audit_write(&st, "patch_issue", &format!("{key} → {to:?}"));
+        st.emit(json!({
+            "type": "issue.transitioned",
+            "key": key,
+            "to": to,
+            "version": issue.version,
+        }));
+    }
+    if !patch.is_empty() {
+        user.audit_write(&st, "edit_issue", &format!("{key} v{}", issue.version));
+        st.emit(json!({
+            "type": "issue.edited",
+            "key": key,
+            "version": issue.version,
+        }));
+    }
     Ok(Json(issue))
 }
 

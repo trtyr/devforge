@@ -180,6 +180,21 @@ impl Issue {
 
 // ---------- P020-k5：agent submit_issue 交卷载荷 ----------
 
+/// 人工字段编辑补丁（PATCH 通道字段改半边；None = 该字段不动）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IssueFieldPatch {
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub severity: Option<IssueSeverity>,
+    pub category: Option<IssueCategory>,
+}
+
+impl IssueFieldPatch {
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none() && self.body.is_none() && self.severity.is_none() && self.category.is_none()
+    }
+}
+
 /// agent submit_issue 落库回调（server 注入；引擎事件流捕获，免 API 鉴权——
 /// agent 子进程没有 token，引擎持有 store，解析后的载荷经此回调进第三实体）。
 pub type IssueSink = std::sync::Arc<dyn Fn(AgentIssueReport) + Send + Sync>;

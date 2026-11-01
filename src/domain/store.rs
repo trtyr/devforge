@@ -932,6 +932,61 @@ impl Store {
         Ok(snap)
     }
 
+    /// 人工字段编辑（PATCH 通道的字段改半边，与状态流转同用乐观锁）：
+    /// title/body/severity/category 可选更新；空补丁 = 无操作错（400 面）。
+    /// 状态不在本方法——走 transition_issue（can_transition 校验）。
+    pub fn update_issue_fields(
+        &mut self,
+        key: &str,
+        patch: &crate::domain::issue::IssueFieldPatch,
+        expected_version: u64,
+        actor: &str,
+    ) -> Result<crate::domain::Issue> {
+        if patch.is_empty() {
+            return Err(DevforgeError::Store(format!(
+                "issue `{key}` 字段编辑补丁为空（无 title/body/severity/category）"
+            )));
+        }
+        let issue = self
+            .issues
+            .iter_mut()
+            .find(|i| i.key == key)
+            .ok_or_else(|| DevforgeError::Store(format!("issue `{key}` 不存在")))?;
+        if issue.version != expected_version {
+            return Err(DevforgeError::Store(format!(
+                "issue `{key}` 版本冲突（期望 v{expected_version}，当前 v{}）——刷新后重试",
+                issue.version
+            )));
+        }
+        let mut touched: Vec<&str> = Vec::new();
+        if let Some(title) = &patch.title {
+            let title = title.trim();
+            if title.is_empty() {
+                return Err(DevforgeError::Store(format!("issue `{key}` title 不可为空")));
+            }
+            issue.title = title.to_string();
+            touched.push("title");
+        }
+        if let Some(body) = &patch.body {
+            issue.body = body.clone();
+            touched.push("body");
+        }
+        if let Some(severity) = patch.severity {
+            issue.severity = severity;
+            touched.push("severity");
+        }
+        if let Some(category) = patch.category {
+            issue.category = category;
+            touched.push("category");
+        }
+        let detail = format!("更新 {}", touched.join("/"));
+        issue.note(actor, "edited", detail, now_ms());
+        issue.version += 1;
+        let snap = issue.clone();
+        self.persist();
+        Ok(snap)
+    }
+
     /// 引擎专用（run Settled 联动）：Queued → Resolved。非 Queued 幂等不动。
     /// 返回是否真的发生了流转（事件 emit 只在真变时发）。
     pub fn auto_resolve_issue(&mut self, key: &str, run_id: &str) -> Result<bool> {

@@ -826,3 +826,51 @@ fn auto_report_requires_existing_project() {
     assert!(s.auto_report_issue("ghost", "t", "r", "x").is_err());
 }
 
+#[test]
+fn update_issue_fields_edits_and_locks() {
+    // P020 审计补：PATCH 字段改半边（流转之外的第二半边）
+    let mut s = setup();
+    let i = s
+        .create_issue(
+            "devforge",
+            "原标题",
+            "原正文".to_string(),
+            crate::domain::IssueSource::Operator,
+            crate::domain::IssueSeverity::Minor,
+            crate::domain::IssueCategory::Bug,
+            vec![],
+            vec![],
+        )
+        .unwrap();
+    let patch = crate::domain::issue::IssueFieldPatch {
+        title: Some("新标题".to_string()),
+        severity: Some(crate::domain::IssueSeverity::Major),
+        ..Default::default()
+    };
+    let edited = s
+        .update_issue_fields(&i.key, &patch, i.version, "operator")
+        .unwrap();
+    assert_eq!(edited.title, "新标题");
+    assert_eq!(edited.severity, crate::domain::IssueSeverity::Major);
+    assert_eq!(edited.category, crate::domain::IssueCategory::Bug, "未提及字段不动");
+    assert_eq!(edited.version, i.version + 1);
+    let last = edited.timeline.last().unwrap();
+    assert_eq!(last.action, "edited");
+    assert!(last.detail.contains("title") && last.detail.contains("severity"));
+
+    // 乐观锁：旧 version 再改 = 冲突
+    let err = s
+        .update_issue_fields(&i.key, &patch, i.version, "operator")
+        .unwrap_err();
+    assert!(err.to_string().contains("版本冲突"));
+
+    // 空补丁拒收；空 title 拒收
+    let empty = crate::domain::issue::IssueFieldPatch::default();
+    assert!(s.update_issue_fields(&i.key, &empty, edited.version, "op").is_err());
+    let blank_title = crate::domain::issue::IssueFieldPatch {
+        title: Some("   ".to_string()),
+        ..Default::default()
+    };
+    assert!(s.update_issue_fields(&i.key, &blank_title, edited.version, "op").is_err());
+}
+

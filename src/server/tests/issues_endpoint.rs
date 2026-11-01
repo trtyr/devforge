@@ -438,3 +438,64 @@ async fn auto_report_run_failure_creates_and_dedupes() {
     .await;
     assert_eq!(list["total"], 1, "去重后仍只有一条未关 issue");
 }
+
+#[tokio::test]
+async fn patch_issue_edits_fields_with_optimistic_lock() {
+    let (_dir, _state, router, bus) = fixture();
+    let mut rx = bus.subscribe();
+    let resp = send(&router, "POST", "/api/v1/projects/devforge/issues", Some(issue_body("minor"))).await;
+    let key = body_json(resp).await["key"].as_str().unwrap().to_string();
+
+    // 字段编辑半边：severity/category 一次改 + issue.edited 事件
+    let resp = send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/issues/{key}"),
+        Some(serde_json::json!({"severity": "critical", "category": "flow", "version": 1})),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert_eq!(body["severity"], "critical");
+    assert_eq!(body["category"], "flow");
+    assert_eq!(body["version"], 2);
+    assert_eq!(body["status"], "open", "字段编辑不动状态");
+    let raw = {
+        // 创建事件先入流——过滤等 issue.edited
+        let mut raw = String::new();
+        for _ in 0..4 {
+            let (_, r) = rx.recv().await.unwrap();
+            let ev: serde_json::Value = serde_json::from_str(&r).unwrap();
+            if ev["type"] == "issue.edited" {
+                raw = r;
+                break;
+            }
+        }
+        raw
+    };
+    let ev: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(ev["type"], "issue.edited");
+
+    // 旧 version 再改 = 409；流转 + 字段同传链式推进
+    let resp = send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/issues/{key}"),
+        Some(serde_json::json!({"severity": "info", "version": 1})),
+    )
+    .await;
+    assert_eq!(resp.status(), 409);
+
+    let resp = send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/issues/{key}"),
+        Some(serde_json::json!({"status": "triaged", "title": "改后标题", "version": 2})),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "triaged");
+    assert_eq!(body["title"], "改后标题");
+    assert_eq!(body["version"], 4, "流转 + 编辑各 bump 一次");
+}
