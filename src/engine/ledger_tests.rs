@@ -861,8 +861,9 @@ fn reconcile_all_has_exactly_one_production_caller() {
     callers.sort();
     assert_eq!(
         callers,
-        vec!["src/main.rs".to_string()],
-        "reconcile_all 的生产调用点必须恰为 src/main.rs（新增第二个生产入口 → 本锚变红）"
+        vec!["src/main.rs".to_string(), "src/server/http.rs".to_string()],
+        "reconcile_all 生产调用点白名单：main.rs 启动对账 + http.rs 停机清场（EX-4，\
+         空活动集 = 自家遗留子进程一律 SIGTERM）——新增第三个生产入口 → 本锚变红，先审再改"
     );
 }
 

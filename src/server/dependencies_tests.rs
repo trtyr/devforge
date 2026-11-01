@@ -87,3 +87,30 @@ fn log_dir_expansion_skips_without_home() {
         "非 $HOME 占位原样"
     );
 }
+
+/// R5-EX-6/R2-12/R3-10：挂起进程（sleep 10）在 3s 硬超时窗内被杀并报超时，
+/// probe 有界返回（旧口径 scope 隐式 join 会无限挂起）。
+#[test]
+fn real_probe_timeout_kills_hanging_child() {
+    let started = std::time::Instant::now();
+    let outcome = super::RealProbe.probe("sleep", &["10"]);
+    let elapsed = started.elapsed();
+    assert!(!outcome.alive);
+    assert!(
+        outcome.error.as_deref().unwrap_or("").contains("超时"),
+        "挂起进程应报超时：{outcome:?}"
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_secs(3)
+            && elapsed < std::time::Duration::from_secs(8),
+        "耗时应为 3s 超时窗（实测 {elapsed:?}）"
+    );
+}
+
+/// 成功路径不回归：正常命令照常取 version。
+#[test]
+fn real_probe_success_path_reads_version() {
+    let outcome = super::RealProbe.probe("echo", &["1.2.3-test"]);
+    assert!(outcome.alive, "{outcome:?}");
+    assert_eq!(outcome.version.as_deref(), Some("1.2.3-test"));
+}

@@ -4,7 +4,7 @@
 //! 口径（P019 用户定稿）：只读监控——**无卸载、无 AI 自动修复**；下载/更新是
 //! 写操作+长任务，留待后续任务化（本模块只有读面）。
 //! 依赖清单与 SOP 出场表同哲学：静态写死（decisions/002）。探测经
-//! [`DependencyProbe`] trait——生产 [`RealProbe`]（tokio Command + 3s 超时），
+//! [`DependencyProbe`] trait——生产 [`RealProbe`]（spawn + try_wait 轮询，3s 硬超时杀子进程），
 //! 测试注入 Fake（不依赖本机真装了什么）。
 
 use serde::Serialize;
@@ -30,43 +30,91 @@ pub struct RealProbe;
 
 impl DependencyProbe for RealProbe {
     fn probe(&self, cmd: &str, args: &[&str]) -> ProbeOutcome {
-        let outcome = std::thread::scope(|scope| {
-            // 阻塞探测放独立线程 + 接收通道，外层限时等待——std 无 wait_timeout，
-            // 不为此引 tokio 依赖进同步逻辑。
-            let (tx, rx) = std::sync::mpsc::channel();
-            let cmd = cmd.to_string();
-            let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-            scope.spawn(move || {
-                let out = std::process::Command::new(&cmd).args(&args).output();
-                let _ = tx.send(out);
-            });
-            rx.recv_timeout(std::time::Duration::from_secs(3))
-        });
-        match outcome {
-            Ok(Ok(output)) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let version = stdout.lines().next().map(|l| l.trim().to_string());
-                ProbeOutcome {
-                    alive: true,
-                    version: version.filter(|v| !v.is_empty()),
-                    error: None,
+        // R5-EX-6/R2-12/R3-10：旧口径 scope spawn + recv_timeout(3s)——超时后
+        // scope 隐式 join 等子线程，而子线程卡在 output()（子进程不退出就永远等）
+        // → 3s 超时形同虚设，探测可无限挂起。改为 spawn + try_wait 轮询：超时直接
+        // kill + 收尸，硬上限真实生效。探测失败一律留痕（EX-16）。
+        const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+        let mut child = match std::process::Command::new(cmd)
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(component = "dependencies", cmd, error = %e, "依赖探测 spawn 失败");
+                return ProbeOutcome {
+                    alive: false,
+                    version: None,
+                    error: Some(format!("spawn 失败：{e}")),
+                };
+            }
+        };
+        let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+        // 轮询等待：探测命令输出极小（version 一行），piped 64K 缓冲不会满阻塞；
+        // 退出后 stdout 读到 EOF 不阻塞。
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(st)) => break Some(st),
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        break None; // 超时
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+                Err(e) => {
+                    tracing::warn!(component = "dependencies", cmd, error = %e, "依赖探测 wait 失败");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return ProbeOutcome {
+                        alive: false,
+                        version: None,
+                        error: Some(format!("wait 失败：{e}")),
+                    };
                 }
             }
-            Ok(Ok(output)) => ProbeOutcome {
+        };
+        let Some(status) = status else {
+            // 超时：杀子进程 + 收尸——不留下继续跑的探测进程
+            let _ = child.kill();
+            let _ = child.wait();
+            tracing::warn!(
+                component = "dependencies",
+                cmd,
+                timeout_secs = 3,
+                "依赖探测超时，子进程已杀（旧口径会无限挂起）"
+            );
+            return ProbeOutcome {
                 alive: false,
                 version: None,
-                error: Some(format!("exit {}", output.status.code().unwrap_or(-1))),
-            },
-            Ok(Err(e)) => ProbeOutcome {
+                error: Some("探测超时（3s，子进程已杀）".into()),
+            };
+        };
+        if !status.success() {
+            tracing::warn!(
+                component = "dependencies",
+                cmd,
+                exit = status.code().unwrap_or(-1),
+                "依赖探测非零退出"
+            );
+            return ProbeOutcome {
                 alive: false,
                 version: None,
-                error: Some(format!("spawn 失败：{e}")),
-            },
-            Err(_) => ProbeOutcome {
-                alive: false,
-                version: None,
-                error: Some("探测超时（3s）".into()),
-            },
+                error: Some(format!("exit {}", status.code().unwrap_or(-1))),
+            };
+        }
+        let mut stdout_buf = String::new();
+        if let Some(mut out) = child.stdout.take() {
+            let _ = std::io::Read::read_to_string(&mut out, &mut stdout_buf);
+        }
+        let version = stdout_buf.lines().next().map(|l| l.trim().to_string());
+        ProbeOutcome {
+            alive: true,
+            version: version.filter(|v| !v.is_empty()),
+            error: None,
         }
     }
 }
