@@ -407,11 +407,41 @@ impl ProdChangeSession {
                 issues: tagged("确定性审计", audit.issues),
             });
         }
+        // F8-A（selfhost 台账）：引用核验缓存——引擎每轮机械核全量（零成本），
+        // 与上轮缓存比对出命中/fresh 注入审查指令：命中处审查官免重核（c5 实测
+        // 复审 ~95% 引用与上轮相同）。缓存是优化不是正确性依赖：缺失即全量重核。
+        let ref_entries =
+            crate::change::plan_ref_cache::extract_entries(&plan_text, &self.ctx.repo);
+        let ref_diff = crate::change::plan_ref_cache::RefCache::load(&self.ctx.blackboard)
+            .map(|prev| crate::change::plan_ref_cache::diff(&prev, &ref_entries));
+        crate::change::plan_ref_cache::RefCache {
+            plan_hash: crate::change::plan_ref_cache::plan_hash_of(&plan_text),
+            refs: ref_entries,
+        }
+        .store(&self.ctx.blackboard);
+        if let Some(d) = &ref_diff {
+            tracing::info!(
+                component = "change-engine",
+                event = "plan_ref_cache",
+                hits = d.hits.len(),
+                fresh = d.fresh.len(),
+                "plan 引用核验缓存比对完成"
+            );
+        }
+        let cache_section = ref_diff
+            .as_ref()
+            .map(crate::change::plan_ref_cache::render_section);
         // plan 侧的审查实例数（= 审查轮次）落字段：报告里的轮次如实反映重审（D026 · Q12）。
         let (report, plan_instances) = review_once(
             &mut *self.plan_review,
             "change-plan-review",
-            &review_instruction(&self.ctx.change_id, &plan_path, &plan_text, &audit),
+            &review_instruction(
+                &self.ctx.change_id,
+                &plan_path,
+                &plan_text,
+                &audit,
+                cache_section.as_deref(),
+            ),
         )?;
         self.plan_review_instances = plan_instances;
         match report.verdict {

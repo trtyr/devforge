@@ -15,6 +15,7 @@ pub mod gate0;
 pub mod history;
 pub mod orchestrator;
 pub mod plan_audit;
+pub mod plan_ref_cache;
 pub mod prepare;
 pub mod report;
 pub mod session;

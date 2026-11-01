@@ -40,8 +40,15 @@ async fn stats_buckets_daily_success_rate_and_distribution() {
         f1.id = RunId::generate();
         let mut s2 = run_with(RunStatus::Settled, anchor - 300_000, Some(anchor));
         s2.id = RunId::generate();
-        // 昨天：1 settled
-        let mut s3 = run_with(RunStatus::Settled, anchor - 86_400_000 - 60_000, Some(anchor - 86_400_000));
+        // 昨天：1 settled。余量 14h 而非 1min：anchor 是「UTC 当日 13:00」，在 UTC
+        // 13 点前它落在未来，而 days 窗口相对 now——两参照系最大错位 13h，
+        // 60s 余量会被吃穿（2026-11-01 UTC 04:00 实证）：38h 前在任意错位下
+        // 都在 days=1 窗外、且日历日仍是 anchor 的前一天。
+        let mut s3 = run_with(
+            RunStatus::Settled,
+            anchor - 86_400_000 - 14 * 3_600_000,
+            Some(anchor - 86_400_000 - 14 * 3_600_000),
+        );
         s3.id = RunId::generate();
         // 窗口外（20 天前 > 缺省 14 天窗）：不计入
         let mut old = run_with(RunStatus::Failed, anchor - 20 * 86_400_000, Some(anchor - 20 * 86_400_000));

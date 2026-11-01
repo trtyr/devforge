@@ -369,6 +369,7 @@ fn unclassified_entry_is_a_fact_not_a_failure() {
         &f.ctx.plan_path(),
         &plan,
         &audit_report,
+        None,
     );
     assert!(
         instruction.contains("未分类") && instruction.contains("复合词"),
@@ -395,6 +396,7 @@ fn prose_declaration_is_a_fact_not_a_failure() {
         &f.ctx.plan_path(),
         &plan,
         &audit_report,
+        None,
     );
     assert!(
         instruction.contains("散文") && instruction.contains("必须用户裁决"),

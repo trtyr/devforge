@@ -507,13 +507,18 @@ pub fn plan_facts(plan: &str) -> (Vec<String>, Vec<String>) {
 /// 审查指令：语义判据 + **计划路径与全文** + 注入式引擎审计（审查官不得重算）。
 ///
 /// 计划文件在目标仓，而审查子进程的 cwd 是黑板——不给路径和全文，审查官根本读不到计划。
+/// `cache_section`（F8-A）：引用核验缓存的命中/fresh 段（首轮/缓存缺失为 None）。
 pub fn review_instruction(
     change_id: &str,
     plan_path: &Path,
     plan_text: &str,
     audit: &PlanAudit,
+    cache_section: Option<&str>,
 ) -> String {
     let verdicts = audit_verdicts(plan_text);
+    let cache = cache_section
+        .map(|c| format!("\n{c}"))
+        .unwrap_or_default();
     format!(
         "你是 change-plan-review。审的是**计划**（change-id `{change_id}`），不是代码：\
 不看 diff、不跑验收命令、不写任何文件。\n\n\
@@ -530,7 +535,7 @@ pub fn review_instruction(
 \
 9. 夹具冲突盘点（仅当白名单触及 tests/）：盘点节列出的既有测试/夹具是否真实、兼容口径是否成立——盘漏了会撞夹具的测试 = FAIL（F12：c7 第四场死法的治理）。\n\n\
 ## 引擎审计（确定性，勿质疑、勿重算）\n\n{}\n\n\
-## 裁决门事实（确定性，勿质疑、勿重算）\n\n{}\n\n\
+## 裁决门事实（确定性，勿质疑、勿重算）\n\n{}\n{cache}\n\
 ## 计划全文（`{}`）\n\n```markdown\n{}\n```\n\n\
 末尾输出协议块：<stage-verdict>PASS|FAIL</stage-verdict> + <next>advance|fix</next> + <issues>（FAIL 时逐条，带 path:line）。",
         plan_path.display(),

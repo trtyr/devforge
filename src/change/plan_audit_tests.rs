@@ -166,7 +166,7 @@ fn review_instruction_carries_audit_plan_text_and_forbids_rerun() {
     let plan = good_plan();
     let a = audit(&plan, r.path());
     let plan_path = r.path().join("docs/changes/x/change-plan.md");
-    let text = review_instruction("change-20261020-x", &plan_path, &plan, &a);
+    let text = review_instruction("change-20261020-x", &plan_path, &plan, &a, None);
     for anchor in [
         "不看 diff",
         "不跑验收命令",
@@ -187,6 +187,32 @@ fn review_instruction_carries_audit_plan_text_and_forbids_rerun() {
         text.contains("给定 x=1 → 返回 2"),
         "审查指令必须附计划全文：{text}"
     );
+}
+
+#[test]
+fn review_instruction_injects_cache_section_when_present() {
+    let r = repo();
+    let plan = good_plan();
+    let a = audit(&plan, r.path());
+    let plan_path = r.path().join("docs/changes/x/change-plan.md");
+    let section = crate::change::plan_ref_cache::render_section(
+        &crate::change::plan_ref_cache::CacheDiff {
+            hits: vec![crate::change::plan_ref_cache::RefEntry {
+                ref_text: "src/a.rs:2".into(),
+                verdict: "exists".into(),
+            }],
+            fresh: vec![],
+        },
+    );
+    let text = review_instruction(
+        "change-20261020-x",
+        &plan_path,
+        &plan,
+        &a,
+        Some(&section),
+    );
+    assert!(text.contains("src/a.rs:2"), "命中清单要进指令：{text}");
+    assert!(text.contains("直接采信"), "免重核话术要进指令：{text}");
 }
 
 // ---------------- 裁决门（问询环的结构与留痕） ----------------
@@ -319,7 +345,7 @@ fn review_instruction_carries_verdict_facts_and_new_criteria() {        // 错�
     let plan = plan_with_ambiguity("- 复合词算一个词还是两个词\n");
     let a = audit(&plan, r.path());
     let plan_path = r.path().join("docs/changes/x/change-plan.md");
-    let text = review_instruction("change-20261021-x", &plan_path, &plan, &a);
+    let text = review_instruction("change-20261021-x", &plan_path, &plan, &a, None);
     assert!(text.contains("裁决门事实"), "审查指令要带裁决门事实段：{text}");
     assert!(
         text.contains("未分类") && text.contains("复合词"),
