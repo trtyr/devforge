@@ -140,3 +140,16 @@ fn command_failure_classification_pins_system_vs_config() {
         "两类必须可区分（瞬态≠配置）"
     );
 }
+
+/// R6-P58：墙钟判定纯函数——过线 deadline 必须叫停（Quality）、未到线/不限时放行。
+/// 旧口径 deadline 在 loop 内每轮现算（now+timeout 永远追不上 now）= 死代码，
+/// 该用例钉住「快照一次」语义的可失败性。
+#[test]
+fn wall_clock_check_fires_only_when_deadline_passed() {
+    let past = std::time::Instant::now() - std::time::Duration::from_millis(5);
+    let err = super::wall_clock_check(Some(past)).expect("过线 deadline 必须叫停");
+    assert!(err.is_quality_failure(), "墙钟叫停 = Quality：{err}");
+    let future = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+    assert!(super::wall_clock_check(Some(future)).is_none(), "未到线放行");
+    assert!(super::wall_clock_check(None).is_none(), "显式不限时放行");
+}

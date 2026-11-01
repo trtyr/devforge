@@ -158,6 +158,19 @@ fn tool_result_detail(result: Option<&serde_json::Value>) -> (String, i64) {
     (one_line_tail(&collect_result_text(result)), code)
 }
 
+/// R6-P58：墙钟判定（纯函数——deadline 在进入等待前快照，loop 内现算永假）。
+fn wall_clock_check(at: Option<std::time::Instant>) -> Option<DevforgeError> {
+    let at = at?;
+    if std::time::Instant::now() >= at {
+        Some(DevforgeError::Quality(
+            "会话超过墙钟仍未收尾（流式刷活性但不再推进）——按质量失败放弃".into(),
+        ))
+    } else {
+        None
+    }
+}
+
+
 impl RpcClient {
     /// spawn 子 pi 进程（RPC 模式）。台账条目由调用方立即落盘（预防孤儿）。
     pub fn spawn(spec: SpawnSpec) -> Result<Self> {
@@ -408,6 +421,8 @@ impl RpcClient {
         e
     }
 
+
+
     /// 等待 agent_settled，期间遇 extension_ui_request 事件时：
     /// dialog 类（select/confirm/input/editor）回调取答案并回传；
     /// fire-and-forget 类（notify/setStatus/setWidget/setTitle/set_editor_text）只记录不应答
@@ -421,16 +436,13 @@ impl RpcClient {
         let started_at_ms = now_ms();
         let mut out = WaitOutcome::default();
         let mut tool_starts = std::collections::HashMap::new();
+        // R6-P58：墙钟在进入等待前**快照一次**——旧口径 loop 内每轮现算
+        // review_deadline()（now+timeout 永远追不上 now）→ 墙钟成死代码。
+        // None = 显式不限时（零硬限制），行为同旧。
+        let wall_deadline = crate::sop::review_gate::review_deadline();
         loop {
-            // 2026-10-27 自审 major：Plan 侧等待也要墙钟——「流式刷活性但不再收尾」
-            // 的活死批 idle 收割打不中，只能靠墙钟叫停（与 wait_settled_deadline 同口径）。
-            // review_deadline() 为 None = 显式不限时（零硬限制），行为同旧。
-            if let Some(at) = crate::sop::review_gate::review_deadline()
-                && std::time::Instant::now() >= at
-            {
-                return Err(DevforgeError::Quality(
-                    "会话超过墙钟仍未收尾（流式刷活性但不再推进）——按质量失败放弃".into(),
-                ));
+            if let Some(err) = wall_clock_check(wall_deadline) {
+                return Err(err);
             }
             let line = match self.next_line() {
                 Ok(l) => l,
