@@ -88,6 +88,24 @@ pub fn prepare(
     let doc_action = docs::apply(repo, level)?;
     // 自审 minor（63）：归因文案带真实档位——旧口径把 detailed 也说成 complete
     if let DocAction::FullChainRequired(required) = doc_action {
+        // 2026-11-01 审计批次一（R3-18）：早退不留半注册现场——本次新建的空目录
+        // （台账根计划目录 + 黑板 change 子目录）清掉；幂等重入的既有目录
+        // （已有 SOP 状态文件）不动。change-id 是 date+slug 幂等复用，无序号消耗，
+        // marker 保留 → 重试时同 id 复用。
+        for dir in [&plan_dir, &blackboard.join(&change_id)] {
+            if let Ok(mut entries) = std::fs::read_dir(dir)
+                && entries.next().is_none()
+            {
+                let _ = std::fs::remove_dir(dir);
+            }
+        }
+        tracing::info!(
+            component = "change-prepare",
+            event = "prepare.full_chain_early_exit",
+            change_id = %change_id,
+            doc_level = %doc_level,
+            "FullChainRequired 早退：本次新建的空目录已清，change-id 幂等保留（重试同 id 复用）"
+        );
         return Err(DevforgeError::Quality(format!(
             "doc_level={} 需要先跑 doc-from-zero 生成文档，change SOP 不代跑（调用方决定）",
             required.as_str()

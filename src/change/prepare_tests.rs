@@ -164,3 +164,52 @@ fn bad_doc_level_is_rejected() {
     .unwrap_err();
     assert!(err.to_string().contains("doc_level"), "{err}");
 }
+
+#[test]
+fn full_chain_required_early_exit_cleans_fresh_dirs() {
+    // 审计批次一（R3-18）：complete 档位无文档 → FullChainRequired 早退，
+    // 本次新建的空目录（台账计划目录 + 黑板 change 子目录）必须清掉
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = repo_with_code(); // 无 docs/ → complete 档位触发 FullChainRequired
+    let plans = tmp.path().join("plans");
+
+    let err = prepare(
+        &plans,
+        repo.path(),
+        "proj",
+        "task-fc",
+        "add book api",
+        "complete",
+        (2026, 10, 20),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("doc-from-zero"), "{err}");
+
+    let id = "change-20261020-add-book-api";
+    assert!(
+        !plantree_root(&plans, "proj")
+            .join("changes")
+            .join(id)
+            .exists(),
+        "台账计划目录必须已清"
+    );
+    assert!(
+        !crate::change::change_id::change_root(&plans, "proj", "task-fc")
+            .join(id)
+            .exists(),
+        "黑板 change 子目录必须已清"
+    );
+
+    // 幂等：重试（换 none 档位走通全流程）同 id 复用，marker 保留无序号消耗
+    let prep2 = prepare(
+        &plans,
+        repo.path(),
+        "proj",
+        "task-fc",
+        "add book api",
+        "none",
+        (2026, 10, 20),
+    )
+    .unwrap();
+    assert_eq!(prep2.change_id, id, "change-id 幂等复用");
+}

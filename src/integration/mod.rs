@@ -466,7 +466,21 @@ struct IwCleanup {
 }
 impl Drop for IwCleanup {
     fn drop(&mut self) {
-        let _ = git(&self.repo, &["worktree", "remove", "--force", &self.path.to_string_lossy()]);
+        // 2026-11-01 审计批次一（EX 附加/R3 语境）：清理失败必须留痕——前置 prune
+        // 能兜住大部分残骸，但与仓内「清理失败必须留痕」口径（孤儿清理同款）对齐。
+        if let Err(e) = git(
+            &self.repo,
+            &["worktree", "remove", "--force", &self.path.to_string_lossy()],
+        ) {
+            tracing::warn!(
+                component = "integration",
+                event = "iw_cleanup_failed",
+                path = %self.path.display(),
+                repo = %self.repo.display(),
+                error = %e,
+                "worktree 清理失败（后续 prune 兑底，残留路径见上）"
+            );
+        }
     }
 }
 
