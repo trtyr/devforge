@@ -35,7 +35,8 @@ use crate::sop::doc::prompts::{
     DOC_REMEDIATION_PREFIX, doc_kickoff, doc_review_instruction,
 };
 use crate::sop::doc::state::{
-    add_issues, bump_review, data_obj, done_units, issues_total, mark_done, review_rounds,
+    add_issues, bump_review, consecutive_fails, data_obj, done_units, issues_total, mark_done,
+    record_fix_queue, restore_fix_queue, review_rounds, set_consecutive_fails,
 };
 use crate::sop::doc::protocol::{
     DocReviewReport, DocVerdict, MAX_DOC_CONTINUE_NUDGES, MAX_DOC_EMPTY_REPLIES,
@@ -187,8 +188,11 @@ where
     let mut pending: Option<PendingReview> = None;
     // lead=1 写超前：审查槽被占时交卷的单元先排队，槽空出时补派
     let mut written_unreviewed: std::collections::VecDeque<(usize, String, u32)> = Default::default();
-    let mut fix_queue: std::collections::VecDeque<(String, String, Vec<String>, u32)> = Default::default();
-    let mut consecutive_fails = 0u32;
+    // R6-P64：从断点恢复 fix 队列与连续失败计数（重启续跑继续修——断路器文案
+    // 「resume 可续」承诺兑现；旧口径为栈变量重启全丢）
+    let mut fix_queue: std::collections::VecDeque<(String, String, Vec<String>, u32)> =
+        restore_fix_queue(&state).into();
+    let mut consecutive_fails = consecutive_fails(&state);
     let mut frontier = 0usize;
     let mut active = String::new();
     let mut active_idx = 0usize;
@@ -346,6 +350,10 @@ where
                         }
                     }
                     consecutive_fails = 0;
+                    // R6-P64：清零与队列变更落盘（resume 可续承诺兑现）
+                    set_consecutive_fails(&mut state, 0);
+                    record_fix_queue(&mut state, &fix_queue.iter().cloned().collect::<Vec<_>>());
+                    store.save(&mut state)?;
                     tracing::info!(
                         component = "doc-sop",
                         event = "doc.unit_done",
@@ -364,6 +372,10 @@ where
                         $round,
                     ));
                     consecutive_fails += 1;
+                    // R6-P64：fix 队列与失败计数落盘（resume 可续承诺兑现）
+                    record_fix_queue(&mut state, &fix_queue.iter().cloned().collect::<Vec<_>>());
+                    set_consecutive_fails(&mut state, consecutive_fails);
+                    store.save(&mut state)?;
                     if consecutive_fails >= 2 {
                         return Err(DevforgeError::Quality(format!(
                             "断路器：连续 {} 轮审查 FAIL（最近单元 `{}`），停发新单元——修复队列 {} 项（resume 可续）",
@@ -439,6 +451,9 @@ where
 
         // ── B. 决定下一步 ──
         let next = if let Some((u, route, issues, fix_round)) = fix_queue.pop_front() {
+            // R6-P64：弹出后队列变更落盘（resume 快照与内存一致）
+            record_fix_queue(&mut state, &fix_queue.iter().cloned().collect::<Vec<_>>());
+            store.save(&mut state)?;
             Next::Fix(u, route, issues, fix_round)
         } else if frontier < units.len() {
             // lead=1（用户拍板 10-23）：审查 N 在途期间允许写 N+1（写超前 1）；

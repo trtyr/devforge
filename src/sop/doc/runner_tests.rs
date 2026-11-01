@@ -866,3 +866,35 @@ fn tool_verdict_fail_without_issues_is_violation_then_retry_recovers() {
     // 裁决轮数 = 1（正确行为：违例不占裁决轮，断路器只数真裁决）
     assert_eq!(rep.review_rounds, 1, "违例不占裁决轮（worker 内消化）");
 }
+
+/// R6-P64：fix 队列与失败计数落盘回放——record + save 后经 load restore 一致
+/// （断路器文案承诺的「resume 可续」由断点真实承载）。
+#[test]
+fn fix_queue_and_fails_roundtrip_via_store() {
+    use crate::sop::doc::state::{
+        consecutive_fails, record_fix_queue, restore_fix_queue, set_consecutive_fails,
+    };
+    let store = state_path(&tempfile::tempdir().unwrap());
+    let mut state = store.fresh_state();
+    record_fix_queue(
+        &mut state,
+        &[(
+            "unit-a".to_string(),
+            "phase2".to_string(),
+            vec!["覆盖缺失：unit-a".to_string()],
+            1,
+        )],
+    );
+    set_consecutive_fails(&mut state, 1);
+    store.save(&mut state).unwrap();
+
+    // 重启：load 回放
+    let loaded = store.load();
+    let reloaded = loaded.state().expect("断点应可回放");
+    let q = restore_fix_queue(reloaded);
+    assert_eq!(q.len(), 1, "fix 队列应从断点恢复");
+    assert_eq!(q[0].0, "unit-a");
+    assert_eq!(q[0].2, vec!["覆盖缺失：unit-a"]);
+    assert_eq!(q[0].3, 1);
+    assert_eq!(consecutive_fails(reloaded), 1, "失败计数应从断点恢复");
+}
