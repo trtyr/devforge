@@ -2298,10 +2298,14 @@ pub async fn run_transcript(
             return Err(ApiError::not_found(format!("run `{run_id}` 不存在")));
         }
     }
-    // 收集本 run 的会话文件：<sessions_root>/<role>/<ts>_<run_id>.jsonl
+    // 收集本 run 的会话文件（R5-P44/P53：布局单一事实源——
+    // `<sessions_root>/<run_id>/<role>/<文件>.jsonl`，旧口径单层 read_dir 把
+    // 第一层目录名（run_id）当角色比较 → role 过滤永不生效、files 恒空）。
+    // 递归两层：第一层 = 角色目录（role 过滤在此），第二层 = 会话文件。
     let mut files: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&st.sessions_root) {
-        for role_dir in rd.filter_map(|e| e.ok()) {
+    let run_sessions = crate::engine::session_root_for(&st.sessions_root, &run_id);
+    if let Ok(rd) = std::fs::read_dir(&run_sessions) {
+        for role_dir in rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
             let role_name = role_dir.file_name().to_string_lossy().to_string();
             if let Some(want) = &q.role
                 && role_name != *want

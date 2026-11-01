@@ -434,3 +434,60 @@ async fn ui_abort_run_unblocks_only_its_own_run() {
     let _ = ui.abort_all();
     let _ = b.join();
 }
+
+/// R5-P44/P53：transcript 按真实布局（sessions/<run_id>/<role>/）递归收集——
+/// 无 role 全见、role 过滤生效（旧口径单层 read_dir 恒空）。
+#[tokio::test]
+async fn run_transcript_reads_real_layout_and_filters_role() {
+    let f = fixture();
+    send(&f.router, "POST", "/api/v1/projects", Some(json!({"name": "p", "local_path": "/tmp/p"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks", Some(json!({"id": "t", "sop": "planning"}))).await;
+    send(&f.router, "POST", "/api/v1/projects/p/tasks/t/start", None).await;
+    let mut run_id = String::new();
+    for _ in 0..100 {
+        let resp = send(&f.router, "GET", "/api/v1/projects/p/tasks/t/runs", None).await;
+        let body = body_json(resp).await;
+        if let Some(id) = body["runs"].as_array().and_then(|a| a.first()).and_then(|r| r["id"].as_str()) {
+            run_id = id.to_string();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(!run_id.is_empty(), "run 应已起");
+
+    // 造真实布局：sessions/<run_id>/<role>/<ts>_<run_id>.jsonl
+    let run_sessions = f.state.sessions_root.join(&run_id);
+    for (role, line) in [
+        ("plan", r#"{"msg":"from-plan"}"#),
+        ("testing", r#"{"msg":"from-testing"}"#),
+    ] {
+        let d = run_sessions.join(role);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(format!("1_{run_id}.jsonl")), format!("{line}\n")).unwrap();
+    }
+
+    // 无 role：两个角色的条目都可见
+    let resp = send(
+        &f.router,
+        "GET",
+        &format!("/api/v1/projects/p/tasks/t/runs/{run_id}/transcript"),
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert_eq!(body["total"], json!(2), "无 role 应见全部角色条目：{body}");
+    assert_eq!(body["files"].as_array().unwrap().len(), 2);
+
+    // role=plan：只见 plan 条目
+    let resp = send(
+        &f.router,
+        "GET",
+        &format!("/api/v1/projects/p/tasks/t/runs/{run_id}/transcript?role=plan"),
+        None,
+    )
+    .await;
+    let body = body_json(resp).await;
+    assert_eq!(body["total"], json!(1), "role 过滤生效：{body}");
+    assert_eq!(body["entries"][0]["msg"], json!("from-plan"));
+}

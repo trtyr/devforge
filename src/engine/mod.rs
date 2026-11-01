@@ -19,3 +19,11 @@ pub use client::{RpcClient, WaitOutcome};
 pub use ledger::{Reconciliation, SpawnLedger, LedgerEntry};
 pub use process::{build_spawn_command, SpawnSpec};
 pub use protocol::{decode_line, CommandRecord, EventRecord, Inbound, ResponseRecord};
+
+/// 会话目录布局单一事实源（R5-P53）：run 的会话存档根 =
+/// `<sessions_root>/<run_id>/`，角色子目录（plan/reviews/coding/testing/doc-fix…）
+/// 由 spawn 侧按 role 创建。读取方（transcript 端点等）经此函数取根后递归遍历，
+/// 不得自拼三层布局——三处各拼一份正是 transcript 恒空的结构性根因。
+pub fn session_root_for(sessions_root: &std::path::Path, run_id: &str) -> std::path::PathBuf {
+    sessions_root.join(run_id)
+}
