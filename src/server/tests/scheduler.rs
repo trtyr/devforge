@@ -926,6 +926,8 @@ async fn the_status_endpoint_keeps_its_top_level_field_set() {
             "effective_max_concurrent",
             // gap-E：自动集成面（开关态 + 窗口态 + 目标 ref + 可选门）
             "integration",
+            // P020：issues 面板源（open 总数 + 按严重度分布）
+            "issues",
             "max_concurrent_runs",
             "queue",
             "runnable",

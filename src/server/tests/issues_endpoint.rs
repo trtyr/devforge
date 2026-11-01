@@ -12,7 +12,12 @@ use crate::observability::events::EventBus;
 use crate::server::{build_router, ServerState, UiRelay};
 use std::sync::Arc;
 
-fn fixture() -> (tempfile::TempDir, Arc<ServerState>, axum::Router) {
+fn fixture() -> (
+    tempfile::TempDir,
+    Arc<ServerState>,
+    axum::Router,
+    Arc<EventBus>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let bus = Arc::new(EventBus::new());
     let ui = Arc::new(UiRelay::new(bus.clone()));
@@ -23,7 +28,7 @@ fn fixture() -> (tempfile::TempDir, Arc<ServerState>, axum::Router) {
         Box::new(|| -> Box<dyn crate::domain::RunEngine + Send> {
             unreachable!("issues 单测不触发引擎")
         }),
-        bus,
+        bus.clone(),
         ui,
         Arc::new(FakeInstaller),
         dir.path().join("profiles"),
@@ -43,7 +48,7 @@ fn fixture() -> (tempfile::TempDir, Arc<ServerState>, axum::Router) {
     }
     let state: Arc<ServerState> = st;
     let router = build_router(state.clone());
-    (dir, state, router)
+    (dir, state, router, bus)
 }
 
 fn issue_body(severity: &str) -> serde_json::Value {
@@ -59,7 +64,7 @@ fn issue_body(severity: &str) -> serde_json::Value {
 
 #[tokio::test]
 async fn issue_crud_and_transition_full_chain() {
-    let (_dir, _state, router) = fixture();
+    let (_dir, _state, router, _bus) = fixture();
 
     // 创建：201 + key = DEVFORGE-1（项目前缀序）
     let resp = send(&router, "POST", "/api/v1/projects/devforge/issues", Some(issue_body("major"))).await;
@@ -135,7 +140,7 @@ async fn issue_crud_and_transition_full_chain() {
 
 #[tokio::test]
 async fn issue_convert_creates_task_with_ref_and_audits() {
-    let (_dir, state, router) = fixture();
+    let (_dir, state, router, _bus) = fixture();
     let audits_before = state.store.lock().unwrap().auth_events.len();
 
     // 建 issue → Triaged
@@ -183,4 +188,102 @@ async fn issue_convert_creates_task_with_ref_and_audits() {
     // A1 审计落账（create/patch/convert 三类写操作都留痕）
     let audits_after = state.store.lock().unwrap().auth_events.len();
     assert!(audits_after > audits_before, "写操作必须留审计");
+}
+
+#[tokio::test]
+async fn critical_issue_creation_raises_error_notification() {
+    let (_dir, state, router, _bus) = fixture();
+    let before = state.store.lock().unwrap().notifications.len();
+
+    // critical：A2 error 通知（运营者必须马上知道）
+    let resp = send(
+        &router,
+        "POST",
+        "/api/v1/projects/devforge/issues",
+        Some(issue_body("critical")),
+    )
+    .await;
+    assert_eq!(resp.status(), 201);
+    {
+        let store = state.store.lock().unwrap();
+        assert_eq!(store.notifications.len(), before + 1, "critical 必须发通知");
+        let n = store.notifications.last().unwrap();
+        assert_eq!(n.kind, "issue");
+        assert_eq!(n.level, "error");
+    }
+
+    // 非 critical：不发通知（通知只给「必须马上知道」的）
+    let resp = send(
+        &router,
+        "POST",
+        "/api/v1/projects/devforge/issues",
+        Some(issue_body("minor")),
+    )
+    .await;
+    assert_eq!(resp.status(), 201);
+    assert_eq!(
+        state.store.lock().unwrap().notifications.len(),
+        before + 1,
+        "minor 不发通知"
+    );
+}
+
+#[tokio::test]
+async fn sse_broadcasts_issue_created_and_transitioned() {
+    let (_dir, _state, router, bus) = fixture();
+    let mut rx = bus.subscribe();
+
+    let resp = send(&router, "POST", "/api/v1/projects/devforge/issues", Some(issue_body("major"))).await;
+    assert_eq!(resp.status(), 201);
+    let key = body_json(resp).await["key"].as_str().unwrap().to_string();
+
+    // issue.created 先到
+    let (_, raw) = rx.recv().await.unwrap();
+    let ev: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(ev["type"], "issue.created");
+    assert_eq!(ev["key"], key);
+
+    // 流转 → issue.transitioned
+    send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/issues/{key}"),
+        Some(serde_json::json!({"status": "triaged", "version": 1})),
+    )
+    .await;
+    let (_, raw) = rx.recv().await.unwrap();
+    let ev: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(ev["type"], "issue.transitioned");
+    assert_eq!(ev["key"], key);
+}
+
+#[tokio::test]
+async fn status_endpoint_counts_open_issues_by_severity() {
+    let (_dir, _state, router, _bus) = fixture();
+    // 两条 open：major + critical
+    for sev in ["major", "critical"] {
+        let resp = send(
+            &router,
+            "POST",
+            "/api/v1/projects/devforge/issues",
+            Some(issue_body(sev)),
+        )
+        .await;
+        assert_eq!(resp.status(), 201);
+    }
+    let body = body_json(send(&router, "GET", "/api/v1/scheduler/status", None).await).await;
+    assert_eq!(body["issues"]["open"], 2);
+    assert_eq!(body["issues"]["by_severity"]["major"], 1);
+    assert_eq!(body["issues"]["by_severity"]["critical"], 1);
+
+    // triaged 一条 → open 减一（计数只看 open 态）
+    send(
+        &router,
+        "PATCH",
+        "/api/v1/issues/DEVFORGE-1",
+        Some(serde_json::json!({"status": "triaged", "version": 1})),
+    )
+    .await;
+    let body = body_json(send(&router, "GET", "/api/v1/scheduler/status", None).await).await;
+    assert_eq!(body["issues"]["open"], 1);
 }

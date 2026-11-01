@@ -1174,6 +1174,26 @@ pub async fn create_issue(
             .map_err(issue_err)?
     };
     user.audit_write(&st, "create_issue", &format!("{project}/{}", issue.key));
+    // SSE：issue.created（前端按 issue. 前缀订阅）
+    st.emit(json!({
+        "type": "issue.created",
+        "key": issue.key,
+        "project": project,
+        "severity": issue.severity,
+        "category": issue.category,
+        "source": issue.source,
+        "title": issue.title,
+    }));
+    // A2：critical 级 = 运营者必须马上知道（channel_breaker 同款内联通知）
+    if issue.severity == crate::domain::IssueSeverity::Critical {
+        crate::server::notify(
+            &st,
+            "issue",
+            "error",
+            &format!("Critical issue {}: {}", issue.key, issue.title),
+            Some(&format!("{project}/{}", issue.key)),
+        );
+    }
     Ok((StatusCode::CREATED, Json(issue)))
 }
 
@@ -1247,6 +1267,12 @@ pub async fn patch_issue(
             .map_err(issue_err)?
     };
     user.audit_write(&st, "patch_issue", &format!("{key} → {:?}", req.status));
+    st.emit(json!({
+        "type": "issue.transitioned",
+        "key": key,
+        "to": req.status,
+        "version": issue.version,
+    }));
     Ok(Json(issue))
 }
 
@@ -1331,6 +1357,12 @@ pub async fn convert_issue(
         "convert_issue",
         &format!("{issue_key} → {project}/{task_id}"),
     );
+    st.emit(json!({
+        "type": "issue.transitioned",
+        "key": issue_key,
+        "to": "queued",
+        "task": task_id,
+    }));
     Ok((StatusCode::CREATED, Json(created?)))
 }
 

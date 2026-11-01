@@ -1221,6 +1221,27 @@ pub fn status(st: &SharedState) -> serde_json::Value {
     let integration_settings = crate::integration::settings::load(&crate::integration::settings::settings_path(
         &st.plans_root,
     ));
+    // P020：issues 计数（纯内存短锁——open 总数 + 按严重度分布，Dashboard 面板源）。
+    let issue_stats = {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        let open = store
+            .issues
+            .iter()
+            .filter(|i| i.status == crate::domain::IssueStatus::Open)
+            .collect::<Vec<_>>();
+        let by = |s: crate::domain::IssueSeverity| {
+            open.iter().filter(|i| i.severity == s).count()
+        };
+        serde_json::json!({
+            "open": open.len(),
+            "by_severity": {
+                "info": by(crate::domain::IssueSeverity::Info),
+                "minor": by(crate::domain::IssueSeverity::Minor),
+                "major": by(crate::domain::IssueSeverity::Major),
+                "critical": by(crate::domain::IssueSeverity::Critical),
+            },
+        })
+    };
     // 渠道派生映射（清单 → sop/agent → 渠道）在进 store 锁**之前**算好：
     // 锁内再取 manifest 就是「store → manifest」反向嵌套，与 PUT /config/manifest
     // （先锁 manifest）构成锁序环（风险 R5）。锁内只查算好的快照。
@@ -1356,6 +1377,8 @@ pub fn status(st: &SharedState) -> serde_json::Value {
         "max_concurrent_runs": effective_cap,
         "effective_max_concurrent": effective_cap,
         "channel_breakers": channel_breakers,
+        // P020：issues 面板源（open 总数 + 按严重度分布）。
+        "issues": issue_stats,
         // 自动集成面（gap-E）：开关态 + 窗口态——运营面要能回答「开关开了吗 / 现在在集成吗」。
         "integration": {
             "auto_integrate_enabled": integration_settings.auto_integrate_enabled,
