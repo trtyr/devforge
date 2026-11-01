@@ -990,6 +990,14 @@ impl Store {
         issue.status = crate::domain::IssueStatus::Queued;
         issue.note(actor, "converted", format!("task {task_id}"), now_ms());
         issue.version += 1;
+        // 双向回填：task 侧也带 issue key（任务卡「源自 DF-x」/ run 收尾联动的锚点）
+        if let Some(t) = self
+            .tasks
+            .iter_mut()
+            .find(|t| t.project == issue.project && t.id == task_id)
+        {
+            t.issue_ref = Some(issue.key.clone());
+        }
         let snap = issue.clone();
         self.persist();
         Ok(snap)

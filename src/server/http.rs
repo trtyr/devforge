@@ -67,6 +67,18 @@ pub fn build_router(state: SharedState) -> Router {
             post(handlers::archive_project),
         )
         .route(
+            "/projects/{name}/issues",
+            post(handlers::create_issue).get(handlers::list_issues),
+        )
+        .route(
+            "/issues/{key}",
+            get(handlers::get_issue).patch(handlers::patch_issue),
+        )
+        .route(
+            "/issues/{key}/convert",
+            post(handlers::convert_issue),
+        )
+        .route(
             "/projects/{name}/tasks",
             post(handlers::create_task).get(handlers::list_tasks),
         )

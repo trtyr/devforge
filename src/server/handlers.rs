@@ -1124,6 +1124,216 @@ pub async fn put_integration_settings(
     Ok(Json(serde_json::to_value(settings).unwrap_or(serde_json::Value::Null)))
 }
 
+// ---------- P020 反馈系统：issues ----------
+
+/// store 错误 → HTTP：项目/issue 不存在 = 404，乐观锁 = 409，其余 = 400。
+fn issue_err(e: crate::error::DevforgeError) -> ApiError {
+    let msg = e.to_string();
+    if msg.contains("不存在") {
+        ApiError::not_found(msg)
+    } else if msg.contains("版本冲突") {
+        ApiError::conflict(msg)
+    } else {
+        ApiError::bad_request(msg)
+    }
+}
+
+#[derive(Deserialize)]
+pub struct CreateIssueReq {
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    pub severity: crate::domain::IssueSeverity,
+    pub category: crate::domain::IssueCategory,
+    #[serde(default)]
+    pub run_refs: Vec<String>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+/// `POST /projects/{project}/issues`：操作员报 issue（source=Operator，key 项目前缀序分配）。
+pub async fn create_issue(
+    State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
+    Path(project): Path<String>,
+    Json(req): Json<CreateIssueReq>,
+) -> ApiResult<(StatusCode, Json<crate::domain::Issue>)> {
+    let issue = {
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .create_issue(
+                &project,
+                req.title,
+                req.body,
+                crate::domain::IssueSource::Operator,
+                req.severity,
+                req.category,
+                req.run_refs,
+                req.evidence,
+            )
+            .map_err(issue_err)?
+    };
+    user.audit_write(&st, "create_issue", &format!("{project}/{}", issue.key));
+    Ok((StatusCode::CREATED, Json(issue)))
+}
+
+/// `GET /projects/{project}/issues`：列表（status/severity/category 过滤 + 分页）。
+#[derive(Deserialize)]
+pub struct ListIssuesQuery {
+    pub status: Option<crate::domain::IssueStatus>,
+    pub severity: Option<crate::domain::IssueSeverity>,
+    pub category: Option<crate::domain::IssueCategory>,
+    #[serde(default)]
+    pub offset: usize,
+    pub limit: Option<usize>,
+}
+
+pub async fn list_issues(
+    State(st): State<SharedState>,
+    Path(project): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<ListIssuesQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+    let all: Vec<&crate::domain::Issue> = store
+        .issues
+        .iter()
+        .filter(|i| i.project == project)
+        .filter(|i| q.status.is_none_or(|s| i.status == s))
+        .filter(|i| q.severity.is_none_or(|s| i.severity == s))
+        .filter(|i| q.category.is_none_or(|c| i.category == c))
+        .collect();
+    let total = all.len();
+    let items: Vec<crate::domain::Issue> = all
+        .into_iter()
+        .skip(q.offset)
+        .take(limit)
+        .cloned()
+        .collect();
+    Ok(Json(json!({ "total": total, "offset": q.offset, "limit": limit, "issues": items })))
+}
+
+/// `GET /issues/{key}`：详情（含 timeline）。
+pub async fn get_issue(
+    State(st): State<SharedState>,
+    Path(key): Path<String>,
+) -> ApiResult<Json<crate::domain::Issue>> {
+    let issue = {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.get_issue(&key).cloned()
+    };
+    issue
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found(format!("issue `{key}` 不存在")))
+}
+
+/// `PATCH /issues/{key}`：状态流转（乐观锁；Queued→Resolved 人工不可手标——由 run 联动）。
+#[derive(Deserialize)]
+pub struct PatchIssueReq {
+    pub status: crate::domain::IssueStatus,
+    pub version: u64,
+}
+
+pub async fn patch_issue(
+    State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
+    Path(key): Path<String>,
+    Json(req): Json<PatchIssueReq>,
+) -> ApiResult<Json<crate::domain::Issue>> {
+    let issue = {
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .transition_issue(&key, req.status, req.version, &user.username)
+            .map_err(issue_err)?
+    };
+    user.audit_write(&st, "patch_issue", &format!("{key} → {:?}", req.status));
+    Ok(Json(issue))
+}
+
+/// `POST /issues/{key}/convert`：转 task（复用 create_task 全套校验；issue 进 Queued）。
+#[derive(Deserialize)]
+pub struct ConvertIssueReq {
+    /// task id 缺省 = issue key 小写加 `-fix`（如 `devforge-3-fix`）。
+    #[serde(default)]
+    pub task_id: Option<String>,
+    /// 缺省 change SOP（修复走 change 流程）。
+    #[serde(default)]
+    pub sop: Option<String>,
+    /// 契约（可选——留空交给 plan agent 规划，F12/白名单门照拦）。
+    #[serde(default)]
+    pub contract: Option<crate::domain::contract::WorkItemContract>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub exclusive: bool,
+    /// workspace 覆盖（缺省用项目登记路径）。
+    #[serde(default)]
+    pub workspace: Option<String>,
+}
+
+pub async fn convert_issue(
+    State(st): State<SharedState>,
+    Extension(user): Extension<AuthedUser>,
+    Path(key): Path<String>,
+    Json(req): Json<ConvertIssueReq>,
+) -> ApiResult<(StatusCode, Json<Task>)> {
+    let (project, issue_key) = {
+        let store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(issue) = store.get_issue(&key) else {
+            return Err(ApiError::not_found(format!("issue `{key}` 不存在")));
+        };
+        (issue.project.clone(), issue.key.clone())
+    };
+    let task_id = req
+        .task_id
+        .unwrap_or_else(|| format!("{}-fix", key.to_lowercase()));
+    let sop = req
+        .sop
+        .unwrap_or_else(|| crate::change::state::CHANGE_SOP.to_string());
+    let created = {
+        let mut store = st.store.lock().unwrap_or_else(|e| e.into_inner());
+        let registry = st.registry.clone();
+        let contract = req.contract.clone();
+        let deps = crate::domain::task::TaskDeps {
+            depends_on: req.depends_on.clone(),
+            exclusive: req.exclusive,
+        };
+        store
+            .create_task(
+                &registry,
+                &project,
+                &task_id,
+                &sop,
+                contract,
+                deps,
+            )
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        // 可选 workspace 覆盖（create_task 快照项目路径后的补充指定）
+        if let Some(ws) = &req.workspace
+            && let Some(t) = store
+                .tasks
+                .iter_mut()
+                .find(|t| t.project == project && t.id == task_id)
+        {
+            t.workspace = std::path::PathBuf::from(ws);
+        }
+        store
+            .link_issue_task(&key, &task_id, &user.username)
+            .map_err(issue_err)?;
+        // link 之后再取：task.issue_ref 已回填（返回值带完整引用关系）
+        store
+            .get_task(&project, &task_id)
+            .cloned()
+            .ok_or_else(|| ApiError::internal("task 创建后不可见（store 不一致）"))
+    };
+    user.audit_write(
+        &st,
+        "convert_issue",
+        &format!("{issue_key} → {project}/{task_id}"),
+    );
+    Ok((StatusCode::CREATED, Json(created?)))
+}
+
 /// P013 M2：审计报告读取（黑板上的 audit-report.json；未生成 = 404）。
 pub async fn audit_report(
     State(st): State<SharedState>,
