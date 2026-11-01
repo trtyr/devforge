@@ -54,13 +54,24 @@ fn integrator<'a>(
     }
 }
 
+/// 队首 Pending 下标（integrate_selected 由调用方选候选——测试统一取首个）。
+fn first_pending(q: &MergeQueue) -> usize {
+    q.candidates
+        .iter()
+        .position(|c| matches!(c.status, CandidateStatus::Pending))
+        .expect("测试前置：队列应存在 Pending 候选")
+}
+
 #[test]
 fn idle_when_queue_empty() {
     let (dir, _base) = repo_with_base();
     let plans = tempfile::tempdir().unwrap();
     let mut q = MergeQueue::load(plans.path(), "p").unwrap();
     let mut it = integrator(dir.path(), plans.path(), |_| Ok(()));
-    assert!(matches!(it.integrate_next(&mut q).unwrap(), IntegrationOutcome::Idle));
+    assert!(matches!(
+        it.integrate_selected(&mut q, 0).unwrap(),
+        IntegrationOutcome::Idle
+    ));
 }
 
 #[test]
@@ -78,12 +89,14 @@ fn serial_integration_advances_target_and_second_sees_moved_target() {
     q.save().unwrap();
 
     let mut it = integrator(dir.path(), plans.path(), |_| Ok(()));
-    let r1 = it.integrate_next(&mut q).unwrap();
+    let sel = first_pending(&q);
+    let r1 = it.integrate_selected(&mut q, sel).unwrap();
     let IntegrationOutcome::Integrated { task_id: t1, merged_sha: m1 } = r1 else {
         panic!("第一个候选应集成成功：{r1:?}");
     };
     assert_eq!(t1, "task-a");
-    let r2 = it.integrate_next(&mut q).unwrap();
+    let sel = first_pending(&q);
+    let r2 = it.integrate_selected(&mut q, sel).unwrap();
     let IntegrationOutcome::Integrated { task_id: t2, .. } = r2 else {
         panic!("第二个候选应集成成功（串行下 expect 始终最新）：{r2:?}");
     };
@@ -126,7 +139,8 @@ fn stale_cas_is_rejected_and_candidate_requeued() {
     let mut q = MergeQueue::load(plans.path(), "p").unwrap();
     q.enqueue(cand);
     q.save().unwrap();
-    let r = it.integrate_next(&mut q).unwrap();
+    let sel = first_pending(&q);
+    let r = it.integrate_selected(&mut q, sel).unwrap();
     let IntegrationOutcome::Requeued { task_id, target_moved_to } = r else {
         panic!("过期 CAS 应触发重排：{r:?}");
     };
@@ -152,7 +166,8 @@ fn validation_failure_produces_artifact_and_needs_repair() {
     let mut q = MergeQueue::load(plans.path(), "p").unwrap();
     q.enqueue(cand);
     q.save().unwrap();
-    let r = it.integrate_next(&mut q).unwrap();
+    let sel = first_pending(&q);
+    let r = it.integrate_selected(&mut q, sel).unwrap();
     let IntegrationOutcome::NeedsRepair { task_id, reason, artifact } = r else {
         panic!("验证失败应回修复队列：{r:?}");
     };
@@ -230,11 +245,13 @@ fn merge_conflict_produces_artifact_and_needs_repair() {
     q.enqueue(b);
     q.save().unwrap();
     let mut it = integrator(dir.path(), plans.path(), |_| Ok(()));
+    let sel = first_pending(&q);
     assert!(matches!(
-        it.integrate_next(&mut q).unwrap(),
+        it.integrate_selected(&mut q, sel).unwrap(),
         IntegrationOutcome::Integrated { .. }
     ));
-    let r = it.integrate_next(&mut q).unwrap();
+    let sel = first_pending(&q);
+    let r = it.integrate_selected(&mut q, sel).unwrap();
     let IntegrationOutcome::NeedsRepair { task_id, reason, artifact } = r else {
         panic!("冲突应回修复队列：{r:?}");
     };
@@ -263,7 +280,8 @@ fn unreachable_candidate_is_not_reported_as_conflict() {
     q.enqueue(cand);
     q.save().unwrap();
     let mut it = integrator(dir.path(), plans.path(), |_| Ok(()));
-    let r = it.integrate_next(&mut q).unwrap();
+    let sel = first_pending(&q);
+    let r = it.integrate_selected(&mut q, sel).unwrap();
     let IntegrationOutcome::NeedsRepair { reason, artifact, .. } = r else {
         panic!("失联候选应回修复队列：{r:?}");
     };
@@ -299,11 +317,13 @@ fn repeated_artifacts_never_overwrite() {
     let mut it = integrator(dir.path(), plans.path(), |_| {
         Err(DevforgeError::Quality("总是失败".into()))
     });
-    let r1 = it.integrate_next(&mut q).unwrap();
+    let sel = first_pending(&q);
+    let r1 = it.integrate_selected(&mut q, sel).unwrap();
     let IntegrationOutcome::NeedsRepair { artifact: a1, .. } = r1 else {
         panic!("第一次应进修复队列：{r1:?}");
     };
-    let r2 = it.integrate_next(&mut q).unwrap();
+    let sel = first_pending(&q);
+    let r2 = it.integrate_selected(&mut q, sel).unwrap();
     let IntegrationOutcome::NeedsRepair { artifact: a2, .. } = r2 else {
         panic!("第二次应进修复队列：{r2:?}");
     };
@@ -330,7 +350,8 @@ fn traversal_project_and_task_id_are_rejected() {
     let mut it = integrator(dir.path(), plans.path(), |_| {
         Err(DevforgeError::Quality("触发产物写入".into()))
     });
-    let err = it.integrate_next(&mut q).unwrap_err();
+    let sel = first_pending(&q);
+    let err = it.integrate_selected(&mut q, sel).unwrap_err();
     assert!(
         err.to_string().contains("产物 task_id 校验"),
         "穿越 task_id 应被拒：{err}"

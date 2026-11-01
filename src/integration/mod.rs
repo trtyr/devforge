@@ -150,8 +150,8 @@ impl MergeQueue {
         })
     }
 
-    /// 第一个 Pending 候选的下标。
-    fn next_pending(&self) -> Option<usize> {
+    /// 第一个 Pending 候选的下标（测试与调用方选候选用）。
+    pub fn next_pending(&self) -> Option<usize> {
         self.candidates.iter().position(|c| matches!(c.status, CandidateStatus::Pending))
     }
 }
@@ -198,14 +198,26 @@ pub struct Integrator<'a> {
 pub type ValidateFn<'a> = Box<dyn Fn(&Path) -> Result<()> + 'a>;
 
 impl<'a> Integrator<'a> {
-    /// 集成下一个 Pending 候选（串行消费一次）。
+    /// 集成**调用方选中的**候选（串行消费一次）。
     ///
-    /// 流程：出队 → 集成 worktree checkout 目标最新 → merge 候选（冲突 = NeedsRepair）→
+    /// R4-P42：旧 `integrate_next` 内部自取队首 Pending，而消费者 [`next_consumable`]
+    /// 会跳过仓库路径未知的候选——队首是孤儿时，merge 的与记账的不是同一个候选。
+    /// 现在候选由调用方选中后传下标，「选谁就集成谁」。
+    ///
+    /// 流程：集成 worktree checkout 目标最新 → merge 候选（冲突 = NeedsRepair）→
     /// 组合验证（失败 = NeedsRepair）→ CAS 更新目标 ref（expect 不符 = NeedsRebase 重排）。
-    pub fn integrate_next(&mut self, queue: &mut MergeQueue) -> Result<IntegrationOutcome> {
-        let Some(idx) = queue.next_pending() else {
+    pub fn integrate_selected(
+        &mut self,
+        queue: &mut MergeQueue,
+        idx: usize,
+    ) -> Result<IntegrationOutcome> {
+        // 防漂移：选中的必须仍是 Pending（并发变更时宁可空转一轮）
+        if !matches!(
+            queue.candidates.get(idx).map(|c| &c.status),
+            Some(CandidateStatus::Pending)
+        ) {
             return Ok(IntegrationOutcome::Idle);
-        };
+        }
         let cand = queue.candidates[idx].clone();
         let expect_before = self.target_sha()?;
 

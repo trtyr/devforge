@@ -10,7 +10,7 @@
 //! 3. 取首个 `Pending` 候选（仓库路径未知的跳过并留痕——不留痕就静默卡住队列）；
 //! 4. 已集成判定：`git merge-base --is-ancestor <候选 sha> <目标 ref>` 命中 → 直接置
 //!    `Integrated`（CAS 已成功但队列未落盘的场景，不再重复 merge）；
-//! 5. 跑 [`Integrator::integrate_next`]（merge → 验证 → CAS）。
+//! 5. 跑 [`Integrator::integrate_selected`]（merge → 验证 → CAS，候选由本层选中传入）。
 //!
 //! 基础设施失败（System）重试口径（前置裁决④）：**第一次保留 `Pending` + 记一次重试**，
 //! 第二次仍 System 才落 `NeedsRepair` + `validation_infra` 产物 + 清掉计数键
@@ -212,7 +212,7 @@ where
             });
         }
         Ok(false) => {}
-        // 目标 ref 不可读 = 基础设施故障（前置裁决④）：与 `integrate_next` 的 System
+        // 目标 ref 不可读 = 基础设施故障（前置裁决④）：与 `integrate_selected` 的 System
         // **同一条归因路径**——第一次保留 Pending + 记一次重试，第二次仍 System 才落
         // NeedsRepair（否则该路径会绕过侧车计数：候选永停 Pending，每轮只打一条失败日志）。
         Err(e) => {
@@ -230,8 +230,8 @@ where
         }
     }
 
-    // ⑥ 集成：merge → 验证 → CAS。
-    match integrator.integrate_next(&mut queue) {
+    // ⑥ 集成：merge → 验证 → CAS（候选 = 本层选中的 idx——R4-P42「选谁就集成谁」）。
+    match integrator.integrate_selected(&mut queue, idx) {
         Ok(IntegrationOutcome::Integrated { task_id, merged_sha }) => Ok(DrainReport {
             enabled: true,
             rearmed,

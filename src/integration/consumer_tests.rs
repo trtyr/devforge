@@ -627,3 +627,42 @@ fn resolve_target_ref_rejects_detached_head() {
     let err = resolve_target_ref(dir.path()).unwrap_err();
     assert!(err.to_string().contains("分离 HEAD"), "{err}");
 }
+
+#[test]
+fn orphan_head_consumes_selected_not_first_pending() {
+    // R4-P42 回归：孤儿候选（无仓路径）在队首 + 正常候选其后 → 消费的必须是
+    // 选中的 task-ok，不是队首的 task-ghost。错位形态：集成器自取队首 → merge
+    // ghost 的 sha、把 ghost 标 NeedsRepair，ok 永远轮不到（且归因串台）。
+    let (repo, base) = repo_with_base();
+    let plans = tempfile::tempdir().unwrap();
+    let ghost = make_candidate(repo.path(), &base, "task-ghost", "ghost.rs");
+    let ok = make_candidate(repo.path(), &base, "task-ok", "ok.rs");
+    let frozen_ok = ok.frozen_sha.clone();
+    enqueue(plans.path(), ghost); // 队首：孤儿
+    enqueue(plans.path(), ok);    // 第二：正常
+    let repos_map = repos(repo.path(), "task-ok"); // ghost 无工作区路径 → repo_unknown 跳过
+
+    let report =
+        drain_project(&settings(true), "p", &repos_map, plans.path(), |_| Ok(())).unwrap();
+    let Some(Consumed::Integrated { task_id, merged_sha }) = report.consumed else {
+        panic!("应集成选中的 task-ok：{report:?}");
+    };
+    assert_eq!(task_id, "task-ok", "消费的必须是选中的候选");
+    // merged_sha 是 merge 提交（--no-ff），候选冻结件必须真在它的历史里
+    git(repo.path(), &["merge-base", "--is-ancestor", &frozen_ok, &merged_sha])
+        .expect("task-ok 的冻结件必须在 merge 提交历史里");
+
+    match candidate_status(plans.path(), "task-ok") {
+        CandidateStatus::Integrated { integrated_sha } => {
+            assert_eq!(integrated_sha, merged_sha, "队列状态记的必须是同一个 merge 提交");
+        }
+        other => panic!("task-ok 应 Integrated：{other:?}"),
+    }
+    assert!(
+        matches!(
+            candidate_status(plans.path(), "task-ghost"),
+            CandidateStatus::Pending
+        ),
+        "孤儿本轮只能被跳过，不得被错位消费或改状态"
+    );
+}
