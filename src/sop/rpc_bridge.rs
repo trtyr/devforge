@@ -100,8 +100,10 @@ impl ReviewSession for RpcReviewSession {
         // 未产出任何正文。空串不得当作合法审查结论（否那么保守解析会把它当成
         // “协议违例”并错误回注给被审 Agent），必须作为基础设施故障上抛。
         if outcome.text.trim().is_empty() {
-            return Err(crate::error::DevforgeError::System(format!(
-                "审查会话 `{}` 无有效回复（进程正常结束但未产出一字）——按基础设施故障处理，不作为审查结论",
+            // R6-P62/P63：结构化变体（旧口径 System + 中文文案子串嗅探——改一句
+            // 文案即静默改变 audit 侧重试策略）。归类语义见 EmptyReply 变体文档。
+            return Err(crate::error::DevforgeError::EmptyReply(format!(
+                "审查会话 `{}` 无有效回复（进程正常结束但未产出一字）",
                 self.role
             )));
         }

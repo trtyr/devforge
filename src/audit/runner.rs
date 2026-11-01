@@ -588,7 +588,7 @@ fn with_stage_retry<T>(
     for attempt in 0..2 {
         let mut session = factory.open().ctx(format!("开{label}会话"))?;
         let outcome = run(session.as_mut()).map_err(|e| {
-            if e.to_string().contains("未产出一字") {
+            if matches!(e.root_cause(), crate::error::DevforgeError::EmptyReply(_)) {
                 tracing::warn!(
                     component = "audit-engine",
                     stage = label,

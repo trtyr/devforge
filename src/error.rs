@@ -31,6 +31,13 @@ pub enum DevforgeError {
     #[error("系统错误: {0}")]
     System(String),
 
+    /// 会话正常结束但**零正文**（provider 软断粮；R6-P62/P63 结构化变体——旧口径
+    /// 用中文文案「未产出一字」的子串嗅探做分类，改一句文案即静默改变重试策略）。
+    /// 归类语义：实例级瞬时故障，换实例可恢复（审查侧重试换实例；audit 侧降级
+    /// Quality 换实例不重启 run——处置随业务场景，识别统一靠本变体）。
+    #[error("空回复: {0}")]
+    EmptyReply(String),
+
     /// 质量判定失败（审查打回、协议违例达上限、越界申报、验收不通过）。
     ///
     /// 与 [`DevforgeError::System`] 的区别只在恢复策略上（plan 010 D004）：
@@ -135,11 +142,12 @@ impl DevforgeError {
 
     /// 是否应当自动重启（**唯一判定源**，engine::policy 与 HTTP 层都读它）。
     ///
-    /// 可重启：`System`（外部瞬时故障）或 `Io`（spawn 层瞬时资源耗尽）。
+    /// 可重启：`System`（外部瞬时故障）、`Io`（spawn 层瞬时资源耗尽）或
+    /// `EmptyReply`（provider 软断粮——换实例可恢复，R6-P62/P63）。
     /// 其余一律不重启——重启只会得到同一个结论（Quality/Config）、或数据本身坏了
     /// （Store/Json/RpcProtocol）、或要交给编排器决策（Agent）。
     pub fn is_restartable(&self) -> bool {
-        matches!(self.root_cause(), Self::System(_) | Self::Io(_))
+        matches!(self.root_cause(), Self::System(_) | Self::Io(_) | Self::EmptyReply(_))
     }
 
     /// 机器可读错误码（自审 ref 144）：API 层不该靠中文关键词嗅探映射状态码。
@@ -150,6 +158,7 @@ impl DevforgeError {
         match self.root_cause() {
             Self::Agent { .. } => "agent",
             Self::System(_) => "system",
+            Self::EmptyReply(_) => "empty_reply",
             Self::Quality(_) => "quality",
             Self::Config(_) => "config",
             Self::Store(_) => "store",

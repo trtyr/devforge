@@ -301,7 +301,7 @@ pub fn stage1_review_batch_with_deadline(
                 // 超时同层——换实例重试一次后按该批放弃，一次会话闪失不得打断整场
                 // 审计（它昨晚干掉过一次整场）。其余实例/基础设施故障仍保持原分类
                 // 上抛（审计修复 #1 不回退：真故障该打断，不伪装成质量失败）。
-                if e.to_string().contains("未产出一字") {
+                if matches!(e.root_cause(), crate::error::DevforgeError::EmptyReply(_)) {
                     last_err = format!("第 {} 次空回复（会话正常结束但未产出一字）", attempt + 1);
                     tracing::warn!(
                         component = "audit-engine",

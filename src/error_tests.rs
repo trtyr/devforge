@@ -128,3 +128,20 @@ fn untrusted_text_is_sanitized() {
     let err = DevforgeError::agent("r", "\u{1b}[1m炸了\u{1b}[0m");
     assert_eq!(err.sanitized_message(), "agent 失败 [r]: 炸了");
 }
+
+/// R6-P62/P63：EmptyReply 变体映射——is_restartable=true（provider 软断粮
+/// 换实例可恢复）/ code="empty_reply" / 非 Quality（识别统一靠变体，不再
+/// 靠中文文案子串嗅探）；WithContext 包装下根因判定仍然成立。
+#[test]
+fn empty_reply_variant_mapping() {
+    let e = DevforgeError::EmptyReply("审查会话 `doc-review` 无有效回复".into());
+    assert!(e.is_restartable(), "provider 软断粮换实例可恢复");
+    assert_eq!(e.code(), "empty_reply");
+    assert!(!e.is_quality_failure(), "识别统一靠变体，不是 Quality");
+    let wrapped = DevforgeError::WithContext {
+        context: "开审查会话".into(),
+        source: Box::new(e),
+    };
+    assert!(wrapped.is_restartable(), "包装链下根因判定仍然成立");
+    assert_eq!(wrapped.code(), "empty_reply");
+}
