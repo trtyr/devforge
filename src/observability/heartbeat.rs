@@ -29,7 +29,7 @@ pub struct Heartbeat {
 
 /// run_id 是否可作为文件名成分（自审 minor 159：本函数是 pub API，旧口径直接把
 /// run_id 拼进路径——含 `../` 或分隔符就是路径穿越原语，只是当前调用方恰好有护栏）。
-fn safe_run_id(run_id: &str) -> bool {
+pub(crate) fn safe_run_id(run_id: &str) -> bool {
     !run_id.is_empty()
         && run_id.len() <= 128
         && !run_id.contains("..")
@@ -57,6 +57,13 @@ pub fn heartbeat_path(root: &Path, run_id: &str) -> PathBuf {
 
 /// 写心跳（**覆盖写**）。
 pub fn write(root: &Path, snap: &RunSnapshot) -> std::io::Result<()> {
+    // R5-P52：非法 run_id 提前拒收（可区分错误），不再构造含 NUL 的必败路径盲写
+    if !safe_run_id(&snap.run_id) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("run_id 形状非法（{}）——心跳拒收", snap.run_id),
+        ));
+    }
     let path = heartbeat_path(root, &snap.run_id);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

@@ -100,7 +100,7 @@ pub fn begin_run_in(root: PathBuf, run_id: &str, phase: &str) {
     }
     begin_run_in_ctx(root, run_id, phase);
     if let Err(e) = write_heartbeat(run_id) {
-        tracing::debug!(component = "observability", error = %e, "周期心跳落盘失败（下个 tick 重试）");
+        log_heartbeat_result(&e);
     }
 }
 
@@ -287,7 +287,7 @@ pub fn end_run(run_id: &str) {
     // F18：终态心跳先落盘再摘快照（摘完 write_heartbeat 就找不到 run 了）；
     // 尾部写不触发开跑竞态（resume6f 实验已证）→ 短 run 也有心跳在案
     if let Err(e) = write_heartbeat(run_id) {
-        tracing::debug!(component = "observability", error = %e, "周期心跳落盘失败（下个 tick 重试）");
+        log_heartbeat_result(&e);
     }
     runs().lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
     roots().lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
@@ -360,7 +360,7 @@ pub fn set_phase(phase: &str) {
         }
     }
     if let Err(e) = write_heartbeat(&run_id) {
-        tracing::debug!(component = "observability", error = %e, "周期心跳落盘失败（下个 tick 重试）");
+        log_heartbeat_result(&e);
     }
 }
 
@@ -379,7 +379,7 @@ pub fn set_step(step: &str) {
         snap.step = step.to_string();
     }
     if let Err(e) = write_heartbeat(&run_id) {
-        tracing::debug!(component = "observability", error = %e, "周期心跳落盘失败（下个 tick 重试）");
+        log_heartbeat_result(&e);
     }
 }
 
@@ -536,19 +536,45 @@ fn last_touch() -> &'static Mutex<HashMap<String, u64>> {
     LAST_TOUCH.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 写心跳（无该 run 的快照时不写）。
+/// 心跳写失败的三态日志（R5-P52）：NotFound = 设计内跳过（trace）；
+/// 其它 = 真失败（debug 点名）——仓内无重试队列，不承诺「下个 tick 重试」。
+fn log_heartbeat_result(e: &std::io::Error) {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        tracing::trace!(component = "observability", error = %e, "心跳跳过（run 上下文缺失）");
+    } else {
+        tracing::debug!(component = "observability", error = %e, "心跳未落盘（无重试队列——下一事件或 tick 触发时会再写）");
+    }
+}
+
+/// 写心跳（R5-P52 三态诚实化）：Ok = 已落盘；Err(NotFound) = 无该 run 的快照/根
+/// （设计内跳过——非 run 上下文的调用不是错误）；其它 Err = 真写失败（非法
+/// run_id / 盘错误）。调用方不再能把它与写失败混淆。
 pub fn write_heartbeat(run_id: &str) -> std::io::Result<()> {
+    // R5-P52：非法 run_id 提前拒收（可区分错误），不再构造含 NUL 的必败路径盲写
+    if !heartbeat::safe_run_id(run_id) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("run_id 形状非法（`{run_id}`）——心跳拒收"),
+        ));
+    }
     let Some(snap) = runs()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(run_id)
         .cloned()
     else {
-        return Ok(());
+        // 设计内跳过（非 run 上下文），但与写失败可区分（R5-P52）
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("无 run `{run_id}` 的快照——心跳跳过（非错误路径）"),
+        ));
     };
     // 落点 = 本 run 开始时捕获的观测根（不随进程级注入漂移）
     let Some(root) = run_root(run_id) else {
-        return Ok(());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("无 run `{run_id}` 的观测根——心跳跳过（非错误路径）"),
+        ));
     };
     // 刷心跳失败不打断 run（best-effort）：直接透传，日志级别由调用方（watchdog）定
     heartbeat::write(&root, &snap)

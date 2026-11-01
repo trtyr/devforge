@@ -228,3 +228,15 @@ fn run_root_follows_begin_capture_not_instance_root() {
     // 复位实例根，不污染其它测试
     super::set_root(dir_a.path());
 }
+
+/// R5-P52：write_heartbeat 三态诚实化——非法 run_id（含路径穿越）提前拒收
+/// InvalidData；无快照 NotFound（设计内跳过，与写失败可区分）。
+#[test]
+fn write_heartbeat_rejects_bad_run_id_and_reports_missing_snapshot() {
+    // 非法 run_id：路径穿越形态 → InvalidData（不再构造 NUL 路径盲写 EINVAL）
+    let err = super::write_heartbeat("../evil").unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+    // 无快照（run 未 begin）→ NotFound（设计内跳过）
+    let err = super::write_heartbeat("never-began-run").unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{err}");
+}
