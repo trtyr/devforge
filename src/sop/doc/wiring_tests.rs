@@ -100,3 +100,15 @@ fn final_review_reads_tool_submission() {
         crate::sop::doc::protocol::DocVerdict::Pass
     ));
 }
+
+/// R6-P60：doc 看门狗 idle 兑底——未显式设阈值时必须给 15 分钟默认值
+/// （对齐 builtin code-review 形态；缺省部署失活收割开启）。
+/// 源码锚钉接线形态防回归裸传 None（同 ledger 守卫锚先例：新增接线变更先审本锚）。
+#[test]
+fn doc_watchdog_idle_falls_back_to_audit_default() {
+    let src = include_str!("wiring.rs");
+    assert!(
+        src.contains("self.idle_ms.or(Some(crate::audit::runner::DEFAULT_AUDIT_IDLE_MS))"),
+        "doc 看门狗必须接 idle 兜底（裸传 self.idle_ms = 缺省部署失活收割关闭，R6-P60）"
+    );
+}

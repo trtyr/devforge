@@ -315,7 +315,9 @@ impl BuiltinRpcEngine {
         let sop_result = run_with_watchdog(
             control,
             run_id,
-            self.idle_ms,
+            // R6-P60：未显式设阈值时给 15 分钟兑底（对齐 builtin code-review 形态）——
+            // 旧口径裸 self.idle_ms 缺省 None = 缺省部署连失活收割都关，run 挂死无任何兑底。
+            self.idle_ms.or(Some(crate::audit::runner::DEFAULT_AUDIT_IDLE_MS)),
             vec![session_root.join("doc"), session_root.join("doc-reviews")],
             Some(ledger),
             Some(self.unblock_hook()),
