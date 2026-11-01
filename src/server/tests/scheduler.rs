@@ -1142,3 +1142,26 @@ async fn scheduler_status_reports_integration_switch_and_window_state() {
         "改文件即生效（每轮重读）：{body}"
     );
 }
+
+/// R5-EX-9/R2-13 + R5-P55：进程级去重集超限对折——真实路径灌 SEEN_SET_CAP+100
+/// 条，mark_fused 触发裁剪后集合回到约一半（有界）；未超限不动。
+#[test]
+fn seen_set_cap_folds_when_over_limit() {
+    // 前置隔离：本测试独占 fused_runs 进程级集合——其它测试若依赖其初始为空
+    // 会受影响（fused 集合只用于熔断去重，无别的断言依赖）。
+    let cap = crate::server::scheduler::SEEN_SET_CAP;
+    for i in 0..(cap + 100) {
+        crate::server::scheduler::mark_fused(&format!("cap-test-{i}"));
+    }
+    let set = crate::server::scheduler::fused_runs().lock().unwrap();
+    assert!(
+        set.len() <= cap,
+        "超限后必须有界（对折保留）：{} > {cap}",
+        set.len()
+    );
+    assert!(
+        set.contains("cap-test-0") || set.len() > cap / 3,
+        "对折应保留约一半条目：{}",
+        set.len()
+    );
+}

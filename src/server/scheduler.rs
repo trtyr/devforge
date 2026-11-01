@@ -222,7 +222,7 @@ pub fn integration_window_in_flight() -> bool {
 /// 已熔断过的 run id（自审 minor 227：重复熔断 = 重复 SIGKILL + 重复事件）。
 ///
 /// 进程级集合：run 收场时无需清理（id 唯一，容量与「本进程见过的超预算 run 数」同阶）。
-fn fused_runs() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+pub(crate) fn fused_runs() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
     static FUSED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
         std::sync::OnceLock::new();
     FUSED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
@@ -235,11 +235,38 @@ fn already_fused(run_id: &str) -> bool {
         .contains(run_id)
 }
 
-fn mark_fused(run_id: &str) {
-    fused_runs()
+/// 进程级去重集的超限保护（R5-EX-9/R2-13 + R5-P55）：只增不删的集合在长跑
+/// 进程里无界增长（与见过的 run 数同阶）。超限时对折保留（hash 奇偶分半）：
+/// 最坏后果是极老条目被重复处置一次（重复通知/重复熔断），远轻于无界内存。
+pub(crate) const SEEN_SET_CAP: usize = 50_000;
+fn cap_seen_set(set: &mut std::collections::HashSet<String>, what: &str) {
+    if set.len() <= SEEN_SET_CAP {
+        return;
+    }
+    use std::hash::{Hash, Hasher};
+    let before = set.len();
+    set.retain(|s| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        s.hash(&mut h);
+        h.finish().is_multiple_of(2)
+    });
+    tracing::warn!(
+        component = "scheduler",
+        event = "seen_set_capped",
+        what,
+        before,
+        after = set.len(),
+        cap = SEEN_SET_CAP,
+        "进程级去重集超限，已对折保留（极老条目可能被重复处置一次）"
+    );
+}
+
+pub(crate) fn mark_fused(run_id: &str) {
+    let mut set = fused_runs()
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(run_id.to_string());
+        .unwrap_or_else(|e| e.into_inner());
+    set.insert(run_id.to_string());
+    cap_seen_set(&mut set, "fused_runs");
 }
 
 /// 渠道事故去重集（进程级，仿 `fused_runs`）。
@@ -265,10 +292,11 @@ fn channel_run_seen(kind: &str, run_id: &str) -> bool {
 
 /// 标记该 run 在给定语义下已处置过。
 fn mark_channel_run_seen(kind: &str, run_id: &str) {
-    channel_seen_runs()
+    let mut set = channel_seen_runs()
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(format!("{kind}:{run_id}"));
+        .unwrap_or_else(|e| e.into_inner());
+    set.insert(format!("{kind}:{run_id}"));
+    cap_seen_set(&mut set, "channel_seen_runs");
 }
 
 // ---------- A2 通知扫描（ui 待答久等 / 集成 NeedsRepair） ----------
@@ -287,10 +315,11 @@ fn ui_notify_seen(id: &str) -> bool {
 }
 
 fn mark_ui_notify_seen(id: &str) {
-    ui_notify_seen_set()
+    let mut set = ui_notify_seen_set()
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(id.to_string());
+        .unwrap_or_else(|e| e.into_inner());
+    set.insert(id.to_string());
+    cap_seen_set(&mut set, "ui_notify_seen_set");
 }
 
 fn integration_repair_seen_set()
@@ -308,10 +337,11 @@ fn integration_repair_seen(key: &str) -> bool {
 }
 
 fn mark_integration_repair_seen(key: &str) {
-    integration_repair_seen_set()
+    let mut set = integration_repair_seen_set()
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key.to_string());
+        .unwrap_or_else(|e| e.into_inner());
+    set.insert(key.to_string());
+    cap_seen_set(&mut set, "integration_repair_seen_set");
 }
 
 /// A2：ui 待答久等 → 通知。与 scan_pending_warns 的 WARN 同一阈值旋钮，
