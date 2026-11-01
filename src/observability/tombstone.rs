@@ -91,6 +91,8 @@ pub fn write_tombstone(root: &Path, info: &PanicHookInfo<'_>) -> std::io::Result
         location_text(info),
     );
     std::fs::write(&path, body)?;
+    // R5-P46：panic 少见但仍无界——按数裁最老
+    super::prune_observability_dir(&dir, 64, "tombstones");
     Ok(path)
 }
 

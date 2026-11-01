@@ -174,3 +174,36 @@ fn phase_logs_cap_drops_oldest_half() {
         .unwrap()
         .retain(|k, _| !k.starts_with(prefix));
 }
+
+/// R5-P46：观测产物按数裁最老——文件与目录两态都裁、cap 内不动、最老先死。
+#[test]
+fn prune_observability_dir_drops_oldest_over_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    // 文件态：cap 3，造 5 个（mtime 用文件系统粒度，加时戳差）
+    for i in 0..5 {
+        std::fs::write(dir.path().join(format!("hb{i}.json")), "x").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(15)); // mtime 递增（排序依据）
+    }
+    super::prune_observability_dir(dir.path(), 3, "test-files");
+    let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().filter_map(|e| e.ok()).collect();
+    assert_eq!(left.len(), 3, "超 cap 必须裁到 3：{}", left.len());
+    assert!(
+        !dir.path().join("hb0.json").exists() && !dir.path().join("hb1.json").exists(),
+        "最老两个必须先死"
+    );
+
+    // 目录态：is_dir 分支（remove_dir_all）
+    for i in 0..5 {
+        let d = dir.path().join(format!("sess{i}"));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("s.jsonl"), "x").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    super::prune_observability_dir(dir.path(), 2, "test-dirs");
+    let dirs: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .collect();
+    assert_eq!(dirs.len(), 2, "目录态同样裁到 cap：{}", dirs.len());
+}

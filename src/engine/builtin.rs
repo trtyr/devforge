@@ -166,6 +166,8 @@ impl RunEngine for BuiltinRpcEngine {
             // 引擎批次 #4：会话存档按 run-id 隔离——README 一直声称按 run-id 组织，
             // 实现却是按角色共享（sessions/code-review），两个 run 的存档互相覆盖。
             let sessions = self.session_root.join(&run.id.0);
+        // R5-P46：会话目录按 run 归档，无界磁盘面——开跑前裁最老（cap 128 个 run 目录）
+        crate::observability::prune_observability_dir(&self.session_root, 128, "sessions");
             let factory = crate::sop::rpc_bridge::RpcReviewFactory::per_round_in(
                 self.profile_root.join("code-review"),
                 "code-review",
@@ -268,6 +270,8 @@ impl BuiltinRpcEngine {
 
         // 引擎批次 #4：本 run 的会话根（与 README 口径一致：按 run-id 归档）
         let sessions = self.session_root.join(&run.id.0);
+        // R5-P46：会话目录按 run 归档，无界磁盘面——开跑前裁最老（cap 128 个 run 目录）
+        crate::observability::prune_observability_dir(&self.session_root, 128, "sessions");
         let ledger_path = self
             .plans_root
             .join(&task.project)
@@ -362,6 +366,8 @@ impl BuiltinRpcEngine {
         preflight_codegraph(&task.workspace, &self.codegraph_bin);
 
         let sessions = self.session_root.join(&run.id.0);
+        // R5-P46：会话目录按 run 归档，无界磁盘面——开跑前裁最老（cap 128 个 run 目录）
+        crate::observability::prune_observability_dir(&self.session_root, 128, "sessions");
         let agent_client = RpcClient::spawn(
             SpawnSpec::new(
                 self.profile_root.join("coding-agent"),
@@ -467,6 +473,8 @@ impl BuiltinRpcEngine {
         // 无 codegraph 预检——测试 Agent 不配代码事实层（D007），不需要索引
 
         let sessions = self.session_root.join(&run.id.0);
+        // R5-P46：会话目录按 run 归档，无界磁盘面——开跑前裁最老（cap 128 个 run 目录）
+        crate::observability::prune_observability_dir(&self.session_root, 128, "sessions");
         let agent_client = RpcClient::spawn(
             SpawnSpec::new(
                 self.profile_root.join("test-agent"),
@@ -629,6 +637,8 @@ impl BuiltinRpcEngine {
         crate::sop::testing_protocol::create_testing_skeleton(&blackboard).ctx("建 testing 骨架")?;
 
         let sessions = self.session_root.join(&run.id.0);
+        // R5-P46：会话目录按 run 归档，无界磁盘面——开跑前裁最老（cap 128 个 run 目录）
+        crate::observability::prune_observability_dir(&self.session_root, 128, "sessions");
         let agent_client = RpcClient::spawn(
             SpawnSpec::new(
                 self.profile_root.join("doc-fix"),

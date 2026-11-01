@@ -100,6 +100,12 @@ pub fn write(root: &Path, snap: &RunSnapshot) -> std::io::Result<()> {
             "心跳原子替换失败（临时文件已清理）"
         );
     }
+    if renamed.is_ok() {
+        // R5-P46：按数裁最老（每 run 一文件）——无界磁盘面的回收点
+        if let Some(dir) = path.parent() {
+            super::prune_observability_dir(dir, 512, "heartbeat");
+        }
+    }
     renamed
 }
 

@@ -180,6 +180,48 @@ const MAX_PHASE_SPANS: usize = 256;
 
 static PHASE_LOGS: OnceLock<Mutex<HashMap<String, Vec<PhaseSpan>>>> = OnceLock::new();
 
+/// 观测产物按数裁剪（R5-P46）：目录内条目超 cap 时按 mtime 删最老（心跳/墓碑是
+/// 文件、sessions 是 run 目录——is_dir 分流）。失败留痕不阻断写路径；与同仓
+/// prune_runs / MAX_AUTH_EVENTS 同一口径（有界磁盘面）。
+pub(crate) fn prune_observability_dir(dir: &std::path::Path, cap: usize, what: &str) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return; // 目录不存在 = 还没产物，无需裁
+    };
+    let mut items: Vec<(std::path::PathBuf, std::time::SystemTime)> = rd
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            Some((e.path(), meta.modified().ok()?))
+        })
+        .collect();
+    if items.len() <= cap {
+        return;
+    }
+    items.sort_by_key(|(_, t)| *t); // 最老在前
+    let drop_n = items.len() - cap;
+    let mut removed = 0usize;
+    for (p, _) in items.into_iter().take(drop_n) {
+        let ok = if p.is_dir() {
+            std::fs::remove_dir_all(&p).is_ok()
+        } else {
+            std::fs::remove_file(&p).is_ok()
+        };
+        if ok {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        tracing::warn!(
+            component = "observability",
+            event = "observability_pruned",
+            what,
+            dropped = removed,
+            cap,
+            "观测产物超限，已裁最老"
+        );
+    }
+}
+
 /// 进程内保留阶段历史的 run 条目上限（R2-08：end_run 不摘是设计——结束后仍可查
 /// 阶段边界；但 run 条目数无界 = 长跑内存增长）。超限按「最近活动时间」裁掉最老
 /// 一半（刚结束/活跃 run 不受影响）。
