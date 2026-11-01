@@ -45,8 +45,10 @@ pub fn settings_path(plans_root: &std::path::Path) -> std::path::PathBuf {
     plans_root.join("integrations").join("settings.json")
 }
 
-/// 读（纯函数化）：文件缺失 = 缺省全 off；损坏 = 缺省全 off + WARN（生效值
-/// 端点/响应里可见，不让手滑值炸读取方）。
+/// 读（纯函数化）：文件缺失 = 缺省全 off（「文件不存在 = 功能不存在」，静默）；
+/// 损坏 = 缺省全 off + WARN；**其它 IO 错误（权限/IO/路径为目录等）= 缺省全 off +
+/// WARN 留痕**（R4-P40：旧口径 Err(_) 静默吞——EACCES/EIO 反复失败无任何痕迹，
+/// 消费方每 30s 调一次也不升级告警）。
 pub fn load(path: &std::path::Path) -> IntegrationSettings {
     match std::fs::read_to_string(path) {
         Ok(raw) => match serde_json::from_str(&raw) {
@@ -62,7 +64,17 @@ pub fn load(path: &std::path::Path) -> IntegrationSettings {
                 IntegrationSettings::default()
             }
         },
-        Err(_) => IntegrationSettings::default(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => IntegrationSettings::default(),
+        Err(e) => {
+            tracing::warn!(
+                component = "integration",
+                event = "integration.settings_io_error",
+                error = %e,
+                path = %path.display(),
+                "integrations/settings.json 不可读（非缺失）——按全 off 缺省处理（检查权限/路径）"
+            );
+            IntegrationSettings::default()
+        }
     }
 }
 

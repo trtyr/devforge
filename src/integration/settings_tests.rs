@@ -57,3 +57,27 @@ fn serialized_shape_matches_ui9_schema() {
     assert_eq!(v["gates"]["doc_lint"], true);
     assert!(v.get("integrations").is_none(), "无多余嵌套");
 }
+
+/// R4-P40：文件存在但不可读（chmod 000 = EACCES）→ 按全 off 缺省处理且
+/// 留痕（settings_io_error WARN，行为面断言 default）；与「缺失静默」分开。
+#[cfg(unix)]
+#[test]
+fn load_unreadable_file_falls_back_to_default_with_io_error_logged() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    std::fs::write(&path, r#"{"auto_integrate_enabled":true,"gates":{}}"#).unwrap();
+    // 权限归零（owner 无读写）→ read_to_string 报 EACCES
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    let s = super::load(&path);
+    assert!(!s.auto_integrate_enabled, "不可读文件必须回落全 off");
+    // 还原权限以便 tempdir 清理
+    let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644));
+}
+
+/// R4-P40 对照面：文件缺失（NotFound）静默回落全 off——正常缺省路径无告警语义。
+#[test]
+fn load_missing_file_is_silent_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = super::load(&dir.path().join("nope").join("settings.json"));
+    assert!(!s.auto_integrate_enabled);
+}
