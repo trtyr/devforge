@@ -394,8 +394,43 @@ impl BuiltinRpcEngine {
                         );
                     } else {
                     let frozen_path = task_root.join(FROZEN_COMMIT_FILE);
-                    std::fs::write(&frozen_path, format!("{frozen}\n"))
-                        .ctx("写冻结 commit 记录")?;
+                    // R9-P84：原子写（唯一临时名 + sync + rename，gate0 write_baseline /
+                    // history 先例同款）——旧 truncate+write 崩溃留下半截 sha：scheduler
+                    // 会把脏值当锚点（t13 已加 40-hex 拒收），但 run 已被写失败 ? 上抛翻成
+                    // Failed——report.md 已写「通过」而 run Failed，日志面与台账面矛盾；
+                    // rename 失败时旧台账完好，重试安全。
+                    let tmp = task_root
+                        .join(format!("{FROZEN_COMMIT_FILE}.{}.tmp", std::process::id()));
+                    let body = format!("{frozen}\n");
+                    (|| -> crate::error::Result<()> {
+                        use std::io::Write;
+                        let mut f = std::fs::File::create(&tmp).map_err(|e| {
+                            crate::error::DevforgeError::System(format!(
+                                "建冻结锚点临时文件失败：{e}"
+                            ))
+                        })?;
+                        f.write_all(body.as_bytes()).map_err(|e| {
+                            crate::error::DevforgeError::System(format!(
+                                "写冻结锚点临时文件失败：{e}"
+                            ))
+                        })?;
+                        f.sync_all().map_err(|e| {
+                            crate::error::DevforgeError::System(format!(
+                                "刷冻结锚点临时文件失败：{e}"
+                            ))
+                        })?;
+                        std::fs::rename(&tmp, &frozen_path).map_err(|e| {
+                            crate::error::DevforgeError::System(format!(
+                                "原子替换冻结锚点 {} 失败：{e}",
+                                frozen_path.display()
+                            ))
+                        })?;
+                        Ok(())
+                    })()
+                    .inspect_err(|_| {
+                        let _ = std::fs::remove_file(&tmp);
+                    })
+                    .ctx("写冻结 commit 记录")?;
                     tracing::info!(
                         component = "change-engine",
                         event = "change.frozen",
