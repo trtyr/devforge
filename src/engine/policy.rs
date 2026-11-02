@@ -98,9 +98,12 @@ where
         if let Err(e) = &result {
             let (message, as_warn) = if e.is_quality_failure() {
                 ("run 尝试失败（质量类，不重启）", true)
-            } else if matches!(e, DevforgeError::Config(_)) {
+            } else if e.is_config_error() {
                 // 审计修复 #2：配置类失败与质量类同款分级（WARN + 不重启）——
                 // 配置问题重启永远不会变好，ERROR 会误导成基础设施故障。
+                // R10-P93：走 root_cause 判据（is_config_error）——旧口径裸顶层
+                // matches! 与同文件 map_intervention（root_cause）相反，包装后的
+                // Config 被误判成 ERROR 基础设施故障。
                 ("run 尝试失败（配置类，不重启）", true)
             } else {
                 ("run 尝试失败", false)

@@ -127,6 +127,28 @@ fn config_failures_are_not_retried_and_logged_as_warn() {
     assert!(lines[0].contains("缺 API key"), "缺原始错误全文：{}", lines[0]);
 }
 
+/// R10-P93 回归：**包装**的配置类失败（WithContext 包 Config）也判对级别——
+/// 错实现形态：分级判据裸顶层 matches!(e, Config(_))，与同文件 map_intervention
+/// （root_cause）相反——包装后的 Config 被误判成 ERROR（误导基础设施故障）。
+#[test]
+fn wrapped_config_failures_are_still_logged_as_warn() {
+    let text = capture_jsonl(|| {
+        let (result, attempts) = run_with_retry(&RetryPolicy::fast(), &RunControl::new(), |_| {
+            Err(DevforgeError::WithContext {
+                context: "渲染 profile".into(),
+                source: Box::new(DevforgeError::Config("缺 API key（配置问题）".into())),
+            })
+        });
+        assert_eq!(attempts, 1, "包装的配置失败也不得重启：{attempts}");
+        assert!(result.is_err());
+    });
+    let lines: Vec<&str> = text.lines().filter(|l| l.contains("run.attempt_failed")).collect();
+    assert_eq!(lines.len(), 1, "包装配置失败应落一条条目：{text}");
+    assert!(lines[0].contains("\"level\":\"WARN\""), "包装 Config 应走配置类 WARN 分级：{}", lines[0]);
+    assert!(lines[0].contains("配置类，不重启"), "应走配置类文案而非基础设施 ERROR：{}", lines[0]);
+    assert!(lines[0].contains("\"retryable\":false"), "包装配置失败不重启：{}", lines[0]);
+}
+
 #[test]
 fn the_retry_layer_updates_the_run_context_attempt() {
     // 错实现形态：重试层不更新 run 上下文 → `map_intervention` 读到的 attempt 不是本次的
