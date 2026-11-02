@@ -246,8 +246,28 @@ where
                             let cov = crate::docgen::audit::coverage_for_unit(
                                 inv, &docs_root, level, &$unit,
                             )?;
-                            let lint =
-                                crate::docgen::lint::lint_docs_with_entities(&docs_root, idx)?;
+                            // R7-P67：机械门 lint 按本单元产出文件收窄（写前→交卷快照
+                            // 对的产出集）——lead=1 写超前下全树 lint 会把 N+1 的半成品
+                            // 记到 N 头上；全局 lint 归终审面兜底。快照缺失（bug 场景，
+                            // mark_done 段会按 Quality 中止）回退全树保持旧行为。
+                            let unit_files: Vec<std::path::PathBuf> = unit_snapshots
+                                .get(&$unit)
+                                .map(|(before, committed)| {
+                                    crate::sop::doc::evidence::produced_files_between(
+                                        committed, before,
+                                    )
+                                    .into_iter()
+                                    .map(|rel| docs_root.join(rel))
+                                    .collect()
+                                })
+                                .unwrap_or_default();
+                            let lint = if unit_files.is_empty() {
+                                crate::docgen::lint::lint_docs_with_entities(&docs_root, idx)?
+                            } else {
+                                crate::docgen::lint::lint_docs_with_entities_for_files(
+                                    &docs_root, &unit_files, idx,
+                                )?
+                            };
                             let mut issues: Vec<String> = cov
                                 .missing
                                 .iter()

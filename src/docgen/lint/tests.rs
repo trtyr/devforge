@@ -541,3 +541,30 @@ fn modern_mermaid_kinds_pass() {
         report.violations()
     );
 }
+
+/// R7-P67：scoped lint 只看传入文件集——B 的半成品不得污染 A 的判定
+/// （单元机械门按本单元产出收窄的引擎侧根基；全局口径仍走 lint_docs）。
+#[test]
+fn lint_for_files_only_judges_given_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let good = write(
+        tmp.path(),
+        "a-good.md",
+        "---\ntype: entry\n---\n\n# 新增笔记\n\n## 用途\n创建一条笔记。\n\n## 输入\n- title: 必填\n\n## 输出\n返回笔记对象。\n\n## 错误\n400 validation_failed。\n\n## 示例\n`curl -X POST /api/notes`\n",
+    );
+    let _bad = write(
+        tmp.path(),
+        "b-broken.md",
+        "---\ntype: entry\n---\n\n# 列用户\n\n## 用途\n列出用户。\n",
+    );
+    let inv = crate::docgen::inventory::build_inventory(tmp.path()).unwrap();
+    let idx = EntityIndex::build(tmp.path(), Some(&inv)).unwrap();
+
+    // 只看 good：b 的缺节不算在它头上
+    let scoped = lint_docs_with_entities_for_files(tmp.path(), &[good], &idx).unwrap();
+    assert!(scoped.passed(), "scoped 应只判定传入文件：{:?}", scoped.violations());
+
+    // 全树口径仍会抓到 b（对照——证明半成品确实存在，scoped 不是假绿）
+    let all = lint_docs_with_entities(tmp.path(), &idx).unwrap();
+    assert!(!all.passed(), "全树口径必须仍抓到 b 的缺节");
+}

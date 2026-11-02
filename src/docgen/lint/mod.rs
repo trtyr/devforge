@@ -9,7 +9,7 @@ use crate::error::Context as _;
 use crate::error::Result;
 
 pub use report::{Check, EntryType, LintReport, Severity, Violation};
-pub use checks::{lint_docs, lint_docs_with_entities};
+pub use checks::{lint_docs, lint_docs_with_entities, lint_docs_with_entities_for_files};
 pub use entities::{EntityIndex, mentioned_entities};
 
 mod checks;

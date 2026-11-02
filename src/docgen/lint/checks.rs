@@ -15,10 +15,24 @@ pub fn lint_docs_with_entities(docs_dir: &Path, index: &EntityIndex) -> Result<L
 }
 
 fn lint_with(docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport> {
+    lint_core(&collect_markdown(docs_dir)?, docs_dir, index)
+}
+
+/// 只 lint 指定文件集（R7-P67：单元机械门按本单元文件域收窄——lead=1 写超前下，
+/// 全树 lint 会把 N+1 的半成品（缺节/死链）记到 N 头上，问题清单还回注给错的
+/// 写手；全局 lint 归终审面兜底）。
+pub fn lint_docs_with_entities_for_files(
+    docs_dir: &Path,
+    files: &[PathBuf],
+    index: &EntityIndex,
+) -> Result<LintReport> {
+    lint_core(files, docs_dir, Some(index))
+}
+
+fn lint_core(files: &[PathBuf], docs_dir: &Path, index: Option<&EntityIndex>) -> Result<LintReport> {
     let mut report = LintReport::default();
-    let files = collect_markdown(docs_dir)?;
     let mut gap_hits: Vec<(PathBuf, usize)> = Vec::new();
-    for file in &files {
+    for file in files {
         let text = std::fs::read_to_string(file)
             .ctx(format!("读取文档 {}", file.display()))?;
         let doc = ParsedDoc::parse(&text);

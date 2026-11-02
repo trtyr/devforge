@@ -898,3 +898,183 @@ fn fix_queue_and_fails_roundtrip_via_store() {
     assert_eq!(q[0].3, 1);
     assert_eq!(consecutive_fails(reloaded), 1, "失败计数应从断点恢复");
 }
+
+/// R7-P67 端到端：lead=1 写超前下，N+1 的半成品（缺节文档已落盘）不得把 N 的
+/// 机械门判死——lint 按本单元产出文件收窄（写前→交卷快照对），全局问题归终审面。
+/// 旧病灶形态：全树 lint 在 u0 裁决时扫到 b.md 半成品 → u0 被 FAIL 进 fix 队列
+/// → 连续两轮不达标触发断路器，整场 run 炸掉。
+#[test]
+fn mechanical_gate_lint_is_scoped_to_unit_files() {
+    use std::collections::VecDeque;
+
+    let tmp = tempfile::tempdir().unwrap();
+    // 门 0 真清单：两个目录各一源文件（unit 按目录划分）→ 至少两个单元
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("lib")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/core.py"),
+        "def create_note(title):\n    return title\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("lib/users.py"),
+        "def list_users():\n    return []\n",
+    )
+    .unwrap();
+    let inv = crate::docgen::inventory::build_inventory(tmp.path()).unwrap();
+    let meta = tmp.path().join("docs/contexts/_meta");
+    std::fs::create_dir_all(&meta).unwrap();
+    inv.save(&meta.join("inventory.json")).unwrap();
+    let units: Vec<String> = inv
+        .entries
+        .iter()
+        .map(|e| e.unit_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert!(units.len() >= 2, "fixture 应产生至少两个单元：{units:?}");
+    let (ua, ub) = (units[0].clone(), units[1].clone());
+
+    // 真写文件的写手（按自身轮次序号驱动，不用静态计数——并行测试互不污染）：
+    // 0=u0 写合规 a.md；1=u1 写超前落半成品 b.md（缺节）；2=u1 fix 重写 b.md 合规
+    struct ScopedWritingAgent {
+        docs_root: std::path::PathBuf,
+        received: Arc<Mutex<Vec<String>>>,
+        n: usize,
+        unit_a: String,
+        unit_b: String,
+    }
+    impl crate::sop::planning::PlanAgentSession for ScopedWritingAgent {
+        fn converse(
+            &mut self,
+            message: &str,
+            _ui: &mut dyn crate::sop::planning::UserLink,
+        ) -> crate::error::Result<String> {
+            let turn = self.n;
+            self.n += 1;
+            // 交卷单元名从指令里抽（kickoff/fix 指令都点名 active 单元）——
+            // 预填固定名会在 fix 轮张冠李戴制造 mismatch
+            let active = if message.contains(&self.unit_a) {
+                self.unit_a.clone()
+            } else {
+                self.unit_b.clone()
+            };
+            let marker = format!("轮{turn}\n<doc-complete>{active}</doc-complete>");
+            // 文档内容按单元名路由符号（单元名含目录段）：覆盖门的提及必须落在
+            // 该单元自己的符号上，否则 coverage 会烧多余的 fix 轮污染时序断言
+            // Module 条目的覆盖判定要路径/模块名词边界命中——文档必须提及
+            // 自己的源码路径（如 `lib/users.py`），只写函数名会缺 Module 覆盖
+            let good_doc = |sym: &str, label: &str, ex: &str, mod_path: &str| {
+                // Module 条目覆盖判定：text 提路径 +（自称 module 或标题命中模块名）——
+                // 标题带目录段（`lib 模块：…`）即中 titled 分支，type 保持 entry
+                let dir = mod_path.split('/').next().unwrap_or(mod_path);
+                format!(
+                    "---\ntype: entry\n---\n\n# {dir} 模块：{label}\n\n## 用途\n`{sym}` 完成对应操作，模块源码见 `{mod_path}`。\n\n## 输入\n- 必填参数\n\n## 输出\n返回结果对象。\n\n## 错误\n400 validation_failed。\n\n## 示例\n`{ex}`\n"
+                )
+            };
+            let (sym_a, mod_a, sym_b, mod_b) = if self.unit_a.contains("lib") {
+                ("list_users", "lib/users.py", "create_note", "src/core.py")
+            } else {
+                ("create_note", "src/core.py", "list_users", "lib/users.py")
+            };
+            match turn {
+                0 => std::fs::write(
+                    self.docs_root.join("a.md"),
+                    good_doc(sym_a, "新增笔记", "curl -X POST /api/notes", mod_a),
+                )
+                .unwrap(),
+                // u1 写超前：半成品落盘（提及符号过覆盖门，但缺「输入/输出」节
+                // ——全树 lint 会 FAIL 它，scoped lint 不看它）
+                1 => std::fs::write(
+                    self.docs_root.join("b.md"),
+                    format!(
+                        "---\ntype: entry\n---\n\n# 半成品\n\n## 用途\n`{sym_b}` 尚未写完。\n"
+                    ),
+                )
+                .unwrap(),
+                // fix 轮：谁的 fix 就重写谁的文件为合规版（active 由指令抽取）
+                _ => {
+                    if active == self.unit_a {
+                        std::fs::write(
+                            self.docs_root.join("a.md"),
+                            good_doc(sym_a, "新增笔记修补", "curl -X POST /api/notes", mod_a),
+                        )
+                        .unwrap();
+                    } else {
+                        std::fs::write(
+                            self.docs_root.join("b.md"),
+                            good_doc(sym_b, "半成品修补", "curl -X POST /api/fix", mod_b),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            self.received.lock().unwrap().push(marker.clone());
+            Ok(marker)
+        }
+    }
+
+    let docs_root = tmp.path().join("docs/contexts");
+    std::fs::create_dir_all(&docs_root).unwrap();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let agent = ScopedWritingAgent {
+        docs_root: docs_root.clone(),
+        received: received.clone(),
+        n: 0,
+        unit_a: ua.clone(),
+        unit_b: ub.clone(),
+    };
+
+    // 卡住 u0 的裁决直到 u1 交卷（写超前的半成品已在盘上）才放行——旧实现在这个
+    // 时点全树 lint 会把 b.md 的缺节记到 u0 头上
+    let (tx1, rx1) = gate_pair();
+    let received_w = received.clone();
+    drive_gates(
+        vec![(
+            Box::new(move || received_w.lock().unwrap().len()) as Box<dyn Fn() -> usize + Send>,
+            2,
+        )],
+        vec![tx1],
+    );
+
+    let factory = PipeReviewFactory {
+        replies: Arc::new(Mutex::new(
+            [
+                "<doc-verdict>PASS</doc-verdict>",
+                "<doc-verdict>PASS</doc-verdict>",
+                "<doc-verdict>PASS</doc-verdict>\n<route>finish</route>",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        )),
+        instructions: Arc::new(Mutex::new(Vec::new())),
+        opens: Arc::new(Mutex::new(0)),
+        gates: Arc::new(Mutex::new(VecDeque::from(vec![rx1]))),
+        deadlines: Arc::new(Mutex::new(Vec::new())),
+        submissions: Arc::new(Mutex::new(Default::default())),
+    };
+
+    run_pipeline(
+        agent,
+        Arc::new(Mutex::new(factory)),
+        state_path(&tmp),
+        &mut NoUser,
+        tmp.path(),
+        &units,
+        "complete",
+        String::new(),
+        None,
+        None,
+    )
+    .expect("scoped 机械门下 u0 不应被 u1 的半成品拖进断路器");
+
+    let saved = state_path(&tmp).load();
+    let state = saved.state().expect("断点应已落盘");
+    let done = done_units(state);
+    assert_eq!(
+        done.len(),
+        2,
+        "两个单元都应完成（u0 直通，u1 半成品只烧自己一轮 fix）：{done:?}"
+    );
+}
