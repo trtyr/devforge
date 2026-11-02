@@ -467,16 +467,18 @@ fn split_path_line(tok: &str) -> Option<(String, u32)> {
     Some((path.to_string(), n))
 }
 
-/// 某块（到下一个标题为止）的内容行——**最后一个**含该词的标题生效。
+/// 某块（到下一个标题为止）的内容行——**最后一个**同名标题生效。
 ///
 /// 自审 PA-01（P012）：旧实现合并所有同名标题的段落（每个标题都重新计算 inside），
 /// 与本函数及注释声称的「后者覆盖前者」相反——旧草稿段会混入白名单集合放宽校验。
 /// 现与 `ambiguity_block` 同构：rposition 取最后一个同名标题。
+/// R8-P76：标题匹配从 contains 子串改精确边界（is_section_title）——「白名单与
+/// 契约对照」「白名单外的影响面」不再命中「白名单」块取错。
 fn section_lines<'a>(plan: &'a str, title: &str) -> Vec<&'a str> {
     let lines: Vec<&str> = plan.lines().collect();
     let start = lines
         .iter()
-        .rposition(|l| l.trim_start().starts_with('#') && l.contains(title));
+        .rposition(|l| is_section_title(l, title));
     let Some(start) = start else {
         return Vec::new();
     };
@@ -485,6 +487,38 @@ fn section_lines<'a>(plan: &'a str, title: &str) -> Vec<&'a str> {
         .take_while(|l| !l.trim_start().starts_with('#'))
         .copied()
         .collect()
+}
+
+/// 标题行精确匹配（R8-P76）：去 `#` 前缀与序号 token 后，标题名以 `title`
+/// 开头且 title 后是行尾/空白——「## 4 白名单」命中、「## 白名单与契约对照」
+/// 「## 白名单外的影响面」不命中（旧 contains 子串把三者都当白名单块，
+/// rposition 取错块污染白名单与契约越界判定）。
+fn is_section_title(line: &str, title: &str) -> bool {
+    let l = line.trim_start();
+    if !l.starts_with('#') {
+        return false;
+    }
+    let body = l.trim_start_matches('#').trim();
+    let name = match body.split_once(char::is_whitespace) {
+        // 首个 token 是序号形态（ASCII 数字开头，如 `4`/`1.1`）→ 剥掉取标题名
+        Some((head, rest))
+            if head.chars().next().is_some_and(|c| c.is_ascii_digit()) =>
+        {
+            rest.trim()
+        }
+        _ => body,
+    };
+    match name.strip_prefix(title) {
+        Some(rest) => {
+            rest.is_empty()
+                || rest.starts_with(char::is_whitespace)
+                // 同名标题的括号注记形态：「白名单（定稿）」「白名单(定稿)」——
+                // PA-01「后者覆盖」语义依赖它被认作同名
+                || rest.starts_with('（')
+                || rest.starts_with('(')
+        }
+        None => false,
+    }
 }
 
 /// 某块里出现的文件路径（按行解析反引号或裸路径 token）。

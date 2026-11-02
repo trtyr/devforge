@@ -567,3 +567,25 @@ fn unreadable_reference_skips_line_check_not_dead() {
         "文本文件行号越界仍应拦"
     );
 }
+
+/// R8-P76：section 标题精确匹配——「白名单与契约对照」「白名单外的影响面」
+/// 不再命中「白名单」块（旧 contains + rposition 取到干扰块，污染白名单
+/// 与契约越界判定：干扰段路径混入白名单集合放宽校验）。
+#[test]
+fn section_title_matches_exactly_not_by_substring() {
+    let base = good_plan();
+    // 干扰标题（含「白名单」子串）带自己的路径段——旧口径 rposition 取到它，
+    // 白名单变成 [src/evil.rs]，真白名单丢失
+    let plan = format!(
+        "{base}\n## 白名单外的影响面\n- `src/evil.rs` 邻接影响\n"
+    );
+    let paths = section_paths(&plan, "白名单");
+    assert!(
+        !paths.iter().any(|p| p.contains("evil")),
+        "干扰标题段不得混入白名单：{paths:?}"
+    );
+    assert!(
+        paths.contains(&"src/a.rs".to_string()),
+        "真白名单块仍应取到：{paths:?}"
+    );
+}
