@@ -4,7 +4,9 @@
 //! DOC_FIX（Doc Fix Agent 单轮工作：读 findings(doc-side) → 逐条修文档 → 回写处置摘要）
 //!   → doc-review 内置审查（每轮全新实例，D008：一致性/自洽/Runbook 契约/findings 完整性）
 //!   → PASS → 返回（编排层恢复 testing，D004 流回测试环节）
-//!   → FAIL → 问题清单回注 Agent → 修订 → 重审（零上限）
+//!   → FAIL → 问题清单回注 Agent → 修订 → 重审（连续 FAIL 上限
+//!     MAX_DOC_FIX_FAILS，超限 Quality 收场；协议违例另由
+//!     MAX_DOC_PROTOCOL_VIOLATIONS 上限重审）
 //! ```
 //!
 //! 与 CodingSopLoop 的差异：无阶段推进（doc-fix 是定点修补，不是分阶段开发），
@@ -46,8 +48,10 @@ pub fn doc_review_instruction(workspace: &Path, round: usize) -> String {
 /// 打回回注前缀（doc-review FAIL）。
 pub const DOC_FIX_REMEDIATION_PREFIX: &str = "文档审查未通过，以下是必须修复的问题：";
 
-/// 协议违例重试上限（C19-R1）：超过即判基础设施故障，快速报错。
-pub const MAX_DOC_PROTOCOL_VIOLATIONS: usize = 3;
+/// 协议违例重试上限（C19-R1）——单一事实源在 [`crate::sop::review_gate`]
+/// （D026），此处只做别名（coding.rs/testing.rs 同款模式）；实际处置是
+/// Quality（不自动重启），非基础设施故障。
+pub const MAX_DOC_PROTOCOL_VIOLATIONS: usize = crate::sop::review_gate::MAX_PROTOCOL_VIOLATIONS;
 
 /// 文档修补 SOP 报告。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

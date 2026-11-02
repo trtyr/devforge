@@ -295,20 +295,11 @@ fn require_marker_nudged(
 }
 
 fn issues_of(reply: &str) -> Vec<String> {
-    let Some(start) = reply.find("<issues>") else {
-        return Vec::new();
-    };
-    let body_start = start + "<issues>".len();
-    let body_end = reply[body_start..]
-        .find("</issues>")
-        .map(|i| body_start + i)
-        .unwrap_or(reply.len());
-    reply[body_start..body_end]
-        .lines()
-        .map(|l| l.trim().trim_start_matches(['-', '*']).trim())
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect()
+    // R8-P75：复用 coding_protocol::extract_lines 单点——未闭合不再吞到末尾
+    //（含路由块/stage-complete/散文），列表前缀口径与五链路一致（取尾部
+    // 纪律同步生效）；旧口径自写第四份 unwrap_or(reply.len()) +
+    // trim_start_matches(['-','*']) 与单点语义漂移
+    crate::sop::coding_protocol::extract_lines(reply, "issues")
 }
 
 /// 跑一次审查（开一个实例 → 审一次 → 解析），按三通道分类。

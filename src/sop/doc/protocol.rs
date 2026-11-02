@@ -9,8 +9,9 @@
 
 use crate::error::Result;
 
-/// 连续协议违例上限（复用 P007 口径 C19-R1）。
-pub const MAX_DOC_PROTOCOL_VIOLATIONS: usize = 3;
+/// 连续协议违例上限（复用 P007 口径 C19-R1）——单一事实源在
+/// [`crate::sop::review_gate`]（D026），此处只做别名。
+pub const MAX_DOC_PROTOCOL_VIOLATIONS: usize = crate::sop::review_gate::MAX_PROTOCOL_VIOLATIONS;
 
 /// 无完成标记时的重推上限（2026-10-20）：标记由模型生成，连续不发就是卡死，
 /// 不能像旧口径那样零上限空转。
