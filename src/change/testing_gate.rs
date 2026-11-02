@@ -22,6 +22,13 @@ use crate::error::{DevforgeError, Result};
 /// 回归证据（相对黑板）。
 pub const REGRESSION_LOG: &str = "evidence/regression.log";
 
+/// mtime 新鲜度判定的文件系统粒度容差（R9-P83 单点）：粗粒度文件系统
+/// （1s/2s 整数秒，容器 overlay/NFS 常见）上本轮刚写的证据 mtime 可能略早于
+/// not_before，裸比较会误判「上一轮残留」判死——2s 远小于一轮的量级，
+/// 不会放过真正的旧文件（旧文件早几分钟到几小时）。coding 门同步引用本常量。
+pub(crate) const MTIME_GRANULARITY_TOLERANCE: std::time::Duration =
+    std::time::Duration::from_secs(2);
+
 /// 一条验收标准到测试的映射。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptanceMatch {
@@ -116,6 +123,11 @@ fn fenced_blocks(text: &str) -> Vec<String> {
 /// 读黑板上的回归日志并判定。
 /// 引擎审计修复 #4：not_before 校验 mtime 不早于本轮开始（与 baseline/self-check 的
 /// freshness 同口径）——上一轮残留的绿 log 不得给本轮提供通行证。
+///
+/// R9-P83：判定带 [`MTIME_GRANULARITY_TOLERANCE`] 容差——旧裸比较在粗粒度
+/// 文件系统（1s/2s 整数秒，容器 overlay/NFS 仍常见）上会把本轮刚写的绿日志
+/// 判成上一轮残留并 Quality 判死（coding 门 2026-10-27 自审 minor 50 同款
+/// 修复，两处常量现归本模块单点）。
 pub fn check_regression_log(
     blackboard: &Path,
     claims_green: bool,
@@ -136,7 +148,7 @@ pub fn check_regression_log(
                 path.display()
             ))
         })?;
-    if mtime < not_before {
+    if mtime + MTIME_GRANULARITY_TOLERANCE < not_before {
         return Err(DevforgeError::Quality(format!(
             "回归证据 {} 是上一轮残留（mtime 早于本轮开始）——本轮必须重跑既有全套",
             path.display()

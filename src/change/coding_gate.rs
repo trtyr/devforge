@@ -207,8 +207,8 @@ fn check_evidence_fresh(
     // 2026-10-27 自审 minor（50）：粗粒度文件系统（1s/2s 整数秒）上，本轮刚写的证据
     // 的 mtime 可能略早于 not_before → 误判「上一轮残留」。给 2s 容差（远小于
     // 一轮 coding 的量级，不会放过真正的旧文件：旧文件早几分钟到几小时）。
-    const MTIME_GRANULARITY_TOLERANCE: std::time::Duration = std::time::Duration::from_secs(2);
-    if mtime + MTIME_GRANULARITY_TOLERANCE < not_before {
+    // R9-P83：常量归 testing_gate 单点（check_regression_log 同款判定同源）。
+    if mtime + crate::change::testing_gate::MTIME_GRANULARITY_TOLERANCE < not_before {
         return Err(DevforgeError::Quality(format!(
             "证据 {} 是上一轮残留（写入时间早于本轮开始）：本轮必须重跑重写，不许沿用旧绿色证据",
             path.display()

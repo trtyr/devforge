@@ -159,6 +159,30 @@ fn stale_regression_log_is_rejected_by_freshness() {
     );
 }
 
+/// R9-P83 回归：粗粒度文件系统上本轮刚写的绿日志不得被误判残留——
+/// mtime 比 not_before 早 1s（1s 粒度卷场景）在 2s 容差内应放行；
+/// 早超容差（3s）仍拒收（不给假绿）。
+#[test]
+fn same_second_regression_log_passes_with_tolerance() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join(REGRESSION_LOG);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&path, "command: cargo test\nexit_code: 0\n").unwrap();
+    // mtime ≈ now，not_before = now + 1s：裸比较判残留（旧病灶），2s 容差内放行
+    let near = std::time::SystemTime::now() + std::time::Duration::from_secs(1);
+    check_regression_log(tmp.path(), true, near)
+        .unwrap_or_else(|e| panic!("1s 粒度卷不应误判残留：{e}"));
+    // not_before = now + 3s：超容差仍拒收（真残留不给假绿）
+    let far = std::time::SystemTime::now() + std::time::Duration::from_secs(3);
+    let err = check_regression_log(tmp.path(), true, far).unwrap_err();
+    assert!(
+        err.to_string().contains("上一轮残留"),
+        "超容差仍应拒收：{err}"
+    );
+}
+
 /// 引擎审计修复 #6 回归：测试期间新增的产品代码改动（tests/ 与流水线产物之外）
 /// = Quality；新增 tests/ 合法。
 #[test]
