@@ -388,11 +388,18 @@ pub fn changed_files(repo: &Path, baseline: &str) -> Result<Vec<String>> {
     // **代码盲区**——旧口径按纯路径前缀丢弃，把产品源码写进 docs/ 前缀即可绕过白名单判定。
     // 现在：前缀命中且**不是代码扩展名**才滤（.rs/.ts/.py/.go/... 一律留下参与越界判定）。
     fn looks_like_code(f: &str) -> bool {
-        const CODE_EXTS: [&str; 14] = [
-            "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "kt", "c", "cc", "cpp", "h", "sh",
-        ];
+        // R9-P82：扩展名单一事实源——旧手列 14 项与 docgen SOURCE_EXTENSIONS（21 项）
+        // 差 8 项（mjs/cs/php/rb/hpp/swift/scala/dart），docs/evidence 下这 8 类源码
+        // 成越界判定盲区（上方注释自陈「黑名单不得成为代码盲区」恰与之矛盾）。
+        // 单一事实源在 SOURCE_EXTENSIONS（testing 门 is_source_like 同源），另补 .sh
+        // （inventory 不收 shell 脚本；t17 先例：is_source_like = SOURCE_EXTENSIONS
+        // + 显式 .sh）。
         f.rsplit_once('.').is_some_and(|(_, ext)| {
-            CODE_EXTS.iter().any(|e| ext.eq_ignore_ascii_case(e))
+            let e = ext.to_ascii_lowercase();
+            e == "sh"
+                || crate::docgen::inventory::SOURCE_EXTENSIONS
+                    .iter()
+                    .any(|(src, _)| e == *src)
         })
     }
     files.retain(|f| {

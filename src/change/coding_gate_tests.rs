@@ -304,6 +304,27 @@ fn blacklist_keeps_code_files_under_pi() {
     );
 }
 
+/// 回归（R9-P82 · 扩展名单一事实源）：手列 14 项清单与 SOURCE_EXTENSIONS（21 项）
+/// 差 8 项——自产文档域下的 8 类源码（如 .rb）曾被当「非代码」滤掉，越界判定盲区。
+/// 黑名单窄前缀（docs/plantree//docs/contexts//evidence/）下的 .rb 必须保留，
+/// 纯文档仍滤。
+#[test]
+fn blacklist_keeps_new_source_exts_under_docs() {
+    let (tmp, baseline) = repo_with_baseline();
+    std::fs::create_dir_all(tmp.path().join("docs/plantree")).unwrap();
+    std::fs::write(tmp.path().join("docs/plantree/app.rb"), "puts 1\n").unwrap();
+    std::fs::write(tmp.path().join("docs/plantree/notes.md"), "说明\n").unwrap();
+    let files = changed_files(tmp.path(), &baseline).unwrap();
+    assert!(
+        files.iter().any(|f| f == "docs/plantree/app.rb"),
+        "黑名单前缀下的 SOURCE_EXTENSIONS 源码必须参与越界判定（旧手列清单滤掉 = 盲区）：{files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f == "docs/plantree/notes.md"),
+        "自产文档域的纯文档仍应滤出改动集（黑名单本职）：{files:?}"
+    );
+}
+
 /// 回归（F12 通道 3 · 台账）：预算熔断台账的两个精确名不进改动集——**任意层级**都算
 /// （台账可能落在仓根，也可能落在子目录）。
 ///
