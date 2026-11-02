@@ -281,23 +281,28 @@ impl PackageInstaller for FakeInstaller {
         std::fs::create_dir_all(&npm_dir).ctx("建 npm 目录")?;
         let pkg_json_path = npm_dir.join("package.json");
         let mut pkg_json: serde_json::Value = if pkg_json_path.exists() {
-            serde_json::from_str(&std::fs::read_to_string(&pkg_json_path).ctx("读 package.json")?)
-                .unwrap_or(serde_json::json!({}))
+            // R11-P101：对齐真桥契约（同类代码上方已修）——损坏的 package.json 不得
+            // 静默降级成空对象再回写（丢掉其余所有依赖键），与真桥同款报错。
+            let text = std::fs::read_to_string(&pkg_json_path).ctx("读 package.json")?;
+            serde_json::from_str(&text)
+                .map_err(|e| DevforgeError::Config(format!("package.json 损坏：{e}")))?
         } else {
             serde_json::json!({"name": "pi-extensions", "private": true, "dependencies": {}})
         };
         let deps = pkg_json
             .as_object_mut()
-            .expect("package.json 应为对象")
+            .ok_or_else(|| DevforgeError::Config("package.json 顶层应为对象".into()))?
             .entry("dependencies")
             .or_insert_with(|| serde_json::json!({}));
+        let deps_obj = deps
+            .as_object_mut()
+            .ok_or_else(|| DevforgeError::Config("package.json 的 dependencies 应为对象".into()))?;
         for pkg in packages {
-            deps.as_object_mut()
-                .expect("dependencies 应为对象")
-                .insert(pkg.clone(), serde_json::json!("*"));
+            deps_obj.insert(pkg.clone(), serde_json::json!("*"));
         }
-        std::fs::write(&pkg_json_path, serde_json::to_string_pretty(&pkg_json).unwrap())
-            .ctx("写 package.json")?;
+        let body = serde_json::to_string_pretty(&pkg_json)
+            .map_err(|e| DevforgeError::Config(format!("package.json 序列化失败：{e}")))?;
+        std::fs::write(&pkg_json_path, body).ctx("写 package.json")?;
         Ok(())
     }
 }

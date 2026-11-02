@@ -188,7 +188,17 @@ pub fn scan_support_files(root: &Path) -> Result<Vec<String>> {
     while let Some(dir) = stack.pop() {
         let rd = match std::fs::read_dir(&dir) {
             Ok(rd) => rd,
-            Err(_) => continue,
+            // R11-P97：对齐 scanner.rs 同模式（目录读失败 warn 留痕不再静默）——
+            // 清单分母悄悄变短且无痕，事后无法区分「完整」与「被截断」。
+            Err(e) => {
+                tracing::warn!(
+                    component = "doc-engine",
+                    dir = %dir.display(),
+                    error = %e,
+                    "约定面扫描跳过不可读目录"
+                );
+                continue;
+            }
         };
         for entry in rd.flatten() {
             let p = entry.path();

@@ -169,6 +169,31 @@ fn cargo_crate_name(root: &Path) -> Option<String> {
 }
 
 fn resolve_by_suffix(root: &Path, spec: &str) -> Option<String> {
+    // R11-P104 两处修正——
+    // ①旧口径 basename 全树首命中：任一目录下同名 stem 都可能被错认成依赖目标
+    //   （假边）。改为 spec 路径尾段逐级在仓根下精确解析（全不中才退全树兜底）。
+    // ②旧口径硬编码跳过表（./node_modules/target）与 scanner 的 SKIP_DIRS 不同：
+    //   兜底可能命中清单外文件（假绿）——对齐 is_skipped_dir 单点。
+    let candidate = |base: &Path| -> Option<String> {
+        let abs = root.join(base);
+        if abs.is_file() {
+            return Some(norm(base));
+        }
+        let p = abs.with_extension("go");
+        if p.is_file() {
+            return Some(norm(p.strip_prefix(root).ok()?));
+        }
+        None
+    };
+    // ①spec 尾段逐级精确解析：github.com/x/repo/pkg/users → pkg/users → users
+    let segs: Vec<&str> = spec.split('/').filter(|s| !s.is_empty()).collect();
+    for start in 0..segs.len() {
+        let base: std::path::PathBuf = segs[start..].iter().collect();
+        if let Some(p) = candidate(&base) {
+            return Some(p);
+        }
+    }
+    // ②全树 basename 兜底（跳过表对齐 scanner）
     let tail = spec.rsplit('/').next().unwrap_or(spec);
     let mut stack = vec![root.to_path_buf()];
     while let Some(cur) = stack.pop() {
@@ -179,7 +204,7 @@ fn resolve_by_suffix(root: &Path, spec: &str) -> Option<String> {
             let path = entry.path();
             if path.is_dir() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') || name == "node_modules" || name == "target" {
+                if super::scanner::is_skipped_dir(&name) {
                     continue;
                 }
                 stack.push(path);
