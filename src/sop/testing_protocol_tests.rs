@@ -184,3 +184,26 @@ fn reroute_parse_direct() {
     assert_eq!(Reroute::parse(None), Reroute::TestSide);
     assert_eq!(Reroute::parse(Some("junk")), Reroute::TestSide);
 }
+
+/// R8-P72：FAIL 无 issues 五链路统一——testing 侧两解析器（Test Review 与
+/// Doc Review）空清单 = 协议违例（合成 issue），对齐 doc/protocol.rs 与
+/// coding conservative 既有正确实现；不再回注空清单白烧回合。
+#[test]
+fn test_review_fail_without_issues_is_violation_with_synthetic_issue() {
+    let r = parse_test_review_report(
+        "<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>",
+    );
+    assert_eq!(r.verdict, StageVerdict::Fail);
+    assert!(r.protocol_violation, "空清单判负应是协议违例");
+    assert!(!r.issues.is_empty(), "应合成 issue 而非空清单");
+}
+
+#[test]
+fn doc_review_fail_without_issues_is_violation_with_synthetic_issue() {
+    let r = parse_doc_review_report(
+        "<stage-verdict>FAIL</stage-verdict>",
+    );
+    assert_eq!(r.verdict, StageVerdict::Fail);
+    assert!(r.protocol_violation, "空清单判负应是协议违例");
+    assert!(!r.issues.is_empty(), "应合成 issue 而非空清单");
+}

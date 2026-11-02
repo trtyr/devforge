@@ -351,8 +351,9 @@ fn repeated_protocol_violations_fail_fast() {
     assert!(err.to_string().contains("质量失败"), "协议违例上限归质量失败: {err}");
 }
 
-/// 全仓审计 #7 回归 + 2026-10-27 归因归位：审查判 FAIL 却不给 issues 明细 →
-/// 拒收 + 迫补——但迫补对象是**审查方**（裁决是审查方产出的），不是被测 Agent。
+/// 全仓审计 #7 回归 + 2026-10-27 归因归位 + R8-P72 更新：审查判 FAIL 却不给
+/// issues 明细 → 解析层直接判违例（合成 issue + 重审不回注），空转上限由违例
+/// 通道承接——旧 ISSUES_NUDGE 追补通道被解析层先行拦截不再触达。
 #[test]
 fn fail_without_issues_is_bounded_not_infinite() {
     let agent = MockAgent::new(&[
@@ -369,7 +370,7 @@ fn fail_without_issues_is_bounded_not_infinite() {
         .unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("未给出 issues 明细") && msg.contains("质量失败"),
+        msg.contains("协议违例") && msg.contains("质量失败"),
         "空 issues 应拒收并有界收敛：{msg}"
     );
     // 归因归位：追补话术发给**审查方**（重开审查实例），被测 Agent 只收到 kickoff、

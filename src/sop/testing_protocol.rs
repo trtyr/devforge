@@ -190,6 +190,21 @@ pub fn parse_test_review_report(text: &str) -> TestReviewReport {
         // FAIL 缺 next 缺省 Fix；PASS 缺 next 是协议违例（PASS 必须携带去向）
         return match verdict {
             StageVerdict::Fail => {
+                let mut issues = extract_lines(text, ISSUES_TAG);
+                // R8-P72：FAIL 必带 issues——空清单 = 协议违例（合成 issue），
+                // 对齐 doc/protocol.rs 与 coding conservative 既有正确实现；
+                // 旧口径空清单当正常判负回注，白烧回合
+                if issues.is_empty() {
+                    issues = vec!["Test Review 判定 FAIL 但未列任何问题".into()];
+                    return TestReviewReport {
+                        verdict: StageVerdict::Fail,
+                        next: NextAction::Fix,
+                        reroute: Reroute::TestSide,
+                        issues,
+                        notes: Vec::new(),
+                        protocol_violation: true,
+                    };
+                }
                 let mut report = TestReviewReport {
                     verdict,
                     next: NextAction::Fix,
@@ -230,8 +245,17 @@ pub fn parse_test_review_report(text: &str) -> TestReviewReport {
         ));
     }
 
+    // R8-P72：主流程 FAIL 分支同样空清单违例（与缺 next 缺省分支、doc/protocol.rs、
+    // coding conservative 四面同一口径）
+    let issues = extract_lines(text, ISSUES_TAG);
+    if verdict == StageVerdict::Fail && issues.is_empty() {
+        return conservative_test(
+            "stage-verdict=FAIL 但缺 <issues> 清单（判负必须逐条列问题）",
+        );
+    }
+
     let mut report = TestReviewReport {
-        issues: extract_lines(text, ISSUES_TAG),
+        issues,
         notes: extract_lines(text, NOTES_TAG),
         verdict,
         next,
@@ -286,12 +310,26 @@ pub fn parse_doc_review_report(text: &str) -> DocReviewReport {
             notes: extract_lines(text, NOTES_TAG),
             protocol_violation: false,
         },
-        "FAIL" => DocReviewReport {
-            verdict: StageVerdict::Fail,
-            issues: extract_lines(text, ISSUES_TAG),
-            notes: Vec::new(),
-            protocol_violation: false,
-        },
+        "FAIL" => {
+            let issues = extract_lines(text, ISSUES_TAG);
+            // R8-P72：FAIL 必带 issues——空清单 = 协议违例（合成 issue），对齐
+            // doc/protocol.rs:196-203 既有正确实现；旧口径空清单当正常判负，
+            // doc-fix 回注只剩前缀行白烧到 MAX_DOC_FIX_FAILS
+            if issues.is_empty() {
+                return DocReviewReport {
+                    verdict: StageVerdict::Fail,
+                    issues: vec!["审查判定 FAIL 但未列任何问题".into()],
+                    notes: Vec::new(),
+                    protocol_violation: true,
+                };
+            }
+            DocReviewReport {
+                verdict: StageVerdict::Fail,
+                issues,
+                notes: Vec::new(),
+                protocol_violation: false,
+            }
+        }
         other => DocReviewReport {
             verdict: StageVerdict::Fail,
             issues: vec![format!(

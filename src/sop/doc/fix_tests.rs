@@ -139,8 +139,9 @@ fn review_carries_a_wall_clock() {
     assert!(d[0].is_some(), "审查必须带 deadline（Some）");
 }
 
-/// 自审 critical 回归：FAIL 不带 <issues> → 回注空清单，无上限 = run 无限空转
-/// （每圈真烧两次 LLM）。修复后连续 FAIL 有上限，Quality 收场。
+/// 自审 critical 回归（R8-P72 更新）：FAIL 不带 <issues> 原走 fail_rounds 上限，
+/// 实体化后空清单判负升级为协议违例（合成 issue + 重审不回注）——空转上限
+/// 由违例通道承接，Quality 收场不无限空转的语义不变。
 #[test]
 fn fail_without_issues_is_capped_not_infinite() {
     const FAIL_NO_ISSUES: &str = "<stage-verdict>FAIL</stage-verdict>";
@@ -156,7 +157,10 @@ fn fail_without_issues_is_capped_not_infinite() {
         .run(&mut user, Path::new("/w"), "p", "t")
         .unwrap_err();
     assert!(err.is_quality_failure(), "FAIL 空转是质量失败：{err}");
-    assert!(format!("{err}").contains("上限"), "{err}");
+    assert!(
+        format!("{err}").contains("协议违例"),
+        "空清单判负走违例通道收场：{err}"
+    );
 }
 
 #[test]
