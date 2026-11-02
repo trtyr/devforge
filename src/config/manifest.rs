@@ -523,6 +523,10 @@ impl ConfigManifest {
                     thinking_level: None,
                     path_permissions: None,
                     tools: None,
+                    // R12-P110 裁决（2026-11-02）：doc 流水线不分发 submit_issue——结构性有意：
+                    // review findings 全部经 doc-fix 内闭环修复（fix 队列 + 断点续跑），
+                    // 中间态上报 issue 是重复信息；「文档与代码矛盾且代码为真」类修不了
+                    // 的场景延伸项见台账 R12 段登记。
                     extensions: vec![],
                 },
                 AgentManifest {
@@ -541,6 +545,8 @@ impl ConfigManifest {
                     thinking_level: None,
                     path_permissions: None,
                     tools: None,
+                    // R12-P110 裁决：同 doc-fix——doc 写手不分发 submit_issue（findings
+                    // 由 doc-fix 闭环，中间态上报为重复信息）；延伸项见台账 R12 段。
                     extensions: vec!["submit-unit".into()],
                 },
                 AgentManifest {
