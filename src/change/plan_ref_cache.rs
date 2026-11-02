@@ -34,15 +34,18 @@ pub struct RefCache {
     pub refs: Vec<RefEntry>,
 }
 
-/// 单条引用的三态判定：文件存在性（仓内，与机械审计同口径）+ 行号范围。
+/// 单条引用的四态判定：文件存在性（仓内，与机械审计同口径）+ 行号范围。
+/// R8-P73：读失败（非 UTF-8/IO 错）加第四态 unverifiable——不折成
+/// line-out-of-range（旧口径 total=0 恒越界，IO 抖动/二进制文件误判）。
 fn verdict_for(repo: &Path, path: &str, line: u32) -> &'static str {
     let full = repo.join(path);
     if !full.exists() {
         return "missing";
     }
-    let total = std::fs::read_to_string(&full)
-        .map(|c| c.lines().count() as u32)
-        .unwrap_or(0);
+    let total = match std::fs::read_to_string(&full) {
+        Ok(c) => c.lines().count() as u32,
+        Err(_) => return "unverifiable",
+    };
     if line == 0 || line > total {
         return "line-out-of-range";
     }

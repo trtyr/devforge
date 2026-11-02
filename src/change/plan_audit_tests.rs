@@ -546,3 +546,24 @@ fn parent_dir_references_are_rejected() {
         Some(("src/a.rs".to_string(), 1))
     );
 }
+
+/// R8-P73：引用文件读不出（非 UTF-8/IO 错）不折越界不判死——ref_resolves
+/// 跳过行号校验留痕（存在性已核），verdict_for 出 unverifiable 第四态。
+/// 旧口径 unwrap_or(0) 折成「行号越界（共 0 行）」以不可重启 Quality 判死。
+#[test]
+fn unreadable_reference_skips_line_check_not_dead() {
+    let r = repo();
+    // 非 UTF-8 二进制文件（.png 语义：存在但不可按行核验）
+    std::fs::create_dir_all(r.path().join("img")).unwrap();
+    std::fs::write(r.path().join("img/logo.png"), [0xFF_u8, 0xD8, 0xFF, 0x00]).unwrap();
+    // 读失败不 Err（跳过行号校验，存在性已过）——IO 抖动不再判死整个 change
+    assert!(
+        ref_resolves(r.path(), &[("img/logo.png".to_string(), 1)]).is_ok(),
+        "不可核验引用应跳过而非判死"
+    );
+    // 对照：真实文本文件行号越界仍然拦（不给假绿）
+    assert!(
+        ref_resolves(r.path(), &[("src/a.rs".to_string(), 999)]).is_err(),
+        "文本文件行号越界仍应拦"
+    );
+}

@@ -316,9 +316,24 @@ pub fn ref_resolves(repo: &Path, refs: &[(String, u32)]) -> Result<(), String> {
                 "`{path}:{line}` 文件不存在（对账表只认仓内真实文件）"
             ));
         }
-        let total = std::fs::read_to_string(&full)
-            .map(|c| c.lines().count() as u32)
-            .unwrap_or(0);
+        let total = match std::fs::read_to_string(&full) {
+            Ok(content) => content.lines().count() as u32,
+            Err(e) => {
+                // R8-P73：读失败（非 UTF-8/IO 错）不再 unwrap_or(0) 折成「行号越界
+                // （文件共 0 行）」——文件存在性已核（上方 exists），行号不可核验
+                // = 跳过行号校验 + 留痕：误杀方向（IO 抖动/二进制文件以不可重启
+                // Quality 判死整个 change）消灭，假绿面仅剩「行号虚标」且引用
+                // 指向仓内真实文件这层判据仍成立
+                tracing::warn!(
+                    component = "plan-audit",
+                    event = "ref.line_unverifiable",
+                    path = %path,
+                    error = %e,
+                    "引用文件不可按行核验（非 UTF-8/IO 错误），跳过行号校验（存在性已核）"
+                );
+                continue;
+            }
+        };
         if *line == 0 || *line > total {
             return Err(format!(
                 "`{path}:{line}` 行号越界（文件共 {total} 行）"
