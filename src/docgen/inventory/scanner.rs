@@ -288,6 +288,15 @@ pub fn is_entry_file(rel: &str) -> bool {
             | "lib.rs"
             | "index.ts"
             | "index.js"
+            // R11-P95：TS/JS 生态入口补全（旧白名单按 Python/Go 习惯写，Vite/React 仓
+            // 只有 index.tsx 无 index.ts → 「零入口」全文件不可达 → 门 0 Quality 终态）
+            | "index.tsx"
+            | "index.jsx"
+            | "main.ts"
+            | "main.js"
+            | "app.ts"
+            | "app.tsx"
+            | "app.js"
             | "cli.py"
     ) || lower.starts_with("cmd/")
         || lower.starts_with("bin/")
@@ -478,4 +487,28 @@ fn sanitize(s: &str) -> String {
 
 fn parse_unit_seq(uid: &str) -> Option<u32> {
     uid.rsplit('-').next().and_then(|s| s.parse::<u32>().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_entry_file;
+
+    /// R11-P95：TS/JS 生态入口补全——Vite/React 仓只有 index.tsx（无 index.ts）
+    /// 时旧口径「零入口」全文件不可达 → 门 0 Quality 终态。
+    #[test]
+    fn entry_file_recognizes_ts_js_ecosystem_entries() {
+        for rel in [
+            "index.tsx",
+            "src/index.tsx",
+            "main.ts",
+            "src/main.js",
+            "app.tsx",
+            "src/app.ts",
+            "index.ts",
+            "main.rs",
+        ] {
+            assert!(is_entry_file(rel), "{rel} 应被认作入口");
+        }
+        assert!(!is_entry_file("src/components/Button.tsx"), "普通组件不是入口");
+    }
 }

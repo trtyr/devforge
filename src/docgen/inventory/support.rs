@@ -47,11 +47,39 @@ pub fn env_file_keys(text: &str) -> Vec<(usize, String)> {
 /// 数据层（T002）：SQL DDL 里的表/视图名。
 pub fn sql_objects(text: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
-    for (idx, line) in text.lines().enumerate() {
-        let lower = line.trim().to_ascii_lowercase();
+    // R11-P98：跨行 DDL 状态——「create table/view」后表名在下一行
+    let mut pending: Option<usize> = None;
+    for (idx, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        // R11-P98：上一行是 create table/view 但表名为空 → 本行首 token 即表名
+        if let Some(pl) = pending.take() {
+            let lower = line.to_ascii_lowercase();
+            let name = lower
+                .split(|c: char| c.is_whitespace() || c == '(')
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c| c == '"' || c == '`' || c == ';' || c == '\'');
+            if !name.is_empty() {
+                out.push((pl, name.to_string()));
+                continue;
+            }
+            // 本行仍取不出名（罕见）→ 放弃该条，不无限等
+        }
+        let lower = line.to_ascii_lowercase();
         let rest = match lower
             .strip_prefix("create table ")
             .or_else(|| lower.strip_prefix("create view "))
+            // R11-P98：CREATE OR REPLACE VIEW/TABLE（旧口径全漏）
+            .or_else(|| lower.strip_prefix("create or replace view "))
+            .or_else(|| lower.strip_prefix("create or replace table "))
+            // R11-P98：行尾恰为关键词（无尾随空格，如「create table」单独一行）→ 跨行形态
+            .or_else(|| {
+                lower == "create table"
+                    || lower == "create view"
+                    || lower == "create or replace table"
+                    || lower == "create or replace view"
+            }
+            .then_some(""))
         {
             Some(r) => r,
             None => continue,
@@ -64,6 +92,9 @@ pub fn sql_objects(text: &str) -> Vec<(usize, String)> {
             .trim_matches(|c| c == '"' || c == '`' || c == ';' || c == '\'');
         if !name.is_empty() {
             out.push((idx + 1, name.to_string()));
+        } else {
+            // R11-P98：行尾无表名（跨行 DDL 形态）→ 名字在下一行
+            pending = Some(idx + 1);
         }
     }
     out
@@ -237,12 +268,25 @@ pub fn test_specs(lang: Lang, text: &str) -> Vec<(usize, String)> {
                 }
             }
             Lang::Rust => {
-                if line == "#[test]" || line.starts_with("#[test ") {
+                let t = line.trim();
+                if t == "#[test]" || t.starts_with("#[test ") {
                     prev_was_rust_attr = true;
                     continue;
                 }
+                // R11-P96：#[tokio::test]（本仓 165 处）与 #[test] 同权进分母——
+                // 旧口径只认紧邻 #[test]，异步测试全部不在分母（分母变小，覆盖
+                // 百分比虚高且不报警）。
+                if t == "#[tokio::test]" || t.starts_with("#[tokio::test(") {
+                    prev_was_rust_attr = true;
+                    continue;
+                }
+                if t.starts_with("#[") {
+                    // 其它属性（#[ignore]/#[should_panic]/#[cfg]…）不重置——属性块
+                    // 连续（#[ignore] + #[tokio::test] + fn 三行形态），直到 fn 处理完才清
+                    continue;
+                }
                 if prev_was_rust_attr
-                    && let Some(rest) = line.strip_prefix("fn ")
+                    && let Some(rest) = t.strip_prefix("fn ").or_else(|| t.strip_prefix("async fn "))
                     && let Some(name) = rest.split('(').next()
                 {
                     out.push((idx + 1, name.to_string()));
@@ -253,4 +297,55 @@ pub fn test_specs(lang: Lang, text: &str) -> Vec<(usize, String)> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sql_objects, test_specs};
+
+    /// R11-P96：#[tokio::test] 与 #[test] 同权进分母；属性块连续（#[ignore]+
+    /// #[tokio::test]+fn 三行形态）不丢抽取；普通属性行不误开 fn 候选。
+    #[test]
+    fn rust_tests_recognize_tokio_test_and_attribute_blocks() {
+        let src = "\
+#[test]\n\
+fn sync_a() {}\n\
+#[tokio::test]\n\
+async fn async_b() {}\n\
+#[ignore]\n\
+#[tokio::test]\n\
+async fn ignored_c() {}\n\
+#[should_panic]\n\
+fn not_a_test_marker() {}\n";
+        let got = test_specs(crate::docgen::inventory::Lang::Rust, src);
+        let names: Vec<&str> = got.iter().map(|(_, n)| n.as_str()).collect();
+        assert!(names.contains(&"sync_a"), "#[test] 进分母：{names:?}");
+        assert!(names.contains(&"async_b"), "#[tokio::test] 进分母：{names:?}");
+        assert!(
+            names.contains(&"ignored_c"),
+            "#[ignore]+#[tokio::test] 属性块不丢抽取：{names:?}"
+        );
+        assert!(
+            !names.contains(&"not_a_test_marker"),
+            "非测试属性行不得误开 fn 候选：{names:?}"
+        );
+    }
+
+    /// R11-P98：CREATE OR REPLACE VIEW（旧口径全漏）与跨行 DDL（表名在下一行）。
+    #[test]
+    fn sql_objects_covers_or_replace_and_multiline_ddl() {
+        let src = "\
+create table users (id int);\n\
+CREATE OR REPLACE VIEW active_users AS SELECT 1;\n\
+create table\n\
+  sessions (id int);\n";
+        let got = sql_objects(src);
+        let names: Vec<&str> = got.iter().map(|(_, n)| n.as_str()).collect();
+        assert!(names.contains(&"users"), "基线单行不回潮：{names:?}");
+        assert!(
+            names.contains(&"active_users"),
+            "CREATE OR REPLACE VIEW 应被认出：{names:?}"
+        );
+        assert!(names.contains(&"sessions"), "跨行 DDL 表名应被认出：{names:?}");
+    }
 }
