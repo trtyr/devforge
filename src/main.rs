@@ -240,10 +240,46 @@ async fn main() -> anyhow::Result<()> {
         let pg_flag = devforge::server::http::parse_cli_flag(&args, "--pg")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        // R11-P99：PG 分支整体在非 tokio 线程执行——postgres Client 的 Drop 在
+        // tokio 线程上嵌套 block_on panic（存量：close_inner 同步关闭，手验实测
+        // exit 101）；同时兑现两点：①写后回读验证（set_auth_account 尾调 persist()
+        // 只 WARN 不报错，落盘失败曾静默打印成功退出 0）；②连接串不回显 stdout
+        //（典型含口令）。
+        if let Some(url) = &pg_flag {
+            let url2 = url.clone();
+            let outcome = std::thread::scope(|s| {
+                s.spawn(move || -> anyhow::Result<()> {
+                    let mut store = devforge::domain::Store::load_pg(&url2)
+                        .map_err(|e| anyhow::anyhow!("PG 连接失败：{e}"))?;
+                    if store.auth_account().is_some() && !force {
+                        anyhow::bail!("admin 账户已存在；重置口令请加 --force");
+                    }
+                    let hash = devforge::domain::auth::hash_password(pw);
+                    store.set_auth_account(
+                        "admin",
+                        &hash,
+                        devforge::domain::auth::Role::Admin,
+                        devforge::domain::now_ms(),
+                    );
+                    // 写后回读验证——落盘失败不再静默成功，非零退出
+                    let verify = devforge::domain::Store::load_pg(&url2)
+                        .map_err(|e| anyhow::anyhow!("PG 回读验证失败（落盘未确认）：{e}"))?;
+                    if verify.auth_account().is_none() {
+                        anyhow::bail!(
+                            "PG 落盘未确认（回读无 admin 账户）——检查 PG 连接与写权限，admin 未写入"
+                        );
+                    }
+                    Ok(())
+                })
+                .join()
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("PG 线程 join 失败")))
+            });
+            outcome?;
+            println!("admin 账户已写入 PG（连接串见配置，已回读验证）");
+            return Ok(());
+        }
         let store_path = root.join("store.json");
-        let mut store = if let Some(url) = &pg_flag {
-            devforge::domain::Store::load_pg(url).map_err(|e| anyhow::anyhow!(e.to_string()))?
-        } else if store_path.exists() {
+        let mut store = if store_path.exists() {
             devforge::domain::Store::load(&store_path)?
         } else {
             devforge::domain::Store::new()
@@ -258,10 +294,6 @@ async fn main() -> anyhow::Result<()> {
             devforge::domain::auth::Role::Admin,
             devforge::domain::now_ms(),
         );
-        if let Some(url) = &pg_flag {
-            println!("admin 账户已写入 PG（{url}）");
-            return Ok(());
-        }
         store
             .save(&store_path)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
