@@ -64,6 +64,7 @@ fn verdict_passes_through_and_counts_instances() {
         |_| "审".to_string(),
         &mut budget,
         parse_violation,
+        "gate-test",
     )
     .unwrap();
     assert_eq!(report, "GOOD");
@@ -81,6 +82,7 @@ fn violation_retries_with_a_new_instance() {
         |_| "审".to_string(),
         &mut budget,
         parse_violation,
+        "gate-test",
     )
     .unwrap();
     assert_eq!(report, "GOOD");
@@ -104,6 +106,7 @@ fn violation_budget_exhausted_is_quality_failure() {
         |_| "审".to_string(),
         &mut budget,
         parse_violation,
+        "gate-test",
     )
     .unwrap_err();
     let msg = err.to_string();
@@ -128,6 +131,7 @@ fn instance_failures_are_not_verdicts_and_exhaust_to_system() {
         |_| "审".to_string(),
         &mut budget,
         parse_violation,
+        "gate-test",
     )
     .unwrap_err();
     let msg = err.to_string();
@@ -147,6 +151,7 @@ fn instance_failure_is_retried_before_exhaustion() {
         |_| "审".to_string(),
         &mut budget,
         parse_violation,
+        "gate-test",
     )
     .unwrap();
     assert_eq!(report, "GOOD");
@@ -187,6 +192,7 @@ fn review_rounds_carry_a_wall_clock() {
         |_| "审".to_string(),
         &mut budget,
         |_| Ok(ReviewOutcome::verdict(1u8)),
+        "gate-test",
     )
     .unwrap();
     assert_eq!(opened, 1);

@@ -180,8 +180,23 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> PlanningLoop<P, F> {
                         violation,
                     })
                 },
+                "plan-review",
             )?;
             rounds += opened;
+            // R8-P74：审查结论事件化（五链路统一）
+            tracing::info!(
+                component = "planning-engine",
+                event = "review.verdict",
+                role = "plan-review",
+                round = rounds,
+                verdict = match &verdict {
+                    crate::sop::output::Verdict::Pass => "pass",
+                    crate::sop::output::Verdict::Fail { .. } => "fail",
+                    crate::sop::output::Verdict::ProtocolViolation { .. } => "violation",
+                },
+                instances = opened,
+                "审查结论"
+            );
             match verdict {
                 Verdict::Pass => {
                     return Ok(StageReport { rounds, issues_total });

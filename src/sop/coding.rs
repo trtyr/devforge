@@ -194,8 +194,27 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> CodingSopLoop<P, F> {
                 |round| coding_review_instruction(workspace, round),
                 &mut budget,
                 |text| Ok(outcome_of_review_report(parse_review_report(text)?)),
+                "coding-review",
             )?;
             review_rounds += opened;
+            // R8-P74：审查结论事件化——五链路统一（change 侧 review.verdict 同款），
+            // run 判 Quality 时可从日志区分违例判死/判负判死/实例耗尽
+            tracing::info!(
+                component = "coding-engine",
+                event = "review.verdict",
+                role = "coding-review",
+                round = review_rounds,
+                verdict = if report.verdict
+                    == crate::sop::coding_protocol::StageVerdict::Pass
+                {
+                    "pass"
+                } else {
+                    "fail"
+                },
+                issues = report.issues.len(),
+                instances = opened,
+                "审查结论"
+            );
             match (report.verdict, report.next) {
                 (crate::sop::coding_protocol::StageVerdict::Pass, NextAction::Finish) => {
                     stages_completed.push(stage);

@@ -258,8 +258,26 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> TestingSopLoop<P, F> {
                                 violation: reason,
                             })
                         },
+                        "test-review",
                     )?;
                     report.review_rounds += opened;
+                    // R8-P74：审查结论事件化（五链路统一）
+                    tracing::info!(
+                        component = "testing-engine",
+                        event = "review.verdict",
+                        role = "test-review",
+                        round = report.review_rounds,
+                        verdict = if parsed.verdict
+                            == crate::sop::coding_protocol::StageVerdict::Pass
+                        {
+                            "pass"
+                        } else {
+                            "fail"
+                        },
+                        issues = parsed.issues.len(),
+                        instances = opened,
+                        "审查结论"
+                    );
                     review_issue_nudge = None; // 用过即清（只补一轮）
                     match (parsed.verdict, parsed.next) {
                         (StageVerdictRe::Pass, NextAction::Finish) => {

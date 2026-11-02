@@ -252,6 +252,21 @@ where
     macro_rules! process_verdict {
         ($unit:expr, $report:expr, $round:expr) => {{
             let report = $report;
+            // R8-P74：审查结论事件化（五链路统一，宏三处展开全生效）
+            tracing::info!(
+                component = "doc-engine",
+                event = "review.verdict",
+                role = "doc-review",
+                unit = %$unit,
+                round = $round,
+                verdict = if report.verdict == crate::sop::doc::protocol::DocVerdict::Pass {
+                    "pass"
+                } else {
+                    "fail"
+                },
+                issues = report.issues.len(),
+                "审查结论"
+            );
             match report.verdict {
                 DocVerdict::Pass => {
                     // 引擎审计修复 #2：审查官 PASS 不是终点——覆盖与 lint 机械门必须达标，

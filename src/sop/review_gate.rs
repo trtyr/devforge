@@ -127,6 +127,7 @@ pub fn review_with_gate<T, P, I>(
     mut instruction: I,
     budget: &mut ReviewBudget,
     parse: P,
+    role: &str,
 ) -> Result<(T, usize)>
 where
     I: FnMut(usize) -> String,
@@ -141,7 +142,7 @@ where
             Err(e) => {
                 // 实例开不起来 = 实例失败（同一类故障），不是判负
                 if let Some(fatal) =
-                    instance_failure(budget, round, &format!("开审查实例失败：{e}"))
+                    instance_failure(budget, round, &format!("开审查实例失败：{e}"), role)
                 {
                     return Err(fatal);
                 }
@@ -154,7 +155,7 @@ where
             Ok(t) => t,
             Err(e) => {
                 if let Some(fatal) =
-                    instance_failure(budget, round, &format!("审查实例失败：{e}"))
+                    instance_failure(budget, round, &format!("审查实例失败：{e}"), role)
                 {
                     return Err(fatal);
                 }
@@ -166,6 +167,7 @@ where
                 budget,
                 round,
                 "审查实例返回空回复（进程正常结束但未产出一字）",
+                role,
             ) {
                 return Err(fatal);
             }
@@ -178,7 +180,7 @@ where
         budget.violations += 1;
         if budget.violations > MAX_PROTOCOL_VIOLATIONS {
             return Err(DevforgeError::Quality(format!(
-                "审查连续 {} 轮输出协议违例（{reason}），判定为质量失败（不自动重启），停止 run",
+                "{role} 审查连续 {} 轮输出协议违例（{reason}），判定为质量失败（不自动重启），停止 run",
                 budget.violations
             )));
         }
@@ -198,16 +200,18 @@ fn instance_failure(
     budget: &mut ReviewBudget,
     round: usize,
     reason: &str,
+    role: &str,
 ) -> Option<DevforgeError> {
     budget.instance_failures += 1;
     if budget.instance_failures > MAX_REVIEW_INSTANCE_FAILURES {
         return Some(DevforgeError::System(format!(
-            "审查实例连续 {} 次失败（最后一次：{reason}），判定为基础设施故障（触发 run 级自动重启）",
+            "{role} 审查实例连续 {} 次失败（最后一次：{reason}），判定为基础设施故障（触发 run 级自动重启）",
             budget.instance_failures
         )));
     }
     tracing::warn!(
         component = "review-gate",
+        role,
         round,
         failures = budget.instance_failures,
         "审查实例失败，换新实例重试（不判负）"

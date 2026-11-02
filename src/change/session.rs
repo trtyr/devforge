@@ -343,6 +343,7 @@ fn review_once(
         |_| instruction.to_string(),
         &mut budget,
         |text| Ok(outcome_of_review_report(parse_review_report(text)?)),
+        role,
     )?;
     // 2026-10-27 自审 minor（79）：审查结论必须可事件化——旧口径只有 review.open，
     // 「审了几轮、判了什么」从日志里无法重建（违例重审也归不到角色）。

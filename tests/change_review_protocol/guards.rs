@@ -52,6 +52,7 @@ pub(super) fn a25_source_guard_pins_quality_for_violations_and_system_for_instan
                 violation: report.protocol_violation.then(|| report.issues.join("；")),
             })
         },
+        "change-protocol-test",
     )
     .unwrap_err();
     assert!(
@@ -78,6 +79,7 @@ pub(super) fn a25_source_guard_pins_quality_for_violations_and_system_for_instan
                 violation: report.protocol_violation.then(|| report.issues.join("；")),
             })
         },
+        "change-protocol-test",
     )
     .unwrap_err();
     assert!(

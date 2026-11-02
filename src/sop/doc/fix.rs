@@ -113,6 +113,21 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> DocFixSopLoop<P, F> {
             drop(session);
 
             let parsed = parse_doc_review_report(&review_text);
+            // R8-P74：审查结论事件化（五链路统一）
+            tracing::info!(
+                component = "docfix-engine",
+                event = "review.verdict",
+                role = "doc-review",
+                round = report.review_rounds,
+                verdict = if parsed.verdict == StageVerdict::Pass {
+                    "pass"
+                } else {
+                    "fail"
+                },
+                violation = parsed.protocol_violation,
+                issues = parsed.issues.len(),
+                "审查结论"
+            );
             // C19-R1：审查输出本身不合规 → 重跑审查，不回注 doc-fix Agent
             if parsed.protocol_violation {
                 violations += 1;
