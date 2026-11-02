@@ -243,59 +243,87 @@ where
                     // 不达标按 FAIL 同款进 fix 队列（带缺失清单），断路器兜底防死循环。
                     let gates_ok = match &gates {
                         Some((inv, idx)) => {
-                            let cov = crate::docgen::audit::coverage_for_unit(
-                                inv, &docs_root, level, &$unit,
-                            )?;
-                            // R7-P67：机械门 lint 按本单元产出文件收窄（写前→交卷快照
-                            // 对的产出集）——lead=1 写超前下全树 lint 会把 N+1 的半成品
-                            // 记到 N 头上；全局 lint 归终审面兜底。快照缺失（bug 场景，
-                            // mark_done 段会按 Quality 中止）回退全树保持旧行为。
-                            let unit_files: Vec<std::path::PathBuf> = unit_snapshots
-                                .get(&$unit)
-                                .map(|(before, committed)| {
-                                    crate::sop::doc::evidence::produced_files_between(
-                                        committed, before,
+                            // R7-P70：裁决期数据读失败与装载期同口径——降级跳过留痕，
+                            // 不 Err 冒泡。旧口径 coverage/lint 的 read 失败
+                            // （WithContext/Io 根因）属 is_restartable，会把整个 run
+                            // 重启数轮、每轮重写全部单元——单份文档读失败代价失控。
+                            let gate_data: Option<(
+                                crate::docgen::audit::CoverageReport,
+                                crate::docgen::lint::LintReport,
+                            )> = (|| {
+                                let cov = crate::docgen::audit::coverage_for_unit(
+                                    inv, &docs_root, level, &$unit,
+                                )
+                                .ok()?;
+                                // R7-P67：机械门 lint 按本单元产出文件收窄（写前→交卷快照
+                                // 对的产出集）——lead=1 写超前下全树 lint 会把 N+1 的半成品
+                                // 记到 N 头上；全局 lint 归终审面兜底。快照缺失（bug 场景，
+                                // mark_done 段会按 Quality 中止）回退全树保持旧行为。
+                                let unit_files: Vec<std::path::PathBuf> = unit_snapshots
+                                    .get(&$unit)
+                                    .map(|(before, committed)| {
+                                        crate::sop::doc::evidence::produced_files_between(
+                                            committed, before,
+                                        )
+                                        .into_iter()
+                                        .map(|rel| docs_root.join(rel))
+                                        .collect()
+                                    })
+                                    .unwrap_or_default();
+                                let lint = if unit_files.is_empty() {
+                                    crate::docgen::lint::lint_docs_with_entities(&docs_root, idx)
+                                        .ok()?
+                                } else {
+                                    crate::docgen::lint::lint_docs_with_entities_for_files(
+                                        &docs_root, &unit_files, idx,
                                     )
-                                    .into_iter()
-                                    .map(|rel| docs_root.join(rel))
-                                    .collect()
-                                })
-                                .unwrap_or_default();
-                            let lint = if unit_files.is_empty() {
-                                crate::docgen::lint::lint_docs_with_entities(&docs_root, idx)?
-                            } else {
-                                crate::docgen::lint::lint_docs_with_entities_for_files(
-                                    &docs_root, &unit_files, idx,
-                                )?
-                            };
-                            let mut issues: Vec<String> = cov
-                                .missing
-                                .iter()
-                                .map(|m| {
-                                    format!("覆盖缺失：{}（{}）", m.canonical_name, m.id)
-                                })
-                                .collect();
-                            issues.extend(lint.violations().iter().map(|v| format!("lint：{v:?}")));
-                            if cov.passed() && lint.passed() {
-                                true
-                            } else {
-                                add_issues(&mut state, issues.len());
-                                fix_queue.push_back((
-                                    $unit.clone(),
-                                    "机械门不达标".to_string(),
-                                    issues,
-                                    $round,
-                                ));
-                                consecutive_fails += 1;
-                                if consecutive_fails >= 2 {
-                                    return Err(DevforgeError::Quality(format!(
-                                        "断路器：连续 {} 轮机械门不达标（最近单元 `{}`），停发新单元——修复队列 {} 项（resume 可续）",
-                                        consecutive_fails,
-                                        $unit,
-                                        fix_queue.len()
-                                    )));
+                                    .ok()?
+                                };
+                                Some((cov, lint))
+                            })();
+                            match gate_data {
+                                Some((cov, lint)) => {
+                                    let mut issues: Vec<String> = cov
+                                        .missing
+                                        .iter()
+                                        .map(|m| {
+                                            format!("覆盖缺失：{}（{}）", m.canonical_name, m.id)
+                                        })
+                                        .collect();
+                                    issues.extend(
+                                        lint.violations().iter().map(|v| format!("lint：{v:?}")),
+                                    );
+                                    if cov.passed() && lint.passed() {
+                                        true
+                                    } else {
+                                        add_issues(&mut state, issues.len());
+                                        fix_queue.push_back((
+                                            $unit.clone(),
+                                            "机械门不达标".to_string(),
+                                            issues,
+                                            $round,
+                                        ));
+                                        consecutive_fails += 1;
+                                        if consecutive_fails >= 2 {
+                                            return Err(DevforgeError::Quality(format!(
+                                                "断路器：连续 {} 轮机械门不达标（最近单元 `{}`），停发新单元——修复队列 {} 项（resume 可续）",
+                                                consecutive_fails,
+                                                $unit,
+                                                fix_queue.len()
+                                            )));
+                                        }
+                                        false
+                                    }
                                 }
-                                false
+                                None => {
+                                    tracing::warn!(
+                                        component = "doc-sop",
+                                        event = "doc.gate_read_failed",
+                                        unit = %$unit,
+                                        "机械门数据读失败（coverage/lint IO），降级跳过——与装载期降级同口径，不再重启整个 run"
+                                    );
+                                    true
+                                }
                             }
                         }
                         None => true, // 机械门数据不可用（降级，见 run_pipeline 开头 WARN）

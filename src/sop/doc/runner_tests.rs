@@ -1078,3 +1078,95 @@ fn mechanical_gate_lint_is_scoped_to_unit_files() {
         "两个单元都应完成（u0 直通，u1 半成品只烧自己一轮 fix）：{done:?}"
     );
 }
+
+/// R7-P70 回归：裁决期机械门数据读失败（单份文档不可读）与装载期同口径降级
+/// 跳过——run 不重启不炸，单元照常 mark_done。旧口径 Err 冒泡（Io 根因属
+/// is_restartable）→ run_with_retry 重启 → mock 轮次耗尽，单份文档读失败
+/// 把整场 run 拖死。
+#[test]
+fn gate_read_failure_degrades_to_skip_not_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 门 0 真清单：单单元
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/core.py"),
+        "def create_note(title):\n    return title\n",
+    )
+    .unwrap();
+    let inv = crate::docgen::inventory::build_inventory(tmp.path()).unwrap();
+    let meta = tmp.path().join("docs/contexts/_meta");
+    std::fs::create_dir_all(&meta).unwrap();
+    inv.save(&meta.join("inventory.json")).unwrap();
+    let units: Vec<String> = inv
+        .entries
+        .iter()
+        .map(|e| e.unit_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert!(!units.is_empty(), "fixture 应产生至少一个单元");
+    let ua = units[0].clone();
+
+    // 写手：写合规 a.md（含符号 + 模块路径 + 模块名标题）后立刻 chmod 000——
+    // 裁决期 collect_docs/lint 读它必炸（EACCES）
+    struct PoisonAgent {
+        docs_root: std::path::PathBuf,
+        unit: String,
+    }
+    impl crate::sop::planning::PlanAgentSession for PoisonAgent {
+        fn converse(
+            &mut self,
+            message: &str,
+            _ui: &mut dyn crate::sop::planning::UserLink,
+        ) -> crate::error::Result<String> {
+            assert!(
+                message.contains(&self.unit),
+                "kickoff 应点名单元：{message}"
+            );
+            let path = self.docs_root.join("a.md");
+            std::fs::write(
+                &path,
+                "---\ntype: entry\n---\n\n# src 模块：新增笔记\n\n## 用途\n`create_note` 创建笔记，模块源码见 `src/core.py`。\n\n## 输入\n- title: 必填\n\n## 输出\n返回笔记对象。\n\n## 错误\n400 validation_failed。\n\n## 示例\n`curl -X POST /api/notes`\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = &path;
+            }
+            Ok(format!("正文\n<doc-complete>{}</doc-complete>", self.unit))
+        }
+    }
+
+    let docs_root = tmp.path().join("docs/contexts");
+    std::fs::create_dir_all(&docs_root).unwrap();
+    let agent = PoisonAgent {
+        docs_root: docs_root.clone(),
+        unit: ua.clone(),
+    };
+    let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>\n<route>finish</route>"]);
+
+    // 旧口径：读失败 Err 冒泡（is_restartable）→ 重启 → 轮次耗尽炸。
+    // 新口径：降级跳过 + 留痕 → 单元 mark_done，run 正常收尾。
+    run_pipeline(
+        agent,
+        Arc::new(Mutex::new(f)),
+        state_path(&tmp),
+        &mut NoUser,
+        tmp.path(),
+        &units,
+        "complete",
+        String::new(),
+        None,
+        None,
+    )
+    .expect("裁决期读失败应降级跳过，不重启不炸");
+
+    let saved = state_path(&tmp).load();
+    let state = saved.state().expect("断点应已落盘");
+    assert_eq!(done_units(state).len(), 1, "单元应在门降级后照常完成");
+}
