@@ -144,7 +144,11 @@ pub fn diff_stats(repo: &Path, baseline: &str) -> Result<DiffStats> {
             continue;
         };
         let path = rest.trim();
-        if path.starts_with("tests/") || path.starts_with("docs/") || path.starts_with("evidence/") {
+        // R9-P85：「不算产品改动」统一权威 = testing 门 is_exempt_path（段级
+        // tests/docs/evidence + 源码形态不豁免，R4-P49 裁决）——旧纯根前缀丢弃
+        // 三宗罪：①docs/ 下源码（docs/app.rb）从统计消失；②src/evidence/data.json
+        // （段级豁免位）反而进统计；③与 testing 门同词不同答。
+        if crate::change::testing_gate::is_exempt_path(path) {
             continue;
         }
         stats.files += 1;

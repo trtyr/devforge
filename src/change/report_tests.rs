@@ -159,6 +159,53 @@ fn diff_stats_reads_numstat() {
     assert_eq!(stats.deletions, 0, "{stats:?}");
 }
 
+/// R9-P85：统计豁免与 testing 门 is_exempt_path 同源——段级 tests/docs/evidence，
+/// 源码形态不豁免（R4-P49）。旧纯根前缀丢弃把 docs/ 下源码从统计里抹掉，
+/// src/evidence/ 下的数据文件反而进统计（同词不同答）。
+#[test]
+fn diff_stats_untracked_exemption_matches_gate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path();
+    for args in [vec!["init", "-q"], vec!["add", "-A"]] {
+        let _ = Command::new("git").args(&args).current_dir(repo).output();
+    }
+    std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+    let _ = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@localhost", "add", "-A"])
+        .current_dir(repo)
+        .output();
+    let out = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "base"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let sha = String::from_utf8_lossy(
+        &Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+
+    // 四象限：docs/ 下源码进统计（旧口径消失）；段级豁免纯文档不进；
+    // src/evidence/ 下源码进（源码形态不豁免）；evidence/ 下证据不进
+    std::fs::create_dir_all(repo.join("docs")).unwrap();
+    std::fs::create_dir_all(repo.join("evidence")).unwrap();
+    std::fs::create_dir_all(repo.join("src/evidence")).unwrap();
+    std::fs::write(repo.join("docs/app.rb"), "puts 1\n").unwrap();
+    std::fs::write(repo.join("evidence/run.log"), "ok\n").unwrap();
+    std::fs::write(repo.join("src/evidence/store.rs"), "fn x() {}\n").unwrap();
+
+    let stats = diff_stats(repo, &sha).unwrap();
+    assert_eq!(stats.files, 2, "docs/ 源码与 src/evidence/ 源码进统计：{stats:?}");
+    // insertions = docs/app.rb(1) + src/evidence/store.rs(1) = 2
+    assert_eq!(stats.insertions, 2, "{stats:?}");
+}
+
 #[test]
 fn write_report_creates_directory_and_file() {
     let tmp = tempfile::tempdir().unwrap();
