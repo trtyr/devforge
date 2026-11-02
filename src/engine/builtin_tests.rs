@@ -72,6 +72,8 @@ fn change_without_requirement_file_is_a_config_error() {
         let d = profiles.join(p);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("settings.json"), "{}").unwrap();
+        // R10-P86：门卫判据对齐闸门（完成标记），预置须双件齐
+        std::fs::write(d.join(crate::config::render::RENDER_READY_MARKER), "fp").unwrap();
     }
     let plans = dir.path().join("plans");
     let mut engine = BuiltinRpcEngine {
@@ -106,6 +108,8 @@ fn change_run_preflights_codegraph_before_plan() {
         let d = profiles.join(p);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("settings.json"), "{}").unwrap();
+        // R10-P86：门卫判据对齐闸门（完成标记），预置须双件齐
+        std::fs::write(d.join(crate::config::render::RENDER_READY_MARKER), "fp").unwrap();
     }
     let ws = dir.path().join("repo");
     std::fs::create_dir_all(ws.join("src")).unwrap();
@@ -183,8 +187,26 @@ fn profile_gate_passes_when_rendered() {
     let profile = dir.path().join("coding-agent");
     std::fs::create_dir_all(&profile).unwrap();
     std::fs::write(profile.join("settings.json"), "{}").unwrap();
+    // R10-P86：门卫判据对齐闸门（完成标记），预置须双件齐
+    std::fs::write(profile.join(crate::config::render::RENDER_READY_MARKER), "fp").unwrap();
     let engine = f1_engine(dir.path().to_path_buf(), PathBuf::from("/tmp"));
     engine.require_profile("coding-agent").unwrap();
+}
+
+/// R10-P86：门卫判据对齐闸门（完成标记）——settings.json 在装包之前就写，
+/// 闸门超时放行后门卫用弱判据会放行「包没装齐」的半成品 profile → 本用例必须变红。
+#[test]
+fn profile_gate_rejects_half_rendered_profile_missing_ready_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let profile = dir.path().join("coding-agent");
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(profile.join("settings.json"), "{}").unwrap();
+    let engine = f1_engine(dir.path().to_path_buf(), PathBuf::from("/tmp"));
+    let err = engine.require_profile("coding-agent").unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("渲染未完成"), "半成品应报渲染未完成: {msg}");
+    assert!(msg.contains("完成标记"), "报错应指明缺完成标记: {msg}");
+    assert!(msg.contains("PUT /api/v1/config/manifest"), "报错应带处置建议: {msg}");
 }
 
 #[test]
@@ -275,6 +297,8 @@ fn testing_start_requires_workspace_after_profile_gate() {
         let p = profiles.join(role);
         std::fs::create_dir_all(&p).unwrap();
         std::fs::write(p.join("settings.json"), "{}").unwrap();
+        // R10-P86：预置须双件齐
+        std::fs::write(p.join(crate::config::render::RENDER_READY_MARKER), "fp").unwrap();
     }
     let plans = dir.path().join("plans");
     let mut engine = f1_engine(profiles, plans.clone());
@@ -296,6 +320,8 @@ fn code_review_start_requires_workspace_after_profile_gate() {
     let profiles = dir.path().join("profiles");
     std::fs::create_dir_all(profiles.join("code-review")).unwrap();
     std::fs::write(profiles.join("code-review/settings.json"), "{}").unwrap();
+    // R10-P86：预置须双件齐
+    std::fs::write(profiles.join("code-review").join(crate::config::render::RENDER_READY_MARKER), "fp").unwrap();
     let plans = dir.path().join("plans");
     let mut engine = f1_engine(profiles, plans.clone());
     let task = Task::new("t", "p", "code-review", 1); // workspace 默认空
@@ -359,6 +385,8 @@ fn the_door_checks_every_profile_of_the_sop() {
     let agent = profiles.join("coding-agent");
     std::fs::create_dir_all(&agent).unwrap();
     std::fs::write(agent.join("settings.json"), "{}").unwrap();
+    // R10-P86：预置须双件齐
+    std::fs::write(agent.join(crate::config::render::RENDER_READY_MARKER), "fp").unwrap();
     let mut engine = f1_engine(profiles, dir.path().join("plans"));
     let task = Task::new("t", "p", "coding", 1);
     let run = Run::new("p", "t");

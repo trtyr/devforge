@@ -313,9 +313,18 @@ impl<'a> Renderer<'a> {
         prune_npm_dependencies(&dir, &packages)?;
         // 幂等跳过（CAL-19-RENDER）：已装齐且双记录完整则不重装，只回写 settings 记录。
         // 判定标准刻意保守——npm/package.json 缺失、或清单新增了包，一律重装全量。
+        // R10-P87：指纹消费落地——provider/model 变化在旧口径下会复用（packages 不变
+        // → installed 全过），指纹只写不读、「区分上一版清单渲的」只是注释。比对方式：
+        // 「盘上 packages + 当前 provider/model」的指纹 ≠ 盘上标记指纹 ⇒ provider/model
+        // 变了 → 不复用走全量重渲。packages 维度不比：新增已被 installed 覆盖、
+        // 撤包由 prune 对账（重装反而破坏「撤包不需 install」的既有语义）。
+        // 标记缺失（旧版渲染器产物）→ 不复用，全量重渲自愈（与 P88 呼应）。
+        let expected_fingerprint = render_fingerprint(&model.provider, &model.model_id, &previous);
+        let provider_model_changed = rendered_fingerprint(&dir).as_deref()
+            != Some(expected_fingerprint.as_str());
         let installed = packages.iter().all(|p| previous.contains(p));
         let dual_record = dir.join("npm").join("package.json").exists();
-        if installed && dual_record && !previous.is_empty() {
+        if installed && dual_record && !previous.is_empty() && !provider_model_changed {
             // 回写与首渲同一基底对象（只多一个 packages 记录）⇒ 两次渲染产物逐字节可比
             settings["packages"] = serde_json::Value::Array(
                 packages.iter().cloned().map(serde_json::Value::String).collect(),
@@ -332,6 +341,12 @@ impl<'a> Renderer<'a> {
                 profile = %dir.display(),
                 "profile 复用（包已装齐，跳过安装）"
             );
+            // R10-P88：复用分支也要写完成标记——旧分支在写标记之前 return，
+            // 「包已齐、标记缺失」（升级路径必现：旧版渲染器不写标记）永远自愈不了，
+            // 闸门与门卫的 is_some 判据无法放行。复用 = 包已装齐且 provider/model
+            // 未变 = 就绪，标记照写（内容与比对基准同一指纹，两次渲染产物可比）。
+            fs::write(dir.join(RENDER_READY_MARKER), &expected_fingerprint)
+                .ctx(format!("写 {} 的渲染完成标记", agent.name))?;
             return Ok(dir);
         }
         self.installer.install(&dir, &packages)?;

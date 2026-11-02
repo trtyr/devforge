@@ -256,6 +256,16 @@ impl BuiltinRpcEngine {
                 marker.display()
             )));
         }
+        // R10-P86：门卫判据与闸门对齐（完成标记）——settings.json 在装包之前就写，
+        // 闸门超时放行后门卫用弱判据会放行「包没装齐」的半成品 profile（工具缺失，
+        // 表现为模型行为异常）。缺标记 = 半成品或旧版渲染器产物；渲染器幂等复用分支
+        // 会补写标记自愈（P88），重跑 PUT /manifest 即可修复。
+        if crate::config::render::rendered_fingerprint(&dir).is_none() {
+            return Err(crate::error::DevforgeError::Config(format!(
+                "profile `{}` 渲染未完成（settings.json 在但缺完成标记——半成品或旧版渲染产物），重跑 PUT /api/v1/config/manifest 完成安装渲染，再启动 run",
+                dir.display()
+            )));
+        }
         Ok(())
     }
 
@@ -560,6 +570,13 @@ impl BuiltinRpcEngine {
                                     return Err(crate::error::DevforgeError::Config(format!(
                                         "profile `{role}` 未渲染（缺 {}）——testing→doc-fix 交接中止；先 PUT /api/v1/config/manifest 完成渲染",
                                         marker.display()
+                                    )));
+                                }
+                                // R10-P86：与 require_profile 同款判据对齐——settings.json 在装包之前写，
+                                // 缺完成标记 = 半成品或旧版渲染产物（复用分支会补写自愈）。
+                                if crate::config::render::rendered_fingerprint(dir).is_none() {
+                                    return Err(crate::error::DevforgeError::Config(format!(
+                                        "profile `{role}` 渲染未完成（settings.json 在但缺完成标记）——testing→doc-fix 交接中止；重跑 PUT /api/v1/config/manifest 完成渲染",
                                     )));
                                 }
                             }
