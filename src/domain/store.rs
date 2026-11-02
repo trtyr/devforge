@@ -39,6 +39,29 @@ impl PartialEq for PgConnSlot {
     }
 }
 
+/// PG 差量缓存槽（P018 Phase 2 / R2-05/R3-09 列化 2026-11-02）：上次写出的
+/// 每实体表 id→json 快照。derive 套路同 [`PgConnSlot`]——运行时资源不参与
+/// store 相等语义，调试只输出表数不输出快照本体。
+#[derive(Clone, Default)]
+pub struct PgDiffSlot(
+    pub(crate) std::sync::Arc<std::sync::Mutex<std::collections::HashMap<&'static str, std::collections::HashMap<String, String>>>>,
+);
+impl std::fmt::Debug for PgDiffSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n = self
+            .0
+            .lock()
+            .map(|s| s.values().map(|m| m.len()).sum::<usize>())
+            .unwrap_or(0);
+        write!(f, "PgDiffSlot({n} rows)")
+    }
+}
+impl PartialEq for PgDiffSlot {
+    fn eq(&self, _other: &Self) -> bool {
+        true // 差量缓存不参与 store 相等语义
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Store {
     pub projects: Vec<Project>,
@@ -89,6 +112,11 @@ pub struct Store {
     /// Store 是 Clone（快照语义），连接句柄共享同一份；Mutex 提供 &self 可变性。
     #[serde(skip, default)]
     pub pg_conn: PgConnSlot,
+    /// PG 差量缓存（P018 Phase 2 / R2-05/R3-09 列化 2026-11-02）：上次写出的每
+    /// 实体表 id→json 快照——save_pg 按 diff 写变更行，缓存丢失（重启/写失败）=
+    /// 全表清空重建。Arc/Mutex 套路同 pg_conn。serde skip：运行时状态不落盘。
+    #[serde(skip, default)]
+    pub pg_diff: PgDiffSlot,
     /// 最近一次 persist 是否失败（R3-08 裁决②：API 写端点诚实化——置位时写
     /// 端点返回 500「内存已更新/落盘失败/重启丢失」；engine/run 内部保持
     /// WARN-continue）。Cell 内部可变性（persist 是 &self）；serde skip：运行时
@@ -176,6 +204,7 @@ impl Default for Store {
             persist_path: None,
             persist_pg: None,
             pg_conn: PgConnSlot::default(),
+            pg_diff: PgDiffSlot::default(),
             last_persist_failed: std::cell::Cell::new(false),
         }
     }
@@ -260,18 +289,65 @@ impl Store {
         }
     }
 
-    /// P018 Phase 1：全量写 PG（store_state 单行 JSONB，单语句原子）。
-    /// R2-05/R3-09：长连接复用——旧口径每次 persist 新建连接 + CREATE TABLE
-    /// （store 全局锁下的写放大）；现在连接缓存到 pg_conn（Arc<Mutex<Option>>），
-    /// schema 建连时一次化；写失败清缓存（连接可能已失效），下次重建。
+    /// P018 Phase 2（R2-05/R3-09 列化裁决 2026-11-02）：实体表化 + 快照差量
+    /// upsert——整库 JSON blob（store_state 单行）拆成每实体容器一张表（一行
+    /// 一实体 JSONB + 主键），SQL 可直查、单实体可增量更新。写路径带差量缓存
+    /// （pg_diff：上次写出的每表 id→json 快照）：只写变更行；缓存丢失（进程
+    /// 重启/上次写失败重置）= 各表清空全量重建（回到可信基线）。upsert+delete
+    /// 单事务原子；写失败清连接与差量双缓存（t21 口径）。
     fn save_pg(&self, url: &str) -> Result<()> {
         let url = url.to_string();
-        let data = serde_json::to_string(self)
-            .map_err(|e| DevforgeError::System(format!("序列化 store（PG）失败：{e}")));
+        fn ser<T: serde::Serialize>(v: &T) -> Result<String> {
+            serde_json::to_string(v)
+                .map_err(|e| DevforgeError::System(format!("序列化实体（PG）失败：{e}")))
+        }
+        // 行集构建：每实体容器一张表，主键与实体 id 字段对齐
+        // (表名, id, project（仅 tasks 复合主键）, json)
+        let mut rows: Vec<(&'static str, String, Option<String>, String)> = Vec::new();
+        for p in &self.projects {
+            rows.push(("pg_projects", p.name.clone(), None, ser(p)?));
+        }
+        for t in &self.tasks {
+            rows.push(("pg_tasks", t.id.clone(), Some(t.project.clone()), ser(t)?));
+        }
+        for r in &self.runs {
+            rows.push(("pg_runs", r.id.0.clone(), None, ser(r)?));
+        }
+        for i in &self.issues {
+            rows.push(("pg_issues", i.key.clone(), None, ser(i)?));
+        }
+        for n in &self.notifications {
+            rows.push(("pg_notifications", n.id.to_string(), None, ser(n)?));
+        }
+        for e in &self.auth_events {
+            rows.push(("pg_auth_events", e.id.to_string(), None, ser(e)?));
+        }
+        for b in &self.channel_breakers {
+            rows.push(("pg_channel_breakers", b.channel.clone(), None, ser(b)?));
+        }
+        // KV：标量配置 + auth 单例 + issue_seq 水位（小表，不做差量，每次全写）
+        let mut kv: Vec<(String, String)> = vec![
+            (
+                "max_concurrent_runs".into(),
+                serde_json::json!(self.max_concurrent_runs).to_string(),
+            ),
+            (
+                "max_runs_per_task".into(),
+                serde_json::json!(self.max_runs_per_task).to_string(),
+            ),
+        ];
+        if let Some(a) = &self.auth {
+            kv.push(("auth".into(), ser(a)?));
+        }
+        for (proj, seq) in &self.issue_seq {
+            kv.push((format!("issue_seq:{proj}"), serde_json::json!(seq).to_string()));
+        }
+
         let conn_slot = self.pg_conn.clone();
+        let diff_slot = self.pg_diff.clone();
         Self::run_pg_blocking(move || {
-            let data = data?;
             let mut slot = conn_slot.0.lock().unwrap_or_else(|e| e.into_inner());
+            let mut diff = diff_slot.0.lock().unwrap_or_else(|e| e.into_inner());
             // 无连接则建连 + schema 一次化（连接生命周期内 schema 已保证）
             if slot.is_none() {
                 let mut conn = postgres::Client::connect(&url, postgres::NoTls)
@@ -280,19 +356,125 @@ impl Store {
                 *slot = Some(conn);
             }
             let conn = slot.as_mut().expect("上方已确保连接存在");
-            // TEXT 参数 + ::text::jsonb cast——postgres crate 的 serde_json feature 不依赖，
-            // 序列化字符串直接 cast（PG 校验 JSON 合法性，语义等同）
-            match conn.execute(
-                "INSERT INTO store_state (id, data) VALUES (1, $1::text::jsonb) \
-                 ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
-                &[&data],
-            ) {
-                Ok(_) => Ok(()),
-                // 连接可能已失效（断连/超时）：清缓存下次重建，本次如实报错
+            // 差量快照键：tasks 复合主键用 "project\u{1}id"（\u{1} 不进业务字符）
+            let key_of = |proj: &Option<String>, id: &str| {
+                match proj {
+                    Some(p) => format!("{p}\u{1}{id}"),
+                    None => id.to_string(),
+                }
+            };
+            let result = (|| -> Result<()> {
+                let mut tx = conn
+                    .transaction()
+                    .map_err(|e| DevforgeError::System(format!("开事务失败：{e}")))?;
+                let fresh = diff.is_empty(); // 快照不可信（重启/上次失败）→ 全删重建
+                if fresh {
+                    for table in [
+                        "pg_projects",
+                        "pg_tasks",
+                        "pg_runs",
+                        "pg_issues",
+                        "pg_notifications",
+                        "pg_auth_events",
+                        "pg_channel_breakers",
+                    ] {
+                        tx.execute(&format!("DELETE FROM {table}"), &[] as &[&(dyn postgres::types::ToSql + Sync)])
+                            .map_err(|e| DevforgeError::System(format!("清表 {table} 失败：{e}")))?;
+                    }
+                }
+                // upsert 变更行（fresh 时 = 全部行）；PHASE 2 初版逐行执行，
+                // 事务内本地往返可接受——批量 prepared 是后续优化项
+                for (table, id, proj, json) in &rows {
+                    let key = key_of(proj, id);
+                    let prev = diff.get_mut(table).and_then(|m| m.get(&key));
+                    if !fresh && prev == Some(json) {
+                        continue; // 未变更行跳过（差量核心）
+                    }
+                    match *table {
+                        "pg_tasks" => {
+                            let p = proj.as_deref().expect("pg_tasks 行必带 project");
+                            tx.execute(
+                                "INSERT INTO pg_tasks (project, id, data) VALUES ($1, $2, $3::text::jsonb) \
+                                 ON CONFLICT (project, id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+                                &[&p, &id, &json],
+                            )
+                            .map_err(|e| DevforgeError::System(format!("upsert pg_tasks 失败：{e}")))?;
+                        }
+                        _ => {
+                            tx.execute(
+                                &format!(
+                                    "INSERT INTO {table} (id, data) VALUES ($1, $2::text::jsonb) \
+                                     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()"
+                                ),
+                                &[&id, &json],
+                            )
+                            .map_err(|e| DevforgeError::System(format!("upsert {table} 失败：{e}")))?;
+                        }
+                    }
+                }
+                // 删除消失的实体行（非 fresh：上次有本次无）
+                if !fresh {
+                    let mut current_by_table: std::collections::HashMap<&str, std::collections::HashSet<String>> =
+                        Default::default();
+                    for (table, id, proj, _) in &rows {
+                        current_by_table
+                            .entry(table)
+                            .or_default()
+                            .insert(key_of(proj, id));
+                    }
+                    for (table, prev_map) in diff.iter() {
+                        let cur = current_by_table.get(table);
+                        for key in prev_map.keys() {
+                            if cur.is_none_or(|c| !c.contains(key)) {
+                                if *table == "pg_tasks" {
+                                    let (p, id) = key.split_once('\u{1}').expect("tasks 键带复合分隔符");
+                                    tx.execute(
+                                        "DELETE FROM pg_tasks WHERE project = $1 AND id = $2",
+                                        &[&p, &id],
+                                    )
+                                    .map_err(|e| DevforgeError::System(format!("delete pg_tasks 失败：{e}")))?;
+                                } else {
+                                    tx.execute(
+                                        &format!("DELETE FROM {table} WHERE id = $1"),
+                                        &[&key],
+                                    )
+                                    .map_err(|e| DevforgeError::System(format!("delete {table} 失败：{e}")))?;
+                                }
+                            }
+                        }
+                    }
+                }
+                // KV 全量 upsert（小表）
+                for (k, v) in &kv {
+                    tx.execute(
+                        "INSERT INTO pg_kv (key, value) VALUES ($1, $2::text::jsonb) \
+                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+                        &[&k, &v],
+                    )
+                    .map_err(|e| DevforgeError::System(format!("upsert pg_kv 失败：{e}")))?;
+                }
+                tx.commit()
+                    .map_err(|e| DevforgeError::System(format!("提交事务失败：{e}")))?;
+                // 提交成功才更新差量快照（失败路径快照保持旧值/空值）
+                let mut new_snapshot: std::collections::HashMap<&'static str, std::collections::HashMap<String, String>> =
+                    Default::default();
+                for (table, id, proj, json) in &rows {
+                    new_snapshot
+                        .entry(table)
+                        .or_default()
+                        .insert(key_of(proj, id), json.clone());
+                }
+                *diff = new_snapshot;
+                Ok(())
+            })();
+            match result {
+                Ok(()) => Ok(()),
+                // 连接可能已失效（断连/超时）：清连接与差量双缓存，下次全量重建
                 Err(e) => {
                     *slot = None;
+                    *diff = Default::default();
                     Err(DevforgeError::System(format!(
-                        "写 store_state 失败（连接已重置，下次重建）：{e}"
+                        "写实体表失败（连接与差量缓存已重置，下次全量重建）：{e}"
                     )))
                 }
             }
@@ -300,6 +482,9 @@ impl Store {
     }
 
     /// store_state 表幂等建表（persist/load 各自调用，IF NOT EXISTS 幂等）。
+    /// P018 Phase 2（R2-05/R3-09 列化 2026-11-02）：实体表化——每实体容器一张表
+    /// （一行一实体 JSONB + 主键），SQL 可直查、单实体可增量更新；标量/水位/单例
+    /// 进 pg_kv。store_state（旧整库 blob）保留作为迁移源（t9：一次性迁移后改名 _legacy）。
     fn ensure_pg_schema(conn: &mut postgres::Client) -> Result<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS store_state (\
@@ -309,6 +494,38 @@ impl Store {
             &[] as &[&(dyn postgres::types::ToSql + Sync)],
         )
         .map_err(|e| DevforgeError::System(format!("建 store_state 表失败：{e}")))?;
+        // 实体表：主键与实体 id 字段对齐（tasks 复合主键 project+id；其余单列 id）
+        const TABLE_DDL: &[&str] = &[
+            "CREATE TABLE IF NOT EXISTS pg_projects (\
+             id TEXT PRIMARY KEY, data JSONB NOT NULL,\
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+            "CREATE TABLE IF NOT EXISTS pg_tasks (\
+             project TEXT NOT NULL, id TEXT NOT NULL, data JSONB NOT NULL,\
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),\
+             PRIMARY KEY (project, id))",
+            "CREATE TABLE IF NOT EXISTS pg_runs (\
+             id TEXT PRIMARY KEY, data JSONB NOT NULL,\
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+            "CREATE TABLE IF NOT EXISTS pg_issues (\
+             id TEXT PRIMARY KEY, data JSONB NOT NULL,\
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+            "CREATE TABLE IF NOT EXISTS pg_notifications (\
+             id TEXT PRIMARY KEY, data JSONB NOT NULL,\
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+            "CREATE TABLE IF NOT EXISTS pg_auth_events (\
+             id TEXT PRIMARY KEY, data JSONB NOT NULL,\
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+            "CREATE TABLE IF NOT EXISTS pg_channel_breakers (\
+             id TEXT PRIMARY KEY, data JSONB NOT NULL,\
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+            "CREATE TABLE IF NOT EXISTS pg_kv (\
+             key TEXT PRIMARY KEY, value JSONB NOT NULL,\
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+        ];
+        for ddl in TABLE_DDL {
+            conn.execute(*ddl, &[] as &[&(dyn postgres::types::ToSql + Sync)])
+                .map_err(|e| DevforgeError::System(format!("建实体表失败：{e}（ddl 前缀 {}）", &ddl[..36])))?;
+        }
         Ok(())
     }
 
@@ -337,8 +554,12 @@ impl Store {
         Ok(MigrateReport { verified: true, ..rep })
     }
 
-    /// P018 Phase 1：从 PG 重建 Store（启动入口；PG 不可达 = 硬错误，服务不启动——
-    /// 不静默回落文件模式，双真相分叉比崩溃更危险）。空库 = 全新 Store（persist 已开）。
+    /// P018 Phase 2（R2-05/R3-09 列化 2026-11-02）：从 PG 重建 Store。读序：
+    /// ① blob 表（store_state）有行 → 旧库兼容读（t9 迁移会把 blob 清掉改名）；
+    /// ② 否则实体表全量读回（projects/tasks/runs/issues/notifications/
+    /// auth_events/channel_breakers + pg_kv 标量/水位/单例）。
+    /// PG 不可达 = 硬错误，服务不启动——不静默回落文件模式，双真相分叉比崩溃
+    /// 更危险。空库 = 全新 Store（persist 已开）。
     pub fn load_pg(url: &str) -> Result<Self> {
         let url = url.to_string();
         Self::run_pg_blocking(move || {
@@ -348,22 +569,102 @@ impl Store {
                 ))
             })?;
             Self::ensure_pg_schema(&mut conn)?;
-            let row = conn
+            let blob = conn
                 .query_opt(
                     "SELECT data::text FROM store_state WHERE id = 1",
                     &[] as &[&(dyn postgres::types::ToSql + Sync)],
                 )
                 .map_err(|e| DevforgeError::System(format!("读 store_state 失败：{e}")))?;
-            let Some(row) = row else {
-                let store = Self {
-                    persist_pg: Some(url.clone()),
-                    ..Self::default()
-                };
-                return Ok(store);
+            let store = if let Some(row) = blob {
+                // 旧库兼容：blob 有行 = 迁移前写入，读 blob（写路径已切实体表，
+                // 下次 persist 即写实体表——下次启动实体表有行即赢，见下方读序）
+                let data: String = row.get(0);
+                serde_json::from_str(&data)
+                    .map_err(|e| DevforgeError::System(format!("解析 store（PG）失败：{e}")))?
+            } else {
+                // 实体表全量读回
+                let mut store = Self::default();
+                for row in conn
+                    .query("SELECT data::text FROM pg_projects ORDER BY id", &[] as &[&(dyn postgres::types::ToSql + Sync)])
+                    .map_err(|e| DevforgeError::System(format!("读 pg_projects 失败：{e}")))?
+                {
+                    let data: String = row.get(0);
+                    store.projects.push(serde_json::from_str(&data).map_err(|e| DevforgeError::System(format!("解析 project 失败：{e}")))?);
+                }
+                for row in conn
+                    .query("SELECT data::text FROM pg_tasks", &[] as &[&(dyn postgres::types::ToSql + Sync)])
+                    .map_err(|e| DevforgeError::System(format!("读 pg_tasks 失败：{e}")))?
+                {
+                    let data: String = row.get(0);
+                    store.tasks.push(serde_json::from_str(&data).map_err(|e| DevforgeError::System(format!("解析 task 失败：{e}")))?);
+                }
+                for row in conn
+                    .query("SELECT data::text FROM pg_runs", &[] as &[&(dyn postgres::types::ToSql + Sync)])
+                    .map_err(|e| DevforgeError::System(format!("读 pg_runs 失败：{e}")))?
+                {
+                    let data: String = row.get(0);
+                    store.runs.push(serde_json::from_str(&data).map_err(|e| DevforgeError::System(format!("解析 run 失败：{e}")))?);
+                }
+                for row in conn
+                    .query("SELECT data::text FROM pg_issues", &[] as &[&(dyn postgres::types::ToSql + Sync)])
+                    .map_err(|e| DevforgeError::System(format!("读 pg_issues 失败：{e}")))?
+                {
+                    let data: String = row.get(0);
+                    store.issues.push(serde_json::from_str(&data).map_err(|e| DevforgeError::System(format!("解析 issue 失败：{e}")))?);
+                }
+                for row in conn
+                    .query("SELECT data::text FROM pg_notifications", &[] as &[&(dyn postgres::types::ToSql + Sync)])
+                    .map_err(|e| DevforgeError::System(format!("读 pg_notifications 失败：{e}")))?
+                {
+                    let data: String = row.get(0);
+                    store.notifications.push(serde_json::from_str(&data).map_err(|e| DevforgeError::System(format!("解析 notification 失败：{e}")))?);
+                }
+                for row in conn
+                    .query("SELECT data::text FROM pg_auth_events", &[] as &[&(dyn postgres::types::ToSql + Sync)])
+                    .map_err(|e| DevforgeError::System(format!("读 pg_auth_events 失败：{e}")))?
+                {
+                    let data: String = row.get(0);
+                    store.auth_events.push(serde_json::from_str(&data).map_err(|e| DevforgeError::System(format!("解析 auth_event 失败：{e}")))?);
+                }
+                for row in conn
+                    .query("SELECT data::text FROM pg_channel_breakers", &[] as &[&(dyn postgres::types::ToSql + Sync)])
+                    .map_err(|e| DevforgeError::System(format!("读 pg_channel_breakers 失败：{e}")))?
+                {
+                    let data: String = row.get(0);
+                    store.channel_breakers.push(serde_json::from_str(&data).map_err(|e| DevforgeError::System(format!("解析 channel_breaker 失败：{e}")))?);
+                }
+                // KV：标量 + auth 单例 + issue_seq 水位
+                for row in conn
+                    .query("SELECT key, value::text FROM pg_kv", &[] as &[&(dyn postgres::types::ToSql + Sync)])
+                    .map_err(|e| DevforgeError::System(format!("读 pg_kv 失败：{e}")))?
+                {
+                    let key: String = row.get(0);
+                    let value: String = row.get(1);
+                    match key.as_str() {
+                        "max_concurrent_runs" => {
+                            store.max_concurrent_runs = serde_json::from_str(&value)
+                                .map_err(|e| DevforgeError::System(format!("解析 max_concurrent_runs 失败：{e}")))?;
+                        }
+                        "max_runs_per_task" => {
+                            store.max_runs_per_task = serde_json::from_str(&value)
+                                .map_err(|e| DevforgeError::System(format!("解析 max_runs_per_task 失败：{e}")))?;
+                        }
+                        "auth" => {
+                            store.auth = Some(serde_json::from_str(&value)
+                                .map_err(|e| DevforgeError::System(format!("解析 auth 失败：{e}")))?);
+                        }
+                        k if k.starts_with("issue_seq:") => {
+                            let proj = k.strip_prefix("issue_seq:").expect("前缀已判");
+                            let seq: u64 = serde_json::from_str(&value)
+                                .map_err(|e| DevforgeError::System(format!("解析 issue_seq 失败：{e}")))?;
+                            store.issue_seq.insert(proj.to_string(), seq);
+                        }
+                        _ => {}
+                    }
+                }
+                store
             };
-            let data: String = row.get(0);
-            let mut store: Store = serde_json::from_str(&data)
-                .map_err(|e| DevforgeError::System(format!("解析 store（PG）失败：{e}")))?;
+            let mut store = store;
             store.persist_pg = Some(url);
             Ok(store)
         })

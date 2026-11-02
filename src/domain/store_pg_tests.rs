@@ -23,8 +23,22 @@ fn pg_test_conn() -> Option<postgres::Client> {
     }
 }
 
+/// R7-P68 后续（PG 实体化）：清全部 PG 表——blob 与实体/KV 表都清，
+/// 只清 blob 会残留上一用例的实体行（空库用例假数据、行数断言漂移）。
 fn drop_store_state(conn: &mut postgres::Client) {
-    conn.execute("DROP TABLE IF EXISTS store_state", &[]).unwrap();
+    for table in [
+        "store_state",
+        "pg_projects",
+        "pg_tasks",
+        "pg_runs",
+        "pg_issues",
+        "pg_notifications",
+        "pg_auth_events",
+        "pg_channel_breakers",
+        "pg_kv",
+    ] {
+        conn.execute(&format!("DROP TABLE IF EXISTS {table}"), &[]).unwrap();
+    }
 }
 
 #[test]
@@ -79,11 +93,12 @@ fn pg_persist_updates_same_row_not_append() {
             1700000000000,
         ))
         .unwrap();
+    // 实体表化：每项目一行（p1/p2 两行）——多次 persist 同 id upsert 不追加
     let n: i64 = conn
-        .query_one("SELECT count(*) FROM store_state", &[])
+        .query_one("SELECT count(*) FROM pg_projects", &[])
         .unwrap()
         .get(0);
-    assert_eq!(n, 1, "单行整存：多次 persist 不追加行");
+    assert_eq!(n, 2, "实体表：每实体一行，多次 persist 不追加行");
     let loaded = Store::load_pg(PG_TEST_URL).unwrap();
     assert_eq!(loaded.projects.len(), 2);
 }
