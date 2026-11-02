@@ -29,8 +29,20 @@ pub fn check_closures(root: &Path, inv: &Inventory) -> Result<Vec<ClosureFinding
         if *lang == Lang::Other {
             continue;
         }
-        let text = std::fs::read_to_string(root.join(rel))
-            .ctx(format!("读取源文件 {rel}"))?;
+        // R11-P94：读失败降级（与扫描器同口径）——旧口径 ？ 上抛经门 0 判 Quality
+        // 判死整条流水线；降级 = 跳过该文件的覆盖校验（warn 留痕）。
+        let text = match std::fs::read_to_string(root.join(rel)) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(
+                    component = "doc-engine",
+                    file = %rel,
+                    error = %e,
+                    "闭包校验跳过不可读源文件（非 UTF-8/IO 错误）"
+                );
+                continue;
+            }
+        };
         for (line, name) in public_symbols(*lang, &text) {
             if !inventory_symbols.contains(&(rel.clone(), name.clone())) {
                 findings.push(ClosureFinding {

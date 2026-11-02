@@ -1,6 +1,7 @@
 //! （2026-10-26 测试分离：自 src/docgen/impact.rs 内联平移，纯移动零改动。）
 use super::*;
 use crate::docgen::inventory::build_inventory;
+use crate::docgen::inventory::EntryKind;
 use std::fs;
 
 fn touch(root: &Path, rel: &str, body: &str) {
@@ -290,5 +291,36 @@ fn symlink_dir_loop_is_bounded_not_abort() {
     assert!(
         format!("{err}").contains("影响面遍历超限"),
         "软链环应触发上限而非栈溢出：{err}"
+    );
+}
+
+/// R11-P94：不可读源文件（非 UTF-8，如 GBK 编码）不判死流水线——降级跳过
+/// 该文件不进清单（warn 留痕），build_inventory 照常 Ok；旧口径 ？ 直接 Err
+/// 经门 0 闭包校验变 Quality 终态不可重启。
+#[test]
+fn unreadable_source_file_is_skipped_not_fatal() {
+    let tmp = repo();
+    // GBK 编码字节序列（「中文」的 GBK 双字节编码）塞进合法扩展名源文件——
+    // read_to_string 会因非 UTF-8 而失败
+    std::fs::write(
+        tmp.path().join("core/gbk.py"),
+        [0xD6u8, 0xD0, 0xCE, 0xC4, 0x0A],
+    )
+    .unwrap();
+    let inv = build_inventory(tmp.path()).unwrap();
+    // 符号层降级：不可读文件的符号不进清单（读不出内容抽不了符号）
+    assert!(
+        !inv.entries.iter().any(|e| e.path == "core/gbk.py" && e.kind == EntryKind::Symbol),
+        "不可读文件的符号不进清单：{:?}",
+        inv.entries.iter().map(|e| (&e.path, &e.kind)).collect::<Vec<_>>()
+    );
+    // Module 条目（路径级登记，不依赖文件内容）仍在——无害（文档照常可提该路径）
+    assert!(
+        inv.entries.iter().any(|e| e.path == "core/gbk.py" && e.kind == EntryKind::Module),
+        "路径级 Module 登记不依赖内容，仍在"
+    );
+    // 合法文件照常在分母（降级不扩围）
+    assert!(
+        inv.entries.iter().any(|e| e.path == "core/a.py" && e.kind == EntryKind::Symbol)
     );
 }

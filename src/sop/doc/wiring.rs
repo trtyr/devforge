@@ -77,8 +77,12 @@ impl BuiltinRpcEngine {
             .collect();
         units.sort();
         if units.is_empty() {
-            return Err(crate::error::DevforgeError::System(
-                "门 0 未产出任何单元（清单为空或全部未分组）".into(),
+            // R11-P103：两种门 0 前置失败寿命归一——旧口径这里归 System（可重启烧
+            // 退避），gate0_block 闭包发现归 Quality（终态），同一类坏输入两种寿命。
+            // 清单为空是仓内容/配置问题，重启不会变好 → Config（确定性、不盲重启、
+            // 修数据后重跑），与 require_profile 的「配置问题」口径一致。
+            return Err(crate::error::DevforgeError::Config(
+                "门 0 未产出任何单元（清单为空或全部未分组）——检查目标仓源码布局与清单扫描范围，修数据后重跑".into(),
             ));
         }
 

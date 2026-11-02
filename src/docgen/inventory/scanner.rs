@@ -35,8 +35,22 @@ pub fn build_inventory(root: &Path) -> Result<Inventory> {    let root = root
             }
             _ => {
                 let abs = root.join(rel);
-                let text = std::fs::read_to_string(&abs)
-                    .ctx(format!("读取源文件 {}", abs.display()))?;
+                // R11-P94：源文件读失败降级（对齐不可读目录的 warn+continue 口径）——
+                // 旧口径 ？ 直接 Err，经门 0 闭包校验变 Quality 终态不可重启：目标仓一个
+                // 非 UTF-8 文件（如 GBK 编码）即可判死整条 doc 流水线。降级 = 该文件
+                // 不进清单（分母缩窄且 warn 留痕），不再判死。
+                let text = match std::fs::read_to_string(&abs) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::warn!(
+                            component = "doc-engine",
+                            file = %abs.display(),
+                            error = %e,
+                            "清单扫描跳过不可读源文件（非 UTF-8/IO 错误）——不进分母不判死"
+                        );
+                        continue;
+                    }
+                };
                 for (line, name) in public_symbols(*lang, &text) {
                     entries.push(InventoryEntry {
                         id: format!("sym:{rel}:{name}"),
