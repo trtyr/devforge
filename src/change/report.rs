@@ -155,11 +155,36 @@ pub fn diff_stats(repo: &Path, baseline: &str) -> Result<DiffStats> {
     Ok(stats)
 }
 
+/// R9-P81：验收条款对账归一化——跨 agent 手抄的条款文本不做逐字节比较。
+/// 计划 agent 写「**给定 x=1** → 返回 2」、test agent 手抄「给定 x=1 → 返回 2」，
+/// 格式标记（粗体/反引号）与空白差异不该等价「这条没验」（缺一条即 Quality 判死）。
+/// 归一范围：剥格式标记（`**粗体**/\`代码\`/__下划线__`）+ 空白折叠；
+/// **不做标点全半角归一**（中文计划可能有意区分全半角）；对称函数，两侧同处理。
+fn normalize_criterion(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_ws = false;
+    for ch in s.trim().chars() {
+        if matches!(ch, '`' | '*' | '_') {
+            continue; // 格式标记剥离
+        }
+        let ws = ch.is_whitespace();
+        if ws && last_ws {
+            continue; // 空白折叠
+        }
+        out.push(ch);
+        last_ws = ws;
+    }
+    out.trim().to_string()
+}
+
 /// 汇总验收对账（`criteria` 全部、`done` 已通过）。
+///
+/// R9-P81：比较走 [`normalize_criterion`] 归一化（格式标记/空白差异不判死），
+/// 内容真不同才缺条。
 pub fn summarize_acceptance(criteria: &[String], done: &[String]) -> AcceptanceSummary {
     let missing: Vec<String> = criteria
         .iter()
-        .filter(|c| !done.iter().any(|d| d == *c))
+        .filter(|c| !done.iter().any(|d| normalize_criterion(d) == normalize_criterion(c)))
         .cloned()
         .collect();
     AcceptanceSummary {

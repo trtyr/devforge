@@ -545,10 +545,13 @@ pub fn run<S: ChangeSession>(
                 }
                 let summary = summarize_acceptance(&criteria, &acceptance_done);
                 if !summary.passed() {
+                    // R9-P81：失败文案双侧——只列 missing 无法自查（done 是 test agent
+                    // 手抄的条款，格式差异/漏抄要对着对账表实际内容才能看出来）
                     let reason = format!(
-                        "验收对账缺 {} 条：{}",
+                        "验收对账缺 {} 条：缺失=[{}]；已对账=[{}]——计划标准与已对账条款逐条对照（归一化后比对：格式标记/空白差异不判死，内容不同即缺）",
                         summary.missing.len(),
-                        summary.missing.join("；")
+                        summary.missing.join("；"),
+                        acceptance_done.join("；")
                     );
                     return terminate::<S>(&run, &mut state, reason);
                 }

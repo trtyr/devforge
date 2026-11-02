@@ -81,6 +81,36 @@ fn summarize_counts_missing() {
     assert!(!s.passed());
 }
 
+/// R9-P81：跨 agent 格式漂移不再等价「这条没验」——粗体围栏/反引号/多空格
+/// 在归一化后比对（逐字节比较曾把纯格式差异判成缺条 Quality 判死）。
+#[test]
+fn summarize_tolerates_formatting_drift() {
+    let criteria = vec!["**给定 x=1** → 返回 2".to_string()];
+    // 手抄侧：无粗体 + 多一空格
+    let done = vec!["给定 x=1  → 返回 2".to_string()];
+    let s = summarize_acceptance(&criteria, &done);
+    assert!(s.passed(), "格式差异不应判缺条：{:?}", s);
+}
+
+/// R9-P81：反引号包裹的变量名同属格式标记，两侧同剥。
+#[test]
+fn summarize_tolerates_backtick_variants() {
+    let criteria = vec!["`count_words(a b)` 等于 2".to_string()];
+    let done = vec!["count_words(a b) 等于 2".to_string()];
+    let s = summarize_acceptance(&criteria, &done);
+    assert!(s.passed(), "反引号差异不应判缺条：{:?}", s);
+}
+
+/// R9-P81：内容真不同仍然拦（归一化不给假绿）。
+#[test]
+fn summarize_real_content_diff_still_missing() {
+    let criteria = vec!["给定 x=1 → 返回 2".to_string()];
+    let done = vec!["给定 x=1 → 返回 3".to_string()];
+    let s = summarize_acceptance(&criteria, &done);
+    assert!(!s.passed(), "内容不同应仍判缺条：{:?}", s);
+    assert_eq!(s.missing, vec!["给定 x=1 → 返回 2".to_string()]);
+}
+
 #[test]
 fn diff_stats_reads_numstat() {
     let tmp = tempfile::tempdir().unwrap();
