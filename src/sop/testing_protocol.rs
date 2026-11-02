@@ -175,7 +175,8 @@ pub fn parse_test_review_report(text: &str) -> TestReviewReport {
     let Some(verdict_raw) = extract_block(text, STAGE_VERDICT_TAG) else {
         return conservative_test("Test Review 输出缺 <stage-verdict> 协议块");
     };
-    let verdict = match verdict_raw {
+    // R8-P79：verdict 大小写全链统一宽容（doc 侧口径为准，理由见 output.rs 同注）
+    let verdict = match verdict_raw.to_ascii_uppercase().as_str() {
         "PASS" => StageVerdict::Pass,
         "FAIL" => StageVerdict::Fail,
         other => {

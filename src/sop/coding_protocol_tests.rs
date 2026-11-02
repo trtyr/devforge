@@ -169,3 +169,16 @@ fn extract_block_takes_last_occurrence() {
     assert_eq!(r.verdict, StageVerdict::Pass, "尾部真裁决应赢过正文示例块");
     assert_eq!(r.next, NextAction::Advance);
 }
+
+/// R8-P79：verdict 大小写全链统一宽容——小写 pass 在 change 侧不再连判违例
+/// 后杀 run（同模型同提示词在 doc 上正常、在 change 上全废的归因误判消除）。
+#[test]
+fn lowercase_verdict_is_tolerated_not_violation() {
+    let r = parse_review_report(
+        "<stage-verdict>pass</stage-verdict>\n<next>advance</next>",
+    )
+    .unwrap();
+    assert_eq!(r.verdict, StageVerdict::Pass, "小写 pass 应宽容为 PASS");
+    assert_eq!(r.next, NextAction::Advance);
+    assert!(!r.protocol_violation, "大小写漂移不再是协议违例");
+}

@@ -64,7 +64,10 @@ pub fn parse_verdict(text: &str) -> Result<Verdict> {
     };
     let verdict = after_open[..close].trim();
 
-    match verdict {
+    // R8-P79：verdict 大小写全链统一宽容（doc 侧 to_ascii_uppercase 口径为准）——
+    // 小写 pass 在严格口径下连判违例后杀 run，同模型同提示词在 doc 上正常、
+    // 在 change 上全废，归因误判「模型不稳定」
+    match verdict.to_ascii_uppercase().as_str() {
         "PASS" => Ok(Verdict::Pass),
         "FAIL" => {
             let issues = extract_issues(&after_open[close + "</verdict>".len()..]);
