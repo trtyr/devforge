@@ -9,7 +9,7 @@ use crate::sop::doc::mocks::{
     pipe_factory, pipe_factory_with_submissions, state_path, submit_unit, submit_verdict,
 };
 use crate::sop::doc::prompts::{doc_kickoff, doc_review_instruction};
-use crate::sop::doc::runner::run_pipeline;
+use crate::sop::doc::runner::{run_pipeline, should_warn_fallback};
 use crate::sop::doc::state::done_units;
 
 /// 行为类测试的 pipeline 调用（闸门/注入类用例用全参数 run_pipeline）
@@ -1197,5 +1197,22 @@ fn broken_checkpoint_resets_with_explicit_trace() {
         state.data.get("checkpoint_unusable").is_some(),
         "断点损坏应如实入账：{:?}",
         state.data
+    );
+}
+
+/// R10-P92：文本降级告警判据每单元一次——同一单元第二次降级不再告警，
+/// 不同单元各自首次告警（旧口径 run 级布尔，第二个及以后降级单元静默）。
+#[test]
+fn fallback_warn_is_per_unit_not_per_run() {
+    let mut seen = std::collections::HashSet::new();
+    assert!(should_warn_fallback(&mut seen, "unit-a"), "首个单元首次降级应告警");
+    assert!(
+        !should_warn_fallback(&mut seen, "unit-a"),
+        "同单元第二次降级不得重复告警"
+    );
+    assert!(should_warn_fallback(&mut seen, "unit-b"), "不同单元首次降级应告警");
+    assert!(
+        !should_warn_fallback(&mut seen, "unit-b"),
+        "unit-b 第二次也不得重复"
     );
 }

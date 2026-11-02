@@ -233,10 +233,11 @@ where
     let mut first_kickoff_sent = false;
     let mut marker = MarkerNudge::bounded(MAX_DOC_CONTINUE_NUDGES);
     let mut nudged_for = String::new();
-    // AF-5：文本降级路径每单元只 WARN 一次（不刷屏；nudge 话术引导工具优先）
-    let mut fallback_warned = false;
-    // TODO(DR-10③)：流水线路径的 glue 计时（stage）尚未接线；协议违例计数已下沉到 spawn_review_worker
-    let mut _stage: Option<(&'static str, std::time::Instant)> = None;
+    // AF-5：文本降级路径每单元只 WARN 一次（不刷屏；nudge 话术引导工具优先）——
+    // R10-P92：判据抽纯函数单测（旧口径 run 级布尔，注释写「每单元一次」实为全 run 一次）
+    let mut fallback_warned_units: std::collections::HashSet<String> = Default::default();
+    // DR-10③ 已在 engine 层落地（d9dd036：engine.glue 间隙计时事件实测入库），
+    // doc-runner 内部不再需要 stage 占位——旧口径的未使用 _stage 死变量删除（R10-P91）
     // DR-4：首单元逾期守卫——开跑超阈值仍无任何单元完成 → 告警一次（假活/单元过重）
     let run_started = std::time::Instant::now();
     let first_unit_deadline =
@@ -719,8 +720,8 @@ where
                 Some(Some(u)) => u,
                 _ => {
                     // 降级：每单元 WARN 一次（不刷屏），nudge 话术引导工具优先
-                    if !fallback_warned {
-                        fallback_warned = true;
+                    // R10-P92：判据抽纯函数（旧口径 run 级布尔——第二个降级单元静默）
+                    if should_warn_fallback(&mut fallback_warned_units, &active) {
                         tracing::warn!(
                             component = "doc-engine",
                             unit = %active,
@@ -815,4 +816,11 @@ where
         review_rounds: review_rounds(&state),
         issues_total: issues_total(&state),
     })
+}
+
+/// R10-P92：文本降级告警判据（每单元一次）——旧口径 run 级布尔，注释写
+/// 「每单元一次」实为全 run 只响一次，第二个及以后降级的单元静默。抽纯函数
+/// 单测（HashSet::insert 返回「首次插入」即「应告警」）。
+pub(super) fn should_warn_fallback(seen: &mut std::collections::HashSet<String>, unit: &str) -> bool {
+    seen.insert(unit.to_string())
 }
