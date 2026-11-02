@@ -50,8 +50,8 @@ testing→回注 coding），有界（各 3 轮后判质量失败），不验修
 cargo run            # 启动 API（默认 127.0.0.1:7888，DEVFORGE_ADDR 可改）
 ```
 
-可选环境变量：`DEVFORGE_TOKEN`（启用 `x-devforge-token` 鉴权）、`DEVFORGE_RUN_TIMEOUT_MS`（run 超时）、`DEVFORGE_MAX_CONCURRENT`（调度器并发 mutation 上限，缺省 2；设 1 即串行自修模式）。
-> 2026-10-30 注：环境变量将在 F14 配置层迁移中全部收编为 config 文件 + CLI 参数（零 env 目标）。
+可选环境变量：`DEVFORGE_TOKEN`（启用 `x-devforge-token` 鉴权）、`DEVFORGE_RUN_TIMEOUT_MS`（run 超时）。
+> 2026-10-30 注：环境变量将在 F14 配置层迁移中全部收编为 config 文件 + CLI 参数（零 env 目标）。调度器并发上限已收编：`config.json` / CLI 显式值 `max_concurrent_mutation`（缺省 1 = 串行兼容，decisions/003）——`DEVFORGE_MAX_CONCURRENT` env 已于 2026-11-02 退役（并发口径统一，cfaba81）。
 
 ## 测试
 
