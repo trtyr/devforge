@@ -82,6 +82,21 @@ pub fn init(log_dir: &Path, component: &str) -> Result<()> {
     Ok(())
 }
 
+/// R11-P100：诊断子命令专用初始化——仅 stderr 人类层（不依赖运行根/日志目录）。
+/// doc-lint / doc-audit / doc-inventory 在运行根推导之前分派并 exit，而扫描器的
+/// 全部诊断是 tracing::warn——没有 subscriber 时这些事件被直接丢弃（warn 全静默）。
+/// 幂等同 [`init`]（全局 subscriber 已被占用时跳过）。
+pub fn init_stderr() {
+    let human_layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_writer(std::io::stderr);
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(human_layer)
+        .try_init();
+}
+
 #[cfg(test)]
 #[path = "logging_tests.rs"]
 mod tests;

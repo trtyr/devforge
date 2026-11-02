@@ -33,6 +33,9 @@ async fn main() -> anyhow::Result<()> {
     // doc-lint：引擎侧确定性门禁（D008/D012）。退出码可判：0 = 通过。
     // 形态：`devforge doc-lint [docs_dir]`，默认检查 `docs/contexts`。
     if args.first().map(String::as_str) == Some("doc-lint") {
+        // R11-P100：诊断命令在运行根推导之前分派——扫描器的 warn 需 stderr
+        // subscriber 才可见（旧口径三命令的 warn 全部静默丢弃）
+        devforge::logging::init_stderr();
         let dir = args
             .get(1)
             .map(std::path::PathBuf::from)
@@ -63,6 +66,8 @@ async fn main() -> anyhow::Result<()> {
     if args.first().map(String::as_str) == Some("doc-audit") {
         // 五项审计里的机械部分可复算入口（覆盖 + 跨模块重复）。
         // 形态：`devforge doc-audit <docs_dir> --repo <root> [--level complete]`，退出码 1 = 覆盖不完整。
+        // R11-P100：同 doc-lint（诊断 warn 需 stderr subscriber）
+        devforge::logging::init_stderr();
         let Some(docs) = args.get(1) else {
             eprintln!("用法: devforge doc-audit <docs_dir> --repo <root> [--level essential|complete|detailed]");
             std::process::exit(2);
@@ -120,6 +125,8 @@ async fn main() -> anyhow::Result<()> {
     if args.first().map(String::as_str) == Some("doc-inventory") {
         // 清单（分母）机械抽取 + 三道闭包校验（D002/D013）。
         // 形态：`devforge doc-inventory <repo> [--out <dir>]`，退出码 1 = 闭包不过。
+        // R11-P100：同 doc-lint（诊断 warn 需 stderr subscriber）
+        devforge::logging::init_stderr();
         let Some(repo) = args.get(1) else {
             eprintln!("用法: devforge doc-inventory <repo> [--out <dir>]");
             std::process::exit(2);
