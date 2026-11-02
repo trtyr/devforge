@@ -98,5 +98,20 @@
     "a/b.txt",
     "**/secrets/**",
     false
+  ],
+  [
+    "/repo/src/a.rs",
+    "src/**",
+    false
+  ],
+  [
+    "/repo/src/a.rs",
+    "**",
+    true
+  ],
+  [
+    "/repo/docs/a.md",
+    "docs/**",
+    false
   ]
 ]

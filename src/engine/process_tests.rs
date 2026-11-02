@@ -23,6 +23,32 @@ fn command_has_rpc_mode_and_session_dir() {
     );
     // 默认中性工作目录（不污染服务器 cwd 语义）
     assert_eq!(cmd.get_current_dir(), Some(std::path::Path::new(".")));
+    // R11-P105：未设仓根时不注入 DEVFORGE_WORKSPACE_ROOT（插件退回原始形态比较）
+    let envs: Vec<(String, String)> = cmd
+        .get_envs()
+        .filter_map(|(k, v)| v.map(|v| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())))
+        .collect();
+    assert!(
+        !envs.iter().any(|(k, _)| k == "DEVFORGE_WORKSPACE_ROOT"),
+        "未设仓根不得注入：{envs:?}"
+    );
+}
+
+/// R11-P105：with_workspace_root → DEVFORGE_WORKSPACE_ROOT 注入——path-guard
+/// 插件据此把 realpath 后的绝对路径相对化后再比 pathguard.json 的相对 glob。
+#[test]
+fn command_injects_workspace_root_when_set() {
+    let spec = spec().with_workspace_root(PathBuf::from("/srv/demo/repo"));
+    let cmd = build_spawn_command(&spec);
+    let envs: Vec<(String, String)> = cmd
+        .get_envs()
+        .filter_map(|(k, v)| v.map(|v| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())))
+        .collect();
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "DEVFORGE_WORKSPACE_ROOT" && v == "/srv/demo/repo"),
+        "仓根应注入 DEVFORGE_WORKSPACE_ROOT：{envs:?}"
+    );
 }
 
 #[test]

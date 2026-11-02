@@ -29,6 +29,7 @@ fn spec_for(script: &Path, session: &Path) -> SpawnSpec {
         working_dir: PathBuf::from("."),
         extra_args: vec![script.to_string_lossy().into_owned()],
         ledger_path: None,
+        workspace_root: None,
     }
 }
 

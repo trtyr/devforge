@@ -19,3 +19,17 @@ for (const [path, pattern, expected] of cases) {
     assert.equal(pathCoveredBy(path, pattern), expected);
   });
 }
+
+/// R11-P105：仓根相对化（纯函数）——绝对路径相对化后再比相对 glob 才命中；
+/// 仓外路径与无基准（root=null）返回 null（绝对形态只被绝对 glob 命中）。
+import { relativize } from "./match.ts";
+
+test("relativize: absolute path inside root becomes repo-relative", () => {
+  assert.equal(relativize("/repo/src/a.rs", "/repo"), "src/a.rs");
+  assert.equal(relativize("/repo", "/repo"), ".");
+});
+
+test("relativize: outside-root path and null root yield null", () => {
+  assert.equal(relativize("/profiles/x/settings.json", "/repo"), null);
+  assert.equal(relativize("/repo/src/a.rs", null), null);
+});

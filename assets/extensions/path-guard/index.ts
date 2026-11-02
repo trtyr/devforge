@@ -15,7 +15,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { covers } from "./match";
+import { covers, relativize } from "./match";
 import { loadConfig, type LoadedConfig, type PathGuardConfig } from "./config";
 
 export const DENIED_PREFIX = "[path-guard] ";
@@ -36,6 +36,28 @@ function resolveReal(p: string): string {
     }
   }
 }
+
+/**
+ * R11-P105：仓根相对化——resolveReal 输出恒为绝对路径，而渲染端 pathguard.json
+ * 写的是仓根相对 glob（src/**、docs/**…）——两形态裸比永不相等：deny 全漏
+ * （fail-open）、非空 write 白名单拦死一切写（fail-closed 到不可用）。
+ * 修法：spawn 注入 DEVFORGE_WORKSPACE_ROOT（绝对仓根），仓内路径先相对化再比；
+ * 仓外路径返回 null（绝对形态仍可被绝对 glob——提权防护——命中）。
+ */
+function workspaceRoot(): string | null {
+  const r = process.env.DEVFORGE_WORKSPACE_ROOT;
+  if (!r || r.length === 0) {
+    return null;
+  }
+  try {
+    return fs.realpathSync(r);
+  } catch {
+    return r;
+  }
+}
+
+/** 仓内绝对路径 → 仓根相对形态；仓外或无基准 → null。（实现住 match.ts，纯函数可测） */
+export { relativize };
 
 /** 提权双保险：profile 目录（agent-dir）恒追加在 deny_write（渲染端已加，运行时再自检）。 */
 function ensureEscalationGuard(cfg: PathGuardConfig, env: NodeJS.ProcessEnv): PathGuardConfig {
@@ -83,20 +105,31 @@ export default function (pi: ExtensionAPI) {
       return undefined;
     }
     const p = resolveReal(raw);
+    // R11-P105：绝对路径相对化后双形态判定——deny 从严（任一形态命中即拦），
+    // 白名单以相对形态命中为准（相对 glob 只放行仓内相对命中）。
+    const rel = relativize(p, workspaceRoot());
+    const denyHit = (pats: string[]): boolean =>
+      covers(p, pats) || (rel !== null && covers(rel, pats));
 
     // deny-first：deny_read 命中连带堵写；deny_write 命中堵写
-    if (WRITE_TOOLS.has(tool) && covers(p, cfg.deny_read)) {
+    if (WRITE_TOOLS.has(tool) && denyHit(cfg.deny_read)) {
       return { block: true, reason: `${DENIED_PREFIX}${p} 在 deny_read 内（连带堵写）` };
     }
-    if (WRITE_TOOLS.has(tool) && covers(p, cfg.deny_write)) {
+    if (WRITE_TOOLS.has(tool) && denyHit(cfg.deny_write)) {
       return { block: true, reason: `${DENIED_PREFIX}${p} 在 deny_write 内` };
     }
-    if (tool === "read" && covers(p, cfg.deny_read)) {
+    if (tool === "read" && denyHit(cfg.deny_read)) {
       return { block: true, reason: `${DENIED_PREFIX}${p} 在 deny_read 内` };
     }
 
-    // 白名单语义：列表非空 = 只允许列表内
-    if (WRITE_TOOLS.has(tool) && cfg.write.length > 0 && !covers(p, cfg.write)) {
+    // 白名单语义：列表非空 = 只允许列表内。相对形态命中才放行（root 不可用时
+    // 拦——fail-closed 保守；root 由 spawn 注入 DEVFORGE_WORKSPACE_ROOT 恒可用）。
+    if (
+      WRITE_TOOLS.has(tool) &&
+      cfg.write.length > 0 &&
+      !covers(p, cfg.write) &&
+      (rel === null || !covers(rel, cfg.write))
+    ) {
       return {
         block: true,
         reason: `${DENIED_PREFIX}${p} 不在 write 允许列表内（允许：${cfg.write.join(", ")}）`,

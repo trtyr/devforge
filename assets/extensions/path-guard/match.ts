@@ -45,3 +45,24 @@ export function pathCoveredBy(path: string, pattern: PathPattern): boolean {
 export function covers(path: string, patterns: PathPattern[]): boolean {
   return patterns.some((p) => pathCoveredBy(path, p));
 }
+
+/**
+ * R11-P105：仓根相对化——resolveReal 输出恒为绝对路径，而 pathguard.json 写的是
+ * 仓根相对 glob：两形态裸比永不相等（deny 全漏 fail-open / 非空 write 白名单
+ * 拦死一切写 fail-closed 到不可用）。仓内绝对路径 → 仓根相对形态；仓外或无
+ * 基准（root=null）→ null（绝对形态仍可被绝对 glob——提权防护——命中）。
+ * 纯函数（不碰 fs），与 index.ts 的 workspaceRoot()（DEVFORGE_WORKSPACE_ROOT
+ * env + realpath）配套使用。
+ */
+export function relativize(p: string, root: string | null): string | null {
+  if (root === null) {
+    return null;
+  }
+  if (p === root) {
+    return ".";
+  }
+  if (p.startsWith(`${root}/`)) {
+    return p.slice(root.length + 1);
+  }
+  return null;
+}

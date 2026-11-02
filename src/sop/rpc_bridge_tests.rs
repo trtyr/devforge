@@ -66,6 +66,7 @@ fn ui_request_goes_to_user_and_answer_flows_back() {
         working_dir: std::path::PathBuf::from("."),
         extra_args: vec![script.to_string_lossy().into_owned()],
         ledger_path: None,
+        workspace_root: None,
     };
     // 裸 sh 跑回放脚本（pi 的 --mode 前缀 sh 不认）
     let mut cmd = Command::new("sh");
@@ -111,6 +112,7 @@ fn empty_review_reply_is_infrastructure_error() {
         working_dir: PathBuf::from("."),
         extra_args: vec![script.to_string_lossy().into_owned()],
         ledger_path: None,
+        workspace_root: None,
     };
     let mut cmd = Command::new("sh");
     cmd.arg(&script);

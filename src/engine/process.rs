@@ -31,6 +31,11 @@ pub struct SpawnSpec {
     /// 生产必须显式给：change SOP 的 working_dir 是 plans/<p>/<t>/change，涌现推导
     /// 会把台账落 task 层，而熔断与启动对账只读 project 层——六个角色全部隐身。
     pub ledger_path: Option<PathBuf>,
+    /// 仓根绝对路径（R11-P105：DEVFORGE_WORKSPACE_ROOT 注入）——path-guard 插件
+    /// 把 realpath 后的绝对路径相对化后再比相对 glob（渲染端 pathguard.json 写的
+    /// 是仓根相对形态）。None = 不注入（插件退回原始形态比较，相对 glob 对绝对
+    /// 路径不命中——旧语义）。path_permissions 接线批次给生产调用点补齐。
+    pub workspace_root: Option<PathBuf>,
 }
 
 impl SpawnSpec {
@@ -45,6 +50,7 @@ impl SpawnSpec {
             working_dir: PathBuf::from("."),
             extra_args: Vec::new(),
             ledger_path: None,
+            workspace_root: None,
         }
     }
 
@@ -58,6 +64,13 @@ impl SpawnSpec {
     /// plans/<项目>/ 层，不能靠 working_dir 涌现推导）。
     pub fn with_ledger_path(mut self, path: PathBuf) -> Self {
         self.ledger_path = Some(path);
+        self
+    }
+
+    /// 设置仓根绝对路径（R11-P105：DEVFORGE_WORKSPACE_ROOT——path-guard 插件
+    /// 相对化基准）。path_permissions 接线的 profile 必须给。
+    pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
+        self.workspace_root = Some(root);
         self
     }
 }
@@ -82,6 +95,11 @@ pub fn build_spawn_command(spec: &SpawnSpec) -> Command {
     cmd.env("PI_CODING_AGENT_DIR", &spec.profile_dir)
         .env("DEVFORGE_MANAGED", &spec.run_id)
         .env("DEVFORGE_ROLE", &spec.role);
+    // R11-P105：仓根绝对路径——path-guard 插件据此把 realpath 后的绝对路径
+    // 相对化后再比 pathguard.json 里的仓根相对 glob（deny 漏拦/白名单拦死修复）。
+    if let Some(ws) = &spec.workspace_root {
+        cmd.env("DEVFORGE_WORKSPACE_ROOT", ws);
+    }
     // P8-ISSUE-04 修复：子进程工作目录 = plan root（decisions/002）
     cmd.current_dir(&spec.working_dir);
     cmd

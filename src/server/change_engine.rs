@@ -245,7 +245,9 @@ impl BuiltinRpcEngine {
                 self.plans_root
                     .join(&task.project)
                     .join("spawn-ledger.json"),
-            ),
+            )
+            // R11-P105：仓根基准（path-guard 相对化）
+            .with_workspace_root(run_ws.clone()),
         )?);
         let plan_review = RpcReviewFactory::per_round_in(
             self.profile_root.join("change-plan-review"),
@@ -268,7 +270,9 @@ impl BuiltinRpcEngine {
                 self.plans_root
                     .join(&task.project)
                     .join("spawn-ledger.json"),
-            ),
+            )
+            // R11-P105：仓根基准（path-guard 相对化）
+            .with_workspace_root(run_ws.clone()),
         )?);
         let coding_review = RpcReviewFactory::per_round_in(
             self.profile_root.join("change-coding-review"),
@@ -291,7 +295,9 @@ impl BuiltinRpcEngine {
                 self.plans_root
                     .join(&task.project)
                     .join("spawn-ledger.json"),
-            ),
+            )
+            // R11-P105：仓根基准（path-guard 相对化）
+            .with_workspace_root(run_ws.clone()),
         )?);
         let test_review = RpcReviewFactory::per_round_in(
             self.profile_root.join("change-test-review"),
