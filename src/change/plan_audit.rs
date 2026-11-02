@@ -442,7 +442,10 @@ fn split_path_line(tok: &str) -> Option<(String, u32)> {
     if !line.chars().all(|c| c.is_ascii_digit()) || line.is_empty() {
         return None;
     }
-    if !path.contains('.') || path.starts_with('/') {
+    // R8-P78：路径谓词统一到 audit::finding 最严口径（拒绝对/盘符/`..`/RootDir）
+    // ——旧口径只拒绝对路径与无点，`../x.rs:1` 经 repo.join 逃出仓根通过验收
+    // 对账硬门（假绿方向）；点检查保留（防普通单词被当引用）
+    if !path.contains('.') || !crate::audit::finding::is_repo_relative(path) {
         return None;
     }
     let n: u32 = line.parse().ok()?;

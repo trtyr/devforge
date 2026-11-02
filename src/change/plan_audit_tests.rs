@@ -530,3 +530,19 @@ fn path_line_impact_references_pass_the_hygiene_gate() {
         a.issues
     );
 }
+
+/// R8-P78：引用核验拒 `..` 逃逸——split_path_line 统一到最严谓词后，
+/// `../x.rs:1` 不再被当合法引用经 repo.join 逃出仓根通过验收对账硬门（假绿）。
+#[test]
+fn parent_dir_references_are_rejected() {
+    // 引擎层：split_path_line 直接拒
+    assert_eq!(split_path_line("../x.rs:1"), None, "`..` 段应拒收");
+    assert_eq!(split_path_line("a/../../b.rs:1"), None, "嵌套 `..` 应拒收");
+    assert_eq!(split_path_line("C:/x.rs:1"), None, "盘符应拒收");
+    assert_eq!(split_path_line("/abs/x.rs:1"), None, "绝对路径应拒收");
+    // 合法引用不受影响
+    assert_eq!(
+        split_path_line("src/a.rs:1"),
+        Some(("src/a.rs".to_string(), 1))
+    );
+}

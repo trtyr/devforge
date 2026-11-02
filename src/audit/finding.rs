@@ -140,7 +140,10 @@ pub fn parse_findings(reply: &str) -> Result<ParsedBatch, String> {
 }
 
 /// path 必须是仓内相对路径：非空、不是绝对路径、无 `..` 段、无盘符。
-fn is_repo_relative(path: &str) -> bool {
+/// R8-P78：提升 pub(crate) 单点共享——引用核验（plan_audit split_path_line）
+/// 旧自写最松口径只拒绝对与无点，`../x.rs:1` 经 repo.join 逃出仓根通过
+/// 验收对账硬门（假绿方向），统一到本谓词。
+pub(crate) fn is_repo_relative(path: &str) -> bool {
     let p = path.trim();
     if p.is_empty() || p.starts_with('/') || p.starts_with('\\') {
         return false;
