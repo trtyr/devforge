@@ -996,3 +996,42 @@ fn plugin_distribution_does_not_depend_on_skills_source() {
         "skills_source=None 时插件仍应分发"
     );
 }
+
+/// R12-P106 回归：manifest 撤下的 skill 目录不得残留 profile——残留会被 pi
+/// 自动加载（能力面只增不减）；合法 skill 目录不受清理波及。
+#[test]
+fn removed_skill_directory_is_pruned_from_profile() {
+    let manifest = ConfigManifest::builtin();
+    let root = tempfile::tempdir().unwrap();
+    let renderer = renderer(&manifest);
+    renderer.render_agent(root.path(), "plan-agent").unwrap();
+    // 造残留：手工塞一个清单外的 skill 目录（模拟上一版清单渲出的旧能力）
+    let ghost = root
+        .path()
+        .join("plan-agent")
+        .join("skills")
+        .join("ghost-removed-skill");
+    std::fs::create_dir_all(&ghost).unwrap();
+    std::fs::write(ghost.join("SKILL.md"), "旧能力").unwrap();
+    // 幂等重渲染（渲染器对包已装齐走复用分支）——清理照样生效
+    renderer.render_agent(root.path(), "plan-agent").unwrap();
+    assert!(
+        !ghost.exists(),
+        "清单外的 skill 残留应被清理：{}",
+        ghost.display()
+    );
+    // 合法 skill 目录不受清理波及
+    let skills = root.path().join("plan-agent").join("skills");
+    let remaining: Vec<String> = std::fs::read_dir(&skills)
+        .unwrap()
+        .filter_map(|e| {
+            e.ok().and_then(|e| {
+                e.file_name().to_str().map(|s| s.to_string())
+            })
+        })
+        .collect();
+    assert!(
+        !remaining.is_empty(),
+        "合法 skill 目录不得被误清：{remaining:?}"
+    );
+}

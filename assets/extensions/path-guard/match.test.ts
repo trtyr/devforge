@@ -33,3 +33,30 @@ test("relativize: outside-root path and null root yield null", () => {
   assert.equal(relativize("/profiles/x/settings.json", "/repo"), null);
   assert.equal(relativize("/repo/src/a.rs", null), null);
 });
+
+/// R12-P109/P108：发现顺序修正回归——profile 候选在前（agent 不可改的边界源），
+/// cwd 候选降位为后备；死路径 DEVFORGE_PATHGUARD 候选删除（全仓无注入点）。
+import { candidatePaths } from "./config.ts";
+
+test("candidatePaths: agent-dir candidate comes before cwd candidate", () => {
+  const env = { PI_CODING_AGENT_DIR: "/profiles/coding-agent" } as NodeJS.ProcessEnv;
+  const paths = candidatePaths(env);
+  assert.equal(paths.length, 2, `两个候选：${JSON.stringify(paths)}`);
+  assert.equal(paths[0], "/profiles/coding-agent/.pi/pathguard.json", "profile 候选在前");
+  assert.ok(paths[1].endsWith("/.pi/pathguard.json"), "cwd 候选降位为后备");
+});
+
+test("candidatePaths: no agent-dir falls back to cwd only", () => {
+  const paths = candidatePaths({} as NodeJS.ProcessEnv);
+  assert.equal(paths.length, 1, `仅 cwd 候选：${JSON.stringify(paths)}`);
+  assert.ok(paths[0].endsWith("/.pi/pathguard.json"));
+});
+
+test("candidatePaths: dead-path DEVFORGE_PATHGUARD is gone (P108)", () => {
+  const env = {
+    DEVFORGE_PATHGUARD: "/evil/pathguard.json",
+    PI_CODING_AGENT_DIR: "/profiles/coding-agent",
+  } as unknown as NodeJS.ProcessEnv;
+  const paths = candidatePaths(env);
+  assert!(!paths.includes("/evil/pathguard.json"), `死路径候选应已删除：${JSON.stringify(paths)}`);
+});

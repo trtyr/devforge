@@ -227,6 +227,25 @@ impl<'a> Renderer<'a> {
                 },
             }
         }
+        // R12-P106：清单外残留清理（与下方 mcp 分支同口径）——manifest 撤下的
+        // skill 目录留在 profile 下会被 pi 自动加载，能力面只增不减（空语义形同虚设）。
+        let skills_dir = dir.join("skills");
+        if skills_dir.is_dir() {
+            for entry in fs::read_dir(&skills_dir).ctx("读 skills 目录")? {
+                let p = entry.ctx("读 skills 条目")?.path();
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !name.is_empty() && !agent.skills.iter().any(|s| s == name) {
+                    fs::remove_dir_all(&p)
+                        .ctx(format!("清理清单外 skill 残留 {}", p.display()))?;
+                    tracing::info!(
+                        component = "renderer",
+                        agent = %agent.name,
+                        removed = %p.display(),
+                        "清理 manifest 已撤下的 skill 残留"
+                    );
+                }
+            }
+        }
 
         // extensions 分发（AF-5）：内置资产表 → `<profile>/extensions/<name>.ts`，
         // pi 对 profile 目录（PI_CODING_AGENT_DIR）下的 extensions/ 自动加载。
@@ -240,6 +259,47 @@ impl<'a> Renderer<'a> {
                         fs::write(dir.join("extensions").join(name), body)
                             .ctx(format!("写 extension {ext}/{name}"))?;
                     }
+                }
+            }
+        }
+        // R12-P106：清单外残留清理（与下方 mcp 分支同口径）——撤下的 extension .ts
+        // 仍会被 pi 自动加载。产出集 = 清单内各 ext 的内嵌资产文件名并集；
+        // 清单为空时产出集为空 = 全清（老 profile 的残留同样收敛）。
+        let extensions_dir = dir.join("extensions");
+        if extensions_dir.is_dir() {
+            let mut expected: std::collections::BTreeSet<String> = Default::default();
+            // path-guard 子目录（PATH_GUARD_FILES 内嵌资产写到 extensions/path-guard/，
+            // extension_assets_tests 的对账门保证目录内容与常量一致）
+            expected.insert("path-guard".to_string());
+            for ext in &agent.extensions {
+                if let Some(files) = crate::config::skill_assets::builtin_extension_files(ext) {
+                    for (name, _) in files {
+                        expected.insert(name.to_string());
+                    }
+                }
+            }
+            for entry in fs::read_dir(&extensions_dir).ctx("读 extensions 目录")? {
+                let p = entry.ctx("读 extensions 条目")?.path();
+                let name = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !name.is_empty() && !expected.contains(&name) {
+                    // 目录/文件各自处理（残留目录 remove_dir_all，残留文件 remove_file）
+                    if p.is_dir() {
+                        fs::remove_dir_all(&p)
+                            .ctx(format!("清理清单外 extension 残留 {}", p.display()))?;
+                    } else {
+                        fs::remove_file(&p)
+                            .ctx(format!("清理清单外 extension 残留 {}", p.display()))?;
+                    }
+                    tracing::info!(
+                        component = "renderer",
+                        agent = %agent.name,
+                        removed = %p.display(),
+                        "清理 manifest 已撤下的 extension 残留"
+                    );
                 }
             }
         }
