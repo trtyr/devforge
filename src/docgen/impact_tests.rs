@@ -274,3 +274,21 @@ fn deleted_file_unit_from_old_inventory_survives_mixed_changes() {
         impact.units
     );
 }
+
+/// R7-P68：目录软链环有界终止——walk 跟随软链（metadata 语义保留）但深度/
+/// 条目双上限兑底，超限 Err（上层降级全量）而不是栈溢出 abort（进程级）。
+#[test]
+fn symlink_dir_loop_is_bounded_not_abort() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("repo");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.py"), "x = 1\n").unwrap();
+    // 目录环：repo/link → repo（self-loop，metadata 跟随 → 无限递归面）
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&root, root.join("link")).unwrap();
+    let err = super::walk(&root, &root, &mut |_rel, _text| Ok(())).unwrap_err();
+    assert!(
+        format!("{err}").contains("影响面遍历超限"),
+        "软链环应触发上限而非栈溢出：{err}"
+    );
+}

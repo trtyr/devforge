@@ -279,18 +279,42 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// 遍历深度/条目双上限（R7-P68，P47 watchdog 同款修法）：walk 用 `p.is_dir()`
+/// （metadata 语义）跟随软链——一条目录链环即可无限递归，栈溢出是 abort
+/// （进程级，catch_unwind 抓不住）。超限返回 Err = 影响面不可信，上层按
+/// 「增量影响面不可算」降级全量（宁漏报不炸进程）。
+const IMPACT_MAX_DEPTH: usize = 24;
+const IMPACT_MAX_ENTRIES: usize = 200_000;
+
 /// 遍历仓库里的文本源码文件。
 fn walk(
     root: &Path,
     dir: &Path,
     f: &mut impl FnMut(String, &str) -> Result<()>,
 ) -> Result<()> {
+    let mut count = 0usize;
+    walk_bounded(root, dir, f, 0, &mut count)
+}
+
+fn walk_bounded(
+    root: &Path,
+    dir: &Path,
+    f: &mut impl FnMut(String, &str) -> Result<()>,
+    depth: usize,
+    count: &mut usize,
+) -> Result<()> {
+    if depth > IMPACT_MAX_DEPTH || *count > IMPACT_MAX_ENTRIES {
+        return Err(crate::error::DevforgeError::System(format!(
+            "影响面遍历超限（深度 >{IMPACT_MAX_DEPTH} 或条目 >{IMPACT_MAX_ENTRIES}）——疑似目录环/超大树，宁漏报不炸进程"
+        )));
+    }
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
         .ctx(format!("读目录 {}", dir.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .collect();
     entries.sort();
     for p in entries {
+        *count += 1;
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name.starts_with('.') && name != "." {
             continue;
@@ -299,7 +323,7 @@ fn walk(
             if SKIP_DIRS.contains(&name) {
                 continue;
             }
-            walk(root, &p, f)?;
+            walk_bounded(root, &p, f, depth + 1, count)?;
             continue;
         }
         let Some(ext) = p.extension().and_then(|e| e.to_str()) else {
