@@ -79,7 +79,7 @@ fn fresh_path_is_owned_by_start_gate_only() {
     seed(tmp.path(), "fake", &["u1", "u2"]);
     let sop = FakeSop::new("fake", tmp.path());
     // fresh=true 的入口：start_gate 负责清断点
-    start_gate(tmp.path(), "p", "t", "fake", true).expect("start_gate 应成功");
+    start_gate(tmp.path(), "p", "t", "fake", true, |_| true).expect("start_gate 应成功");
     // 清完之后 plan() 只能看到空断点 = 冷启动，全量重跑
     let p = plan(tmp.path(), "p", "t", &sop, &units());
     assert!(!p.resumed, "断点已被 start_gate 清掉，plan 必须冷启动");
@@ -156,16 +156,34 @@ fn plan_is_order_stable_and_deduped_by_identity() {
 #[test]
 fn start_gate_cold_start_when_no_checkpoint() {
     let tmp = tempfile::tempdir().unwrap();
-    let d = start_gate(tmp.path(), "p", "t", "fake", false).unwrap();
+    let d = start_gate(tmp.path(), "p", "t", "fake", false, |_| true).unwrap();
     assert!(!d.resumed);
     assert!(d.note.is_none());
+}
+
+/// R7-P63：resumed 语义按调用方注入的续跑能力判定——断点在但 SOP 无续跑
+/// 实现时不得报 resumed，note 如实说明按冷启动。
+#[test]
+fn start_gate_reports_non_resumable_sop_as_cold_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    seed(tmp.path(), "fake", &[("u1")]);
+    let d = start_gate(tmp.path(), "p", "t", "fake", false, |_| false).unwrap();
+    assert!(!d.resumed, "无续跑能力的 SOP 不得报 resumed");
+    assert!(
+        d.note
+            .as_deref()
+            .unwrap_or("")
+            .contains("无续跑实现"),
+        "note 应如实说明：{:?}",
+        d.note
+    );
 }
 
 #[test]
 fn start_gate_resumes_when_checkpoint_present() {
     let tmp = tempfile::tempdir().unwrap();
     seed(tmp.path(), "fake", &["u1"]);
-    let d = start_gate(tmp.path(), "p", "t", "fake", false).unwrap();
+    let d = start_gate(tmp.path(), "p", "t", "fake", false, |_| true).unwrap();
     assert!(d.resumed);
     assert!(d.note.is_none());
 }
@@ -175,7 +193,7 @@ fn start_gate_fresh_clears_only_that_sop() {
     let tmp = tempfile::tempdir().unwrap();
     seed(tmp.path(), "fake", &["u1"]);
     seed(tmp.path(), "other-sop", &["x"]);
-    let d = start_gate(tmp.path(), "p", "t", "fake", true).unwrap();
+    let d = start_gate(tmp.path(), "p", "t", "fake", true, |_| true).unwrap();
     assert!(!d.resumed);
     assert!(d.note.as_deref().unwrap_or("").contains("fresh"));
     // 该 SOP 的 done 已清空
@@ -197,7 +215,7 @@ fn start_gate_reports_unusable_checkpoint_as_cold_start() {
     let path = key.path(tmp.path());
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "not json").unwrap();
-    let d = start_gate(tmp.path(), "p", "t", "fake", false).unwrap();
+    let d = start_gate(tmp.path(), "p", "t", "fake", false, |_| true).unwrap();
     assert!(!d.resumed);
     assert!(d.note.is_some(), "损坏的断点必须在响应里回显原因");
 }

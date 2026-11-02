@@ -282,6 +282,29 @@ async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
         ),
         "不得动其他 SOP 的断点"
     );
+
+    // 4) R7-P63（放用例尾：start 带 sop 覆盖会持久改任务身份）——planning
+    // 断点在但 planning 无续跑实现，不报 resumed、note 如实说明按冷启动
+    let resp = start_bounded(
+        &f,
+        "/api/v1/projects/p/tasks/d/start",
+        Some(json!({"sop": "planning"})),
+    )
+    .await;
+    assert_eq!(resp.status(), 202);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["resumed"], false,
+        "planning 无续跑实现不得报 resumed：{body}"
+    );
+    assert!(
+        body["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("无续跑实现")),
+        "note 应如实说明按冷启动：{body}"
+    );
+    assert_eq!(body["sop"], "planning");
+    wait_settled(&f, "p", "d").await;
 }
 
 

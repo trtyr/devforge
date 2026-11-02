@@ -1829,6 +1829,8 @@ pub async fn start_task(
         &task,
         &sop_name,
         fresh,
+        // R7-P63：resumed 语义按 SOP 续跑能力判定（能力名单住 sop 层，引擎面注入）
+        |s| crate::sop::resumable_sops().contains(&s),
     ) {
         Ok(d) => d,
         Err(e) => {

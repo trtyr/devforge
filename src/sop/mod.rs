@@ -21,6 +21,20 @@ pub mod rpc_bridge;
 pub mod testing;
 pub mod testing_protocol;
 
+/// 有「续跑能力」的 SOP 名单（R7-P63）。
+///
+/// 断点文件对**任意** sop 名写入（重启记账 attempt>1 即写），但没实现续跑的
+/// SOP 根本没有「续跑」能力——它的断点只是历史遗留数据，对它报
+/// `resumed: true` 是对外谎报（日志/审计/响应体三处都吃这个字段）。
+/// 名单内两种续跑形态并存：doc-from-zero 走 Resumable trait（sop/doc/resume），
+/// change 走黑板续跑（change/state 的 load_strict + resume_brief）。
+/// 业务词住业务层（runstate 引擎面禁 SOP id——守卫 trait_surface_stays_agnostic），
+/// 判定由调用方把本名单成员判定注入 start_gate。新增续跑实现时把名字
+/// 加进来；审计面 `grep -rn "impl Resumable"` 与 change 黑板续跑入口与此名单保持一致。
+pub fn resumable_sops() -> &'static [&'static str] {
+    &["doc-from-zero", "change"]
+}
+
 pub use coding::{
     CodingReport, CodingSopLoop, CODING_REMEDIATION_PREFIX, CONTINUE_NUDGE, coding_kickoff,
     coding_review_instruction,

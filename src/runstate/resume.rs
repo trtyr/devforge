@@ -122,12 +122,17 @@ pub struct StartDecision {
 /// `start` 入口的续跑门：`fresh = true` 时清空该 SOP 的断点并回冷启动。
 ///
 /// **只动该 SOP 自己那份**——同一 task 下其他 SOP 的状态文件不受影响（D001）。
+///
+/// R7-P63：`is_resumable` 由调用方注入（业务词不能住引擎面——守卫
+/// trait_surface_stays_agnostic 禁 SOP id 与业务模块路径出现在本层；
+/// 生产传 sop 模块的 resumable_sops 名单成员判定）。
 pub fn start_gate(
     plans_root: &Path,
     project: &str,
     task: &str,
     sop_name: &str,
     fresh: bool,
+    is_resumable: impl Fn(&str) -> bool,
 ) -> Result<StartDecision> {
     let key = StateKey::new(project, task, sop_name);
     // 自审 minor（188）：本函数是**破坏性**公开 API（删盘上文件），路径段必须自校验，
@@ -151,10 +156,24 @@ pub fn start_gate(
         });
     }
     let decision = match load(plans_root, &key) {
-        Loaded::Found(_) => Ok(StartDecision {
-            resumed: true,
-            note: None,
-        }),
+        Loaded::Found(_) => {
+            // R7-P63：resumed 语义按 SOP 续跑能力判定——无 Resumable 实现的
+            // SOP 断点存在也不报 resumed（note 如实说明「断点在但没有续跑
+            // 实现，按冷启动」）；判定由调用方注入，引擎面不认识业务词
+            if is_resumable(sop_name) {
+                Ok(StartDecision {
+                    resumed: true,
+                    note: None,
+                })
+            } else {
+                Ok(StartDecision {
+                    resumed: false,
+                    note: Some(format!(
+                        "断点文件存在，但 `{sop_name}` 无续跑实现——按冷启动"
+                    )),
+                })
+            }
+        }
         Loaded::Missing => Ok(StartDecision {
             resumed: false,
             note: None,
