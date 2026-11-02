@@ -154,3 +154,18 @@ fn report_semantic_contradictions_are_conservative() {
         assert!(!r.issues.is_empty(), "矛盾原因应作为 issue: {verdict}+{next}");
     }
 }
+
+/// R8-P71：正文引用示例块 + 尾部真裁决 → 真裁决赢（取尾部纪律，与
+/// parse_stage_complete 同款——旧口径 find 取首块，示例块盖过真裁决）。
+#[test]
+fn extract_block_takes_last_occurrence() {
+    // 引擎层：组合文本取尾块
+    let text = "示例：<verdict>FAIL</verdict>\n\n真实裁决：<verdict>PASS</verdict>";
+    assert_eq!(extract_block(text, "verdict"), Some("PASS"));
+
+    // 解析层端到端：正文引用示例 FAIL 块 + 尾部真 PASS 裁决 → PASS（不被示例盖过）
+    let combo = "之前的审查是这样写的：\n<stage-verdict>FAIL</stage-verdict>\n<next>fix</next>\n<issues>- 老问题</issues>\n\n本轮裁决：\n<stage-verdict>PASS</stage-verdict>\n<next>advance</next>\n";
+    let r = parse_review_report(combo).unwrap();
+    assert_eq!(r.verdict, StageVerdict::Pass, "尾部真裁决应赢过正文示例块");
+    assert_eq!(r.next, NextAction::Advance);
+}

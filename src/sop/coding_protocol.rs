@@ -185,13 +185,24 @@ fn conservative(reason: &str) -> ReviewReport {
 }
 
 /// 提取 `<tag>...</tag>` 块内文（trim）。缺失/未闭合 → None。
+///
+/// R8-P71：取**最后一次出现**的完整块（与 parse_stage_complete / parse_doc_complete
+/// 同款纪律）——「真终止符 = 最后一个」：回复正文里引用的示例块不再能盖过尾部
+/// 真裁决（SMTP 点填充同款防伪：真终止符定义在最后且其后不许有数据）。
 pub(crate) fn extract_block<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
-    let pos = text.find(&open)?;
-    let after = &text[pos + open.len()..];
-    let end = after.find(&close)?;
-    Some(after[..end].trim())
+    let mut found: Option<&str> = None;
+    let mut rest = text;
+    while let Some(pos) = rest.find(&open) {
+        let after = &rest[pos + open.len()..];
+        let Some(end) = after.find(&close) else {
+            break; // 尾部开标签未闭合：保留此前已找到的完整块
+        };
+        found = Some(after[..end].trim());
+        rest = &after[end + close.len()..];
+    }
+    found
 }
 
 /// 提取 `<tag>` 块内清单行（去 `- ` 前缀，跳过空行）。缺失 → 空。
