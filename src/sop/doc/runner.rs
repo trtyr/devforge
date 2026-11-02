@@ -186,8 +186,23 @@ where
         crate::runstate::Loaded::Found(s) => s,
         crate::runstate::Loaded::Missing => store.fresh_state(),
         crate::runstate::Loaded::Unusable(reason) => {
-            tracing::warn!(component = "doc-sop", %reason, "断点不可用，按冷启动");
-            store.fresh_state()
+            // R7-P64：断点损坏不再一条 WARN 静默冷启动——error 级留痕 + 断点状态
+            // 如实入账（status/账单可查）；写手知情走 wiring 的 resume_note（plan.note）。
+            // 不拒绝继续（自决 2026-11-02）：doc 重写整树代价可控且产出仍正确，
+            // 拒绝会卡死自动化——与 change load_strict 的「计数归零/额度重置」
+            // 性质不同，那里保持严格口径不动。
+            tracing::error!(
+                component = "doc-sop",
+                event = "doc.checkpoint_unusable",
+                reason = %reason.detail,
+                "断点存在但不可读/不可解析——已按冷启动重置（不拒绝继续）"
+            );
+            let mut s = store.fresh_state();
+            data_obj(&mut s).insert(
+                "checkpoint_unusable".to_string(),
+                serde_json::json!(reason.detail.clone()),
+            );
+            s
         }
     };
     // DR-5：总单元数入断点 + 立即落盘

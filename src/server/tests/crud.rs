@@ -285,12 +285,31 @@ async fn start_reports_resumed_and_fresh_clears_only_that_sop() {
 
     // 4) R7-P63（放用例尾：start 带 sop 覆盖会持久改任务身份）——planning
     // 断点在但 planning 无续跑实现，不报 resumed、note 如实说明按冷启动
-    let resp = start_bounded(
-        &f,
-        "/api/v1/projects/p/tasks/d/start",
-        Some(json!({"sop": "planning"})),
-    )
-    .await;
+    // 前置：planning 的 begin 需要 plan-agent/plan-review 就绪（不种则
+    // wait_for_profiles 在并行下偶发超时 → 500 淹没语义断言）
+    for p in ["plan-agent", "plan-review"] {
+        let d = f.state.profiles_root.join(p);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("settings.json"), "{}").unwrap();
+        std::fs::write(d.join(crate::config::render::RENDER_READY_MARKER), "fp").unwrap();
+    }
+    let mut resp = None;
+    for _ in 0..100 {
+        let r = send(
+            &f.router,
+            "POST",
+            "/api/v1/projects/p/tasks/d/start",
+            Some(json!({"sop": "planning"})),
+        )
+        .await;
+        if r.status() != 409 && r.status() != 500 {
+            resp = Some(r);
+            break;
+        }
+        // 全量并行下 planning begin 的槽/渲染竞态会瞬发 409/500——有界重试
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let resp = resp.expect("planning start 在 2s 内持续 409/500（并行瞬态未消）");
     assert_eq!(resp.status(), 202);
     let body = body_json(resp).await;
     assert_eq!(

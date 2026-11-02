@@ -192,6 +192,13 @@ impl BuiltinRpcEngine {
             Some(st) => crate::runstate::resume::Resumable::resume_brief(&resume, st, &plan.redo),
             None => String::new(),
         };
+        // R7-P64：断点损坏（Unusable）的冷启动不再静默——原因随首 kickoff 下发
+        // 给写手（对外三通道之二：start 响应 note / runner error 日志+入账已备）
+        if let Some(reason) = &plan.note {
+            resume_note.push_str(&format!(
+                "\n注意：上次断点存在但不可用（{reason}），本次已按冷启动全量重写。"
+            ));
+        }
 
         // 增量（D021）：显式开关 + 状态里的 base_sha；失败一律降级全量并记日志。
         let mut run_units = plan.to_run.clone();

@@ -1170,3 +1170,32 @@ fn gate_read_failure_degrades_to_skip_not_restart() {
     let state = saved.state().expect("断点应已落盘");
     assert_eq!(done_units(state).len(), 1, "单元应在门降级后照常完成");
 }
+
+/// R7-P64：断点损坏的冷启动不再静默——error 级入账（state.checkpoint_unusable
+/// 可查）。旧口径一条 WARN，status/账单对外全盲；写手知情走 wiring 的
+/// resume_note（plan.note 随首 kickoff 下发）。
+#[test]
+fn broken_checkpoint_resets_with_explicit_trace() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 种一份损坏断点（与 state_path 同 key：plans/p/t/doc-from-zero）
+    let key = crate::runstate::StateKey::new(
+        "p",
+        "t",
+        crate::sop::doc::resume::DOC_SOP,
+    );
+    let path = key.path(&tmp.path().join("plans"));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "not json").unwrap();
+
+    let agent = MockAgent::new(&["正文\n<doc-complete>unit-a-01</doc-complete>"]);
+    let f = pipe_factory(&["<doc-verdict>PASS</doc-verdict>\n<route>finish</route>"]);
+    run_pipe!(agent, f, tmp, ["unit-a-01".to_string()]).unwrap();
+
+    let saved = state_path(&tmp).load();
+    let state = saved.state().expect("冷启动后断点应已重建落盘");
+    assert!(
+        state.data.get("checkpoint_unusable").is_some(),
+        "断点损坏应如实入账：{:?}",
+        state.data
+    );
+}
