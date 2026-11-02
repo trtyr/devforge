@@ -3,12 +3,15 @@
 //! 四条链路都在做同一件事——「agent 这轮没交完成标记，就再要一次；连续要了
 //! 这么多次还不交，判质量失败」：
 //!
+//! 四条链路之外（R7-P69 补录）还有第五条——change 域自带的 coding 阶段循环：
+//!
 //! | 链路 | 标记 | 上限 |
 //! | --- | --- | --- |
 //! | [`crate::change`] 计划/编码/测试轮 | `<stage-complete>N</stage-complete>` | [`MAX_MARKER_NUDGES`] |
 //! | [`crate::sop::planning`] | `<plan-complete>` | 零上限（decisions/003） |
 //! | [`crate::sop::testing`] | `<stage-complete>` | [`MAX_TEST_CONTINUE_NUDGES`] |
 //! | [`crate::sop::doc::runner`] | `<doc-complete>unit</doc-complete>` | [`MAX_DOC_CONTINUE_NUDGES`]，按当前单元计 |
+//! | [`crate::sop::coding`] | `<stage-complete>N</stage-complete>` | [`MAX_CONTINUE_NUDGES`]（coding.rs 自持） |
 //!
 //! 以前是四份独立实现，各自手写 `nudges += 1` / `> MAX` / 清零。计数规则本来就是
 //! 一条（**同一对象上连续失败才累加，交了就清零，超限即质量失败**），四份实现意味着

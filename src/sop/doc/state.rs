@@ -33,12 +33,6 @@ pub fn is_done(state: &RunState, unit: &str) -> bool {
     done_units(state).iter().any(|u| u == unit)
 }
 
-/// 把单元从 done 里摘除（重做前用：旧记录已不可信）。
-pub fn unmark_done(state: &mut RunState, unit: &str) {
-    let kept: Vec<String> = done_units(state).into_iter().filter(|u| u != unit).collect();
-    data_obj(state).insert("done".into(), serde_json::json!(kept));
-}
-
 /// 标记单元完成，并登记它产出的文件（相对产出根）。
 pub fn mark_done(state: &mut RunState, unit: &str, files: &[String]) {
     let mut done = done_units(state);

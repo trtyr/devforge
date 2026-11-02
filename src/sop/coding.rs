@@ -17,6 +17,7 @@ use std::path::Path;
 
 use crate::error::Result;
 use crate::sop::coding_protocol::{parse_review_report, parse_stage_complete, NextAction};
+use crate::sop::marker::{MarkerNudge, MarkerStep};
 use crate::sop::planning::{PlanAgentSession, ReviewSessionFactory, UserLink};
 use crate::sop::review_gate::{outcome_of_review_report, review_with_gate, ReviewBudget};
 
@@ -124,7 +125,10 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> CodingSopLoop<P, F> {
         let mut issues_total = 0usize;
         // 审查预算的生命周期 = 整个 run（违例重审与实例失败重试都从这里计数）
         let mut budget = ReviewBudget::default();
-        let mut nudges = 0usize;
+        // R7-P69：无标记重推的计数纪律单点化到 MarkerNudge（marker.rs 链路表已补
+        // 本行）——旧口径手写 nudges += 1 / > MAX / 清零，与单点语义等价但无测试
+        // 同时约束两者，易单边漂移
+        let mut nudges = MarkerNudge::bounded(MAX_CONTINUE_NUDGES);
         // 阶段推进记录：上一个阶段号（首个阶段的前驱 = "start"）
         let mut last_stage: Option<u64> = None;
         // 被打回后待收尾的修复轮（回注在下一轮 agent 回合才发生 → fix.end 落在那一回合返回处）
@@ -143,17 +147,20 @@ impl<P: PlanAgentSession, F: ReviewSessionFactory> CodingSopLoop<P, F> {
             }
             let Some(stage) = parse_stage_complete(&text) else {
                 // 无有效标记 → 有界重推（005/015）：标记由模型生成，卡住时不能无限打转
-                nudges += 1;
-                if nudges > MAX_CONTINUE_NUDGES {
-                    return Err(crate::error::DevforgeError::Quality(format!(
-                        "连续 {nudges} 次未输出 <stage-complete>，判定为质量失败（不自动重启）；最近一次回复尾巴：{}",
-                        tail(&text)
-                    )));
+                match nudges.bump() {
+                    MarkerStep::Exhausted(n) => {
+                        return Err(crate::error::DevforgeError::Quality(format!(
+                            "连续 {n} 次未输出 <stage-complete>，判定为质量失败（不自动重启）；最近一次回复尾巴：{}",
+                            tail(&text)
+                        )));
+                    }
+                    MarkerStep::Nudge(_) => {}
+                    MarkerStep::Done => unreachable!("bump 不可能返回 Done"),
                 }
                 message = CONTINUE_NUDGE.to_string();
                 continue;
             };
-            nudges = 0;
+            nudges.reset();
             // 阶段推进：agent 报出的新阶段号（前一个阶段 → 当前阶段）。
             // 重发同一阶段号（打回后重交）**不是**推进 → 不落里程碑（from/to 同值 = 噪声）。
             if last_stage != Some(stage) {
