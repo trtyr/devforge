@@ -589,3 +589,58 @@ fn section_title_matches_exactly_not_by_substring() {
         "真白名单块仍应取到：{paths:?}"
     );
 }
+
+/// R9-P80：「验收标准必须是列表项」前置到 plan 阶段确定性审计——全表格/段落
+/// 形态在 plan 打回，不再零反馈漏到 testing 末段 criteria.is_empty() 封印整轮。
+#[test]
+fn acceptance_criteria_all_table_rows_rejected_at_plan() {
+    let r = repo();
+    let all_table = good_plan().replace(
+        "## 5 验收标准\n- 给定 x=1 → 返回 2\n",
+        "## 5 验收标准\n| 给定 | 期望 |\n|---|---|\n| x=1 | 2 |\n",
+    );
+    let a = audit(&all_table, r.path());
+    assert!(
+        a.issues.iter().any(|i| i.contains("没有可对账的条款")),
+        "全表格形态应在 plan 阶段打回：{:?}",
+        a.issues
+    );
+    assert!(
+        a.issues.iter().filter(|i| i.contains("表格行")).count() >= 3,
+        "表格行应逐行点名：{:?}",
+        a.issues
+    );
+}
+
+/// R9-P80：混写场景——表格行点名，列表项本身不误伤（不报零条款）。
+#[test]
+fn acceptance_criteria_mixed_table_rows_flagged_bullets_kept() {
+    let r = repo();
+    let mixed = good_plan().replace(
+        "## 5 验收标准\n- 给定 x=1 → 返回 2\n",
+        "## 5 验收标准\n- 给定 x=1 → 返回 2\n| AC1 | count_words(a b) | == 2 |\n",
+    );
+    let a = audit(&mixed, r.path());
+    assert!(
+        a.issues.iter().any(|i| i.contains("表格行")),
+        "混写表格行应点名：{:?}",
+        a.issues
+    );
+    assert!(
+        !a.issues.iter().any(|i| i.contains("没有可对账的条款")),
+        "有列表项不得报零条款：{:?}",
+        a.issues
+    );
+}
+
+/// R9-P80：散文说明（非表格）不误伤——只拦「零条款」与表格行。
+#[test]
+fn acceptance_criteria_prose_notes_not_flagged() {
+    let r = repo();
+    let with_prose = good_plan().replace(
+        "## 5 验收标准\n- 给定 x=1 → 返回 2\n",
+        "## 5 验收标准\n对账说明：以下条款为验收依据。\n- 给定 x=1 → 返回 2\n",
+    );
+    let a = audit(&with_prose, r.path());
+    assert!(a.is_clean(), "散文说明 + 列表项应全绿：{:?}", a.issues);
+}

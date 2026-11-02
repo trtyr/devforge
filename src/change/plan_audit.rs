@@ -426,15 +426,39 @@ fn audit_inner_roots(plan: &str, repo: &Path, plantree: Option<&Path>) -> PlanAu
         );
     }
 
-    // 4) 验收标准可观测性
+    // 4) 验收标准可观测性 + R9-P80 列表项形态前置校验
+    let mut criteria_bullets = 0usize;
+    let mut criteria_content = 0usize;
     for line in section_lines(plan, "验收标准") {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') {
             continue;
         }
+        criteria_content += 1;
+        if t.starts_with('-') || t.starts_with('*') {
+            criteria_bullets += 1;
+        }
         if VAGUE_ACCEPTANCE.iter().any(|v| t.contains(v)) && !t.contains('→') {
             a.issues.push(format!("验收标准不可观测（缺「输入 → 期望输出」）：{t}"));
         }
+        // R9-P80：表格行在 plan_facts 里永远不被抽成条款（t26 v3 防鬼条款纪律），
+        // 写在验收标准里 = 对账静默缩窄——逐行点名打回（散文说明不误伤）
+        if t.starts_with('|') {
+            a.issues.push(format!(
+                "验收标准含表格行（不会被抽成条款，对账会静默缩窄）：{t}——改写成列表项（行首 `-` 或 `*`）"
+            ));
+        }
+    }
+    // R9-P80：「必须是列表项」的硬约束此前只在 testing 末段生效（orchestrator
+    // criteria.is_empty() → terminate 写 terminal_reason 封印整轮重跑）；
+    // plan_facts 只抽列表项（t26 v3），表格/段落形态在这里零反馈直接漏到封印。
+    // 前置成确定性审计：块有内容但抽不出任何条款 = 形态错误，plan 阶段打回
+    // （与 F11 引用卫生同模式：不过 = 修复回路，不烧审查轮次）。
+    if criteria_content > 0 && criteria_bullets == 0 {
+        a.issues.push(
+            "「验收标准」块没有可对账的条款——必须写成列表项（行首 `-` 或 `*`）；表格行、普通段落不会被抽成验收条款（对账一对一机械匹配）"
+                .into(),
+        );
     }
 
     a
