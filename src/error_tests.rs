@@ -145,3 +145,35 @@ fn empty_reply_variant_mapping() {
     assert!(wrapped.is_restartable(), "包装链下根因判定仍然成立");
     assert_eq!(wrapped.code(), "empty_reply");
 }
+
+/// R10-P90：API 错误响应体走净化文本 + 机器可读 code——旧口径 to_string() 原样
+/// 透传不可信 agent 文本（ANSI/控制字符进响应体），且「错误码进响应体」的注释
+/// 承诺从未兑现（P89）。本用例钉死两件事：净化 + code 字段。
+#[tokio::test]
+async fn api_error_body_is_sanitized_and_carries_code() {
+    use axum::response::IntoResponse;
+    let e = DevforgeError::agent("test-agent", "原始\u{1b}[31mANSI\u{1b}[0m\n第二行");
+    let api: crate::server::handlers::ApiError = e.into();
+    let resp = api.into_response();
+    assert_eq!(resp.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let bytes = http_body_util::BodyExt::collect(resp.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let msg = body["error"].as_str().unwrap();
+    assert!(!msg.contains('\u{1b}'), "响应体不得含 ANSI 转义: {msg:?}");
+    assert!(!msg.contains('\n'), "响应体应为单行: {msg:?}");
+    assert_eq!(body["code"], "agent", "响应体应带机器可读 code");
+}
+
+/// R10-P89：code() 的 WithContext 分支不可达——root_cause() 已剥包装，
+/// 任何包装深度的错误 code 都取根因（穷尽性保留分支，语义上到不了）。
+#[test]
+fn code_of_wrapped_error_is_root_cause_not_context() {
+    let e = DevforgeError::WithContext {
+        context: "渲染".into(),
+        source: Box::new(DevforgeError::Config("坏清单".into())),
+    };
+    assert_eq!(e.code(), "config");
+}

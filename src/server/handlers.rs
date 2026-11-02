@@ -19,24 +19,31 @@ use crate::server::{run_in_background, PendingAskView, SharedState};
 
 // ---------- 错误映射（原则 §1：对外错误面向人和 AI 双读者） ----------
 
-/// API 错误：状态码 + 消息。
+/// API 错误：状态码 + 消息 + 机器可读码（R10-P89：兑现「错误码进响应体」的
+/// 既有注释承诺——消费方不必嘎探中文措辞）。
 pub struct ApiError {
     status: StatusCode,
     message: String,
+    code: &'static str,
 }
 
 impl ApiError {
     pub fn not_found(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, message: msg.into() }
+        Self { status: StatusCode::NOT_FOUND, message: msg.into(), code: "not_found" }
     }
     pub fn conflict(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::CONFLICT, message: msg.into() }
+        Self { status: StatusCode::CONFLICT, message: msg.into(), code: "conflict" }
     }
     pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, message: msg.into() }
+        Self { status: StatusCode::BAD_REQUEST, message: msg.into(), code: "bad_request" }
     }
     pub fn internal(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: msg.into() }
+        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: msg.into(), code: "internal" }
+    }
+    /// 变体精确 code（R10-P89）：DevforgeError::code() 的机器可读标识直达响应体
+    /// （服务端侧分支用——agent/system/quality/rpc/io/empty_reply 比 internal 更有诊断价值）。
+    fn with_code(code: &'static str, msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: msg.into(), code }
     }
 }
 
@@ -97,14 +104,19 @@ fn validate_local_path(path: &std::path::Path) -> Result<(), String> {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = json!({"error": self.message});
+        // R10-P90：响应体走净化版文本——子 Agent 的错误文本是不可信输入
+        // （error.rs::sanitized_message：去 ANSI/控制字符、压单行、限长），
+        // 旧口径 to_string() 原样透传。
+        let body = json!({ "error": self.message, "code": self.code });
         (self.status, Json(body)).into_response()
     }
 }
 
 impl From<crate::error::DevforgeError> for ApiError {
     fn from(e: crate::error::DevforgeError) -> Self {
-        let msg = e.to_string();
+        // R10-P90：净化版出仓（限长 + 去 ANSI + 压控制字符）——子 Agent 产出
+        // 会进这条链路（Agent 变体 Display 含原始 message）。
+        let msg = e.sanitized_message();
         // 2026-10-27 自审 minor（105/202）：变体优先——旧口径全靠中文关键词子串，
         // 客户端输入类（JSON/配置）落进 500 内部错，而 System 里带「不存在」字样的
         // 基础设施故障反被判成 404。变体是确定性事实，关键词只在 Store 内细化状态码。
@@ -122,7 +134,7 @@ impl From<crate::error::DevforgeError> for ApiError {
             | crate::error::DevforgeError::Quality(_)
             | crate::error::DevforgeError::Agent { .. }
             | crate::error::DevforgeError::RpcProtocol(_)
-            | crate::error::DevforgeError::Io(_) => return Self::internal(msg),
+            | crate::error::DevforgeError::Io(_) => return Self::with_code(e.code(), msg),
             // Store：不变量/校验类，继续走关键词细化（已存在/串行/不存在/其余）
             _ => {}
         }

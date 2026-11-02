@@ -168,6 +168,8 @@ impl DevforgeError {
             Self::RpcProtocol(_) => "rpc",
             Self::Io(_) => "io",
             Self::Json(_) => "json",
+            // R10-P89：root_cause() 已剥包装，此分支实际不可达——保留仅为 match 穷尽性
+            //（WithContext 构造点仍在，编译器要求覆盖）。
             Self::WithContext { .. } => "context",
         }
     }
