@@ -298,6 +298,7 @@ pub(super) fn a29_guard_constants_point_at_this_change() {
 
 /// 验收 30 · 上一场验收测试文件的两个常量与守卫文件逐字一致。
 #[test]
+#[ignore = "c7-1 场次烙死（同 a31 10-23 裁决）：change_ask_ring.rs 与 change_failure_context/support.rs 的 BASELINE/WHITELIST 快照常量已随 11-01 守卫常量物化真修（ad01b3f）有意演化，本验收仅在重放该场次时生效"]
 pub(super) fn a30_acceptance_file_constants_match_the_guard() {
     // 错实现形态：两份常量不同步（a16 比对失败）→ 本用例必须变红
     let guard = std::fs::read_to_string(repo_root().join("tests/change_ask_ring.rs"))

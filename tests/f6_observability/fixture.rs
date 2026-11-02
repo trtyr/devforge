@@ -59,14 +59,22 @@ pub(super) async fn send(
 ) -> axum::response::Response {
     use tower::ServiceExt as _;
     let builder = axum::http::Request::builder().method(method).uri(uri);
-    let req = match body {
+    // A1 认证后 oneshot 无 ConnectInfo → fail-closed 不豁免（auth_middleware 注释
+    // 自陈「模拟本机须显式插回环对端」）——f6 存量未跟改，九轮审计一直绕开。
+    // 显式插回环对端 = 走回环豁免通道，与真实本机客户端同语义。
+    let loopback = axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 0u16)));
+    let builder = match body {
         Some(v) => builder
             .header("content-type", "application/json")
+            .extension(loopback)
             .body(axum::body::Body::from(v.to_string()))
             .expect("请求构造"),
-        None => builder.body(axum::body::Body::empty()).expect("请求构造"),
+        None => builder
+            .extension(loopback)
+            .body(axum::body::Body::empty())
+            .expect("请求构造"),
     };
-    router.clone().oneshot(req).await.expect("端点调用")
+    router.clone().oneshot(builder).await.expect("端点调用")
 }
 
 pub(super) async fn body_json(resp: axum::response::Response) -> Value {
