@@ -202,8 +202,11 @@ impl BuiltinRpcEngine {
 
         // 增量（D021）：显式开关 + 状态里的 base_sha；失败一律降级全量并记日志。
         let mut run_units = plan.to_run.clone();
-        // T009：报告要记录尝试次数（run_with_retry 在重启前把 rs.attempt 落盘；首次为 1）
-        let attempt_now = loaded.state().map(|s| s.attempt).unwrap_or(0).max(1);
+        // T009：报告要记录尝试次数。磁盘语义（刻意）：`rs.attempt` 初始 0 =
+        // 未重启，run_with_retry 只在重启前落盘 attempt>1（retry 测试钉住该口径）——
+        // 账单折显 max(1) 仅为「1 = 首次」可读性，磁盘原值一并入账不再掩盖（R7-P65）
+        let attempt_raw = loaded.state().map(|s| s.attempt).unwrap_or(0);
+        let attempt_now = attempt_raw.max(1);
         if let crate::sop::doc::incremental::Mode::Incremental { base, .. } = &mode {
             match crate::docgen::impact::changed_since(&workspace, base) {
                 Ok(changes) if changes.is_empty() => {
@@ -462,10 +465,11 @@ impl BuiltinRpcEngine {
                 if let Err(e) = std::fs::write(
                     &report_path,
                     format!(
-                        "# doc-from-zero 运行报告\n\n- run: {}\n- 墙钟: {}s\n- 尝试: {}（1 = 首次；>1 含自动重启）\n- 模块数: {} / 单元数: {}\n- 单元完成: {:?}\n- 审查轮次: {}\n- 累计问题: {}\n- 用量: {}\n- 终审: {:?}\n\n## 终审审计\n\n{}\n",
+                        "# doc-from-zero 运行报告\n\n- run: {}\n- 墙钟: {}s\n- 尝试: {}（磁盘原值 {}；0 = 未重启，>1 含自动重启）\n- 模块数: {} / 单元数: {}\n- 单元完成: {:?}\n- 审查轮次: {}\n- 累计问题: {}\n- 用量: {}\n- 终审: {:?}\n\n## 终审审计\n\n{}\n",
                         final_run_id,
                         started.elapsed().as_secs(),
                         attempt_now,
+                        attempt_raw,
                         module_count,
                         report.units_done.len(),
                         report.units_done,
