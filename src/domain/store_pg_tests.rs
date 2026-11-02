@@ -181,3 +181,71 @@ fn concurrent_persist_shares_one_connection() {
         }
     }
 }
+
+/// P018 Phase 2（t9）：旧 blob 一次性迁移——store_state 有行且实体表空时，
+/// load_pg 把 blob 数据全量写入实体表，然后 blob 改名 store_state_legacy
+/// 保留现场（不 DROP：数据不出库），blob 从此退出读序。
+#[test]
+fn blob_legacy_is_migrated_to_entity_tables_on_load() {
+    let _pg_guard = PG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut conn) = pg_test_conn() else { return };
+    drop_store_state(&mut conn);
+    // 手工种旧格式 blob（store_state 一行 + 实体表不存在/为空）
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS store_state (\
+         id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),\
+         data JSONB NOT NULL,\
+         updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+        &[],
+    )
+    .unwrap();
+    let mut legacy = Store::new();
+    legacy
+        .create_project(crate::domain::project::Project::new(
+            "legacy-proj",
+            std::path::PathBuf::from("/tmp/legacy"),
+            1,
+        ))
+        .unwrap();
+    let data = serde_json::to_string(&legacy).unwrap();
+    conn.execute(
+        "INSERT INTO store_state (id, data) VALUES (1, $1::text::jsonb)",
+        &[&data],
+    )
+    .unwrap();
+
+    // load_pg 触发一次性迁移
+    let loaded = Store::load_pg(PG_TEST_URL).unwrap();
+    assert_eq!(loaded.projects.len(), 1, "blob 数据应迁入实体表并读回");
+    assert_eq!(loaded.projects[0].name, "legacy-proj");
+
+    // blob 改名收尾：store_state 不存在、store_state_legacy 保留现场
+    let blob_gone: i64 = conn
+        .query_one(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'store_state'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(blob_gone, 0, "blob 应已改名退出读序");
+    let legacy_kept: i64 = conn
+        .query_one(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'store_state_legacy'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(legacy_kept, 1, "legacy 表应保留现场（数据不出库）");
+
+    // 迁移后续写：实体表路径正常（persist 再次落 PG、load 再读回一致）
+    let mut store = loaded;
+    store
+        .create_project(crate::domain::project::Project::new(
+            "post-migration",
+            std::path::PathBuf::from("/tmp/post"),
+            1,
+        ))
+        .unwrap();
+    let reloaded = Store::load_pg(PG_TEST_URL).unwrap();
+    assert_eq!(reloaded.projects.len(), 2, "迁移后续写应落实体表");
+}
