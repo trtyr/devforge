@@ -26,8 +26,10 @@ pub struct WaitOutcome {
     /// 口径澄清（2026-10-27 自审 minor 129）：这是最后一次上报的值（上下文规模快照），
     /// 不是整轮累加；事件字段名用 last_ 前缀，避免被当成「本轮消耗」。
     pub last_usage: Option<(u64, u64)>,
-    /// 2026-10-27 自审 major：path-guard 拦截计数（消费方持有事件总线，可上总线）。
-    pub boundary_denials: usize,
+    /// R12-P107：旧口径的 boundary_denials 计数字段删除（自增后全仓无读取方——
+    /// 死字段误导「有人消费」）。path-guard 拦截事实的观测面 = tracing JSONL 的
+    /// boundary.violation 事件（logs 查询按 event 过滤回放可查）；SSE 总线通道
+    /// 待 path_permissions 接线批次与 DEVFORGE_WORKSPACE_ROOT 同批评估。
     /// AF-5（2026-10-24 拍板）：期间捕获的交卷工具提交（tool_execution_start 的
     /// toolName+args 结构化载荷）。交卷信号的正道；文本魔法块是降级回退。
     pub tool_submissions: Vec<ToolSubmission>,
@@ -734,10 +736,10 @@ fn is_path_guard_denial(e: &EventRecord) -> bool {
                 // P012 · path-guard 事件回流：被插件拦截的调用（isError + reason 前缀约定）
                 // 转 boundary.violation —— 与 M0 引擎终校验共用同一事件名，过滤时对得上。
                 if Self::is_path_guard_denial(e) {
-                    // 2026-10-27 自审 major：除日志外计入结构化计数——WaitOutcome 消费方
-                    // （编排层，持有事件总线）可据此把拦截事实发上总线；旧口径只落
-                    // tracing，与 server 侧同名事件的「进总线」口径对不上。
-                    out.boundary_denials += 1;
+                    // R12-P107：观测面 = tracing JSONL 的 boundary.violation 事件
+                    // （logs 查询按 event 过滤回放可查）。旧口径的 boundary_denials
+                    // 计数字段删除——自增后全仓无读取方（死字段误导「有人消费」）；
+                    // SSE 总线通道待 path_permissions 接线批次评估。
                     tracing::warn!(
                         component = "engine",
                         event = "boundary.violation",
