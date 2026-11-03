@@ -370,7 +370,9 @@ impl<'a> Renderer<'a> {
         packages.extend(agent.extra_packages.iter().cloned());
         // 自审 major：撤包方向的对账——manifest 移除的包若只在 settings 抹掉、
         // npm 依赖里残留，双记录自此自相矛盾（后续「已装齐」判定也建立在脏记录上）。
-        prune_npm_dependencies(&dir, &packages)?;
+        // R11-P102：撤包对账返回记录健康信号——解析失败/结构残缺时压制 dual_record，
+        // 让幂等复用分支不成立，走全量重装重建记录（损坏记录不再被永久跳过）。
+        let prune_healthy = prune_npm_dependencies(&dir, &packages)?;
         // 幂等跳过（CAL-19-RENDER）：已装齐且双记录完整则不重装，只回写 settings 记录。
         // 判定标准刻意保守——npm/package.json 缺失、或清单新增了包，一律重装全量。
         // R10-P87：指纹消费落地——provider/model 变化在旧口径下会复用（packages 不变
@@ -383,7 +385,8 @@ impl<'a> Renderer<'a> {
         let provider_model_changed = rendered_fingerprint(&dir).as_deref()
             != Some(expected_fingerprint.as_str());
         let installed = packages.iter().all(|p| previous.contains(p));
-        let dual_record = dir.join("npm").join("package.json").exists();
+        let dual_record =
+            prune_healthy && dir.join("npm").join("package.json").exists();
         if installed && dual_record && !previous.is_empty() && !provider_model_changed {
             // 回写与首渲同一基底对象（只多一个 packages 记录）⇒ 两次渲染产物逐字节可比
             settings["packages"] = serde_json::Value::Array(
@@ -490,25 +493,55 @@ fn recorded_packages(dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 移除损坏的 npm/package.json：安装层对损坏记录的对齐语义是报错拒绝（P101，
+/// 与真桥一致），不清除的话全量重装仍会撞同一损坏 → 永远修不好。移除失败
+/// （权限等）不掩益：warn 后继续，让安装层报出真错误。
+fn discard_corrupt_npm_record(path: &Path) {
+    if let Err(e) = fs::remove_file(path) {
+        tracing::warn!(
+            component = "renderer",
+            path = %path.display(),
+            error = %e,
+            "移除损坏的 npm/package.json 失败，重装路径将原样报错"
+        );
+    }
+}
+
 /// 撤包对账：把 npm/package.json 的 dependencies 修剪成清单期望集。
 /// 清单外残留（已撤包）与缺失（损坏记录）都交给重装路径；无记录则不动。
-fn prune_npm_dependencies(dir: &Path, desired: &[String]) -> Result<()> {
+/// 返回记录健康信号：Ok(true) = 记录存在且可解析（已对账/无需对账）或无记录
+/// （重装路径会建全量）；Ok(false) = 记录不可用（解析失败/结构残缺）——
+/// 调用方据此压制 dual_record 走全量重装自愈（R11-P102：旧口径只看文件存在性，
+/// 损坏记录被幂等复用分支永久跳过，注释承诺的「交给重装路径」从未兑现）。
+fn prune_npm_dependencies(dir: &Path, desired: &[String]) -> Result<bool> {
     let path = dir.join("npm").join("package.json");
     if !path.exists() {
-        return Ok(());
+        return Ok(true);
     }
     let raw = fs::read_to_string(&path).ctx("读 npm/package.json")?;
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Ok(());
+        tracing::warn!(
+            component = "renderer",
+            path = %path.display(),
+            "npm/package.json 解析失败（损坏记录）：移除损坏产物交由重装路径重建（R11-P102）"
+        );
+        discard_corrupt_npm_record(&path);
+        return Ok(false);
     };
     let Some(deps) = v.get_mut("dependencies").and_then(|d| d.as_object_mut()) else {
-        return Ok(());
+        tracing::warn!(
+            component = "renderer",
+            path = %path.display(),
+            "npm/package.json 缺 dependencies 记录（结构残缺）：移除损坏产物交由重装路径重建（R11-P102）"
+        );
+        discard_corrupt_npm_record(&path);
+        return Ok(false);
     };
     let before = deps.len();
     deps.retain(|k, _| desired.iter().any(|p| p == k));
     let pruned = before - deps.len();
     if pruned == 0 {
-        return Ok(());
+        return Ok(true);
     }
     fs::write(&path, serde_json::to_string_pretty(&v).ctx("序列化 package.json")?)
         .ctx("写 npm/package.json（撤包对账）")?;
@@ -518,7 +551,7 @@ fn prune_npm_dependencies(dir: &Path, desired: &[String]) -> Result<()> {
         path = %path.display(),
         "npm 依赖对账：移除清单外的残留包"
     );
-    Ok(())
+    Ok(true)
 }
 
 /// 递归复制目录。

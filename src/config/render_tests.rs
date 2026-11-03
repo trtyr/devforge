@@ -334,6 +334,56 @@ fn package_removal_reconciles_both_records() {
     );
 }
 
+/// R11-P102 回归：npm/package.json 损坏（无效 JSON）时 dual_record 只看存在性
+/// 会误判「双记录完整」走复用分支，prune 对解析失败静默跳过 → 损坏记录永不自愈。
+/// 修复后 prune 返回健康信号，不可用压制 dual_record → 全量重装重建记录。
+#[test]
+fn corrupt_npm_record_heals_via_full_reinstall() {
+    let manifest = ConfigManifest::builtin();
+    let root = tempfile::tempdir().unwrap();
+    let counter = CountingInstaller::default();
+    Renderer {
+        manifest: &manifest,
+        installer: &counter,
+        skills_source: None,
+    }
+    .render_agent(root.path(), "plan-agent")
+    .unwrap();
+    let first = counter.0.load(Ordering::SeqCst);
+    assert!(first > 0, "首渲必须真实装包，本测试前提不成立");
+
+    // 破坏 npm 记录：文件仍在 → 旧口径 dual_record 为真，复用分支成立，损坏被静默跳过
+    fs::write(
+        root.path().join("plan-agent/npm/package.json"),
+        "not-json{{{",
+    )
+    .unwrap();
+
+    // 同清单重渲染：installed 真 + previous 非空 + provider/model 未变 + 标记在——
+    // 唯一能让复用分支不成立的就是修复后的 prune 健康信号；必须走全量重装重建记录
+    Renderer {
+        manifest: &manifest,
+        installer: &counter,
+        skills_source: None,
+    }
+    .render_agent(root.path(), "plan-agent")
+    .unwrap();
+
+    let npm: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.path().join("plan-agent/npm/package.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        npm["dependencies"].is_object(),
+        "损坏的 npm/package.json 必须被重装路径重建为有效 JSON"
+    );
+    let second = counter.0.load(Ordering::SeqCst);
+    assert!(
+        second > first,
+        "记录不可用时必须走全量重装而非复用：first={first} second={second}"
+    );
+}
+
 #[test]
 fn manifest_package_change_forces_reinstall() {
     let mut manifest = ConfigManifest::builtin();
